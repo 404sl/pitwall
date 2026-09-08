@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Classification, SCHEMA_VERSION, isYours, parseSnapshot } from "@404sl/pitwall-schema";
-import { buildBoard, parkedReasons, parkedSummary } from "../ui/model.ts";
+import { blockedSummary, buildBoard, parkedReasons, parkedSummary } from "../ui/model.ts";
 import { VERSION } from "../src/version.ts";
 
 const GENERATED_AT = "2026-09-08T14:11:00Z";
@@ -111,7 +111,14 @@ test("parked is counted per reason and never summed", () => {
   for (const entry of board.parked) {
     assert.deepEqual(Object.keys(entry).sort(), ["count", "reason"]);
   }
-  assert.equal(parkedSummary(board.parked), "tooling 3 \u00b7 watch 2 \u00b7 umbrella 4 \u00b7 roadmap 6\u2003blocked 5");
+  assert.equal(parkedSummary(board.parked), "tooling 3 \u00b7 watch 2 \u00b7 umbrella 4 \u00b7 roadmap 6");
+  assert.equal(
+    parkedSummary(board.parked).includes("blocked"),
+    false,
+    "blocked must not be joined into the parked reasons",
+  );
+  assert.equal(blockedSummary(board.parked), "blocked 5");
+  assert.equal(blockedSummary(board.parked).includes(String(total)), false);
   assert.equal(
     Object.entries(board).some(([key, value]) => key.toLowerCase().includes("parked") && typeof value === "number"),
     false,
@@ -217,4 +224,57 @@ test("a lane with no recorded activity reports no elapsed time", () => {
     board.runningTotals.map((total) => total.state),
     ["working", "awaiting-lander", "stranded"],
   );
+});
+
+test("a lane the tracker did not report still counts, and never as zero", () => {
+  const board = buildBoard(
+    snapshotOf([
+      project("maas", {
+        issues: [],
+        errors: [{ source: "bd list --status open", message: "exited 1", at: "2026-09-08T14:09:00Z" }],
+        lanes: [{ slot: 1, state: "working", issueId: "maas-abc", lastActivityAt: "2026-09-08T12:59:00Z" }],
+      }),
+    ]),
+  );
+  assert.deepEqual(
+    board.running.map((row) => [row.project, row.state, row.count]),
+    [["maas", "working", 1]],
+  );
+  assert.deepEqual(board.runningTotals, [{ state: "working", count: 1 }]);
+  assert.equal(board.problems.length, 1);
+});
+
+test("no running row prints a count beneath the lanes it shows", () => {
+  const board = buildBoard(
+    snapshotOf([
+      project("maas", {
+        issues: [],
+        lanes: [
+          { slot: 1, state: "working", issueId: "maas-abc", lastActivityAt: "2026-09-08T13:59:00Z" },
+          { slot: 2, state: "handed-off", issueId: "maas-def", lastActivityAt: "2026-09-08T13:11:00Z" },
+        ],
+      }),
+      project("session-replay", {
+        issues: [issue("sr-1", "in-flight"), issue("sr-2", "in-flight"), issue("sr-3", "landing")],
+        lanes: [{ slot: 1, state: "working", issueId: "sr-1", lastActivityAt: "2026-09-08T13:00:00Z" }],
+      }),
+    ]),
+  );
+  for (const row of board.running) {
+    assert.ok(row.count >= row.chips.length, `${row.project} ${row.state} counts fewer than the lanes it shows`);
+    assert.ok(row.count > 0, `${row.project} ${row.state} renders a row with no count`);
+  }
+  assert.deepEqual(
+    board.running.map((row) => [row.project, row.state, row.count]),
+    [
+      ["session-replay", "working", 2],
+      ["session-replay", "awaiting-lander", 1],
+      ["maas", "working", 1],
+      ["maas", "awaiting-lander", 1],
+    ],
+  );
+  assert.deepEqual(board.runningTotals, [
+    { state: "working", count: 3 },
+    { state: "awaiting-lander", count: 2 },
+  ]);
 });

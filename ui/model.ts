@@ -190,9 +190,9 @@ function runningRows(projects: Project[], generatedAt: string): RunningRow[] {
         (issue) => RUNNING_FROM_CLASSIFICATION[issue.classification] === state,
       ).length;
       const chips = chipsFor(project, generatedAt, state);
-      const count = state === "stranded" ? chips.length : fromIssues;
+      const count = state === "stranded" ? chips.length : Math.max(fromIssues, chips.length);
       return { project: project.name, state, count, chips };
-    }).filter((row) => row.count > 0 || row.chips.length > 0);
+    }).filter((row) => row.count > 0);
     const total = rows.reduce((sum, row) => sum + row.count, 0);
     return { name: project.name, count: total, rows };
   });
@@ -251,16 +251,15 @@ function parkedEntries(projects: Project[]): ParkedEntry[] {
 }
 
 export function parkedSummary(entries: ParkedEntry[]): string {
-  const reasons = entries
+  return entries
     .filter((entry) => entry.reason !== "blocked")
     .map((entry) => `${entry.reason} ${entry.count}`)
     .join(" \u00b7 ");
+}
+
+export function blockedSummary(entries: ParkedEntry[]): string {
   const blocked = entries.find((entry) => entry.reason === "blocked");
-  if (blocked === undefined) {
-    return reasons;
-  }
-  const tail = `blocked ${blocked.count}`;
-  return reasons === "" ? tail : `${reasons}\u2003${tail}`;
+  return blocked === undefined ? "" : `blocked ${blocked.count}`;
 }
 
 function problemRows(snapshot: Snapshot): ProblemRow[] {

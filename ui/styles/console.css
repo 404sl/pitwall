@@ -264,6 +264,10 @@ body {
   color: var(--pw-ink);
 }
 
+.pw-parked--blocked {
+  margin-block-start: 12px;
+}
+
 .pw-more,
 .pw-empty {
   color: var(--pw-muted);
@@ -325,22 +329,20 @@ body {
 
   .pw-row {
     padding-block: 6px;
-    border-inline-start: var(--pw-rail) solid transparent;
   }
 
   .pw-row--signal {
-    border-inline-start-color: var(--pw-signal);
+    box-shadow: inset var(--pw-rail) 0 0 0 var(--pw-signal);
   }
 
   .pw-row--hold {
-    border-inline-start-color: var(--pw-hold);
+    box-shadow: inset var(--pw-rail) 0 0 0 var(--pw-hold);
   }
 
   .pw-row--alert {
-    border-inline-start-color: var(--pw-alert);
+    box-shadow: inset var(--pw-rail) 0 0 0 var(--pw-alert);
   }
 
-  .pw-row > :first-child,
   .pw-row--signal > :first-child,
   .pw-row--hold > :first-child,
   .pw-row--alert > :first-child {
@@ -349,7 +351,7 @@ body {
 
   .pw-cell {
     padding-block: 1px;
-    padding-inline-end: 0;
+    padding-inline: 12px 0;
   }
 
   .pw-cell--at {
