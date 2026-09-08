@@ -1,0 +1,273 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { chmodSync, mkdtempSync, mkdirSync, utimesSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { Lane } from "@404sl/pitwall-schema";
+import { readWorkspace } from "../src/autofix.ts";
+import { readLanes, recencyArgs, slotsPath, worktreePath } from "../src/lanes.ts";
+
+const PREFIX = "fixture";
+const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), "fixtures");
+
+function lockRoot(): string {
+  return mkdtempSync(join(tmpdir(), "pitwall-lanes-"));
+}
+
+function claim(root: string, slot: number, issueId: string): void {
+  const dir = slotsPath(PREFIX, root);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, String(slot)), `${issueId}\n`);
+}
+
+function registry(root: string): void {
+  mkdirSync(slotsPath(PREFIX, root), { recursive: true });
+}
+
+function worktree(root: string, issueId: string, minutesAgo: number): string {
+  const dir = worktreePath(PREFIX, issueId, root);
+  const nested = join(dir, "src");
+  mkdirSync(nested, { recursive: true });
+  writeFileSync(join(nested, "index.ts"), "export {};\n");
+  if (minutesAgo > 0) {
+    const when = new Date(Date.now() - minutesAgo * 60_000);
+    for (const path of [join(nested, "index.ts"), nested, dir]) {
+      utimesSync(path, when, when);
+    }
+  }
+  return dir;
+}
+
+function stateOf(lanes: readonly Lane[], slot: number): string | undefined {
+  return lanes.find((lane) => lane.slot === slot)?.state;
+}
+
+const FIND_ALWAYS_FAILS = '#!/bin/sh\necho "find: probe rejected" >&2\nexit 1\n';
+
+function findAcceptingOnly(primary: string): string {
+  const real = spawnSync("/bin/sh", ["-c", "command -v find"], { encoding: "utf8" });
+  const path = real.stdout.trim();
+  return [
+    "#!/bin/sh",
+    'case " $* " in',
+    `  *" ${primary} "*) exec ${path} "$@" ;;`,
+    "esac",
+    'echo "find: unknown primary or operator" >&2',
+    "exit 1",
+    "",
+  ].join("\n");
+}
+
+function withFind<T>(script: string, run: () => T): T {
+  const bin = mkdtempSync(join(tmpdir(), "pitwall-find-"));
+  const stub = join(bin, "find");
+  writeFileSync(stub, script);
+  chmodSync(stub, 0o755);
+  const path = process.env["PATH"];
+  process.env["PATH"] = path === undefined ? bin : `${bin}:${path}`;
+  try {
+    return run();
+  } finally {
+    if (path === undefined) {
+      delete process.env["PATH"];
+    } else {
+      process.env["PATH"] = path;
+    }
+  }
+}
+
+test("a probe that fails is reported working with an error, never stranded", () => {
+  const root = lockRoot();
+  claim(root, 1, "pw-unprobed");
+  const dir = worktree(root, "pw-unprobed", 0);
+
+  const { lanes, errors } = withFind(FIND_ALWAYS_FAILS, () =>
+    readLanes(PREFIX, { lockRoot: root }),
+  );
+
+  assert.equal(lanes[0]?.state, "working");
+  assert.equal(lanes[0]?.issueId, "pw-unprobed");
+  assert.equal(lanes[0]?.worktree, dir);
+  assert.equal(lanes[0]?.lastActivityAt, undefined);
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0]?.source, dir);
+  assert.match(errors[0]?.message ?? "", /probe rejected/);
+});
+
+test("a find that rejects every primary but -mmin still tells working from stranded", () => {
+  const root = lockRoot();
+  claim(root, 1, "pw-alive");
+  claim(root, 2, "pw-dead");
+  worktree(root, "pw-alive", 0);
+  worktree(root, "pw-dead", 60);
+
+  const { lanes, errors } = withFind(findAcceptingOnly("-mmin"), () =>
+    readLanes(PREFIX, { lockRoot: root }),
+  );
+
+  assert.deepEqual(errors, []);
+  assert.equal(stateOf(lanes, 1), "working");
+  assert.match(lanes[0]?.lastActivityAt ?? "", /^\d{4}-\d{2}-\d{2}T/);
+  assert.equal(stateOf(lanes, 2), "stranded");
+});
+
+test("a worktree written to inside the window is working", () => {
+  const root = lockRoot();
+  claim(root, 1, "pw-alive");
+  const dir = worktree(root, "pw-alive", 0);
+
+  const { lanes, errors } = readLanes(PREFIX, { lockRoot: root });
+
+  assert.deepEqual(errors, []);
+  assert.equal(lanes.length, 1);
+  assert.equal(lanes[0]?.state, "working");
+  assert.equal(lanes[0]?.issueId, "pw-alive");
+  assert.equal(lanes[0]?.worktree, dir);
+  assert.match(lanes[0]?.lastActivityAt ?? "", /^\d{4}-\d{2}-\d{2}T/);
+});
+
+test("recency asks find for -mmin and never -newermt, whose relative timestamp BSD find rejects", () => {
+  assert.deepEqual(recencyArgs("/w/pw-alive"), ["/w/pw-alive", "-mmin", "-20"]);
+});
+
+test("a claim with no worktree is handed-off, not stranded", () => {
+  const root = lockRoot();
+  claim(root, 1, "pw-landed");
+
+  const { lanes, errors } = readLanes(PREFIX, { lockRoot: root });
+
+  assert.deepEqual(errors, []);
+  assert.equal(lanes[0]?.state, "handed-off");
+  assert.equal(lanes[0]?.issueId, "pw-landed");
+  assert.equal(lanes[0]?.worktree, undefined);
+});
+
+test("a claim whose worktree has been untouched past the window is stranded", () => {
+  const root = lockRoot();
+  claim(root, 1, "pw-dead");
+  const dir = worktree(root, "pw-dead", 60);
+
+  const { lanes } = readLanes(PREFIX, { lockRoot: root });
+
+  assert.equal(lanes[0]?.state, "stranded");
+  assert.equal(lanes[0]?.issueId, "pw-dead");
+  assert.equal(lanes[0]?.worktree, dir);
+});
+
+test("a configured slot nobody claims is idle, because a released slot is deleted", () => {
+  const root = lockRoot();
+  claim(root, 2, "pw-alive");
+  worktree(root, "pw-alive", 0);
+
+  const { lanes } = readLanes(PREFIX, { lockRoot: root, lanes: 3 });
+
+  assert.deepEqual(
+    lanes.map((lane) => [lane.slot, lane.state]),
+    [
+      [1, "idle"],
+      [2, "working"],
+      [3, "idle"],
+    ],
+  );
+  assert.equal(lanes[0]?.issueId, undefined);
+});
+
+test("a slot held above the configured lane count is still reported", () => {
+  const root = lockRoot();
+  claim(root, 7, "pw-drift");
+
+  const { lanes } = readLanes(PREFIX, { lockRoot: root, lanes: 3 });
+
+  assert.deepEqual(
+    lanes.map((lane) => lane.slot),
+    [1, 2, 3, 7],
+  );
+  assert.equal(stateOf(lanes, 7), "handed-off");
+});
+
+test("the four states validate against the contract", () => {
+  const root = lockRoot();
+  claim(root, 1, "pw-alive");
+  worktree(root, "pw-alive", 0);
+  claim(root, 2, "pw-landed");
+  claim(root, 3, "pw-dead");
+  worktree(root, "pw-dead", 60);
+
+  const { lanes } = readLanes(PREFIX, { lockRoot: root, lanes: 4 });
+
+  assert.doesNotThrow(() => Lane.array().parse(lanes));
+  assert.deepEqual(
+    lanes.map((lane) => lane.state),
+    ["working", "handed-off", "stranded", "idle"],
+  );
+});
+
+test("a missing slots directory is zero lanes and no error", () => {
+  const root = lockRoot();
+
+  const { lanes, errors } = readLanes(PREFIX, { lockRoot: root, lanes: 3 });
+
+  assert.deepEqual(lanes, []);
+  assert.deepEqual(errors, []);
+});
+
+test("an empty registry still reports the configured lanes as idle", () => {
+  const root = lockRoot();
+  registry(root);
+
+  const { lanes } = readLanes(PREFIX, { lockRoot: root, lanes: 2 });
+
+  assert.deepEqual(
+    lanes.map((lane) => lane.state),
+    ["idle", "idle"],
+  );
+});
+
+test("a slot file with nothing in it holds no claim", () => {
+  const root = lockRoot();
+  registry(root);
+  writeFileSync(join(slotsPath(PREFIX, root), "1"), "\n");
+
+  const { lanes } = readLanes(PREFIX, { lockRoot: root });
+
+  assert.equal(lanes[0]?.state, "idle");
+});
+
+test("the registry is namespaced by lockPrefix, so one project cannot read another's", () => {
+  const root = lockRoot();
+  claim(root, 1, "pw-alive");
+
+  const { lanes } = readLanes("other", { lockRoot: root });
+
+  assert.deepEqual(lanes, []);
+});
+
+test("a workspace reports its lanes under the lockPrefix its config names", () => {
+  const root = lockRoot();
+  const fixtures = join(FIXTURES, "multi");
+  mkdirSync(join(root, "multi-slots"), { recursive: true });
+  writeFileSync(join(root, "multi-slots", "1"), "mw-alive\n");
+  mkdirSync(join(root, "multi-worktrees", "mw-alive"), { recursive: true });
+
+  const project = readWorkspace(fixtures, { lockRoot: root });
+
+  assert.equal(project.lanes.length, 6);
+  assert.equal(project.lanes[0]?.state, "working");
+  assert.equal(project.lanes[0]?.issueId, "mw-alive");
+  assert.deepEqual(
+    project.lanes.slice(1).map((lane) => lane.state),
+    ["idle", "idle", "idle", "idle", "idle"],
+  );
+  assert.deepEqual(project.errors, []);
+});
+
+test("a workspace whose registry has never been created reports no lanes", () => {
+  const project = readWorkspace(join(FIXTURES, "multi"), {
+    lockRoot: lockRoot(),
+  });
+
+  assert.deepEqual(project.lanes, []);
+  assert.deepEqual(project.errors, []);
+});
