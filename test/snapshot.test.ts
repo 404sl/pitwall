@@ -163,3 +163,30 @@ test("a complete snapshot exits zero and one where every project failed does not
   assert.equal((await emitSnapshot(options(workspace([NO_TRACKER])))).code, 1);
   assert.equal((await emitSnapshot(options(workspace([])))).code, 0);
 });
+
+test("the snapshot reports whether the reason an issue stopped is still true", async () => {
+  const place = workspace([TRACKER]);
+  const asked: string[][] = [];
+  const snapshot = await collectSnapshot({
+    ...options(place, new Date("2026-09-08T09:00:00Z")),
+    env: { ...place.env, BD_LIST_FIXTURE: "stale" },
+    probe: async (command) => {
+      asked.push([...command]);
+      return true;
+    },
+    pullState: async () => undefined,
+  });
+  const byId = new Map((snapshot.projects[0]?.issues ?? []).map((issue) => [issue.id, issue]));
+  assert.equal(byId.get("mw-20")?.staleness.verdict, "resolved");
+  assert.ok(
+    byId.get("mw-20")?.staleness.evidence.some((line) => line.includes("mw-9")),
+    "the resolved verdict names the issue that closed",
+  );
+  assert.equal(byId.get("mw-21")?.staleness.verdict, "likely-stale");
+  assert.equal(byId.get("mw-22")?.classification, "yours:decision");
+  assert.equal(byId.get("mw-22")?.staleness.verdict, "likely-stale");
+  assert.equal(byId.get("mw-23")?.staleness.verdict, "unchecked");
+  assert.equal(byId.get("mw-23")?.staleness.checkedAt, undefined);
+  assert.ok(asked.length > 0);
+  assert.ok(asked.every((command) => command.join(" ") === "npm whoami"));
+});

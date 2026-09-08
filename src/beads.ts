@@ -64,9 +64,15 @@ export interface ClosedIssue extends UnclassifiedIssue {
   closedAt: string | undefined;
 }
 
+export interface IssueText {
+  description: string | undefined;
+  notes: string | undefined;
+}
+
 export interface CollectedIssues {
   issues: Issue[];
   closed: ClosedIssue[];
+  texts: Map<string, IssueText>;
   errors: CollectionError[];
 }
 
@@ -199,6 +205,7 @@ function toIssue(
   categories: ReadonlyMap<string, string>,
   edges: ReadonlyMap<string, string[]>,
   parked: Map<string, Classification>,
+  texts: Map<string, IssueText>,
 ): ClosedIssue {
   const id = row["id"];
   if (typeof id !== "string") {
@@ -212,6 +219,7 @@ function toIssue(
   if (mapping.parked !== undefined) {
     parked.set(id, mapping.parked);
   }
+  texts.set(id, { description: textOf(row["description"]), notes: textOf(row["notes"]) });
   return {
     id,
     title: typeof row["title"] === "string" ? row["title"] : id,
@@ -239,7 +247,8 @@ export async function readIssues(
     const rows = await bd(LIST_ARGS, beadsDir, env, timeoutMs, asRows);
     const edges = blockedEdges(await bd(BLOCKED_ARGS, beadsDir, env, timeoutMs, asRows));
     const parked = new Map<string, Classification>();
-    const all = rows.map((row) => toIssue(row, categories, edges, parked));
+    const texts = new Map<string, IssueText>();
+    const all = rows.map((row) => toIssue(row, categories, edges, parked, texts));
     const active = all.filter((issue) => issue.status !== "closed");
     const closed = all.filter((issue) => issue.status === "closed");
     const byId = new Map(all.map((issue) => [issue.id, issue]));
@@ -256,8 +265,8 @@ export async function readIssues(
         classification: classify(issue, context),
       }),
     );
-    return { issues, closed, errors: [] };
+    return { issues, closed, texts, errors: [] };
   } catch (cause) {
-    return { issues: [], closed: [], errors: [collectionError(beadsDir, cause)] };
+    return { issues: [], closed: [], texts: new Map(), errors: [collectionError(beadsDir, cause)] };
   }
 }
