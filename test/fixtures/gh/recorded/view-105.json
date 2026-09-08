@@ -1,0 +1,6 @@
+{
+  "body": "Bump mw-schema to 0.3.1 - see https://github.com/acme/mw-schema/pull/9.",
+  "statusCheckRollup": [
+    { "__typename": "CheckRun", "name": "test (20)", "status": "COMPLETED", "conclusion": "SUCCESS" }
+  ]
+}

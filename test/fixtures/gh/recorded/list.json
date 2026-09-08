@@ -1,0 +1,37 @@
+[
+  {
+    "number": 101,
+    "title": "Read each repo's real default branch instead of defaulting to main",
+    "labels": [{ "id": "LA_1", "name": "lane-verified", "color": "0e8a16" }],
+    "headRefName": "autofix/mw-12",
+    "url": "https://github.com/acme/site/pull/101"
+  },
+  {
+    "number": 102,
+    "title": "Harden the lane reader against a slot registry it did not write",
+    "labels": [],
+    "headRefName": "fix/lane-registry",
+    "url": "https://github.com/acme/site/pull/102"
+  },
+  {
+    "number": 103,
+    "title": "Serve the console from the snapshot on disk",
+    "labels": [{ "id": "LA_2", "name": "needs-review", "color": "d93f0b" }],
+    "headRefName": "feature/console-serve",
+    "url": "https://github.com/acme/site/pull/103"
+  },
+  {
+    "number": 104,
+    "title": "Rename the workspace file",
+    "labels": [],
+    "headRefName": "chore/rename",
+    "url": "https://github.com/acme/site/pull/104"
+  },
+  {
+    "number": 105,
+    "title": "Bump the contract package",
+    "labels": [],
+    "headRefName": "chore/bump-schema",
+    "url": "https://github.com/acme/site/pull/105"
+  }
+]

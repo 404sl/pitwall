@@ -7,3 +7,16 @@ export function collectionError(source: string, cause: unknown): CollectionError
     at: new Date().toISOString(),
   };
 }
+
+export function failureOf(cause: unknown, timeoutMs: number): string {
+  const failed = cause as { killed?: unknown; stderr?: unknown } | null;
+  if (failed?.killed === true) {
+    return `timed out after ${timeoutMs}ms`;
+  }
+  const stderr = failed?.stderr;
+  const reported = typeof stderr === "string" ? stderr.trim() : "";
+  if (reported !== "") {
+    return reported.split("\n")[0] ?? reported;
+  }
+  return cause instanceof Error ? cause.message : String(cause);
+}

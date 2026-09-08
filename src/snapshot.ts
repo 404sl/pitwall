@@ -10,6 +10,7 @@ import {
 import { readIssues, type ClosedIssue, type IssueText } from "./beads.js";
 import { hasLiveStructuralBlocker, type ClassifyContext } from "./classify.js";
 import { collectProjects, type RootsOptions } from "./config.js";
+import { readPipeline } from "./pipeline.js";
 import { preconditionProbe, pullLookup } from "./probes.js";
 import { writeSnapshot } from "./state.js";
 import { assess, isAssessable, type StalenessContext } from "./staleness.js";
@@ -106,7 +107,12 @@ async function assessed(
   };
 }
 
-async function gather(project: Project, options: SnapshotOptions, day: Date): Promise<Project> {
+interface Gathered {
+  project: Project;
+  unreadable: boolean;
+}
+
+async function gather(project: Project, options: SnapshotOptions, day: Date): Promise<Gathered> {
   const collected = await readIssues(project.root, {
     env: options.env,
     lanes: project.lanes,
@@ -122,39 +128,48 @@ async function gather(project: Project, options: SnapshotOptions, day: Date): Pr
   const issues = await Promise.all(
     collected.issues.map((issue) => assessed(issue, collected.texts, context, structure)),
   );
-  return Project.parse({
-    ...project,
-    issues,
-    metrics: metricsOf(issues, collected.closed, day),
-    errors: [...project.errors, ...collected.errors],
+  const pipeline = await readPipeline(project, {
+    env: options.env,
+    timeoutMs: options.timeoutMs,
+    knownIds: context.knownIds,
   });
+  return {
+    project: Project.parse({
+      ...project,
+      issues,
+      pipeline: pipeline.pipeline,
+      metrics: metricsOf(issues, collected.closed, day),
+      errors: [...project.errors, ...collected.errors, ...pipeline.errors],
+    }),
+    unreadable: project.errors.length > 0 || collected.errors.length > 0,
+  };
 }
 
-export async function collectSnapshot(options: SnapshotOptions = {}): Promise<Snapshot> {
+function everyProjectFailed(gathered: readonly Gathered[]): boolean {
+  return gathered.length > 0 && gathered.every((entry) => entry.unreadable);
+}
+
+async function assemble(options: SnapshotOptions): Promise<{ snapshot: Snapshot; code: number }> {
   const startedAt = options.now ?? new Date();
   const { projects, roots } = collectProjects(options);
   const gathered = await Promise.all(projects.map((project) => gather(project, options, startedAt)));
-  return parseSnapshot({
-    schemaVersion: SCHEMA_VERSION,
-    generatedAt: startedAt.toISOString(),
-    agent: { version: VERSION },
-    projects: gathered,
-    errors: roots.errors,
-  });
+  return {
+    snapshot: parseSnapshot({
+      schemaVersion: SCHEMA_VERSION,
+      generatedAt: startedAt.toISOString(),
+      agent: { version: VERSION },
+      projects: gathered.map((entry) => entry.project),
+      errors: roots.errors,
+    }),
+    code: everyProjectFailed(gathered) ? 1 : 0,
+  };
 }
 
-function everyProjectFailed(snapshot: Snapshot): boolean {
-  return (
-    snapshot.projects.length > 0 &&
-    snapshot.projects.every((project) => project.errors.length > 0)
-  );
+export async function collectSnapshot(options: SnapshotOptions = {}): Promise<Snapshot> {
+  return (await assemble(options)).snapshot;
 }
 
 export async function emitSnapshot(options: SnapshotOptions = {}): Promise<SnapshotResult> {
-  const snapshot = await collectSnapshot(options);
-  return {
-    snapshot,
-    path: writeSnapshot(snapshot, options),
-    code: everyProjectFailed(snapshot) ? 1 : 0,
-  };
+  const { snapshot, code } = await assemble(options);
+  return { snapshot, path: writeSnapshot(snapshot, options), code };
 }
