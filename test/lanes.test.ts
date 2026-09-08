@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Lane } from "@404sl/pitwall-schema";
 import { readWorkspace } from "../src/autofix.ts";
-import { readLanes, recencyArgs, slotsPath, worktreePath } from "../src/lanes.ts";
+import { readLanes, recencyArgs, slotsPath, worktreePath, worktreePaths } from "../src/lanes.ts";
 
 const PREFIX = "fixture";
 const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), "fixtures");
@@ -27,7 +27,14 @@ function registry(root: string): void {
 }
 
 function worktree(root: string, issueId: string, minutesAgo: number): string {
-  const dir = worktreePath(PREFIX, issueId, root);
+  return treeAt(worktreePath(PREFIX, issueId, root), minutesAgo);
+}
+
+function rework(root: string, issueId: string, minutesAgo: number): string {
+  return treeAt(worktreePath(PREFIX, `${issueId}-rework`, root), minutesAgo);
+}
+
+function treeAt(dir: string, minutesAgo: number): string {
   const nested = join(dir, "src");
   mkdirSync(nested, { recursive: true });
   writeFileSync(join(nested, "index.ts"), "export {};\n");
@@ -142,6 +149,76 @@ test("a claim with no worktree is handed-off, not stranded", () => {
   assert.equal(lanes[0]?.state, "handed-off");
   assert.equal(lanes[0]?.issueId, "pw-landed");
   assert.equal(lanes[0]?.worktree, undefined);
+});
+
+test("the probed paths are the bare issue id and the same id suffixed -rework, in that order", () => {
+  const root = lockRoot();
+
+  assert.deepEqual(worktreePaths(PREFIX, "pw-x", root), [
+    join(root, `${PREFIX}-worktrees`, "pw-x"),
+    join(root, `${PREFIX}-worktrees`, "pw-x-rework"),
+  ]);
+});
+
+test("a claim whose only worktree is the rework checkout is working, not handed-off", () => {
+  const root = lockRoot();
+  claim(root, 1, "pw-reworking");
+  const dir = rework(root, "pw-reworking", 0);
+
+  const { lanes, errors } = readLanes(PREFIX, { lockRoot: root });
+
+  assert.deepEqual(errors, []);
+  assert.equal(lanes[0]?.state, "working");
+  assert.equal(lanes[0]?.issueId, "pw-reworking");
+  assert.equal(lanes[0]?.worktree, dir);
+  assert.match(lanes[0]?.lastActivityAt ?? "", /^\d{4}-\d{2}-\d{2}T/);
+});
+
+test("a rework checkout untouched past the window is stranded, naming the path measured", () => {
+  const root = lockRoot();
+  claim(root, 1, "pw-reworked");
+  const dir = rework(root, "pw-reworked", 60);
+
+  const { lanes } = readLanes(PREFIX, { lockRoot: root });
+
+  assert.equal(lanes[0]?.state, "stranded");
+  assert.equal(lanes[0]?.worktree, dir);
+});
+
+test("when both checkouts exist the freshest one decides, even when it is the rework", () => {
+  const root = lockRoot();
+  claim(root, 1, "pw-both");
+  worktree(root, "pw-both", 5);
+  const dir = rework(root, "pw-both", 0);
+
+  const { lanes } = readLanes(PREFIX, { lockRoot: root });
+
+  assert.equal(lanes[0]?.state, "working");
+  assert.equal(lanes[0]?.worktree, dir);
+});
+
+test("when both checkouts exist the freshest one decides, even when it is the build lane", () => {
+  const root = lockRoot();
+  claim(root, 1, "pw-both");
+  const dir = worktree(root, "pw-both", 0);
+  rework(root, "pw-both", 5);
+
+  const { lanes } = readLanes(PREFIX, { lockRoot: root });
+
+  assert.equal(lanes[0]?.state, "working");
+  assert.equal(lanes[0]?.worktree, dir);
+});
+
+test("a build lane past the window is stranded even beside a fresh rework of another id", () => {
+  const root = lockRoot();
+  claim(root, 1, "pw-dead");
+  const dir = worktree(root, "pw-dead", 60);
+  rework(root, "pw-other", 0);
+
+  const { lanes } = readLanes(PREFIX, { lockRoot: root });
+
+  assert.equal(lanes[0]?.state, "stranded");
+  assert.equal(lanes[0]?.worktree, dir);
 });
 
 test("a claim whose worktree has been untouched past the window is stranded", () => {
