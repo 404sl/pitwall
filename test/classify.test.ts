@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { Classification } from "@404sl/pitwall-schema";
 import type { Lane } from "@404sl/pitwall-schema";
 import { classify } from "../src/classify.ts";
-import type { ClassifyContext, UnclassifiedIssue } from "../src/classify.ts";
+import type { ClassificationReason, ClassifyContext, UnclassifiedIssue } from "../src/classify.ts";
 
 function anIssue(id: string, over: Partial<UnclassifiedIssue> = {}): UnclassifiedIssue {
   return { id, title: id, status: "open", labels: [], blockedBy: [], ...over };
@@ -20,7 +20,9 @@ interface Case {
   lanes?: Lane[];
   complete?: boolean;
   stored?: Classification;
+  storedStatus?: string;
   expected: Classification;
+  because?: ClassificationReason;
 }
 
 const cases: Case[] = [
@@ -29,11 +31,13 @@ const cases: Case[] = [
     issue: anIssue("pitwall-a", { status: "in_progress" }),
     lanes: [aLane(1, "working", "pitwall-a")],
     expected: "in-flight",
+    because: { rule: "in-progress-lane", slot: 1 },
   },
   {
     name: "in progress with no lane at all is landing",
     issue: anIssue("pitwall-a", { status: "in_progress" }),
     expected: "landing",
+    because: { rule: "in-progress-no-lane" },
   },
   {
     name: "in progress with a handed-off lane is landing, not in-flight",
@@ -51,6 +55,7 @@ const cases: Case[] = [
     name: "needs-decision is the person's own queue",
     issue: anIssue("pitwall-a", { labels: ["needs-decision"] }),
     expected: "yours:decision",
+    because: { rule: "label", label: "needs-decision" },
   },
   {
     name: "needs-access is the person's own queue",
@@ -103,17 +108,20 @@ const cases: Case[] = [
     name: "an epic type is an umbrella",
     issue: anIssue("pitwall-a", { issueType: "epic" }),
     expected: "parked:umbrella",
+    because: { rule: "umbrella-type", issueType: "epic" },
   },
   {
     name: "an [EPIC] marker in the title is an umbrella",
     issue: anIssue("pitwall-a", { title: "[EPIC] read every tracker" }),
     expected: "parked:umbrella",
+    because: { rule: "umbrella-title-marker" },
   },
   {
     name: "an id that prefixes a live sibling is an umbrella with no umbrella label",
     issue: anIssue("pitwall-0lm"),
     siblings: [anIssue("pitwall-0lm.1")],
     expected: "parked:umbrella",
+    because: { rule: "umbrella-open-child", childId: "pitwall-0lm.1" },
   },
   {
     name: "an id that only prefixes closed siblings is not an umbrella",
@@ -149,6 +157,7 @@ const cases: Case[] = [
     issue: anIssue("pitwall-a", { blockedBy: ["pitwall-b"] }),
     siblings: [anIssue("pitwall-b")],
     expected: "blocked",
+    because: { rule: "blocked-open", ids: ["pitwall-b"] },
   },
   {
     name: "a dependency edge on a closed issue does not block",
@@ -166,6 +175,7 @@ const cases: Case[] = [
     issue: anIssue("pitwall-a", { blockedBy: ["pitwall-gone"] }),
     complete: false,
     expected: "blocked",
+    because: { rule: "blocked-unreadable", ids: ["pitwall-gone"] },
   },
   {
     name: "an incomplete collection does not block an edge on an issue it did carry as closed",
@@ -179,6 +189,7 @@ const cases: Case[] = [
     issue: anIssue("pitwall-a.1"),
     siblings: [anIssue("pitwall-a", { status: "in_progress" })],
     expected: "blocked",
+    because: { rule: "blocked-parent-in-progress", parentId: "pitwall-a" },
   },
   {
     name: "a parent that is merely open does not block its child",
@@ -190,6 +201,7 @@ const cases: Case[] = [
     name: "an open issue with nothing against it is ready",
     issue: anIssue("pitwall-a"),
     expected: "ready",
+    because: { rule: "default" },
   },
   {
     name: "a classification carried by the tracker's own status needs no dependency edge",
@@ -201,7 +213,9 @@ const cases: Case[] = [
     name: "a parked classification carried by the tracker's own status is kept",
     issue: anIssue("pitwall-a"),
     stored: "parked:roadmap",
+    storedStatus: "deferred",
     expected: "parked:roadmap",
+    because: { rule: "stored-status", status: "deferred" },
   },
   {
     name: "a label naming somebody's queue outranks what the tracker's status says",
@@ -217,15 +231,78 @@ function contextFor(scenario: Case): ClassifyContext {
     lanes: scenario.lanes ?? [],
     collectionComplete: scenario.complete ?? true,
     stored:
-      scenario.stored === undefined ? undefined : new Map([[scenario.issue.id, scenario.stored]]),
+      scenario.stored === undefined
+        ? undefined
+        : new Map([
+            [
+              scenario.issue.id,
+              { classification: scenario.stored, status: scenario.storedStatus ?? "deferred" },
+            ],
+          ]),
   };
 }
 
 for (const scenario of cases) {
   test(scenario.name, () => {
-    assert.equal(classify(scenario.issue, contextFor(scenario)), scenario.expected);
+    const classified = classify(scenario.issue, contextFor(scenario));
+    assert.equal(classified.classification, scenario.expected);
+    if (scenario.because !== undefined) {
+      assert.deepEqual(classified.reason, scenario.because);
+    }
   });
 }
+
+test("every rule the precedence walk can take names itself", () => {
+  const rules = new Set(
+    cases
+      .filter((scenario) => scenario.because !== undefined)
+      .map((scenario) => scenario.because?.rule),
+  );
+  assert.deepEqual(
+    [...rules].sort(),
+    [
+      "blocked-open",
+      "blocked-parent-in-progress",
+      "blocked-unreadable",
+      "default",
+      "in-progress-lane",
+      "in-progress-no-lane",
+      "label",
+      "stored-status",
+      "umbrella-open-child",
+      "umbrella-title-marker",
+      "umbrella-type",
+    ],
+  );
+});
+
+test("a closed issue is not classified at all, whatever an open one with its fields would be", () => {
+  const context: ClassifyContext = { issues: [], lanes: [], collectionComplete: true };
+  const decided = anIssue("pitwall-a", { status: "closed", labels: ["needs-decision"] });
+  const epic = anIssue("pitwall-b", { status: "closed", issueType: "epic" });
+  const plain = anIssue("pitwall-c", { status: "closed" });
+  for (const issue of [decided, epic, plain]) {
+    const classified = classify(issue, { ...context, issues: [issue] });
+    assert.equal(classified.classification, undefined, `${issue.id} kept an active classification`);
+    assert.deepEqual(classified.reason, { rule: "closed" });
+  }
+  assert.equal(
+    classify({ ...plain, status: "open" }, { issues: [], lanes: [], collectionComplete: true })
+      .classification,
+    "ready",
+    "the same issue left open is still classified",
+  );
+});
+
+test("a reason names the blocker it read rather than one it could not", () => {
+  const issue = anIssue("pitwall-a", { blockedBy: ["pitwall-b", "pitwall-gone"] });
+  const context: ClassifyContext = {
+    issues: [issue, anIssue("pitwall-b")],
+    lanes: [],
+    collectionComplete: false,
+  };
+  assert.deepEqual(classify(issue, context).reason, { rule: "blocked-open", ids: ["pitwall-b"] });
+});
 
 test("every classification in the contract is produced by a case", () => {
   const produced = [...new Set(cases.map((scenario) => scenario.expected))].sort();

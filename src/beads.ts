@@ -10,7 +10,13 @@ import {
   type Origin,
 } from "@404sl/pitwall-schema";
 import { collectionError, failureOf } from "./errors.js";
-import { classify, type ClassifyContext, type UnclassifiedIssue } from "./classify.js";
+import {
+  classify,
+  type ClassificationReason,
+  type ClassifyContext,
+  type StoredClassification,
+  type UnclassifiedIssue,
+} from "./classify.js";
 
 const run = promisify(execFile);
 
@@ -27,6 +33,12 @@ const LIST_ARGS = ["list", "--all", "--limit", "0", "--json"];
 const BLOCKED_ARGS = ["blocked", "--json"];
 
 const LIST_COMMAND = ["bd", ...LIST_ARGS].join(" ");
+
+const BLOCKS = "blocks";
+
+export function showArgs(id: string): string[] {
+  return ["show", "--id", id, "--json", "--include-dependents"];
+}
 
 const STORED_STATUS = new Map<string, Status>([
   ["open", "open"],
@@ -76,24 +88,68 @@ export interface CollectedIssues {
   errors: CollectionError[];
 }
 
+export interface DependencyLink {
+  id: string;
+  title: string;
+  status: string;
+}
+
+export interface IssueDetail {
+  id: string;
+  title: string;
+  status: Status;
+  issueType: string | undefined;
+  priority: number | undefined;
+  labels: string[];
+  createdAt: string | undefined;
+  updatedAt: string | undefined;
+  description: string | undefined;
+  notes: string | undefined;
+  origin: Origin | undefined;
+  classification: Classification | undefined;
+  reason: ClassificationReason;
+  blockedBy: DependencyLink[];
+  blocks: DependencyLink[];
+}
+
+export type IssueReading =
+  | { kind: "found"; issue: IssueDetail; tried: string[] }
+  | { kind: "missing"; tried: string[] }
+  | { kind: "unreadable"; error: CollectionError; tried: string[] };
+
+interface Reader {
+  beadsDir: string;
+  env: Record<string, string | undefined>;
+  timeoutMs: number;
+  tried: string[];
+}
+
+function readerFor(root: string, options: ReadIssuesOptions): Reader {
+  return {
+    beadsDir: join(resolve(root), BEADS_DIR),
+    env: options.env ?? process.env,
+    timeoutMs: options.timeoutMs ?? TIMEOUT_MS,
+    tried: [],
+  };
+}
+
 async function bd<T>(
+  reader: Reader,
   args: readonly string[],
-  beadsDir: string,
-  env: Record<string, string | undefined>,
-  timeoutMs: number,
   shape: (parsed: unknown) => T,
 ): Promise<T> {
   const command = ["bd", ...args].join(" ");
+  reader.tried.push(command);
   let stdout: string;
   try {
     ({ stdout } = await run("bd", args as string[], {
       encoding: "utf8",
-      env: { ...env, [BEADS_DIR_VAR]: beadsDir },
+      env: { ...reader.env, [BEADS_DIR_VAR]: reader.beadsDir },
       maxBuffer: MAX_OUTPUT,
-      timeout: timeoutMs,
+      timeout: reader.timeoutMs,
     }));
   } catch (cause) {
-    throw new Error(`${command}: ${failureOf(cause, timeoutMs)}`);
+    throw new Error(`${command}: ${failureOf(cause, reader.timeoutMs)}`);
   }
   try {
     return shape(JSON.parse(stdout));
@@ -160,6 +216,19 @@ function mappingOf(stored: string, id: string, categories: ReadonlyMap<string, s
   return { status: byCategory, parked: CATEGORY_CLASSIFICATION.get(category) };
 }
 
+function statusWordOf(stored: unknown, categories: ReadonlyMap<string, string>): string {
+  if (typeof stored !== "string" || stored === "") {
+    return "";
+  }
+  const known = STORED_STATUS.get(stored);
+  if (known !== undefined) {
+    return known;
+  }
+  const category = categories.get(stored);
+  const byCategory = category === undefined ? undefined : CATEGORY_STATUS.get(category);
+  return byCategory ?? stored;
+}
+
 function textOf(value: unknown): string | undefined {
   return typeof value === "string" && value !== "" ? value : undefined;
 }
@@ -191,7 +260,7 @@ function toIssue(
   row: Record<string, unknown>,
   categories: ReadonlyMap<string, string>,
   edges: ReadonlyMap<string, string[]>,
-  parked: Map<string, Classification>,
+  parked: Map<string, StoredClassification>,
   texts: Map<string, IssueText>,
 ): ClosedIssue {
   const id = row["id"];
@@ -204,7 +273,7 @@ function toIssue(
   }
   const mapping = mappingOf(stored, id, categories);
   if (mapping.parked !== undefined) {
-    parked.set(id, mapping.parked);
+    parked.set(id, { classification: mapping.parked, status: stored });
   }
   texts.set(id, { description: textOf(row["description"]), notes: textOf(row["notes"]) });
   return {
@@ -222,38 +291,133 @@ function toIssue(
   };
 }
 
+interface Collection {
+  all: ClosedIssue[];
+  parked: Map<string, StoredClassification>;
+  texts: Map<string, IssueText>;
+  categories: ReadonlyMap<string, string>;
+}
+
+async function collect(reader: Reader): Promise<Collection> {
+  const categories = categoriesOf(await bd(reader, STATUSES_ARGS, asRecord));
+  const rows = await bd(reader, LIST_ARGS, asRows);
+  const edges = blockedEdges(await bd(reader, BLOCKED_ARGS, asRows));
+  const parked = new Map<string, StoredClassification>();
+  const texts = new Map<string, IssueText>();
+  return {
+    all: rows.map((row) => toIssue(row, categories, edges, parked, texts)),
+    parked,
+    texts,
+    categories,
+  };
+}
+
+function contextFor(
+  collection: Collection,
+  options: ReadIssuesOptions,
+): ClassifyContext {
+  return {
+    issues: collection.all,
+    lanes: options.lanes ?? [],
+    collectionComplete: options.errors.length === 0,
+    stored: collection.parked,
+  };
+}
+
 export async function readIssues(
   root: string,
   options: ReadIssuesOptions,
 ): Promise<CollectedIssues> {
-  const beadsDir = join(resolve(root), BEADS_DIR);
-  const env = options.env ?? process.env;
-  const timeoutMs = options.timeoutMs ?? TIMEOUT_MS;
+  const reader = readerFor(root, options);
   try {
-    const categories = categoriesOf(await bd(STATUSES_ARGS, beadsDir, env, timeoutMs, asRecord));
-    const rows = await bd(LIST_ARGS, beadsDir, env, timeoutMs, asRows);
-    const edges = blockedEdges(await bd(BLOCKED_ARGS, beadsDir, env, timeoutMs, asRows));
-    const parked = new Map<string, Classification>();
-    const texts = new Map<string, IssueText>();
-    const all = rows.map((row) => toIssue(row, categories, edges, parked, texts));
-    const active = all.filter((issue) => issue.status !== "closed");
-    const closed = all.filter((issue) => issue.status === "closed");
-    const byId = new Map(all.map((issue) => [issue.id, issue]));
-    const context: ClassifyContext = {
-      issues: all,
-      lanes: options.lanes ?? [],
-      collectionComplete: options.errors.length === 0,
-      stored: parked,
-    };
+    const collection = await collect(reader);
+    const active = collection.all.filter((issue) => issue.status !== "closed");
+    const closed = collection.all.filter((issue) => issue.status === "closed");
+    const byId = new Map(collection.all.map((issue) => [issue.id, issue]));
+    const context = contextFor(collection, options);
     const issues = active.map((issue) =>
       Issue.parse({
         ...issue,
         origin: resolveOrigin(issue, byId),
-        classification: classify(issue, context),
+        classification: classify(issue, context).classification,
       }),
     );
-    return { issues, closed, texts, errors: [] };
+    return { issues, closed, texts: collection.texts, errors: [] };
   } catch (cause) {
-    return { issues: [], closed: [], texts: new Map(), errors: [collectionError(beadsDir, cause)] };
+    return {
+      issues: [],
+      closed: [],
+      texts: new Map(),
+      errors: [collectionError(reader.beadsDir, cause)],
+    };
+  }
+}
+
+function linksOf(value: unknown, categories: ReadonlyMap<string, string>): DependencyLink[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.flatMap((entry) => {
+    if (typeof entry !== "object" || entry === null) return [];
+    const row = entry as Record<string, unknown>;
+    const id = row["id"];
+    if (typeof id !== "string" || row["dependency_type"] !== BLOCKS) return [];
+    return [
+      {
+        id,
+        title: typeof row["title"] === "string" ? row["title"] : id,
+        status: statusWordOf(row["status"], categories),
+      },
+    ];
+  });
+}
+
+export async function readIssue(
+  root: string,
+  id: string,
+  options: ReadIssuesOptions,
+): Promise<IssueReading> {
+  const reader = readerFor(root, options);
+  try {
+    const collection = await collect(reader);
+    const listed = collection.all.find((issue) => issue.id === id);
+    if (listed === undefined) {
+      return { kind: "missing", tried: reader.tried };
+    }
+    const args = showArgs(id);
+    const shown = await bd(reader, args, asRows);
+    const row = shown[0];
+    if (row === undefined) {
+      throw new Error(`${["bd", ...args].join(" ")}: no issue in the output`);
+    }
+    const byId = new Map(collection.all.map((issue) => [issue.id, issue]));
+    const { classification, reason } = classify(listed, contextFor(collection, options));
+    return {
+      kind: "found",
+      tried: reader.tried,
+      issue: {
+        id: listed.id,
+        title: listed.title,
+        status: listed.status,
+        issueType: listed.issueType,
+        priority: listed.priority,
+        labels: listed.labels,
+        createdAt: listed.createdAt,
+        updatedAt: listed.updatedAt,
+        description: textOf(row["description"]),
+        notes: textOf(row["notes"]),
+        origin: resolveOrigin(listed, byId),
+        classification,
+        reason,
+        blockedBy: linksOf(row["dependencies"], collection.categories),
+        blocks: linksOf(row["dependents"], collection.categories),
+      },
+    };
+  } catch (cause) {
+    return {
+      kind: "unreadable",
+      error: collectionError(reader.beadsDir, cause),
+      tried: reader.tried,
+    };
   }
 }

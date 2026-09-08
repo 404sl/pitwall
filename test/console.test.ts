@@ -1,7 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Classification, SCHEMA_VERSION, isYours, parseSnapshot } from "@404sl/pitwall-schema";
-import { blockedSummary, buildBoard, parkedReasons, parkedSummary } from "../ui/model.ts";
+import { blockedSummary, buildBoard, buildIssueView, parkedReasons, parkedSummary } from "../ui/model.ts";
+import type { IssuePayload } from "../ui/model.ts";
+import { issueHref, routeOf } from "../ui/routes.ts";
 import { VERSION } from "../src/version.ts";
 
 const GENERATED_AT = "2026-09-08T14:11:00Z";
@@ -311,4 +313,140 @@ test("a lane that died counts once, not once as a lane and once again as its iss
   for (const row of board.running) {
     assert.ok(row.chips.length > 0, `${row.state} prints a count with no lane beside it`);
   }
+});
+
+function payload(over: Partial<IssuePayload["issue"]> = {}, snapshot?: IssuePayload["snapshot"]): IssuePayload {
+  return {
+    issue: {
+      id: "sr-i6yt",
+      title: "Honour paid checkout?",
+      status: "open",
+      labels: [],
+      project: "session-replay",
+      projectName: "session-replay",
+      authority: { kind: "beads" },
+      blockedBy: [],
+      blocks: [],
+      classification: "yours:decision",
+      reason: { rule: "label", label: "needs-decision" },
+      staleness: { verdict: "unchecked", evidence: [] },
+      ...over,
+    },
+    readAt: "2026-09-08T14:20:00Z",
+    snapshot,
+  };
+}
+
+test("an unchecked verdict is not a checked one, and carries no evidence to act on", () => {
+  const unchecked = buildIssueView(payload()).staleness;
+  assert.equal(unchecked.verdict, "unchecked");
+  assert.equal(unchecked.checked, false);
+  assert.deepEqual(unchecked.evidence, []);
+
+  const checked = buildIssueView(
+    payload({
+      staleness: {
+        verdict: "still-blocking",
+        checkedAt: "2026-09-08T13:00:00Z",
+        evidence: ["sr-8yyz is still open"],
+      },
+    }),
+  ).staleness;
+  assert.equal(checked.checked, true);
+  assert.equal(checked.checkedAt, "2026-09-08T13:00:00Z");
+  assert.deepEqual(checked.evidence, ["sr-8yyz is still open"]);
+});
+
+test("an issue closed since the snapshot is flagged rather than shown as current", () => {
+  const closed = buildIssueView(
+    payload({ status: "closed" }, { generatedAt: GENERATED_AT, status: "open" }),
+  );
+  assert.equal(closed.closedSinceSnapshot, true);
+  assert.equal(closed.issue.status, "closed", "the reading, not the snapshot, is what the page shows");
+  assert.equal(closed.snapshot?.status, "open", "the snapshot's own value stays labelled as the snapshot's");
+});
+
+test("nothing is flagged as newly closed when the snapshot never held the issue, or already knew", () => {
+  assert.equal(buildIssueView(payload({ status: "closed" })).closedSinceSnapshot, false);
+  assert.equal(
+    buildIssueView(payload({ status: "closed" }, { generatedAt: GENERATED_AT, status: "closed" }))
+      .closedSinceSnapshot,
+    false,
+  );
+  assert.equal(
+    buildIssueView(payload({}, { generatedAt: GENERATED_AT, status: "open" })).closedSinceSnapshot,
+    false,
+  );
+});
+
+test("a closed reading is marked closed and carries no classification to render", () => {
+  const closed = buildIssueView(
+    payload({ status: "closed", classification: undefined, reason: { rule: "closed" } }),
+  );
+  assert.equal(closed.closed, true);
+  assert.equal(closed.issue.classification, undefined);
+  assert.deepEqual(closed.issue.reason, { rule: "closed" });
+  assert.equal(closed.staleness.checked, false, "a closed issue falls back to the unchecked verdict");
+  assert.equal(buildIssueView(payload()).closed, false);
+});
+
+test("a closed issue keeps the snapshot's checked verdict and the evidence under it", () => {
+  const closed = buildIssueView(
+    payload(
+      {
+        status: "closed",
+        classification: undefined,
+        reason: { rule: "closed" },
+        staleness: {
+          verdict: "still-blocking",
+          checkedAt: "2026-09-08T13:02:00Z",
+          evidence: ["sr-8yyz is still open"],
+        },
+      },
+      { generatedAt: GENERATED_AT, status: "open" },
+    ),
+  );
+  assert.equal(closed.closed, true);
+  assert.equal(closed.closedSinceSnapshot, true);
+  assert.equal(closed.staleness.checked, true, "a verdict the snapshot recorded is not downgraded to unchecked");
+  assert.equal(closed.staleness.verdict, "still-blocking");
+  assert.equal(closed.staleness.checkedAt, "2026-09-08T13:02:00Z");
+  assert.deepEqual(closed.staleness.evidence, ["sr-8yyz is still open"]);
+});
+
+test("every board row carries the project the link to its page needs", () => {
+  const board = buildBoard(
+    snapshotOf([
+      project("session-replay", {
+        issues: [
+          issue("sr-i6yt", "yours:decision"),
+          issue("sr-w23d", "ready"),
+          issue("sr-24l1", "in-flight", { status: "in_progress" }),
+        ],
+        lanes: [{ slot: 1, state: "working", issueId: "sr-24l1" }],
+      }),
+    ]),
+  );
+  assert.deepEqual(
+    board.needsYou.map((group) => group.projectId),
+    ["session-replay"],
+  );
+  assert.deepEqual(
+    board.ready.map((row) => row.projectId),
+    ["session-replay"],
+  );
+  assert.deepEqual(
+    board.running.map((row) => row.projectId),
+    ["session-replay"],
+  );
+});
+
+test("an issue link survives a round trip, ids and project names included", () => {
+  assert.equal(issueHref("session-replay", "sr-w23d.3"), "#/issue/session-replay/sr-w23d.3");
+  assert.deepEqual(routeOf(issueHref("a project", "sr/1")), { project: "a project", id: "sr/1" });
+  assert.equal(routeOf("#/"), undefined);
+  assert.equal(routeOf(""), undefined);
+  assert.equal(routeOf("#/issue/session-replay"), undefined);
+  assert.equal(routeOf("#/issue//sr-1"), undefined);
+  assert.equal(routeOf("#/issue/session-replay/sr-1/extra"), undefined);
 });

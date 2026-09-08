@@ -1,13 +1,18 @@
 import {
   Classification,
   isYours,
+  type Authority,
+  type Classification as ClassificationValue,
   type CollectionError,
   type Issue,
   type Lane,
+  type Origin,
   type Project,
   type Snapshot,
+  type Staleness,
   type StalenessVerdict,
 } from "@404sl/pitwall-schema";
+import type { ClassificationReason } from "../src/classify.js";
 
 export type NeedsYouKind = "decision" | "access";
 export type RunningState = "working" | "awaiting-lander" | "stranded";
@@ -24,6 +29,7 @@ export interface NeedsYouRow {
 
 export interface ReadyRow {
   project: string;
+  projectId: string;
   id: string;
   priority?: number;
   title: string;
@@ -37,6 +43,7 @@ export interface LaneChip {
 
 export interface RunningRow {
   project: string;
+  projectId: string;
   state: RunningState;
   count: number;
   chips: LaneChip[];
@@ -49,6 +56,7 @@ export interface RunningTotal {
 
 export interface NeedsYouGroup {
   project: string;
+  projectId: string;
   rows: NeedsYouRow[];
 }
 
@@ -167,6 +175,7 @@ function needsYouGroups(projects: Project[]): NeedsYouGroup[] {
   return projects
     .map((project) => ({
       project: project.name,
+      projectId: project.id,
       rows: issuesOf(project)
         .filter((issue) => isYours(issue.classification))
         .map((issue) => ({
@@ -200,7 +209,7 @@ function runningRows(projects: Project[], generatedAt: string): RunningRow[] {
       ).length;
       const chips = chipsFor(project, generatedAt, state);
       const count = chips.length + unclaimed;
-      return { project: project.name, state, count, chips };
+      return { project: project.name, projectId: project.id, state, count, chips };
     }).filter((row) => row.count > 0);
     const total = rows.reduce((sum, row) => sum + row.count, 0);
     return { name: project.name, count: total, rows };
@@ -224,7 +233,13 @@ function readyRows(projects: Project[]): ReadyRow[] {
       name: project.name,
       rows: issuesOf(project)
         .filter((issue) => issue.classification === "ready")
-        .map((issue) => ({ project: project.name, id: issue.id, priority: issue.priority, title: issue.title }))
+        .map((issue) => ({
+          project: project.name,
+          projectId: project.id,
+          id: issue.id,
+          priority: issue.priority,
+          title: issue.title,
+        }))
         .sort(byPriorityThenId),
     }))
     .filter((group) => group.rows.length > 0)
@@ -309,5 +324,73 @@ export function buildBoard(snapshot: Snapshot): Board {
     readyShown: Math.min(ready.length, READY_LIMIT),
     parked: parkedEntries(projects),
     problems: problemRows(snapshot),
+  };
+}
+
+export interface IssueLink {
+  id: string;
+  title: string;
+  status: string;
+}
+
+export interface IssueBody {
+  id: string;
+  title: string;
+  status: string;
+  issueType?: string;
+  priority?: number;
+  labels: string[];
+  project: string;
+  projectName: string;
+  authority: Authority;
+  description?: string;
+  notes?: string;
+  blockedBy: IssueLink[];
+  blocks: IssueLink[];
+  origin?: Origin;
+  classification?: ClassificationValue;
+  reason: ClassificationReason;
+  staleness: Staleness;
+}
+
+export interface IssuePayload {
+  issue: IssueBody;
+  readAt: string;
+  snapshot?: { generatedAt: string; status: string };
+}
+
+export interface StalenessView {
+  verdict: StalenessVerdict;
+  checked: boolean;
+  checkedAt?: string;
+  evidence: string[];
+}
+
+export interface IssueView {
+  issue: IssueBody;
+  readAt: string;
+  snapshot?: { generatedAt: string; status: string };
+  closed: boolean;
+  closedSinceSnapshot: boolean;
+  staleness: StalenessView;
+}
+
+export function buildIssueView(payload: IssuePayload): IssueView {
+  const staleness = payload.issue.staleness;
+  return {
+    issue: payload.issue,
+    readAt: payload.readAt,
+    snapshot: payload.snapshot,
+    closed: payload.issue.status === "closed",
+    closedSinceSnapshot:
+      payload.snapshot !== undefined &&
+      payload.snapshot.status !== "closed" &&
+      payload.issue.status === "closed",
+    staleness: {
+      verdict: staleness.verdict,
+      checked: staleness.verdict !== "unchecked",
+      checkedAt: staleness.checkedAt,
+      evidence: staleness.evidence,
+    },
   };
 }

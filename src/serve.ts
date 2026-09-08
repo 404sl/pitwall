@@ -3,15 +3,21 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { extname, resolve, sep } from "node:path";
 import { pipeline } from "node:stream";
 import { fileURLToPath } from "node:url";
+import type { Issue, Project, Snapshot } from "@404sl/pitwall-schema";
+import { readWorkspace } from "./autofix.js";
+import { readIssue } from "./beads.js";
 import { readSnapshot, type StateOptions } from "./state.js";
 
 export const DEFAULT_PORT = 7373;
 export const HOST = "127.0.0.1";
 export const LOCAL_HOSTNAMES = ["127.0.0.1", "localhost", "[::1]"];
 export const UI_DIR = fileURLToPath(new URL("../dist/ui", import.meta.url));
+export const ISSUE_PREFIX = "/api/issue/";
 
 export interface ServeOptions extends StateOptions {
   uiDir?: string;
+  lockRoot?: string;
+  timeoutMs?: number;
 }
 
 export type ServeArgs = { port: number } | { error: string };
@@ -69,6 +75,92 @@ function serveSnapshot(res: ServerResponse, options: ServeOptions): void {
     message: `No snapshot to show yet - ${error.source} could not be read: ${error.message}`,
     source: error.source,
     at: error.at,
+  });
+}
+
+function issueRoute(pathname: string): { project: string; id: string } | undefined {
+  const segments = pathname.slice(ISSUE_PREFIX.length).split("/");
+  if (segments.length !== 2) {
+    return undefined;
+  }
+  try {
+    const [project, id] = segments.map((segment) => decodeURIComponent(segment));
+    return project === undefined || project === "" || id === undefined || id === ""
+      ? undefined
+      : { project, id };
+  } catch {
+    return undefined;
+  }
+}
+
+function snapshotIssue(project: Project | undefined, id: string): Issue | undefined {
+  return project?.issues.find((issue) => issue.id === id);
+}
+
+function projectIn(snapshot: Snapshot, id: string): Project | undefined {
+  return snapshot.projects.find((project) => project.id === id);
+}
+
+async function serveIssue(
+  res: ServerResponse,
+  options: ServeOptions,
+  route: { project: string; id: string },
+): Promise<void> {
+  const stored = readSnapshot(options);
+  if (stored.snapshot === undefined) {
+    sendJson(res, 503, {
+      message: `${route.id} cannot be looked up - ${stored.error.source} could not be read: ${stored.error.message}`,
+      source: stored.error.source,
+      tried: [stored.path],
+    });
+    return;
+  }
+  const indexed = projectIn(stored.snapshot, route.project);
+  if (indexed === undefined) {
+    sendJson(res, 503, {
+      message: `${route.id} cannot be looked up - the snapshot names no project ${route.project}`,
+      source: stored.path,
+      tried: [stored.path],
+    });
+    return;
+  }
+  const project = readWorkspace(indexed.root, { lockRoot: options.lockRoot });
+  const reading = await readIssue(indexed.root, route.id, {
+    env: options.env,
+    lanes: project.lanes,
+    errors: project.errors,
+    timeoutMs: options.timeoutMs,
+  });
+  if (reading.kind === "unreadable") {
+    sendJson(res, 503, {
+      message: `${route.id} could not be read: ${reading.error.message}`,
+      source: reading.error.source,
+      tried: [reading.error.source, ...reading.tried],
+    });
+    return;
+  }
+  if (reading.kind === "missing") {
+    sendJson(res, 404, {
+      message: `${indexed.name} has no issue ${route.id}`,
+      project: indexed.name,
+      id: route.id,
+    });
+    return;
+  }
+  const snapshotStatus = snapshotIssue(indexed, route.id);
+  sendJson(res, 200, {
+    issue: {
+      ...reading.issue,
+      project: indexed.id,
+      projectName: indexed.name,
+      authority: project.authority,
+      staleness: snapshotStatus?.staleness ?? { verdict: "unchecked", evidence: [] },
+    },
+    readAt: new Date().toISOString(),
+    snapshot:
+      snapshotStatus === undefined
+        ? undefined
+        : { generatedAt: stored.snapshot.generatedAt, status: snapshotStatus.status },
   });
 }
 
@@ -143,6 +235,21 @@ export function createConsoleServer(options: ServeOptions = {}): Server {
     const { pathname } = new URL(req.url ?? "/", `http://${HOST}`);
     if (pathname === "/api/snapshot") {
       serveSnapshot(res, options);
+      return;
+    }
+    if (pathname.startsWith(ISSUE_PREFIX)) {
+      const route = issueRoute(pathname);
+      if (route === undefined) {
+        send(res, 404, "text/plain; charset=utf-8", `Not found: ${pathname}\n`);
+        return;
+      }
+      void serveIssue(res, options, route).catch((cause: unknown) => {
+        sendJson(res, 503, {
+          message: `${route.id} could not be read: ${cause instanceof Error ? cause.message : String(cause)}`,
+          source: pathname,
+          tried: [pathname],
+        });
+      });
       return;
     }
     serveConsole(res, uiDir, pathname);

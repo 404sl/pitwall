@@ -4,6 +4,7 @@ import { connect } from "node:net";
 import { request } from "node:http";
 import { networkInterfaces, tmpdir } from "node:os";
 import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
@@ -239,4 +240,165 @@ test("--port is honoured and the default is fixed", () => {
   assert.match((parseServeArgs(["--port", "70000"]) as { error: string }).error, /--port/);
   assert.match((parseServeArgs(["--port"]) as { error: string }).error, /nothing/);
   assert.match((parseServeArgs(["--host", "0.0.0.0"]) as { error: string }).error, /unknown argument/);
+});
+
+const BD_FIXTURES = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "bd");
+const TRACKER = join(BD_FIXTURES, "tracker");
+
+function indexed(
+  id: string,
+  status: string,
+  classification: string,
+  extra: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return { id, title: `title for ${id}`, status, classification, ...extra };
+}
+
+function trackerSnapshot(issues: Array<Record<string, unknown>>): string {
+  return JSON.stringify({
+    ...SNAPSHOT,
+    projects: [
+      {
+        id: "mw",
+        name: "milliwatt",
+        root: TRACKER,
+        authority: { kind: "beads", idPrefix: "mw" },
+        metrics: {},
+        issues,
+      },
+    ],
+  });
+}
+
+function trackerServer(bin: string, issues: Array<Record<string, unknown>>): Server {
+  const { env } = stateWith(trackerSnapshot(issues));
+  return createConsoleServer({
+    env: { ...env, PATH: `${join(BD_FIXTURES, bin)}:/usr/bin:/bin` },
+    uiDir: builtConsole(),
+  });
+}
+
+test("one issue is served with its body, which the snapshot never carries", async (t) => {
+  const server = trackerServer("ok", [indexed("mw-1", "open", "parked:umbrella")]);
+  t.after(() => server.close());
+  const { origin } = await started(server);
+
+  const response = await fetch(`${origin}/api/issue/mw/mw-1`);
+  assert.equal(response.status, 200);
+  const body = (await response.json()) as {
+    issue: { description: string; notes: string; classification: string; reason: { rule: string } };
+    readAt: string;
+    snapshot: { generatedAt: string; status: string };
+  };
+  assert.match(body.issue.description, /The screen this product exists to show/);
+  assert.match(body.issue.notes, /Signal colours never decorate/);
+  assert.equal(body.issue.classification, "parked:umbrella");
+  assert.equal(body.issue.reason.rule, "umbrella-open-child");
+  assert.ok(Date.parse(body.readAt) > 0);
+  assert.equal(body.snapshot.status, "open");
+
+  const document = await (await fetch(`${origin}/api/snapshot`)).text();
+  assert.equal(document.includes("The screen this product exists to show"), false);
+  assert.equal(document.includes("\"description\""), false);
+  assert.equal(document.includes("\"notes\""), false);
+});
+
+test("an issue that is not there is a 404, told apart from one that could not be read", async (t) => {
+  const readable = trackerServer("ok", [indexed("mw-1", "open", "parked:umbrella")]);
+  const unreadable = trackerServer("failing", [indexed("mw-1", "open", "parked:umbrella")]);
+  t.after(() => {
+    readable.close();
+    unreadable.close();
+  });
+
+  const absent = await fetch(`${(await started(readable)).origin}/api/issue/mw/mw-nope`);
+  assert.equal(absent.status, 404);
+  const missing = (await absent.json()) as { message: string; project: string; id: string; tried?: unknown };
+  assert.equal(missing.project, "milliwatt");
+  assert.equal(missing.id, "mw-nope");
+  assert.equal(missing.tried, undefined);
+
+  const failed = await fetch(`${(await started(unreadable)).origin}/api/issue/mw/mw-1`);
+  assert.equal(failed.status, 503);
+  const unread = (await failed.json()) as { message: string; source: string; tried: string[] };
+  assert.match(unread.message, /mw-1 could not be read/);
+  assert.ok(unread.tried.includes("bd statuses --json"));
+  assert.ok(unread.tried.some((entry) => entry.endsWith(".beads")));
+});
+
+test("an issue closed since the snapshot reports both the reading and the snapshot", async (t) => {
+  const server = trackerServer("ok", [indexed("mw-9", "open", "ready")]);
+  t.after(() => server.close());
+  const { origin } = await started(server);
+
+  const body = (await (await fetch(`${origin}/api/issue/mw/mw-9`)).json()) as {
+    issue: { status: string; classification?: string; reason: { rule: string } };
+    snapshot: { status: string; generatedAt: string };
+  };
+  assert.equal(body.issue.status, "closed");
+  assert.equal(body.snapshot.status, "open");
+  assert.equal(body.snapshot.generatedAt, SNAPSHOT.generatedAt);
+  assert.equal(body.issue.classification, undefined, "closed work carries no active classification");
+  assert.deepEqual(body.issue.reason, { rule: "closed" });
+});
+
+test("a verdict the snapshot checked survives a reading that has since closed", async (t) => {
+  const server = trackerServer("ok", [
+    indexed("mw-9", "open", "ready", {
+      staleness: {
+        verdict: "still-blocking",
+        checkedAt: "2026-09-08T13:02:00Z",
+        evidence: ["mw-1 is still open"],
+      },
+    }),
+  ]);
+  t.after(() => server.close());
+  const { origin } = await started(server);
+
+  const body = (await (await fetch(`${origin}/api/issue/mw/mw-9`)).json()) as {
+    issue: { status: string; classification?: string; staleness: { verdict: string; checkedAt?: string; evidence: string[] } };
+    snapshot: { status: string };
+  };
+  assert.equal(body.issue.status, "closed");
+  assert.equal(body.snapshot.status, "open");
+  assert.equal(body.issue.classification, undefined);
+  assert.equal(body.issue.staleness.verdict, "still-blocking");
+  assert.equal(body.issue.staleness.checkedAt, "2026-09-08T13:02:00Z");
+  assert.deepEqual(body.issue.staleness.evidence, ["mw-1 is still open"]);
+});
+
+test("an issue the snapshot never indexed is served without a snapshot to compare against", async (t) => {
+  const server = trackerServer("ok", []);
+  t.after(() => server.close());
+  const { origin } = await started(server);
+
+  const body = (await (await fetch(`${origin}/api/issue/mw/mw-10`)).json()) as {
+    issue: { classification: string; reason: { rule: string; status?: string }; staleness: { verdict: string } };
+    snapshot?: unknown;
+  };
+  assert.equal(body.snapshot, undefined);
+  assert.equal(body.issue.classification, "parked:roadmap");
+  assert.deepEqual(body.issue.reason, { rule: "stored-status", status: "deferred" });
+  assert.equal(body.issue.staleness.verdict, "unchecked");
+});
+
+test("a project the snapshot does not name is a read failure, not a missing issue", async (t) => {
+  const server = trackerServer("ok", [indexed("mw-1", "open", "parked:umbrella")]);
+  t.after(() => server.close());
+  const { origin } = await started(server);
+
+  const response = await fetch(`${origin}/api/issue/nowhere/mw-1`);
+  assert.equal(response.status, 503);
+  const body = (await response.json()) as { message: string; tried: string[] };
+  assert.match(body.message, /names no project nowhere/);
+  assert.ok(body.tried.length > 0);
+});
+
+test("an issue path that is not a project and an id is not found", async (t) => {
+  const server = trackerServer("ok", [indexed("mw-1", "open", "parked:umbrella")]);
+  t.after(() => server.close());
+  const { origin } = await started(server);
+
+  assert.equal((await fetch(`${origin}/api/issue/mw`)).status, 404);
+  assert.equal((await fetch(`${origin}/api/issue/mw/mw-1/extra`)).status, 404);
 });

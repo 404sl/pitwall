@@ -1,5 +1,6 @@
 import type { ReadyRow } from "../model.js";
 import { priorityLabel } from "../format.js";
+import { issueHref } from "../routes.js";
 import { strings } from "../strings.js";
 
 interface ReadyProps {
@@ -34,7 +35,11 @@ export function Ready({ rows, total }: ReadyProps) {
               <td className="pw-cell pw-cell--data" title={row.priority === undefined ? strings.stale.noPriority : undefined}>
                 {priorityLabel(row.priority)}
               </td>
-              <td className="pw-cell pw-cell--title">{row.title}</td>
+              <td className="pw-cell pw-cell--title">
+                <a className="pw-link" href={issueHref(row.projectId, row.id)}>
+                  {row.title}
+                </a>
+              </td>
             </tr>
           ))}
         </tbody>

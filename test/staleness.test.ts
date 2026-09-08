@@ -32,10 +32,12 @@ function asRecorded(
   const issue = issues.find((other) => other.id === id);
   assert.ok(issue !== undefined, `${id} is not in the fixture`);
   const context: ClassifyContext = { issues, lanes: [], collectionComplete: true };
+  const { classification } = classify(issue, context);
+  assert.ok(classification !== undefined, `${id} is closed, so nothing classifies it`);
   return {
     id: issue.id,
     title: issue.title,
-    classification: classify(issue, context),
+    classification,
     labels: issue.labels,
     blockedBy: issue.blockedBy,
     structurallyBlocked: hasLiveStructuralBlocker(issue, context),

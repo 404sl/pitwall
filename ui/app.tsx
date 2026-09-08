@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Snapshot } from "@404sl/pitwall-schema";
 import { buildBoard, type Board, type ProblemRow } from "./model.js";
 import { Band } from "./components/Band.js";
@@ -9,6 +9,8 @@ import { Parked } from "./components/Parked.js";
 import { Problems } from "./components/Problems.js";
 import { Ready } from "./components/Ready.js";
 import { Running, runningSummary } from "./components/Running.js";
+import { IssuePage } from "./components/IssuePage.js";
+import { routeOf, type IssueRoute } from "./routes.js";
 import { strings } from "./strings.js";
 
 const SNAPSHOT_URL = "/api/snapshot";
@@ -60,7 +62,18 @@ function consoleProblem(cause: unknown): ProblemRow {
   };
 }
 
+function useIssueRoute(): IssueRoute | undefined {
+  const [hash, setHash] = useState(() => window.location.hash);
+  useEffect(() => {
+    const onHash = () => setHash(window.location.hash);
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
+  return useMemo(() => routeOf(hash), [hash]);
+}
+
 export function App() {
+  const route = useIssueRoute();
   const [board, setBoard] = useState<Board | undefined>(undefined);
   const [failure, setFailure] = useState<string | undefined>(undefined);
   const [refetchFailure, setRefetchFailure] = useState<ProblemRow | undefined>(undefined);
@@ -112,6 +125,19 @@ export function App() {
       document.removeEventListener("visibilitychange", onVisible);
     };
   }, [load]);
+
+  if (route !== undefined) {
+    return (
+      <>
+        {board === undefined ? null : (
+          <Header projectCount={board.projectCount} generatedAt={board.generatedAt} />
+        )}
+        <main className="pw-console">
+          <IssuePage route={route} />
+        </main>
+      </>
+    );
+  }
 
   if (board === undefined) {
     return (

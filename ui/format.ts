@@ -1,3 +1,6 @@
+import type { StalenessVerdict } from "@404sl/pitwall-schema";
+import { strings } from "./strings.js";
+
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
@@ -34,3 +37,21 @@ export function stamp(iso: string): string {
 export function priorityLabel(priority: number | undefined): string {
   return priority === undefined ? "—" : `P${priority}`;
 }
+
+export function fill(template: string, values: Record<string, string>): string {
+  return template.replace(/\{(\w+)\}/g, (whole, key: string) => values[key] ?? whole);
+}
+
+export const VERDICT_WORD: Record<StalenessVerdict, string> = {
+  unchecked: strings.stale.unchecked,
+  "still-blocking": strings.stale.stillBlocking,
+  "likely-stale": strings.stale.likelyStale,
+  resolved: strings.stale.resolved,
+};
+
+export const VERDICT_CLASS: Record<StalenessVerdict, string> = {
+  unchecked: "pw-stale--unchecked",
+  "still-blocking": "pw-stale--still-blocking",
+  "likely-stale": "pw-stale--likely-stale",
+  resolved: "pw-stale--resolved",
+};

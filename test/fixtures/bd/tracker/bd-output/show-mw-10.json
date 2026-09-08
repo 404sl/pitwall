@@ -1,0 +1,18 @@
+[
+  {
+    "id": "mw-10",
+    "title": "Read GitHub issues as a signal source",
+    "description": null,
+    "status": "deferred",
+    "priority": 3,
+    "issue_type": "feature",
+    "notes": null,
+    "created_at": "2026-09-02T09:00:00Z",
+    "updated_at": "2026-09-05T11:00:00Z",
+    "dependencies": null,
+    "dependents": null,
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "comment_count": 0
+  }
+]
