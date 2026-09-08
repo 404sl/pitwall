@@ -7,7 +7,14 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Lane } from "@404sl/pitwall-schema";
 import { readWorkspace } from "../src/autofix.ts";
-import { readLanes, recencyArgs, slotsPath, worktreePath, worktreePaths } from "../src/lanes.ts";
+import {
+  handoffArgs,
+  readLanes,
+  recencyArgs,
+  slotsPath,
+  worktreePath,
+  worktreePaths,
+} from "../src/lanes.ts";
 
 const PREFIX = "fixture";
 const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), "fixtures");
@@ -67,9 +74,31 @@ function findAcceptingOnly(primary: string): string {
   ].join("\n");
 }
 
-function withFind<T>(script: string, run: () => T): T {
-  const bin = mkdtempSync(join(tmpdir(), "pitwall-find-"));
-  const stub = join(bin, "find");
+function repo(root: string): string {
+  const dir = join(root, "checkout");
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+function ghListing(...pulls: Record<string, string>[]): string {
+  return [
+    "#!/bin/sh",
+    `case "$*" in`,
+    `  "${handoffArgs().join(" ")}") ;;`,
+    '  *) echo "gh: unexpected arguments: $*" >&2; exit 2 ;;',
+    "esac",
+    "cat <<'JSON'",
+    JSON.stringify(pulls),
+    "JSON",
+    "",
+  ].join("\n");
+}
+
+const GH_ALWAYS_FAILS = '#!/bin/sh\necho "gh: not authenticated" >&2\nexit 4\n';
+
+function withStub<T>(name: string, script: string, run: () => T): T {
+  const bin = mkdtempSync(join(tmpdir(), "pitwall-stub-"));
+  const stub = join(bin, name);
   writeFileSync(stub, script);
   chmodSync(stub, 0o755);
   const path = process.env["PATH"];
@@ -90,7 +119,7 @@ test("a probe that fails is reported working with an error, never stranded", () 
   claim(root, 1, "pw-unprobed");
   const dir = worktree(root, "pw-unprobed", 0);
 
-  const { lanes, errors } = withFind(FIND_ALWAYS_FAILS, () =>
+  const { lanes, errors } = withStub("find", FIND_ALWAYS_FAILS, () =>
     readLanes(PREFIX, { lockRoot: root }),
   );
 
@@ -110,7 +139,7 @@ test("a find that rejects every primary but -mmin still tells working from stran
   worktree(root, "pw-alive", 0);
   worktree(root, "pw-dead", 60);
 
-  const { lanes, errors } = withFind(findAcceptingOnly("-mmin"), () =>
+  const { lanes, errors } = withStub("find", findAcceptingOnly("-mmin"), () =>
     readLanes(PREFIX, { lockRoot: root }),
   );
 
@@ -139,16 +168,118 @@ test("recency asks find for -mmin and never -newermt, whose relative timestamp B
   assert.deepEqual(recencyArgs("/w/pw-alive"), ["/w/pw-alive", "-mmin", "-20"]);
 });
 
-test("a claim with no worktree is handed-off, not stranded", () => {
+test("a claimed slot whose lane has not taken a worktree yet is working, not handed-off", () => {
+  const root = lockRoot();
+  claim(root, 1, "pw-designing");
+  const checkout = repo(root);
+
+  const { lanes, errors } = withStub("gh", ghListing(), () =>
+    readLanes(PREFIX, { lockRoot: root, repos: [checkout] }),
+  );
+
+  assert.deepEqual(errors, []);
+  assert.equal(lanes[0]?.state, "working");
+  assert.equal(lanes[0]?.issueId, "pw-designing");
+  assert.equal(lanes[0]?.worktree, undefined);
+});
+
+test("a claim with no worktree and a labelled pull request is handed-off", () => {
   const root = lockRoot();
   claim(root, 1, "pw-landed");
+  const checkout = repo(root);
 
-  const { lanes, errors } = readLanes(PREFIX, { lockRoot: root });
+  const { lanes, errors } = withStub("gh", ghListing({ headRefName: "autofix/pw-landed" }), () =>
+    readLanes(PREFIX, { lockRoot: root, repos: [checkout] }),
+  );
 
   assert.deepEqual(errors, []);
   assert.equal(lanes[0]?.state, "handed-off");
   assert.equal(lanes[0]?.issueId, "pw-landed");
   assert.equal(lanes[0]?.worktree, undefined);
+});
+
+test("a labelled pull request that only cross-references the id does not hand it off", () => {
+  const root = lockRoot();
+  claim(root, 1, "pw-designing");
+  const checkout = repo(root);
+
+  const { lanes, errors } = withStub(
+    "gh",
+    ghListing({
+      headRefName: "autofix/pw-other",
+      title: "Refs pw-designing",
+      body: "Refs pw-designing",
+    }),
+    () => readLanes(PREFIX, { lockRoot: root, repos: [checkout] }),
+  );
+
+  assert.deepEqual(errors, []);
+  assert.equal(lanes[0]?.state, "working");
+  assert.equal(lanes[0]?.issueId, "pw-designing");
+});
+
+test("a labelled pull request for a dotted child does not hand off its parent", () => {
+  const root = lockRoot();
+  claim(root, 1, "pw-parent");
+  const checkout = repo(root);
+
+  const { lanes } = withStub("gh", ghListing({ headRefName: "autofix/pw-parent.1" }), () =>
+    readLanes(PREFIX, { lockRoot: root, repos: [checkout] }),
+  );
+
+  assert.equal(lanes[0]?.state, "working");
+});
+
+test("a labelled pull request for a longer id does not hand off the shorter one", () => {
+  const root = lockRoot();
+  claim(root, 1, "pw-land");
+  const checkout = repo(root);
+
+  const { lanes } = withStub("gh", ghListing({ headRefName: "autofix/pw-landed" }), () =>
+    readLanes(PREFIX, { lockRoot: root, repos: [checkout] }),
+  );
+
+  assert.equal(lanes[0]?.state, "working");
+});
+
+test("a gh that cannot be asked reports working with an error naming the checkout", () => {
+  const root = lockRoot();
+  claim(root, 1, "pw-unknown");
+  const checkout = repo(root);
+
+  const { lanes, errors } = withStub("gh", GH_ALWAYS_FAILS, () =>
+    readLanes(PREFIX, { lockRoot: root, repos: [checkout] }),
+  );
+
+  assert.equal(lanes[0]?.state, "working");
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0]?.source, checkout);
+  assert.match(errors[0]?.message ?? "", /not authenticated/);
+});
+
+test("handoff asks gh for open pull requests carrying lane-verified", () => {
+  assert.deepEqual(handoffArgs(), [
+    "pr",
+    "list",
+    "--state",
+    "open",
+    "--label",
+    "lane-verified",
+    "--limit",
+    "200",
+    "--json",
+    "headRefName",
+  ]);
+});
+
+test("no repo to ask leaves a claim with no worktree working rather than handed-off", () => {
+  const root = lockRoot();
+  claim(root, 1, "pw-unasked");
+
+  const { lanes, errors } = readLanes(PREFIX, { lockRoot: root });
+
+  assert.deepEqual(errors, []);
+  assert.equal(lanes[0]?.state, "working");
 });
 
 test("the probed paths are the bare issue id and the same id suffixed -rework, in that order", () => {
@@ -261,7 +392,7 @@ test("a slot held above the configured lane count is still reported", () => {
     lanes.map((lane) => lane.slot),
     [1, 2, 3, 7],
   );
-  assert.equal(stateOf(lanes, 7), "handed-off");
+  assert.equal(stateOf(lanes, 7), "working");
 });
 
 test("the four states validate against the contract", () => {
@@ -271,8 +402,11 @@ test("the four states validate against the contract", () => {
   claim(root, 2, "pw-landed");
   claim(root, 3, "pw-dead");
   worktree(root, "pw-dead", 60);
+  const checkout = repo(root);
 
-  const { lanes } = readLanes(PREFIX, { lockRoot: root, lanes: 4 });
+  const { lanes } = withStub("gh", ghListing({ headRefName: "autofix/pw-landed" }), () =>
+    readLanes(PREFIX, { lockRoot: root, lanes: 4, repos: [checkout] }),
+  );
 
   assert.doesNotThrow(() => Lane.array().parse(lanes));
   assert.deepEqual(

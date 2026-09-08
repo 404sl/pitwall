@@ -7,11 +7,15 @@ import { collectionError } from "./errors.js";
 export const LOCK_ROOT = "/tmp";
 export const STALE_AFTER_MINUTES = 20;
 export const REWORK_SUFFIX = "-rework";
+export const VERIFIED_LABEL = "lane-verified";
 const FIND_OUTPUT_LIMIT = 64 * 1024 * 1024;
+const HANDOFF_LIMIT = "200";
+const HANDOFF_TIMEOUT_MS = 30_000;
 
 export interface LaneOptions {
   lockRoot?: string;
   lanes?: number;
+  repos?: readonly string[];
 }
 
 export interface LaneReading {
@@ -60,11 +64,71 @@ export function recencyArgs(worktree: string): string[] {
   return [worktree, "-mmin", `-${STALE_AFTER_MINUTES}`];
 }
 
-function unmeasured(found: SpawnSyncReturns<string>): Error {
-  const detail = (found.stderr ?? "").trim() || found.error?.message || "";
-  return new Error(
-    detail === "" ? "recency could not be measured" : `recency could not be measured: ${detail}`,
-  );
+function refused(what: string, ran: SpawnSyncReturns<string>): Error {
+  const detail = (ran.stderr ?? "").trim() || ran.error?.message || "";
+  return new Error(detail === "" ? what : `${what}: ${detail}`);
+}
+
+export function handoffArgs(): string[] {
+  return [
+    "pr",
+    "list",
+    "--state",
+    "open",
+    "--label",
+    VERIFIED_LABEL,
+    "--limit",
+    HANDOFF_LIMIT,
+    "--json",
+    "headRefName",
+  ];
+}
+
+function branchesOf(parsed: unknown): string[] {
+  if (!Array.isArray(parsed)) {
+    throw new TypeError("output is not an array of pull requests");
+  }
+  return parsed.map((entry) => {
+    const branch = (entry as Record<string, unknown> | null)?.["headRefName"];
+    return typeof branch === "string" ? branch : "";
+  });
+}
+
+function labelledIn(repo: string, errors: CollectionError[]): string[] {
+  const listed = spawnSync("gh", handoffArgs(), {
+    cwd: repo,
+    encoding: "utf8",
+    maxBuffer: FIND_OUTPUT_LIMIT,
+    timeout: HANDOFF_TIMEOUT_MS,
+  });
+  if (listed.error !== undefined || listed.status !== 0) {
+    errors.push(
+      collectionError(repo, refused("labelled pull requests could not be listed", listed)),
+    );
+    return [];
+  }
+  try {
+    return branchesOf(JSON.parse(listed.stdout ?? ""));
+  } catch (cause) {
+    errors.push(collectionError(repo, cause));
+    return [];
+  }
+}
+
+function mentions(text: string, issueId: string): boolean {
+  const escaped = issueId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?<![A-Za-z0-9])${escaped}(?![.A-Za-z0-9])`).test(text);
+}
+
+function handoffReader(
+  repos: readonly string[],
+  errors: CollectionError[],
+): (issueId: string) => boolean {
+  let labelled: string[] | undefined;
+  return (issueId) => {
+    labelled ??= repos.flatMap((repo) => labelledIn(repo, errors));
+    return labelled.some((branch) => mentions(branch, issueId));
+  };
 }
 
 function touchedSince(worktree: string): string[] | Error {
@@ -73,7 +137,7 @@ function touchedSince(worktree: string): string[] | Error {
     maxBuffer: FIND_OUTPUT_LIMIT,
   });
   if (found.error !== undefined || found.status !== 0) {
-    return unmeasured(found);
+    return refused("recency could not be measured", found);
   }
   return (found.stdout ?? "").split("\n").filter((line) => line !== "");
 }
@@ -121,13 +185,16 @@ function freshestOf(probes: readonly Probe[]): Probe | undefined {
   return freshest;
 }
 
-function laneAt(
-  slot: number,
-  dir: string,
-  lockPrefix: string,
-  lockRoot: string | undefined,
-  errors: CollectionError[],
-): Lane {
+interface Registry {
+  dir: string;
+  lockPrefix: string;
+  lockRoot: string | undefined;
+  handedOff: (issueId: string) => boolean;
+  errors: CollectionError[];
+}
+
+function laneAt(slot: number, registry: Registry): Lane {
+  const { dir, lockPrefix, lockRoot, errors } = registry;
   let issueId: string | undefined;
   try {
     issueId = claimOf(dir, slot);
@@ -141,7 +208,9 @@ function laneAt(
   }
   const trees = worktreePaths(lockPrefix, issueId, lockRoot).filter((path) => existsSync(path));
   if (trees.length === 0) {
-    return { slot, state: "handed-off", executor: "local", issueId };
+    return registry.handedOff(issueId)
+      ? { slot, state: "handed-off", executor: "local", issueId }
+      : { slot, state: "working", executor: "local", issueId };
   }
   const live = freshestOf(trees.map((worktree) => probeOf(worktree, errors)));
   if (live === undefined) {
@@ -170,8 +239,13 @@ export function readLanes(lockPrefix: string, options: LaneOptions = {}): LaneRe
     slots.add(slot);
   }
   const errors: CollectionError[] = [];
-  const lanes = [...slots]
-    .sort((a, b) => a - b)
-    .map((slot) => laneAt(slot, dir, lockPrefix, options.lockRoot, errors));
+  const registry: Registry = {
+    dir,
+    lockPrefix,
+    lockRoot: options.lockRoot,
+    handedOff: handoffReader(options.repos ?? [], errors),
+    errors,
+  };
+  const lanes = [...slots].sort((a, b) => a - b).map((slot) => laneAt(slot, registry));
   return { lanes, errors };
 }

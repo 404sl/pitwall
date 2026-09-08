@@ -30,7 +30,13 @@ function repoPath(root: string, name: string, repo: Record<string, unknown>): st
   return resolve(root, path);
 }
 
-function reposOf(root: string, workspace: Record<string, unknown>): unknown[] {
+interface WorkspaceRepo {
+  name: string;
+  path: string;
+  kind: RepoKind;
+}
+
+function reposOf(root: string, workspace: Record<string, unknown>): WorkspaceRepo[] {
   const repos = workspace["repos"];
   if (repos === undefined) {
     return [];
@@ -66,17 +72,19 @@ export function readWorkspace(root: string, options: WorkspaceOptions = {}): Pro
   try {
     const workspace = asRecord(JSON.parse(readFileSync(file, "utf8")), AUTOFIX_FILE);
     const lockPrefix = lockPrefixOf(workspace);
+    const repos = reposOf(dir, workspace);
     const reading =
       lockPrefix === undefined
         ? { lanes: [], errors: [] }
         : readLanes(lockPrefix, {
             lockRoot: options.lockRoot,
             lanes: laneCountOf(workspace),
+            repos: repos.map((repo) => repo.path),
           });
     return Project.parse({
       ...skeleton,
       authority: { kind: "beads", idPrefix: workspace["idPrefix"] },
-      repos: reposOf(dir, workspace),
+      repos,
       lanes: reading.lanes,
       errors: reading.errors,
     });
