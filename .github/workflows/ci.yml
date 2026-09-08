@@ -42,3 +42,7 @@ jobs:
       # is a failure here rather than a surprise at `pitwall serve`.
       - run: npm run build:ui
         working-directory: cli
+      # Assets arrived once with embedded generator provenance that nothing renders
+      # and a careful review missed. This is cheap and it fails loudly.
+      - run: bash scripts/check-brand-assets.sh
+        working-directory: cli
