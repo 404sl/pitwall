@@ -38,3 +38,7 @@ jobs:
         working-directory: cli
       - run: npm run build
         working-directory: cli
+      # The console is part of the deliverable, so a build that no longer produces it
+      # is a failure here rather than a surprise at `pitwall serve`.
+      - run: npm run build:ui
+        working-directory: cli
