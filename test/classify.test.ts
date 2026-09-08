@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { Classification } from "@404sl/pitwall-schema";
 import type { Lane } from "@404sl/pitwall-schema";
 import { classify } from "../src/classify.ts";
-import type { ClassifyContext, UnclassifiedIssue } from "../src/classify.ts";
+import type { ClassifyContext, StoredStatus, UnclassifiedIssue } from "../src/classify.ts";
 
 function anIssue(id: string, over: Partial<UnclassifiedIssue> = {}): UnclassifiedIssue {
   return { id, title: id, status: "open", labels: [], blockedBy: [], ...over };
@@ -18,6 +18,7 @@ interface Case {
   issue: UnclassifiedIssue;
   siblings?: UnclassifiedIssue[];
   lanes?: Lane[];
+  stored?: StoredStatus;
   expected: Classification;
 }
 
@@ -176,12 +177,32 @@ const cases: Case[] = [
     issue: anIssue("pitwall-a"),
     expected: "ready",
   },
+  {
+    name: "the tracker's own blocked status blocks an issue with no dependency edge",
+    issue: anIssue("pitwall-a"),
+    stored: "blocked",
+    expected: "blocked",
+  },
+  {
+    name: "the tracker's own deferred status parks an issue as roadmap",
+    issue: anIssue("pitwall-a"),
+    stored: "deferred",
+    expected: "parked:roadmap",
+  },
+  {
+    name: "a label naming somebody's queue outranks the tracker's blocked status",
+    issue: anIssue("pitwall-a", { labels: ["needs-decision"] }),
+    stored: "blocked",
+    expected: "yours:decision",
+  },
 ];
 
 function contextFor(scenario: Case): ClassifyContext {
   return {
     issues: [scenario.issue, ...(scenario.siblings ?? [])],
     lanes: scenario.lanes ?? [],
+    storedStatus:
+      scenario.stored === undefined ? undefined : new Map([[scenario.issue.id, scenario.stored]]),
   };
 }
 

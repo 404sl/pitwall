@@ -8,20 +8,23 @@ import {
   type Origin,
 } from "@404sl/pitwall-schema";
 import { collectionError } from "./autofix.js";
-import { classify, type UnclassifiedIssue } from "./classify.js";
+import { classify, type StoredStatus, type UnclassifiedIssue } from "./classify.js";
 
 export const BEADS_DIR = ".beads";
 export const BEADS_DIR_VAR = "BEADS_DIR";
 
 const MAX_OUTPUT = 64 * 1024 * 1024;
+const TIMEOUT_MS = 30_000;
 
 type Status = UnclassifiedIssue["status"];
 
 const STATUSES = ["open", "in_progress", "closed"] as const satisfies readonly Status[];
+const STORED_STATUSES = ["blocked", "deferred"] as const satisfies readonly StoredStatus[];
 
 export interface ReadIssuesOptions {
   env?: Record<string, string | undefined>;
   lanes?: readonly Lane[];
+  timeoutMs?: number;
 }
 
 export interface CollectedIssues {
@@ -30,7 +33,10 @@ export interface CollectedIssues {
   errors: CollectionError[];
 }
 
-function failureOf(cause: unknown): string {
+function failureOf(cause: unknown, timeoutMs: number): string {
+  if ((cause as { code?: unknown } | null)?.code === "ETIMEDOUT") {
+    return `timed out after ${timeoutMs}ms`;
+  }
   const stderr = (cause as { stderr?: unknown } | null)?.stderr;
   const reported = typeof stderr === "string" ? stderr.trim() : "";
   if (reported !== "") {
@@ -43,6 +49,7 @@ function bd(
   args: readonly string[],
   beadsDir: string,
   env: Record<string, string | undefined>,
+  timeoutMs: number,
 ): Record<string, unknown>[] {
   const command = ["bd", ...args].join(" ");
   let stdout: string;
@@ -52,9 +59,10 @@ function bd(
       env: { ...env, [BEADS_DIR_VAR]: beadsDir },
       maxBuffer: MAX_OUTPUT,
       stdio: ["ignore", "pipe", "pipe"],
+      timeout: timeoutMs,
     });
   } catch (cause) {
-    throw new Error(`${command}: ${failureOf(cause)}`);
+    throw new Error(`${command}: ${failureOf(cause, timeoutMs)}`);
   }
   try {
     const parsed: unknown = JSON.parse(stdout);
@@ -78,6 +86,19 @@ function textOf(value: unknown): string | undefined {
 
 function statusOf(value: unknown, asked: Status): Status {
   return (STATUSES as readonly string[]).includes(value as string) ? (value as Status) : asked;
+}
+
+function storedStatusOf(rows: readonly Record<string, unknown>[]): Map<string, StoredStatus> {
+  const stored = new Map<string, StoredStatus>();
+  for (const row of rows) {
+    const id = row["id"];
+    const status = row["status"];
+    if (typeof id !== "string") continue;
+    if ((STORED_STATUSES as readonly string[]).includes(status as string)) {
+      stored.set(id, status as StoredStatus);
+    }
+  }
+  return stored;
 }
 
 function labelsOf(value: unknown): string[] {
@@ -129,19 +150,31 @@ function toIssue(
 export function readIssues(root: string, options: ReadIssuesOptions = {}): CollectedIssues {
   const beadsDir = join(resolve(root), BEADS_DIR);
   const env = options.env ?? process.env;
+  const timeoutMs = options.timeoutMs ?? TIMEOUT_MS;
   try {
     const listed = STATUSES.map((status) =>
-      bd(["list", "--status", status, "--limit", "0", "--json"], beadsDir, env),
+      bd(["list", "--status", status, "--limit", "0", "--json"], beadsDir, env, timeoutMs),
     );
-    const edges = blockedEdges(bd(["blocked", "--json"], beadsDir, env));
+    const parkedRows = bd(
+      ["list", "--status", STORED_STATUSES.join(","), "--limit", "0", "--json"],
+      beadsDir,
+      env,
+      timeoutMs,
+    );
+    const edges = blockedEdges(bd(["blocked", "--json"], beadsDir, env, timeoutMs));
     const [open = [], inProgress = [], closedRows = []] = listed;
     const active = [
       ...open.map((row) => toIssue(row, "open", edges)),
       ...inProgress.map((row) => toIssue(row, "in_progress", edges)),
+      ...parkedRows.map((row) => toIssue(row, "open", edges)),
     ];
     const closed = closedRows.map((row) => toIssue(row, "closed", edges));
     const byId = new Map([...active, ...closed].map((issue) => [issue.id, issue]));
-    const context = { issues: active, lanes: options.lanes ?? [] };
+    const context = {
+      issues: active,
+      lanes: options.lanes ?? [],
+      storedStatus: storedStatusOf(parkedRows),
+    };
     const issues = active.map((issue) =>
       Issue.parse({
         ...issue,

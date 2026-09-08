@@ -17,7 +17,7 @@ const NO_BD = { PATH: TRACKER };
 test("every issue the tracker reports is one the contract accepts", () => {
   const collected = readIssues(TRACKER, { env: env("ok") });
   assert.deepEqual(collected.errors, []);
-  assert.equal(collected.issues.length, 7);
+  assert.equal(collected.issues.length, 10);
   for (const issue of collected.issues) {
     assert.doesNotThrow(() => Issue.parse(issue));
   }
@@ -41,6 +41,28 @@ test("dependency edges from bd blocked populate blockedBy", () => {
   assert.deepEqual(byId.get("mw-1.1")?.blockedBy, ["mw-2"]);
   assert.deepEqual(byId.get("mw-6")?.blockedBy, ["mw-9"]);
   assert.deepEqual(byId.get("mw-5")?.blockedBy, []);
+});
+
+test("an issue the tracker stores as blocked or deferred is still part of the backlog", () => {
+  const collected = readIssues(TRACKER, { env: env("ok") });
+  const byId = new Map(collected.issues.map((issue) => [issue.id, issue]));
+  assert.equal(byId.get("mw-7")?.status, "open");
+  assert.equal(byId.get("mw-10")?.status, "open");
+  assert.equal(byId.get("mw-7")?.classification, "blocked");
+  assert.equal(byId.get("mw-10")?.classification, "parked:roadmap");
+});
+
+test("a stored blocked status holds even when every dependency edge has closed", () => {
+  const collected = readIssues(TRACKER, { env: env("ok") });
+  const byId = new Map(collected.issues.map((issue) => [issue.id, issue]));
+  assert.deepEqual(byId.get("mw-8")?.blockedBy, ["mw-9"]);
+  assert.equal(byId.get("mw-8")?.classification, "blocked");
+});
+
+test("an edge onto an issue the tracker stores as blocked is a blocker like any other", () => {
+  const collected = readIssues(TRACKER, { env: env("ok") });
+  const byId = new Map(collected.issues.map((issue) => [issue.id, issue]));
+  assert.equal(byId.get("mw-4.2")?.classification, "blocked");
 });
 
 test("an edge onto an open blocker is blocked and one onto a closed blocker is not", () => {
@@ -138,6 +160,15 @@ test("a bd that prints something other than JSON is a CollectionError naming the
   assert.equal(collected.errors.length, 1);
   assert.match(collected.errors[0]?.message ?? "", /^bd list --status open --limit 0 --json: /);
   assert.match(collected.errors[0]?.message ?? "", /JSON|not an array/);
+});
+
+test("a bd that hangs is a CollectionError naming the command rather than a stuck read", () => {
+  const collected = readIssues(TRACKER, { env: env("slow"), timeoutMs: 200 });
+  assert.deepEqual(collected.issues, []);
+  assert.deepEqual(collected.closed, []);
+  assert.equal(collected.errors.length, 1);
+  assert.match(collected.errors[0]?.message ?? "", /^bd list --status open --limit 0 --json: /);
+  assert.match(collected.errors[0]?.message ?? "", /timed out after 200ms/);
 });
 
 test("a failure carries a timestamp and a source the contract accepts", () => {

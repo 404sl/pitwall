@@ -6,7 +6,9 @@
     "priority": 2,
     "issue_type": "task",
     "labels": null,
-    "blocked_by": ["mw-2"],
+    "blocked_by": [
+      "mw-2"
+    ],
     "dependencies": null
   },
   {
@@ -16,7 +18,33 @@
     "priority": 2,
     "issue_type": "chore",
     "labels": null,
-    "blocked_by": ["mw-9"],
+    "blocked_by": [
+      "mw-9"
+    ],
+    "dependencies": null
+  },
+  {
+    "id": "mw-8",
+    "title": "Move the snapshot store off the home directory",
+    "status": "blocked",
+    "priority": 2,
+    "issue_type": "chore",
+    "labels": null,
+    "blocked_by": [
+      "mw-9"
+    ],
+    "dependencies": null
+  },
+  {
+    "id": "mw-4.2",
+    "title": "Add the threadId column",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "labels": null,
+    "blocked_by": [
+      "mw-7"
+    ],
     "dependencies": null
   }
 ]
