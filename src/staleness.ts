@@ -20,6 +20,7 @@ export interface ParkedRecord {
   classification: Classification;
   labels: readonly string[];
   blockedBy: readonly string[];
+  structurallyBlocked: boolean;
   description?: string;
   notes?: string;
   labelledAt?: string;
@@ -275,6 +276,9 @@ async function preconditionNowHolds(
 const NEVER_CONCLUDED = ["yours:", "blocked", "parked:umbrella"];
 
 function machineMayConclude(record: ParkedRecord, context: StalenessContext): boolean {
+  if (record.structurallyBlocked) {
+    return false;
+  }
   if (NEVER_CONCLUDED.some((prefix) => record.classification.startsWith(prefix))) {
     return false;
   }

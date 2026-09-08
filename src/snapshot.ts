@@ -8,6 +8,7 @@ import {
   type Snapshot,
 } from "@404sl/pitwall-schema";
 import { readIssues, type ClosedIssue, type IssueText } from "./beads.js";
+import { hasLiveStructuralBlocker, type ClassifyContext } from "./classify.js";
 import { collectProjects, type RootsOptions } from "./config.js";
 import { preconditionProbe, pullLookup } from "./probes.js";
 import { writeSnapshot } from "./state.js";
@@ -81,6 +82,7 @@ async function assessed(
   issue: Issue,
   texts: ReadonlyMap<string, IssueText>,
   context: StalenessContext,
+  structure: ClassifyContext,
 ): Promise<Issue> {
   if (!isAssessable(issue.classification)) {
     return issue;
@@ -95,6 +97,7 @@ async function assessed(
         classification: issue.classification,
         labels: issue.labels,
         blockedBy: issue.blockedBy,
+        structurallyBlocked: hasLiveStructuralBlocker(issue, structure),
         description: text?.description,
         notes: text?.notes,
       },
@@ -111,8 +114,13 @@ async function gather(project: Project, options: SnapshotOptions, day: Date): Pr
     timeoutMs: options.timeoutMs,
   });
   const context = stalenessContext(project, collected, options, day);
+  const structure: ClassifyContext = {
+    issues: [...collected.issues, ...collected.closed],
+    lanes: project.lanes,
+    collectionComplete: project.errors.length === 0,
+  };
   const issues = await Promise.all(
-    collected.issues.map((issue) => assessed(issue, collected.texts, context)),
+    collected.issues.map((issue) => assessed(issue, collected.texts, context, structure)),
   );
   return Project.parse({
     ...project,

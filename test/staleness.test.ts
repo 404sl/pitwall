@@ -1,5 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { classify, hasLiveStructuralBlocker } from "../src/classify.ts";
+import type { ClassifyContext, UnclassifiedIssue } from "../src/classify.ts";
 import { preconditionProbe } from "../src/probes.ts";
 import { assess, isAssessable } from "../src/staleness.ts";
 import type { ParkedRecord, PullState, StalenessContext } from "../src/staleness.ts";
@@ -13,7 +15,40 @@ function aRecord(over: Partial<ParkedRecord> = {}): ParkedRecord {
     classification: "blocked",
     labels: [],
     blockedBy: [],
+    structurallyBlocked: false,
     ...over,
+  };
+}
+
+function anIssue(id: string, over: Partial<UnclassifiedIssue> = {}): UnclassifiedIssue {
+  return { id, title: id, status: "open", labels: [], blockedBy: [], ...over };
+}
+
+function asRecorded(
+  id: string,
+  issues: readonly UnclassifiedIssue[],
+  text: Partial<ParkedRecord> = {},
+): ParkedRecord {
+  const issue = issues.find((other) => other.id === id);
+  assert.ok(issue !== undefined, `${id} is not in the fixture`);
+  const context: ClassifyContext = { issues, lanes: [], collectionComplete: true };
+  return {
+    id: issue.id,
+    title: issue.title,
+    classification: classify(issue, context),
+    labels: issue.labels,
+    blockedBy: issue.blockedBy,
+    structurallyBlocked: hasLiveStructuralBlocker(issue, context),
+    ...text,
+  };
+}
+
+function trackerOf(issues: readonly UnclassifiedIssue[]): Partial<StalenessContext> {
+  return {
+    knownIds: new Set(issues.map((issue) => issue.id)),
+    closedIds: new Set(
+      issues.flatMap((issue) => (issue.status === "closed" ? [issue.id] : [])),
+    ),
   };
 }
 
@@ -270,22 +305,68 @@ test("only an issue that stopped for a reason is worth checking", () => {
   assert.equal(isAssessable("yours:access"), true);
 });
 
-test("a blocked issue is never reported resolved, because its live blocker is not in the record", async () => {
-  const staleness = await assess(
-    aRecord({ id: "mw-30.1", classification: "blocked", notes: "Follows the pattern set in mw-9." }),
-    aContext({ idPrefix: "mw", ...tracker({ "mw-9": "closed", "mw-30.1": "open" }) }),
-  );
+const ANSWERED = "Follows the pattern set in mw-9.";
+
+test("a child of an issue somebody is working is never reported resolved", async () => {
+  const issues = [
+    anIssue("mw-9", { status: "closed" }),
+    anIssue("mw-30", { status: "in_progress" }),
+    anIssue("mw-30.1"),
+  ];
+  const record = asRecorded("mw-30.1", issues, { notes: ANSWERED });
+  assert.equal(record.classification, "blocked");
+  assert.equal(record.structurallyBlocked, true);
+  const staleness = await assess(record, aContext({ idPrefix: "mw", ...trackerOf(issues) }));
   assert.equal(staleness.verdict, "likely-stale");
   assert.ok(!matches(staleness.evidence, /no open dependency of its own remains/));
 });
 
-test("an umbrella is never reported resolved, because its open children are not in the record", async () => {
-  const staleness = await assess(
-    aRecord({ classification: "parked:umbrella", notes: "Waiting on mw-9." }),
-    aContext({ idPrefix: "mw", ...tracker({ "mw-9": "closed" }) }),
-  );
+test("an issue with an open child is never reported resolved", async () => {
+  const issues = [anIssue("mw-9", { status: "closed" }), anIssue("mw-30"), anIssue("mw-30.1")];
+  const record = asRecorded("mw-30", issues, { notes: ANSWERED });
+  assert.equal(record.classification, "parked:umbrella");
+  assert.equal(record.structurallyBlocked, true);
+  const staleness = await assess(record, aContext({ idPrefix: "mw", ...trackerOf(issues) }));
   assert.equal(staleness.verdict, "likely-stale");
   assert.ok(!matches(staleness.evidence, /no open dependency of its own remains/));
+});
+
+test("a watch label does not hide an open child from the check", async () => {
+  const issues = [
+    anIssue("mw-9", { status: "closed" }),
+    anIssue("mw-30", { labels: ["watch"] }),
+    anIssue("mw-30.1"),
+  ];
+  const record = asRecorded("mw-30", issues, { notes: ANSWERED });
+  assert.equal(record.classification, "parked:watch");
+  assert.equal(record.structurallyBlocked, true);
+  const staleness = await assess(record, aContext({ idPrefix: "mw", ...trackerOf(issues) }));
+  assert.equal(staleness.verdict, "likely-stale");
+  assert.ok(!matches(staleness.evidence, /no open dependency of its own remains/));
+});
+
+test("a roadmap label does not hide a parent somebody is working from the check", async () => {
+  const issues = [
+    anIssue("mw-9", { status: "closed" }),
+    anIssue("mw-30", { status: "in_progress" }),
+    anIssue("mw-30.1", { labels: ["roadmap"] }),
+  ];
+  const record = asRecorded("mw-30.1", issues, { notes: ANSWERED });
+  assert.equal(record.classification, "parked:roadmap");
+  assert.equal(record.structurallyBlocked, true);
+  const staleness = await assess(record, aContext({ idPrefix: "mw", ...trackerOf(issues) }));
+  assert.equal(staleness.verdict, "likely-stale");
+  assert.ok(!matches(staleness.evidence, /no open dependency of its own remains/));
+});
+
+test("a parked issue with nothing of its own left open is still reported resolved", async () => {
+  const issues = [anIssue("mw-9", { status: "closed" }), anIssue("mw-30", { labels: ["blocked-tooling"] })];
+  const record = asRecorded("mw-30", issues, { notes: ANSWERED });
+  assert.equal(record.classification, "parked:tooling");
+  assert.equal(record.structurallyBlocked, false);
+  const staleness = await assess(record, aContext({ idPrefix: "mw", ...trackerOf(issues) }));
+  assert.equal(staleness.verdict, "resolved");
+  assert.ok(matches(staleness.evidence, /no open dependency of its own remains/));
 });
 
 test("a markdown anchor is not read as a pull request reference", async () => {
