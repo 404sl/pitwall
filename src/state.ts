@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseSnapshot, type CollectionError, type Snapshot } from "@404sl/pitwall-schema";
-import { collectionError } from "./autofix.js";
+import { collectionError } from "./errors.js";
 
 export const STATE_VAR = "XDG_STATE_HOME";
 

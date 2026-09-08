@@ -2,7 +2,8 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type { CollectionError, Project } from "@404sl/pitwall-schema";
-import { AUTOFIX_FILE, collectionError, readWorkspace } from "./autofix.js";
+import { AUTOFIX_FILE, readWorkspace } from "./autofix.js";
+import { collectionError } from "./errors.js";
 
 export const CONFIG_VAR = "PITWALL_CONFIG";
 
@@ -12,6 +13,7 @@ export interface RootsOptions {
   env?: Record<string, string | undefined>;
   cwd?: string;
   home?: string;
+  lockRoot?: string;
 }
 
 export interface ResolvedRoots {
@@ -90,5 +92,8 @@ export function collectProjects(options: RootsOptions = {}): {
   roots: ResolvedRoots;
 } {
   const roots = resolveRoots(options);
-  return { projects: roots.roots.map((root) => readWorkspace(root)), roots };
+  return {
+    projects: roots.roots.map((root) => readWorkspace(root, { lockRoot: options.lockRoot })),
+    roots,
+  };
 }
