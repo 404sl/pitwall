@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { SCHEMA_VERSION, parseSnapshot } from "@404sl/pitwall-schema";
-import { READY_PER_PROJECT, renderStatus, parseStatusArgs, wantsColor } from "../src/status.ts";
+import { READY_PER_PROJECT, renderStatus, parseStatusArgs, terminalWidth, wantsColor } from "../src/status.ts";
 import { VERSION } from "../src/version.ts";
 
 const GENERATED_AT = "2026-09-08T14:11:00Z";
@@ -58,6 +58,27 @@ const BUSY = snapshotOf([
   project("pitwall", {
     issues: [...repeated("pw-you", "yours:decision", 3), issue("pw-ready", "ready")],
   }),
+]);
+
+const LONG_TITLE =
+  "decide whether the collector keeps reading a tracker after the first query comes back empty";
+const LONG_ERROR =
+  "bd exited 1: could not open /projects/unreadable/.beads/issues.db, the file is held by another process";
+
+const WIDE = snapshotOf([
+  project("session-replay", {
+    issues: [
+      issue("sr-1", "yours:decision", { priority: 0, title: LONG_TITLE, staleness: { verdict: "likely-stale" } }),
+      issue("sr-ready-0", "ready", { title: LONG_TITLE }),
+    ],
+    lanes: Array.from({ length: 6 }, (_, index) => ({
+      slot: index + 1,
+      state: "working",
+      issueId: `sr-lane-${index}`,
+      lastActivityAt: "2026-09-08T13:11:00Z",
+    })),
+  }),
+  project("unreadable", { errors: [error("/projects/unreadable/.beads", LONG_ERROR)] }),
 ]);
 
 test("every section of the screen is rendered from a snapshot alone", () => {
@@ -173,4 +194,32 @@ test("status reads the state path by default and another file with --from", () =
 test("--from without a path is an error rather than a silent default", () => {
   assert.deepEqual(parseStatusArgs(["--from"]), { error: "--from expects a path, got nothing" });
   assert.deepEqual(parseStatusArgs(["--nope"]), { error: "unknown argument --nope" });
+});
+
+test("a narrow terminal keeps the columns lined up instead of wrapping mid-word", () => {
+  const narrow = renderStatus(WIDE, { width: 80 });
+  for (const line of narrow.slice(0, narrow.indexOf("PROBLEMS")).split("\n")) {
+    assert.ok(line.length <= 80, `${line.length} columns: ${line}`);
+  }
+  assert.match(narrow, /\u2026/);
+  assert.ok(renderStatus(WIDE).split("\n").some((line) => line.length > 80));
+});
+
+test("truncation counts the words rather than the colour codes", () => {
+  const coloured = renderStatus(WIDE, { width: 80, color: true });
+  assert.equal(coloured.replace(/\u001b\[[0-9;]*m/g, ""), renderStatus(WIDE, { width: 80 }));
+});
+
+test("an error is never cut short to fit the screen", () => {
+  const narrow = renderStatus(WIDE, { width: 80 });
+  assert.ok(narrow.slice(narrow.indexOf("PROBLEMS")).includes(LONG_ERROR));
+});
+
+test("a width with room to spare changes nothing, and piped output has no width at all", () => {
+  assert.equal(renderStatus(WIDE, { width: 10_000 }), renderStatus(WIDE));
+  assert.ok(renderStatus(WIDE).includes(LONG_TITLE));
+  assert.doesNotMatch(renderStatus(WIDE), /\u2026/);
+  assert.equal(terminalWidth({ isTTY: false, columns: 120 }), undefined);
+  assert.equal(terminalWidth({ isTTY: true, columns: 80 }), 80);
+  assert.equal(terminalWidth({}), undefined);
 });

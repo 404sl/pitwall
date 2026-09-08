@@ -20,6 +20,7 @@ export type StatusArgs = { from?: string } | { error: string };
 
 export interface StatusOptions {
   color?: boolean;
+  width?: number;
 }
 
 const NO_PROJECTS = "No projects to report.";
@@ -60,6 +61,29 @@ const STATE_COLOUR: Record<RunningState, string> = {
 };
 
 type Paint = (text: string, code: string) => string;
+
+const SGR = /\u001b\[[0-9;]*m/g;
+const ELLIPSIS = "\u2026";
+const MIN_TAIL = 10;
+
+function plainWidth(text: string): number {
+  return text.replace(SGR, "").length;
+}
+
+function fit(prefix: string, tail: string, width: number | undefined): string {
+  if (width === undefined) {
+    return `${prefix}${tail}`;
+  }
+  const budget = width - plainWidth(prefix);
+  if (tail.length <= budget || budget < MIN_TAIL) {
+    return `${prefix}${tail}`;
+  }
+  return `${prefix}${tail.slice(0, budget - 1).trimEnd()}${ELLIPSIS}`;
+}
+
+export function terminalWidth(stdout: { isTTY?: boolean; columns?: number }): number | undefined {
+  return stdout.isTTY === true ? stdout.columns : undefined;
+}
 
 export function wantsColor(env: Record<string, string | undefined>, isTTY: boolean): boolean {
   const disabled = env.NO_COLOR;
@@ -102,7 +126,7 @@ function section(paint: Paint, label: string, count: string | undefined, body: s
   return ["", count === undefined ? head : `${head} ${paint(count, "2")}`, ...body];
 }
 
-function needsYouLines(groups: NeedsYouGroup[], paint: Paint): string[] {
+function needsYouLines(groups: NeedsYouGroup[], paint: Paint, width: number | undefined): string[] {
   if (groups.length === 0) {
     return [`  ${EMPTY.needsYou}`];
   }
@@ -113,16 +137,16 @@ function needsYouLines(groups: NeedsYouGroup[], paint: Paint): string[] {
   const verdictWidth = widest(rows.map((row) => VERDICT_WORD[row.verdict]));
   return groups.flatMap((group) => [
     `  ${paint(group.project, "1")}`,
-    ...group.rows.map((row) =>
-      [
+    ...group.rows.map((row) => {
+      const columns = [
         "   ",
         paint(row.id.padEnd(idWidth), "36"),
         priorityLabel(row.priority).padEnd(priorityWidth),
         row.kind.padEnd(kindWidth),
         paint(VERDICT_WORD[row.verdict].padEnd(verdictWidth), VERDICT_COLOUR[row.verdict]),
-        row.title,
-      ].join(" "),
-    ),
+      ].join(" ");
+      return fit(`${columns} `, row.title, width);
+    }),
   ]);
 }
 
@@ -149,7 +173,7 @@ function runningSummary(totals: RunningTotal[]): string {
   return totals.map((total) => `${total.count} ${STATE_WORD[total.state]}`).join(" \u00b7 ");
 }
 
-function runningLines(rows: RunningRow[], paint: Paint): string[] {
+function runningLines(rows: RunningRow[], paint: Paint, width: number | undefined): string[] {
   if (rows.length === 0) {
     return [`  ${EMPTY.running}`];
   }
@@ -157,11 +181,11 @@ function runningLines(rows: RunningRow[], paint: Paint): string[] {
   const stateWidth = widest(rows.map((row) => stateText(row)));
   return rows.map((row) => {
     const state = paint(stateText(row).padEnd(stateWidth), STATE_COLOUR[row.state]);
-    return `  ${row.project.padEnd(projectWidth)} ${state} ${chipsText(row.chips)}`.trimEnd();
+    return fit(`  ${row.project.padEnd(projectWidth)} ${state} `, chipsText(row.chips), width).trimEnd();
   });
 }
 
-function readyLines(snapshot: Snapshot, paint: Paint): string[] {
+function readyLines(snapshot: Snapshot, paint: Paint, width: number | undefined): string[] {
   const groups = readyByProject(snapshot, READY_PER_PROJECT);
   if (groups.length === 0) {
     return [`  ${EMPTY.ready}`];
@@ -173,9 +197,10 @@ function readyLines(snapshot: Snapshot, paint: Paint): string[] {
     const rest = group.total - group.rows.length;
     return [
       `  ${paint(group.project, "1")}`,
-      ...group.rows.map((row) =>
-        ["   ", paint(row.id.padEnd(idWidth), "36"), priorityLabel(row.priority).padEnd(priorityWidth), row.title].join(" "),
-      ),
+      ...group.rows.map((row) => {
+        const columns = ["   ", paint(row.id.padEnd(idWidth), "36"), priorityLabel(row.priority).padEnd(priorityWidth)].join(" ");
+        return fit(`${columns} `, row.title, width);
+      }),
       ...(rest > 0 ? [`    ${paint(`+${rest} more ready`, "2")}`] : []),
     ];
   });
@@ -207,6 +232,7 @@ function header(board: Board, paint: Paint): string {
 
 export function renderStatus(snapshot: Snapshot, options: StatusOptions = {}): string {
   const paint = painter(options.color ?? false);
+  const width = options.width;
   const board = buildBoard(snapshot);
   const lines = [header(board, paint)];
   if (board.projectCount === 0) {
@@ -221,9 +247,9 @@ export function renderStatus(snapshot: Snapshot, options: StatusOptions = {}): s
   const needsCount = board.needsYouCount === 0 ? undefined : String(board.needsYouCount);
   const runningCount = board.running.length === 0 ? undefined : runningSummary(board.runningTotals);
   const readyCount = board.readyCount === 0 ? undefined : String(board.readyCount);
-  lines.push(...section(paint, "Needs you", needsCount, needsYouLines(board.needsYou, paint)));
-  lines.push(...section(paint, "Running", runningCount, runningLines(board.running, paint)));
-  lines.push(...section(paint, "Ready", readyCount, readyLines(snapshot, paint)));
+  lines.push(...section(paint, "Needs you", needsCount, needsYouLines(board.needsYou, paint, width)));
+  lines.push(...section(paint, "Running", runningCount, runningLines(board.running, paint, width)));
+  lines.push(...section(paint, "Ready", readyCount, readyLines(snapshot, paint, width)));
   lines.push(...section(paint, "Parked", undefined, parkedLines(board.parked, paint)));
   lines.push(...section(paint, "Problems", undefined, problemLines(board.problems, paint)));
   return `${lines.join("\n")}\n`;

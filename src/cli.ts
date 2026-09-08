@@ -3,7 +3,7 @@ import { SCHEMA_VERSION } from "@404sl/pitwall-schema";
 import { DEFAULT_PORT, HOST, createConsoleServer, listen, parseServeArgs } from "./serve.js";
 import { emitSnapshot } from "./snapshot.js";
 import { readSnapshot, readSnapshotFrom } from "./state.js";
-import { parseStatusArgs, renderStatus, wantsColor } from "./status.js";
+import { parseStatusArgs, renderStatus, terminalWidth, wantsColor } from "./status.js";
 import { VERSION } from "./version.js";
 
 const USAGE = `pitwall ${VERSION}
@@ -81,7 +81,10 @@ if (isEntry) {
       process.exitCode = 1;
     } else {
       process.stdout.write(
-        renderStatus(stored.snapshot, { color: wantsColor(process.env, process.stdout.isTTY === true) }),
+        renderStatus(stored.snapshot, {
+          color: wantsColor(process.env, process.stdout.isTTY === true),
+          width: terminalWidth(process.stdout),
+        }),
       );
     }
   } else if (serve === undefined) {
