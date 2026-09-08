@@ -6,6 +6,7 @@ import { VERSION } from "../src/version.ts";
 
 const GENERATED_AT = "2026-09-08T14:11:00Z";
 const ESCAPE = /\u001b\[/;
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 
 function issue(id: string, classification: string, extra: Record<string, unknown> = {}): Record<string, unknown> {
   return { id, title: `title for ${id}`, status: "open", priority: 1, classification, ...extra };
@@ -38,6 +39,20 @@ function snapshotOf(projects: Array<Record<string, unknown>>, errors: Array<Reco
     projects,
     errors,
   });
+}
+
+function titled(title: string) {
+  return snapshotOf([
+    project("session-replay", {
+      issues: [issue("sr-1", "yours:decision", { priority: 0, title, staleness: { verdict: "still-blocking" } })],
+    }),
+  ]);
+}
+
+function rowFor(out: string, id: string): string {
+  const row = out.split("\n").find((line) => line.includes(id));
+  assert.ok(row !== undefined, `no row for ${id} in ${out}`);
+  return row;
 }
 
 const BUSY = snapshotOf([
@@ -206,8 +221,10 @@ test("a narrow terminal keeps the columns lined up instead of wrapping mid-word"
 });
 
 test("truncation counts the words rather than the colour codes", () => {
-  const coloured = renderStatus(WIDE, { width: 80, color: true });
-  assert.equal(coloured.replace(/\u001b\[[0-9;]*m/g, ""), renderStatus(WIDE, { width: 80 }));
+  for (const width of [80, 36]) {
+    const coloured = renderStatus(WIDE, { width, color: true });
+    assert.equal(coloured.replace(/\u001b\[[0-9;]*m/g, ""), renderStatus(WIDE, { width }));
+  }
 });
 
 test("an error is never cut short to fit the screen", () => {
@@ -222,4 +239,31 @@ test("a width with room to spare changes nothing, and piped output has no width 
   assert.equal(terminalWidth({ isTTY: false, columns: 120 }), undefined);
   assert.equal(terminalWidth({ isTTY: true, columns: 80 }), 80);
   assert.equal(terminalWidth({}), undefined);
+});
+
+test("every row stays inside a terminal narrower than eighty columns", () => {
+  for (const width of [43, 40, 36, 35]) {
+    const out = renderStatus(WIDE, { width });
+    const band = out.slice(0, out.indexOf("PROBLEMS"));
+    for (const line of band.split("\n")) {
+      assert.ok(line.length <= width, `width ${width}: ${line.length} columns: ${line}`);
+    }
+  }
+  assert.match(renderStatus(WIDE, { width: 35 }), /^ {4}sr-1 P0 decision likely stale \u2026$/m);
+});
+
+test("a width too small to lay a row out at all is ignored rather than obeyed", () => {
+  assert.equal(renderStatus(WIDE, { width: 0 }), renderStatus(WIDE));
+  assert.equal(renderStatus(WIDE, { width: 19 }), renderStatus(WIDE));
+  assert.notEqual(renderStatus(WIDE, { width: 20 }), renderStatus(WIDE));
+});
+
+test("a title of astral characters is measured and cut by character, never mid-pair", () => {
+  const whole = "\u{1F680}".repeat(40);
+  const kept = rowFor(renderStatus(titled(whole), { width: 80 }), "sr-1");
+  assert.ok(kept.includes(whole), kept);
+  assert.doesNotMatch(kept, /\u2026/);
+  const cut = rowFor(renderStatus(titled("\u{1F680}".repeat(60)), { width: 80 }), "sr-1");
+  assert.doesNotMatch(cut, LONE_SURROGATE);
+  assert.ok([...cut].length <= 80, `${[...cut].length} characters: ${cut}`);
 });

@@ -63,11 +63,31 @@ const STATE_COLOUR: Record<RunningState, string> = {
 type Paint = (text: string, code: string) => string;
 
 const SGR = /\u001b\[[0-9;]*m/g;
+const SGR_PART = /(\u001b\[[0-9;]*m)/;
 const ELLIPSIS = "\u2026";
-const MIN_TAIL = 10;
+const MIN_WIDTH = 20;
 
 function plainWidth(text: string): number {
-  return text.replace(SGR, "").length;
+  return [...text.replace(SGR, "")].length;
+}
+
+function clip(text: string, budget: number): string {
+  let left = budget;
+  let out = "";
+  for (const part of text.split(SGR_PART)) {
+    if (part.startsWith("\u001b")) {
+      out += part;
+      continue;
+    }
+    const chars = [...part];
+    out += chars.slice(0, left).join("");
+    left = Math.max(0, left - chars.length);
+  }
+  return out;
+}
+
+function usableWidth(width: number | undefined): number | undefined {
+  return width !== undefined && width >= MIN_WIDTH ? width : undefined;
 }
 
 function fit(prefix: string, tail: string, width: number | undefined): string {
@@ -75,10 +95,10 @@ function fit(prefix: string, tail: string, width: number | undefined): string {
     return `${prefix}${tail}`;
   }
   const budget = width - plainWidth(prefix);
-  if (tail.length <= budget || budget < MIN_TAIL) {
+  if (budget < 1 || plainWidth(tail) <= budget) {
     return `${prefix}${tail}`;
   }
-  return `${prefix}${tail.slice(0, budget - 1).trimEnd()}${ELLIPSIS}`;
+  return `${prefix}${clip(tail, budget - 1).trimEnd()}${ELLIPSIS}`;
 }
 
 export function terminalWidth(stdout: { isTTY?: boolean; columns?: number }): number | undefined {
@@ -225,16 +245,17 @@ function problemLines(rows: ProblemRow[], paint: Paint): string[] {
   );
 }
 
-function header(board: Board, paint: Paint): string {
+function header(board: Board, paint: Paint, width: number | undefined): string {
   const noun = board.projectCount === 1 ? "project" : "projects";
-  return `${paint("pitwall", "1")} · ${board.projectCount} ${noun} · ${paint(board.generatedAt, "2")}`;
+  const prefix = `${paint("pitwall", "1")} · ${board.projectCount} ${noun} · `;
+  return fit(prefix, paint(board.generatedAt, "2"), width);
 }
 
 export function renderStatus(snapshot: Snapshot, options: StatusOptions = {}): string {
   const paint = painter(options.color ?? false);
-  const width = options.width;
+  const width = usableWidth(options.width);
   const board = buildBoard(snapshot);
-  const lines = [header(board, paint)];
+  const lines = [header(board, paint, width)];
   if (board.projectCount === 0) {
     lines.push("", NO_PROJECTS);
     lines.push(
