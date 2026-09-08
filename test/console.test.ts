@@ -200,11 +200,15 @@ test("a lane with no recorded activity reports no elapsed time", () => {
   const board = buildBoard(
     snapshotOf([
       project("pitwall", {
-        issues: [issue("pitwall-0lm", "in-flight"), issue("pitwall-zii", "landing")],
+        issues: [
+          issue("pitwall-0lm", "in-flight"),
+          issue("pitwall-zii", "landing"),
+          issue("pitwall-9wq", "landing", { status: "in_progress" }),
+        ],
         lanes: [
           { slot: 1, state: "working", issueId: "pitwall-0lm" },
           { slot: 2, state: "handed-off", issueId: "pitwall-zii", lastActivityAt: "2026-09-08T13:56:00Z" },
-          { slot: 3, state: "stranded", lastActivityAt: "2026-09-06T13:11:00Z" },
+          { slot: 3, state: "stranded", issueId: "pitwall-9wq", lastActivityAt: "2026-09-06T13:11:00Z" },
         ],
       }),
     ]),
@@ -218,7 +222,7 @@ test("a lane with no recorded activity reports no elapsed time", () => {
     ],
   );
   assert.equal(board.running[0]?.chips[0]?.elapsedMs, undefined);
-  assert.equal(board.running[2]?.chips[0]?.id, undefined);
+  assert.equal(board.running[2]?.chips[0]?.id, "pitwall-9wq");
   assert.equal(board.running[2]?.chips[0]?.slot, 3);
   assert.deepEqual(
     board.runningTotals.map((total) => total.state),
@@ -277,4 +281,34 @@ test("no running row prints a count beneath the lanes it shows", () => {
     { state: "working", count: 3 },
     { state: "awaiting-lander", count: 2 },
   ]);
+});
+
+test("a lane that died counts once, not once as a lane and once again as its issue", () => {
+  const board = buildBoard(
+    snapshotOf([
+      project("session-replay", {
+        issues: [issue("sr-9wq0", "landing", { status: "in_progress" })],
+        lanes: [{ slot: 1, state: "stranded", issueId: "sr-9wq0", lastActivityAt: "2026-09-08T09:11:00Z" }],
+      }),
+    ]),
+  );
+  assert.deepEqual(
+    board.running.map((row) => [row.project, row.state, row.count]),
+    [["session-replay", "stranded", 1]],
+  );
+  assert.equal(board.running[0]?.chips[0]?.id, "sr-9wq0");
+  assert.deepEqual(board.runningTotals, [{ state: "stranded", count: 1 }]);
+  assert.equal(
+    board.runningTotals.reduce((sum, total) => sum + total.count, 0),
+    1,
+    "one piece of work must be counted once across the running states",
+  );
+  assert.equal(
+    board.running.some((row) => row.state === "awaiting-lander"),
+    false,
+    "a claimed issue must not raise a second row beside the lane holding it",
+  );
+  for (const row of board.running) {
+    assert.ok(row.chips.length > 0, `${row.state} prints a count with no lane beside it`);
+  }
 });

@@ -183,14 +183,23 @@ function needsYouGroups(projects: Project[]): NeedsYouGroup[] {
     .sort((a, b) => byCountThenName({ count: a.rows.length, name: a.project }, { count: b.rows.length, name: b.project }));
 }
 
+function claimedBy(project: Project): Set<string> {
+  return new Set(
+    lanesOf(project).flatMap((lane) =>
+      RUNNING_FROM_LANE[lane.state] !== undefined && lane.issueId !== undefined ? [lane.issueId] : [],
+    ),
+  );
+}
+
 function runningRows(projects: Project[], generatedAt: string): RunningRow[] {
   const groups = projects.map((project) => {
+    const claimed = claimedBy(project);
     const rows = RUNNING_ORDER.map((state) => {
-      const fromIssues = issuesOf(project).filter(
-        (issue) => RUNNING_FROM_CLASSIFICATION[issue.classification] === state,
+      const unclaimed = issuesOf(project).filter(
+        (issue) => RUNNING_FROM_CLASSIFICATION[issue.classification] === state && !claimed.has(issue.id),
       ).length;
       const chips = chipsFor(project, generatedAt, state);
-      const count = state === "stranded" ? chips.length : Math.max(fromIssues, chips.length);
+      const count = chips.length + unclaimed;
       return { project: project.name, state, count, chips };
     }).filter((row) => row.count > 0);
     const total = rows.reduce((sum, row) => sum + row.count, 0);

@@ -264,7 +264,7 @@ body {
   color: var(--pw-ink);
 }
 
-.pw-parked--blocked {
+.pw-parked + .pw-parked--blocked {
   margin-block-start: 12px;
 }
 
