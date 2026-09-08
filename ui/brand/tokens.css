@@ -1,0 +1,48 @@
+/* pitwall.build — design tokens, rev 01 */
+:root {
+  --pw-font-display: "Barlow Condensed", sans-serif;
+  --pw-font-ui: "Barlow", sans-serif;
+  --pw-font-data: "Azeret Mono", monospace;
+
+  --pw-signal:  oklch(0.80 0.16 142);
+  --pw-alert:   oklch(0.72 0.17 25);
+  --pw-hold:    oklch(0.78 0.13 85);
+  --pw-idle:    oklch(0.46 0.008 60);
+
+  --pw-radius-control: 6px;
+  --pw-radius-panel: 8px;
+  --pw-radius-frame: 12px;
+  --pw-rail: 3px;
+
+  --pw-dur-state: 120ms;
+  --pw-dur-panel: 200ms;
+  --pw-ease: linear;
+}
+
+/* dark — default product surface */
+:root, [data-theme="dark"] {
+  --pw-bg:      oklch(0.15 0.006 60);
+  --pw-surface: oklch(0.20 0.007 60);
+  --pw-raised:  oklch(0.26 0.008 60);
+  --pw-line:    oklch(0.34 0.008 60);
+  --pw-muted:   oklch(0.70 0.006 60);
+  --pw-ink:     oklch(0.96 0.004 60);
+  --pw-on-signal: oklch(0.17 0.03 142);
+}
+
+/* light — marketing & docs */
+[data-theme="light"] {
+  --pw-bg:      oklch(0.97 0.004 60);
+  --pw-surface: oklch(1 0 0);
+  --pw-raised:  oklch(0.94 0.004 60);
+  --pw-line:    oklch(0.89 0.005 60);
+  --pw-muted:   oklch(0.50 0.006 60);
+  --pw-ink:     oklch(0.20 0.006 60);
+  --pw-signal:  oklch(0.52 0.15 142);
+  --pw-alert:   oklch(0.52 0.17 25);
+  --pw-hold:    oklch(0.52 0.13 85);
+  --pw-idle:    oklch(0.52 0.006 60);
+  --pw-on-signal: oklch(1 0 0);
+}
+
+/* Signal colours drop to L=0.52 on light surfaces: 10-12px data type needs 4.5:1. */
