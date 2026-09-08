@@ -1,0 +1,22 @@
+[
+  {
+    "id": "mw-1.1",
+    "title": "Render the parked block",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "labels": null,
+    "blocked_by": ["mw-2"],
+    "dependencies": null
+  },
+  {
+    "id": "mw-6",
+    "title": "Publish the contract to a registry",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "chore",
+    "labels": null,
+    "blocked_by": ["mw-9"],
+    "dependencies": null
+  }
+]
