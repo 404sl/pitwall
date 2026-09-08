@@ -8,7 +8,7 @@ import {
   type Lane,
   type Origin,
 } from "@404sl/pitwall-schema";
-import { collectionError } from "./autofix.js";
+import { collectionError } from "./errors.js";
 import { classify, type UnclassifiedIssue } from "./classify.js";
 
 export const BEADS_DIR = ".beads";
