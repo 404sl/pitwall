@@ -4,23 +4,40 @@
   "description": "One screen over every project you have work running in - what is blocked, what needs you, and whether that is still true",
   "license": "AGPL-3.0-only",
   "type": "module",
-  "bin": { "pitwall": "./dist/cli.js" },
-  "files": ["dist"],
-  "engines": { "node": ">=20" },
-  "repository": { "type": "git", "url": "git+https://github.com/404sl/pitwall.git" },
+  "bin": {
+    "pitwall": "./dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/404sl/pitwall.git"
+  },
   "homepage": "https://pitwall.build",
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "tsx --test test/*.test.ts",
     "lint": "tsc -p tsconfig.json --noEmit",
+    "build:ui": "vite build",
+    "dev:ui": "vite",
     "dev": "tsx src/cli.ts"
   },
   "dependencies": {
     "@404sl/pitwall-schema": "file:../schema"
   },
   "devDependencies": {
-    "typescript": "^5.7.0",
+    "@types/node": "^22.10.0",
+    "@types/react": "^18.3.0",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
     "tsx": "^4.19.0",
-    "@types/node": "^22.10.0"
+    "typescript": "^5.7.0",
+    "vite": "^6.0.0"
   }
 }
