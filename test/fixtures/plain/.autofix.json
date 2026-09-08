@@ -1,0 +1,19 @@
+{
+  "_": "ignored",
+  "idPrefix": "plain",
+  "lanes": 3,
+  "repos": {
+    "site": {
+      "path": "cli",
+      "role": "node",
+      "test": "npm test",
+      "lint": "npm run lint"
+    },
+    "integration": {
+      "path": "schema",
+      "role": "node",
+      "test": "npm test",
+      "lint": "npm run lint && npm run build"
+    }
+  }
+}

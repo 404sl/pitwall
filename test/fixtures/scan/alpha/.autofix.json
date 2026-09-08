@@ -1,0 +1,4 @@
+{
+  "idPrefix": "alpha",
+  "repos": { "site": { "path": ".", "test": "npm test" } }
+}
