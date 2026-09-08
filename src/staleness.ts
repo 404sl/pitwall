@@ -50,7 +50,7 @@ const DEFERRALS = ["not yet", "for later", "hold off", "on hold", "defer"];
 
 const PULL_URL = /https:\/\/github\.com\/[\w.-]+\/([\w.-]+)\/pull\/(\d+)/g;
 const NAMED_PULL = /([A-Za-z][\w.-]*)#(\d+)/g;
-const BARE_PULL = /(^|[^\w#/-])#(\d+)\b/g;
+const BARE_PULL = /(?<!\])(^|[^\w#/-])#(\d+)\b/g;
 
 const ASSESSABLE = ["yours:", "parked:", "blocked"];
 
@@ -272,8 +272,10 @@ async function preconditionNowHolds(
   return { ran, fired, evidence };
 }
 
+const NEVER_CONCLUDED = ["yours:", "blocked", "parked:umbrella"];
+
 function machineMayConclude(record: ParkedRecord, context: StalenessContext): boolean {
-  if (record.classification.startsWith("yours:")) {
+  if (NEVER_CONCLUDED.some((prefix) => record.classification.startsWith(prefix))) {
     return false;
   }
   const closed = context.closedIds ?? new Set<string>();

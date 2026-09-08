@@ -269,3 +269,46 @@ test("only an issue that stopped for a reason is worth checking", () => {
   assert.equal(isAssessable("parked:watch"), true);
   assert.equal(isAssessable("yours:access"), true);
 });
+
+test("a blocked issue is never reported resolved, because its live blocker is not in the record", async () => {
+  const staleness = await assess(
+    aRecord({ id: "mw-30.1", classification: "blocked", notes: "Follows the pattern set in mw-9." }),
+    aContext({ idPrefix: "mw", ...tracker({ "mw-9": "closed", "mw-30.1": "open" }) }),
+  );
+  assert.equal(staleness.verdict, "likely-stale");
+  assert.ok(!matches(staleness.evidence, /no open dependency of its own remains/));
+});
+
+test("an umbrella is never reported resolved, because its open children are not in the record", async () => {
+  const staleness = await assess(
+    aRecord({ classification: "parked:umbrella", notes: "Waiting on mw-9." }),
+    aContext({ idPrefix: "mw", ...tracker({ "mw-9": "closed" }) }),
+  );
+  assert.equal(staleness.verdict, "likely-stale");
+  assert.ok(!matches(staleness.evidence, /no open dependency of its own remains/));
+});
+
+test("a markdown anchor is not read as a pull request reference", async () => {
+  const staleness = await assess(
+    aRecord({
+      classification: "parked:tooling",
+      description: "See [the naming section](#3) of docs/style.md before starting.",
+    }),
+    aContext(pulls({ "#3": "merged" })),
+  );
+  assert.equal(staleness.verdict, "unchecked");
+  assert.ok(matches(staleness.evidence, /it names no pull request/));
+});
+
+test("a bare pull number in a merge title is still read as a pull request reference", async () => {
+  const staleness = await assess(
+    aRecord({
+      classification: "yours:decision",
+      labels: ["needs-decision"],
+      notes: 'Waiting on "The console - urgency-first screen over every project (#12)".',
+    }),
+    aContext(pulls({ "#12": "merged" })),
+  );
+  assert.equal(staleness.verdict, "likely-stale");
+  assert.ok(matches(staleness.evidence, /has merged: #12/));
+});
