@@ -1,0 +1,6 @@
+{
+  "idPrefix": "oldonly",
+  "repos": {
+    "site": { "path": ".", "test": "npm test" }
+  }
+}

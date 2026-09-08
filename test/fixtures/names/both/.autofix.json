@@ -1,0 +1,7 @@
+{
+  "idPrefix": "both-old",
+  "repos": {
+    "site": { "path": ".", "test": "npm test" },
+    "extension": { "path": "extension", "test": "npm test" }
+  }
+}

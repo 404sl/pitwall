@@ -1,10 +1,27 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { Project, type RepoKind } from "@404sl/pitwall-schema";
 import { collectionError } from "./errors.js";
 import { readLanes } from "./lanes.js";
 
-export const AUTOFIX_FILE = ".autofix.json";
+export const WORKSPACE_FILE = ".pitwall.json";
+export const LEGACY_WORKSPACE_FILE = ".autofix.json";
+export const WORKSPACE_FILES = [WORKSPACE_FILE, LEGACY_WORKSPACE_FILE] as const;
+
+export interface WorkspaceFile {
+  name: string;
+  path: string;
+}
+
+export function workspaceFile(dir: string): WorkspaceFile | undefined {
+  for (const name of WORKSPACE_FILES) {
+    const path = join(dir, name);
+    if (existsSync(path)) {
+      return { name, path };
+    }
+  }
+  return undefined;
+}
 
 export interface WorkspaceOptions {
   lockRoot?: string;
@@ -67,10 +84,12 @@ function laneCountOf(workspace: Record<string, unknown>): number | undefined {
 
 export function readWorkspace(root: string, options: WorkspaceOptions = {}): Project {
   const dir = resolve(root);
-  const file = join(dir, AUTOFIX_FILE);
+  const found = workspaceFile(dir);
+  const name = found?.name ?? WORKSPACE_FILE;
+  const file = found?.path ?? join(dir, WORKSPACE_FILE);
   const skeleton = { id: basename(dir), name: basename(dir), root: dir, metrics: {} };
   try {
-    const workspace = asRecord(JSON.parse(readFileSync(file, "utf8")), AUTOFIX_FILE);
+    const workspace = asRecord(JSON.parse(readFileSync(file, "utf8")), name);
     const lockPrefix = lockPrefixOf(workspace);
     const repos = reposOf(dir, workspace);
     const reading =

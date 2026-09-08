@@ -1,0 +1,6 @@
+{
+  "idPrefix": "parent",
+  "repos": {
+    "site": { "path": ".", "test": "npm test" }
+  }
+}
