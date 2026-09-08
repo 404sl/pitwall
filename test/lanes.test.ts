@@ -31,8 +31,7 @@ function worktree(root: string, issueId: string, minutesAgo: number): string {
 }
 
 function rework(root: string, issueId: string, minutesAgo: number): string {
-  const [, dir] = worktreePaths(PREFIX, issueId, root);
-  return treeAt(dir ?? "", minutesAgo);
+  return treeAt(worktreePath(PREFIX, `${issueId}-rework`, root), minutesAgo);
 }
 
 function treeAt(dir: string, minutesAgo: number): string {
@@ -150,6 +149,15 @@ test("a claim with no worktree is handed-off, not stranded", () => {
   assert.equal(lanes[0]?.state, "handed-off");
   assert.equal(lanes[0]?.issueId, "pw-landed");
   assert.equal(lanes[0]?.worktree, undefined);
+});
+
+test("the probed paths are the bare issue id and the same id suffixed -rework, in that order", () => {
+  const root = lockRoot();
+
+  assert.deepEqual(worktreePaths(PREFIX, "pw-x", root), [
+    join(root, `${PREFIX}-worktrees`, "pw-x"),
+    join(root, `${PREFIX}-worktrees`, "pw-x-rework"),
+  ]);
 });
 
 test("a claim whose only worktree is the rework checkout is working, not handed-off", () => {
