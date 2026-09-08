@@ -3,12 +3,13 @@ import { join, resolve } from "node:path";
 import {
   Issue,
   resolveOrigin,
+  type Classification,
   type CollectionError,
   type Lane,
   type Origin,
 } from "@404sl/pitwall-schema";
 import { collectionError } from "./autofix.js";
-import { classify, type StoredStatus, type UnclassifiedIssue } from "./classify.js";
+import { classify, type UnclassifiedIssue } from "./classify.js";
 
 export const BEADS_DIR = ".beads";
 export const BEADS_DIR_VAR = "BEADS_DIR";
@@ -18,8 +19,36 @@ const TIMEOUT_MS = 30_000;
 
 type Status = UnclassifiedIssue["status"];
 
-const STATUSES = ["open", "in_progress", "closed"] as const satisfies readonly Status[];
-const STORED_STATUSES = ["blocked", "deferred"] as const satisfies readonly StoredStatus[];
+const STATUSES_ARGS = ["statuses", "--json"];
+const LIST_ARGS = ["list", "--all", "--limit", "0", "--json"];
+const BLOCKED_ARGS = ["blocked", "--json"];
+
+const LIST_COMMAND = ["bd", ...LIST_ARGS].join(" ");
+
+const STORED_STATUS = new Map<string, Status>([
+  ["open", "open"],
+  ["in_progress", "in_progress"],
+  ["blocked", "open"],
+  ["deferred", "open"],
+  ["closed", "closed"],
+  ["pinned", "open"],
+  ["hooked", "in_progress"],
+]);
+
+const STORED_CLASSIFICATION = new Map<string, Classification>([
+  ["blocked", "blocked"],
+  ["deferred", "parked:roadmap"],
+  ["pinned", "parked:watch"],
+]);
+
+const CATEGORY_STATUS = new Map<string, Status>([
+  ["active", "open"],
+  ["wip", "in_progress"],
+  ["frozen", "open"],
+  ["done", "closed"],
+]);
+
+const CATEGORY_CLASSIFICATION = new Map<string, Classification>([["frozen", "parked:roadmap"]]);
 
 export interface ReadIssuesOptions {
   env?: Record<string, string | undefined>;
@@ -45,12 +74,13 @@ function failureOf(cause: unknown, timeoutMs: number): string {
   return cause instanceof Error ? cause.message : String(cause);
 }
 
-function bd(
+function bd<T>(
   args: readonly string[],
   beadsDir: string,
   env: Record<string, string | undefined>,
   timeoutMs: number,
-): Record<string, unknown>[] {
+  shape: (parsed: unknown) => T,
+): T {
   const command = ["bd", ...args].join(" ");
   let stdout: string;
   try {
@@ -65,40 +95,72 @@ function bd(
     throw new Error(`${command}: ${failureOf(cause, timeoutMs)}`);
   }
   try {
-    const parsed: unknown = JSON.parse(stdout);
-    if (!Array.isArray(parsed)) {
-      throw new TypeError("output is not an array of issues");
-    }
-    return parsed.map((entry, index) => {
-      if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
-        throw new TypeError(`issue ${index} is not an object`);
-      }
-      return entry as Record<string, unknown>;
-    });
+    return shape(JSON.parse(stdout));
   } catch (cause) {
     throw new Error(`${command}: ${cause instanceof Error ? cause.message : String(cause)}`);
   }
 }
 
-function textOf(value: unknown): string | undefined {
-  return typeof value === "string" && value !== "" ? value : undefined;
+function asRows(parsed: unknown): Record<string, unknown>[] {
+  if (!Array.isArray(parsed)) {
+    throw new TypeError("output is not an array of issues");
+  }
+  return parsed.map((entry, index) => {
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+      throw new TypeError(`issue ${index} is not an object`);
+    }
+    return entry as Record<string, unknown>;
+  });
 }
 
-function statusOf(value: unknown, asked: Status): Status {
-  return (STATUSES as readonly string[]).includes(value as string) ? (value as Status) : asked;
+function asRecord(parsed: unknown): Record<string, unknown> {
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new TypeError("output is not an object");
+  }
+  return parsed as Record<string, unknown>;
 }
 
-function storedStatusOf(rows: readonly Record<string, unknown>[]): Map<string, StoredStatus> {
-  const stored = new Map<string, StoredStatus>();
-  for (const row of rows) {
-    const id = row["id"];
-    const status = row["status"];
-    if (typeof id !== "string") continue;
-    if ((STORED_STATUSES as readonly string[]).includes(status as string)) {
-      stored.set(id, status as StoredStatus);
+function categoriesOf(reported: Record<string, unknown>): Map<string, string> {
+  const categories = new Map<string, string>();
+  for (const key of ["built_in_statuses", "custom_statuses"]) {
+    const listed = reported[key];
+    if (!Array.isArray(listed)) continue;
+    for (const entry of listed) {
+      if (typeof entry !== "object" || entry === null) continue;
+      const { name, category } = entry as Record<string, unknown>;
+      if (typeof name === "string" && typeof category === "string") {
+        categories.set(name, category);
+      }
     }
   }
-  return stored;
+  return categories;
+}
+
+interface Mapping {
+  status: Status;
+  parked: Classification | undefined;
+}
+
+function mappingOf(stored: string, id: string, categories: ReadonlyMap<string, string>): Mapping {
+  const known = STORED_STATUS.get(stored);
+  if (known !== undefined) {
+    return { status: known, parked: STORED_CLASSIFICATION.get(stored) };
+  }
+  const category = categories.get(stored);
+  if (category === undefined) {
+    throw new Error(`${LIST_COMMAND}: ${id} has the unknown stored status ${stored}`);
+  }
+  const byCategory = CATEGORY_STATUS.get(category);
+  if (byCategory === undefined) {
+    throw new Error(
+      `${LIST_COMMAND}: ${id} has the stored status ${stored} in the unknown category ${category}`,
+    );
+  }
+  return { status: byCategory, parked: CATEGORY_CLASSIFICATION.get(category) };
+}
+
+function textOf(value: unknown): string | undefined {
+  return typeof value === "string" && value !== "" ? value : undefined;
 }
 
 function labelsOf(value: unknown): string[] {
@@ -126,17 +188,26 @@ function blockedEdges(rows: readonly Record<string, unknown>[]): Map<string, str
 
 function toIssue(
   row: Record<string, unknown>,
-  asked: Status,
+  categories: ReadonlyMap<string, string>,
   edges: ReadonlyMap<string, string[]>,
+  parked: Map<string, Classification>,
 ): UnclassifiedIssue {
   const id = row["id"];
   if (typeof id !== "string") {
     throw new TypeError("an issue has no id");
   }
+  const stored = row["status"];
+  if (typeof stored !== "string") {
+    throw new Error(`${LIST_COMMAND}: ${id} has no stored status`);
+  }
+  const mapping = mappingOf(stored, id, categories);
+  if (mapping.parked !== undefined) {
+    parked.set(id, mapping.parked);
+  }
   return {
     id,
     title: typeof row["title"] === "string" ? row["title"] : id,
-    status: statusOf(row["status"], asked),
+    status: mapping.status,
     issueType: textOf(row["issue_type"]),
     priority: typeof row["priority"] === "number" ? row["priority"] : undefined,
     labels: labelsOf(row["labels"]),
@@ -152,28 +223,18 @@ export function readIssues(root: string, options: ReadIssuesOptions = {}): Colle
   const env = options.env ?? process.env;
   const timeoutMs = options.timeoutMs ?? TIMEOUT_MS;
   try {
-    const listed = STATUSES.map((status) =>
-      bd(["list", "--status", status, "--limit", "0", "--json"], beadsDir, env, timeoutMs),
-    );
-    const parkedRows = bd(
-      ["list", "--status", STORED_STATUSES.join(","), "--limit", "0", "--json"],
-      beadsDir,
-      env,
-      timeoutMs,
-    );
-    const edges = blockedEdges(bd(["blocked", "--json"], beadsDir, env, timeoutMs));
-    const [open = [], inProgress = [], closedRows = []] = listed;
-    const active = [
-      ...open.map((row) => toIssue(row, "open", edges)),
-      ...inProgress.map((row) => toIssue(row, "in_progress", edges)),
-      ...parkedRows.map((row) => toIssue(row, "open", edges)),
-    ];
-    const closed = closedRows.map((row) => toIssue(row, "closed", edges));
-    const byId = new Map([...active, ...closed].map((issue) => [issue.id, issue]));
+    const categories = categoriesOf(bd(STATUSES_ARGS, beadsDir, env, timeoutMs, asRecord));
+    const rows = bd(LIST_ARGS, beadsDir, env, timeoutMs, asRows);
+    const edges = blockedEdges(bd(BLOCKED_ARGS, beadsDir, env, timeoutMs, asRows));
+    const parked = new Map<string, Classification>();
+    const all = rows.map((row) => toIssue(row, categories, edges, parked));
+    const active = all.filter((issue) => issue.status !== "closed");
+    const closed = all.filter((issue) => issue.status === "closed");
+    const byId = new Map(all.map((issue) => [issue.id, issue]));
     const context = {
       issues: active,
       lanes: options.lanes ?? [],
-      storedStatus: storedStatusOf(parkedRows),
+      stored: parked,
     };
     const issues = active.map((issue) =>
       Issue.parse({

@@ -46,5 +46,17 @@
       "mw-7"
     ],
     "dependencies": null
+  },
+  {
+    "id": "mw-13",
+    "title": "Report the lane index on the screen",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "labels": null,
+    "blocked_by": [
+      "mw-12"
+    ],
+    "dependencies": null
   }
 ]

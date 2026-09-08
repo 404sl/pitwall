@@ -12,12 +12,16 @@ function env(bin: string): Record<string, string> {
   return { PATH: `${join(FIXTURES, bin)}:/usr/bin:/bin` };
 }
 
+function byIdOf(collected: ReturnType<typeof readIssues>): Map<string, Issue> {
+  return new Map(collected.issues.map((issue) => [issue.id, issue]));
+}
+
 const NO_BD = { PATH: TRACKER };
 
 test("every issue the tracker reports is one the contract accepts", () => {
   const collected = readIssues(TRACKER, { env: env("ok") });
   assert.deepEqual(collected.errors, []);
-  assert.equal(collected.issues.length, 10);
+  assert.equal(collected.issues.length, 15);
   for (const issue of collected.issues) {
     assert.doesNotThrow(() => Issue.parse(issue));
   }
@@ -41,6 +45,54 @@ test("dependency edges from bd blocked populate blockedBy", () => {
   assert.deepEqual(byId.get("mw-1.1")?.blockedBy, ["mw-2"]);
   assert.deepEqual(byId.get("mw-6")?.blockedBy, ["mw-9"]);
   assert.deepEqual(byId.get("mw-5")?.blockedBy, []);
+});
+
+test("every stored status the tracker reports reaches the snapshot", () => {
+  const collected = readIssues(TRACKER, { env: env("ok") });
+  const byId = byIdOf(collected);
+  assert.deepEqual(
+    ["mw-7", "mw-10", "mw-11", "mw-12", "mw-14", "mw-15"].filter((id) => !byId.has(id)),
+    [],
+  );
+  assert.deepEqual(collected.errors, []);
+});
+
+test("a pinned issue is open and parked rather than a queue item", () => {
+  const byId = byIdOf(readIssues(TRACKER, { env: env("ok") }));
+  assert.equal(byId.get("mw-11")?.status, "open");
+  assert.equal(byId.get("mw-11")?.classification, "parked:watch");
+});
+
+test("a hooked issue is something else working, not an empty slot", () => {
+  const byId = byIdOf(readIssues(TRACKER, { env: env("ok") }));
+  assert.equal(byId.get("mw-12")?.status, "in_progress");
+  assert.equal(byId.get("mw-12")?.classification, "landing");
+});
+
+test("an issue whose only blocker is hooked is blocked, never ready", () => {
+  const byId = byIdOf(readIssues(TRACKER, { env: env("ok") }));
+  assert.deepEqual(byId.get("mw-13")?.blockedBy, ["mw-12"]);
+  assert.equal(byId.get("mw-13")?.classification, "blocked");
+});
+
+test("a status bd reports only as a custom one is mapped by its category", () => {
+  const byId = byIdOf(readIssues(TRACKER, { env: env("ok") }));
+  assert.equal(byId.get("mw-14")?.status, "in_progress");
+  assert.equal(byId.get("mw-14")?.classification, "landing");
+  assert.equal(byId.get("mw-15")?.status, "open");
+  assert.equal(byId.get("mw-15")?.classification, "parked:roadmap");
+});
+
+test("a status bd does not report at all is a CollectionError naming it, not a dropped issue", () => {
+  const collected = readIssues(TRACKER, {
+    env: { ...env("ok"), BD_LIST_FIXTURE: "unmapped" },
+  });
+  assert.deepEqual(collected.issues, []);
+  assert.deepEqual(collected.closed, []);
+  assert.equal(collected.errors.length, 1);
+  assert.match(collected.errors[0]?.message ?? "", /^bd list --all --limit 0 --json: /);
+  assert.match(collected.errors[0]?.message ?? "", /mw-16/);
+  assert.match(collected.errors[0]?.message ?? "", /quarantined/);
 });
 
 test("an issue the tracker stores as blocked or deferred is still part of the backlog", () => {
@@ -142,7 +194,7 @@ test("a bd that is not installed is a CollectionError naming the command", () =>
   assert.deepEqual(collected.issues, []);
   assert.deepEqual(collected.closed, []);
   assert.equal(collected.errors.length, 1);
-  assert.match(collected.errors[0]?.message ?? "", /^bd list --status open --limit 0 --json: /);
+  assert.match(collected.errors[0]?.message ?? "", /^bd statuses --json: /);
   assert.match(collected.errors[0]?.message ?? "", /ENOENT/);
 });
 
@@ -150,7 +202,7 @@ test("a bd that exits non-zero is a CollectionError naming the command", () => {
   const collected = readIssues(TRACKER, { env: env("failing") });
   assert.deepEqual(collected.issues, []);
   assert.equal(collected.errors.length, 1);
-  assert.match(collected.errors[0]?.message ?? "", /^bd list --status open --limit 0 --json: /);
+  assert.match(collected.errors[0]?.message ?? "", /^bd statuses --json: /);
   assert.match(collected.errors[0]?.message ?? "", /no beads database found/);
 });
 
@@ -158,7 +210,7 @@ test("a bd that prints something other than JSON is a CollectionError naming the
   const collected = readIssues(TRACKER, { env: env("garbage") });
   assert.deepEqual(collected.issues, []);
   assert.equal(collected.errors.length, 1);
-  assert.match(collected.errors[0]?.message ?? "", /^bd list --status open --limit 0 --json: /);
+  assert.match(collected.errors[0]?.message ?? "", /^bd statuses --json: /);
   assert.match(collected.errors[0]?.message ?? "", /JSON|not an array/);
 });
 
@@ -167,7 +219,7 @@ test("a bd that hangs is a CollectionError naming the command rather than a stuc
   assert.deepEqual(collected.issues, []);
   assert.deepEqual(collected.closed, []);
   assert.equal(collected.errors.length, 1);
-  assert.match(collected.errors[0]?.message ?? "", /^bd list --status open --limit 0 --json: /);
+  assert.match(collected.errors[0]?.message ?? "", /^bd statuses --json: /);
   assert.match(collected.errors[0]?.message ?? "", /timed out after 200ms/);
 });
 

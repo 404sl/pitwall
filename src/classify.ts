@@ -2,12 +2,10 @@ import type { Classification, Issue, Lane } from "@404sl/pitwall-schema";
 
 export type UnclassifiedIssue = Omit<Issue, "classification" | "staleness">;
 
-export type StoredStatus = "blocked" | "deferred";
-
 export interface ClassifyContext {
   issues: readonly UnclassifiedIssue[];
   lanes: readonly Lane[];
-  storedStatus?: ReadonlyMap<string, StoredStatus>;
+  stored?: ReadonlyMap<string, Classification>;
 }
 
 const PARKED_LABELS: ReadonlyArray<readonly [string, Classification]> = [
@@ -59,8 +57,7 @@ export function classify(issue: UnclassifiedIssue, context: ClassifyContext): Cl
   }
   if (isUmbrella(issue, context.issues)) return "parked:umbrella";
   if (isBlocked(issue, context.issues)) return "blocked";
-  const stored = context.storedStatus?.get(issue.id);
-  if (stored === "blocked") return "blocked";
-  if (stored === "deferred") return "parked:roadmap";
+  const stored = context.stored?.get(issue.id);
+  if (stored !== undefined) return stored;
   return "ready";
 }
