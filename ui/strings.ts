@@ -1,0 +1,75 @@
+export const strings = {
+  brand: "Pitwall",
+  header: {
+    project: "project",
+    projects: "projects",
+  },
+  band: {
+    needsYou: "Needs you",
+    running: "Running",
+    ready: "Ready",
+    parked: "Parked",
+    problems: "Problems",
+  },
+  empty: {
+    loading: "Reading the snapshot…",
+    needsYou: "Nothing needs you.",
+    running: "No lane is running.",
+    ready: "Nothing is ready to pick up.",
+    parked: "Nothing parked.",
+    problems: "Every project read cleanly.",
+  },
+  column: {
+    issue: "Issue",
+    priority: "Priority",
+    kind: "Kind",
+    title: "Title",
+    staleness: "Staleness",
+    project: "Project",
+    state: "State",
+    lanes: "Lanes",
+    scope: "Scope",
+    source: "Source",
+    message: "Message",
+    at: "At",
+  },
+  caption: {
+    needsYou: "Issues waiting on a decision or an access grant, by project.",
+    running: "Lanes in flight, by project and state.",
+    ready: "Issues ready to pick up, by project.",
+    problems: "Sources that could not be read.",
+  },
+  kind: {
+    decision: "decision",
+    access: "access",
+  },
+  laneState: {
+    working: "working",
+    awaitingLander: "awaiting lander",
+    stranded: "stranded",
+  },
+  stale: {
+    unchecked: "unchecked",
+    stillBlocking: "still blocking",
+    likelyStale: "likely stale",
+    resolved: "resolved",
+    checkedAt: "checked",
+    noPriority: "no priority recorded",
+  },
+  lane: {
+    noActivity: "no activity recorded",
+    more: "more",
+    unassigned: "lane",
+  },
+  ready: {
+    more: "more ready",
+  },
+  problems: {
+    run: "run",
+    console: "console",
+  },
+  failure: {
+    heading: "Nothing to show",
+    unreachable: "Could not reach pitwall serve at",
+  },
+} as const;
