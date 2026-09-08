@@ -187,6 +187,14 @@ test("the snapshot reports whether the reason an issue stopped is still true", a
   assert.equal(byId.get("mw-22")?.staleness.verdict, "likely-stale");
   assert.equal(byId.get("mw-23")?.staleness.verdict, "unchecked");
   assert.equal(byId.get("mw-23")?.staleness.checkedAt, undefined);
+  assert.equal(byId.get("mw-24")?.classification, "parked:roadmap");
+  assert.equal(byId.get("mw-24")?.staleness.verdict, "likely-stale");
+  assert.ok(
+    !byId
+      .get("mw-24")
+      ?.staleness.evidence.some((line) => line.includes("no open dependency of its own remains")),
+    "a parking label does not hide the open child from the snapshot",
+  );
   assert.ok(asked.length > 0);
   assert.ok(asked.every((command) => command.join(" ") === "npm whoami"));
 });
