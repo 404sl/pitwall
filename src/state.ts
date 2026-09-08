@@ -27,13 +27,16 @@ export function snapshotPath(options: StateOptions = {}): string {
   return join(stateHome(options), "pitwall", "snapshot.json");
 }
 
-export function readSnapshot(options: StateOptions = {}): StoredSnapshot {
-  const path = snapshotPath(options);
+export function readSnapshotFrom(path: string): StoredSnapshot {
   try {
     return { path, snapshot: parseSnapshot(JSON.parse(readFileSync(path, "utf8"))) };
   } catch (cause) {
     return { path, error: collectionError(path, cause) };
   }
+}
+
+export function readSnapshot(options: StateOptions = {}): StoredSnapshot {
+  return readSnapshotFrom(snapshotPath(options));
 }
 
 export function writeSnapshot(snapshot: Snapshot, options: StateOptions = {}): string {
