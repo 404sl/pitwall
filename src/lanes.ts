@@ -6,6 +6,7 @@ import { collectionError } from "./errors.js";
 
 export const LOCK_ROOT = "/tmp";
 export const STALE_AFTER_MINUTES = 20;
+export const REWORK_SUFFIX = "-rework";
 const FIND_OUTPUT_LIMIT = 64 * 1024 * 1024;
 
 export interface LaneOptions {
@@ -28,6 +29,16 @@ export function worktreePath(
   lockRoot: string = LOCK_ROOT,
 ): string {
   return join(lockRoot, `${lockPrefix}-worktrees`, issueId);
+}
+
+export function worktreePaths(
+  lockPrefix: string,
+  issueId: string,
+  lockRoot: string = LOCK_ROOT,
+): string[] {
+  return [issueId, `${issueId}${REWORK_SUFFIX}`].map((name) =>
+    worktreePath(lockPrefix, name, lockRoot),
+  );
 }
 
 function isMissing(cause: unknown): boolean {
@@ -79,6 +90,37 @@ function newestOf(paths: readonly string[]): string | undefined {
   return newest === 0 ? undefined : new Date(newest).toISOString();
 }
 
+interface Probe {
+  worktree: string;
+  live: boolean;
+  lastActivityAt?: string;
+}
+
+function probeOf(worktree: string, errors: CollectionError[]): Probe {
+  const touched = touchedSince(worktree);
+  if (touched instanceof Error) {
+    errors.push(collectionError(worktree, touched));
+    return { worktree, live: true };
+  }
+  if (touched.length === 0) {
+    return { worktree, live: false };
+  }
+  return { worktree, live: true, lastActivityAt: newestOf(touched) };
+}
+
+function freshestOf(probes: readonly Probe[]): Probe | undefined {
+  let freshest: Probe | undefined;
+  for (const probe of probes) {
+    if (!probe.live) {
+      continue;
+    }
+    if (freshest === undefined || (probe.lastActivityAt ?? "") > (freshest.lastActivityAt ?? "")) {
+      freshest = probe;
+    }
+  }
+  return freshest;
+}
+
 function laneAt(
   slot: number,
   dir: string,
@@ -97,25 +139,21 @@ function laneAt(
   if (issueId === undefined) {
     return { slot, state: "idle", executor: "local" };
   }
-  const worktree = worktreePath(lockPrefix, issueId, lockRoot);
-  if (!existsSync(worktree)) {
+  const trees = worktreePaths(lockPrefix, issueId, lockRoot).filter((path) => existsSync(path));
+  if (trees.length === 0) {
     return { slot, state: "handed-off", executor: "local", issueId };
   }
-  const touched = touchedSince(worktree);
-  if (touched instanceof Error) {
-    errors.push(collectionError(worktree, touched));
-    return { slot, state: "working", executor: "local", issueId, worktree };
-  }
-  if (touched.length === 0) {
-    return { slot, state: "stranded", executor: "local", issueId, worktree };
+  const live = freshestOf(trees.map((worktree) => probeOf(worktree, errors)));
+  if (live === undefined) {
+    return { slot, state: "stranded", executor: "local", issueId, worktree: trees[0] };
   }
   return {
     slot,
     state: "working",
     executor: "local",
     issueId,
-    worktree,
-    lastActivityAt: newestOf(touched),
+    worktree: live.worktree,
+    lastActivityAt: live.lastActivityAt,
   };
 }
 
