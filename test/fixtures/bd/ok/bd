@@ -1,0 +1,13 @@
+#!/bin/sh
+echo "warning: beads.role not configured (GH#2950)." >&2
+case "$BEADS_DIR" in
+  */.beads) ;;
+  *) echo "Error: no beads database found under ${BEADS_DIR:-\$PWD}" >&2; exit 1 ;;
+esac
+out=$(dirname "$BEADS_DIR")/bd-output
+case "$*" in
+  "statuses --json") cat "$out/statuses.json" ;;
+  "list --all --limit 0 --json") cat "$out/${BD_LIST_FIXTURE:-all}.json" ;;
+  "blocked --json") cat "$out/blocked.json" ;;
+  *) echo "Error: unknown command: bd $*" >&2; exit 2 ;;
+esac

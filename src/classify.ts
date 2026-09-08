@@ -5,6 +5,7 @@ export type UnclassifiedIssue = Omit<Issue, "classification" | "staleness">;
 export interface ClassifyContext {
   issues: readonly UnclassifiedIssue[];
   lanes: readonly Lane[];
+  stored?: ReadonlyMap<string, Classification>;
 }
 
 const PARKED_LABELS: ReadonlyArray<readonly [string, Classification]> = [
@@ -56,5 +57,7 @@ export function classify(issue: UnclassifiedIssue, context: ClassifyContext): Cl
   }
   if (isUmbrella(issue, context.issues)) return "parked:umbrella";
   if (isBlocked(issue, context.issues)) return "blocked";
+  const stored = context.stored?.get(issue.id);
+  if (stored !== undefined) return stored;
   return "ready";
 }

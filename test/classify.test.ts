@@ -18,6 +18,7 @@ interface Case {
   issue: UnclassifiedIssue;
   siblings?: UnclassifiedIssue[];
   lanes?: Lane[];
+  stored?: Classification;
   expected: Classification;
 }
 
@@ -176,12 +177,32 @@ const cases: Case[] = [
     issue: anIssue("pitwall-a"),
     expected: "ready",
   },
+  {
+    name: "a classification carried by the tracker's own status needs no dependency edge",
+    issue: anIssue("pitwall-a"),
+    stored: "blocked",
+    expected: "blocked",
+  },
+  {
+    name: "a parked classification carried by the tracker's own status is kept",
+    issue: anIssue("pitwall-a"),
+    stored: "parked:roadmap",
+    expected: "parked:roadmap",
+  },
+  {
+    name: "a label naming somebody's queue outranks what the tracker's status says",
+    issue: anIssue("pitwall-a", { labels: ["needs-decision"] }),
+    stored: "blocked",
+    expected: "yours:decision",
+  },
 ];
 
 function contextFor(scenario: Case): ClassifyContext {
   return {
     issues: [scenario.issue, ...(scenario.siblings ?? [])],
     lanes: scenario.lanes ?? [],
+    stored:
+      scenario.stored === undefined ? undefined : new Map([[scenario.issue.id, scenario.stored]]),
   };
 }
 
