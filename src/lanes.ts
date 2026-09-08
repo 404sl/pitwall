@@ -11,6 +11,7 @@ export const VERIFIED_LABEL = "lane-verified";
 const FIND_OUTPUT_LIMIT = 64 * 1024 * 1024;
 const HANDOFF_LIMIT = "200";
 const HANDOFF_TIMEOUT_MS = 30_000;
+const PATH_IN_CLAIM = /[/\\]|\.\.|^\.$/;
 
 export interface LaneOptions {
   lockRoot?: string;
@@ -49,14 +50,19 @@ function isMissing(cause: unknown): boolean {
   return (cause as NodeJS.ErrnoException | null)?.code === "ENOENT";
 }
 
-function claimedSlots(dir: string): number[] {
-  return readdirSync(dir)
-    .map((entry) => Number(entry))
-    .filter((slot) => Number.isInteger(slot) && slot > 0);
+interface Claim {
+  slot: number;
+  entry: string;
 }
 
-function claimOf(dir: string, slot: number): string | undefined {
-  const id = readFileSync(join(dir, String(slot)), "utf8").trim();
+function claimedSlots(dir: string): Claim[] {
+  return readdirSync(dir)
+    .map((entry) => ({ slot: Number(entry), entry }))
+    .filter(({ slot }) => Number.isInteger(slot) && slot > 0);
+}
+
+function claimOf(dir: string, entry: string): string | undefined {
+  const id = readFileSync(join(dir, entry), "utf8").trim();
   return id === "" ? undefined : id;
 }
 
@@ -193,18 +199,23 @@ interface Registry {
   errors: CollectionError[];
 }
 
-function laneAt(slot: number, registry: Registry): Lane {
+function laneAt(slot: number, entry: string, registry: Registry): Lane {
   const { dir, lockPrefix, lockRoot, errors } = registry;
+  const file = join(dir, entry);
   let issueId: string | undefined;
   try {
-    issueId = claimOf(dir, slot);
+    issueId = claimOf(dir, entry);
   } catch (cause) {
     if (!isMissing(cause)) {
-      errors.push(collectionError(join(dir, String(slot)), cause));
+      errors.push(collectionError(file, cause));
     }
   }
   if (issueId === undefined) {
     return { slot, state: "idle", executor: "local" };
+  }
+  if (PATH_IN_CLAIM.test(issueId)) {
+    errors.push(collectionError(file, new Error(`claim is not an issue id: ${issueId}`)));
+    return { slot, state: "working", executor: "local" };
   }
   const trees = worktreePaths(lockPrefix, issueId, lockRoot).filter((path) => existsSync(path));
   if (trees.length === 0) {
@@ -228,15 +239,22 @@ function laneAt(slot: number, registry: Registry): Lane {
 
 export function readLanes(lockPrefix: string, options: LaneOptions = {}): LaneReading {
   const dir = slotsPath(lockPrefix, options.lockRoot);
-  let claimed: number[];
+  let claimed: Claim[];
   try {
     claimed = claimedSlots(dir);
   } catch (cause) {
     return { lanes: [], errors: isMissing(cause) ? [] : [collectionError(dir, cause)] };
   }
-  const slots = new Set(claimed);
+  const slots = new Map<number, string>();
+  for (const { slot, entry } of claimed) {
+    if (!slots.has(slot) || entry === String(slot)) {
+      slots.set(slot, entry);
+    }
+  }
   for (let slot = 1; slot <= (options.lanes ?? 0); slot += 1) {
-    slots.add(slot);
+    if (!slots.has(slot)) {
+      slots.set(slot, String(slot));
+    }
   }
   const errors: CollectionError[] = [];
   const registry: Registry = {
@@ -246,6 +264,8 @@ export function readLanes(lockPrefix: string, options: LaneOptions = {}): LaneRe
     handedOff: handoffReader(options.repos ?? [], errors),
     errors,
   };
-  const lanes = [...slots].sort((a, b) => a - b).map((slot) => laneAt(slot, registry));
+  const lanes = [...slots]
+    .sort(([a], [b]) => a - b)
+    .map(([slot, entry]) => laneAt(slot, entry, registry));
   return { lanes, errors };
 }
