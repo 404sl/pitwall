@@ -55,7 +55,7 @@ function scanForWorkspaces(parent: string, errors: CollectionError[]): string[] 
     .sort();
 }
 
-export function resolveRoots(options: RootsOptions = {}): ResolvedRoots {
+function locateRoots(options: RootsOptions): ResolvedRoots {
   const path = configPath(options);
   const errors: CollectionError[] = [];
   if (existsSync(path)) {
@@ -75,6 +75,14 @@ export function resolveRoots(options: RootsOptions = {}): ResolvedRoots {
   };
 }
 
+export function resolveRoots(options: RootsOptions = {}): ResolvedRoots {
+  const resolved = locateRoots(options);
+  if (resolved.roots.length === 0) {
+    resolved.errors.push(collectionError(resolved.from, describeRoots(resolved)));
+  }
+  return resolved;
+}
+
 export function describeRoots(resolved: ResolvedRoots): string {
   const count = `${resolved.roots.length} workspace root${resolved.roots.length === 1 ? "" : "s"}`;
   if (resolved.source === "config") {
@@ -82,9 +90,9 @@ export function describeRoots(resolved: ResolvedRoots): string {
   }
   const rejected = resolved.errors.find((error) => error.source === resolved.configPath);
   if (rejected) {
-    return `${count} found by scanning ${resolved.from}, because the config at ${resolved.configPath} could not be read: ${rejected.message}`;
+    return `${count} found by falling back to scanning ${resolved.from}, because the config at ${resolved.configPath} could not be read: ${rejected.message}`;
   }
-  return `${count} found by scanning ${resolved.from}, because there is no config at ${resolved.configPath}`;
+  return `${count} found by falling back to scanning ${resolved.from}, because there is no config at ${resolved.configPath}`;
 }
 
 export function collectProjects(options: RootsOptions = {}): {

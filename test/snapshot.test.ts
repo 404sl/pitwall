@@ -120,8 +120,32 @@ test("a config that could not be read is carried by the snapshot itself", async 
   const place = withConfig('{ "roots": [1, 2] ');
   const snapshot = await collectSnapshot(options(place));
   assert.deepEqual(snapshot.projects, []);
-  assert.equal(snapshot.errors.length, 1);
+  assert.equal(snapshot.errors.length, 2);
   assert.equal(snapshot.errors[0]?.source, place.configPath);
+  assert.equal(snapshot.errors[1]?.source, join(place.home, "work"));
+  assert.match(snapshot.errors[1]?.message ?? "", /could not be read/);
+});
+
+test("a snapshot with no projects at all says why rather than reading as an empty machine", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pitwall-nothing-"));
+  const scanned = join(home, "work");
+  mkdirSync(join(scanned, "here"), { recursive: true });
+  const snapshot = await collectSnapshot({
+    env: { PATH: PATH_WITH_BD, XDG_STATE_HOME: join(home, "state") },
+    home,
+    cwd: join(scanned, "here"),
+  });
+  assert.deepEqual(snapshot.projects, []);
+  assert.equal(snapshot.errors.length, 1);
+  assert.equal(snapshot.errors[0]?.source, scanned);
+  assert.match(snapshot.errors[0]?.message ?? "", /falling back/);
+  assert.ok((snapshot.errors[0]?.message ?? "").includes(join(home, ".config", "pitwall", "config.json")));
+});
+
+test("a healthy run with projects carries no run-level errors", async () => {
+  const snapshot = await collectSnapshot(options(workspace([TRACKER])));
+  assert.equal(snapshot.projects.length, 1);
+  assert.deepEqual(snapshot.errors, []);
 });
 
 test("the snapshot is written where serve reads it", async () => {

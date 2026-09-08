@@ -54,6 +54,35 @@ test("no config falls back to scanning the parent of the working directory", () 
   assert.equal(resolved.source, "scan");
   assert.equal(resolved.from, SCAN);
   assert.deepEqual(resolved.roots, [join(SCAN, "alpha"), join(SCAN, "beta")]);
+  assert.deepEqual(resolved.errors, []);
+});
+
+test("a fallback scan that finds nothing says so rather than reporting an empty workspace", () => {
+  const home = mkdtempSync(join(tmpdir(), "pitwall-nohome-"));
+  const parent = mkdtempSync(join(tmpdir(), "pitwall-nothing-"));
+  const cwd = join(parent, "here");
+  mkdirSync(cwd);
+  const resolved = resolveRoots({ env: {}, home, cwd });
+  assert.equal(resolved.source, "scan");
+  assert.deepEqual(resolved.roots, []);
+  assert.equal(resolved.errors.length, 1);
+  assert.equal(resolved.errors[0]?.source, parent);
+  const said = resolved.errors[0]?.message ?? "";
+  assert.match(said, /falling back/);
+  assert.ok(said.includes(parent));
+  assert.ok(said.includes(resolved.configPath));
+});
+
+test("a configured roots list that is empty is not described as a fallback scan", () => {
+  const { home, path } = config([]);
+  const resolved = resolveRoots({ env: {}, home, cwd: SCAN });
+  assert.equal(resolved.source, "config");
+  assert.deepEqual(resolved.roots, []);
+  assert.equal(resolved.errors.length, 1);
+  assert.equal(resolved.errors[0]?.source, path);
+  const said = resolved.errors[0]?.message ?? "";
+  assert.doesNotMatch(said, /falling back/);
+  assert.ok(said.includes(path));
 });
 
 test("the fallback says that it scanned, and where", () => {
