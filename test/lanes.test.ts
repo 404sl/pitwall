@@ -482,3 +482,38 @@ test("a workspace whose registry has never been created reports no lanes", () =>
   assert.deepEqual(project.lanes, []);
   assert.deepEqual(project.errors, []);
 });
+
+test("a slot file named with a leading zero holds its claim, and is never reported idle", () => {
+  const root = lockRoot();
+  registry(root);
+  writeFileSync(join(slotsPath(PREFIX, root), "03"), "pw-zero\n");
+
+  const { lanes, errors } = readLanes(PREFIX, { lockRoot: root, lanes: 3 });
+
+  assert.deepEqual(errors, []);
+  assert.deepEqual(
+    lanes.map((lane) => [lane.slot, lane.state]),
+    [
+      [1, "idle"],
+      [2, "idle"],
+      [3, "working"],
+    ],
+  );
+  assert.equal(lanes[2]?.issueId, "pw-zero");
+});
+
+test("a claim naming a path outside the worktree root is refused rather than walked", () => {
+  const root = lockRoot();
+  claim(root, 1, "../outside");
+  treeAt(join(root, "outside"), 0);
+
+  const { lanes, errors } = readLanes(PREFIX, { lockRoot: root });
+
+  assert.doesNotThrow(() => Lane.array().parse(lanes));
+  assert.equal(lanes[0]?.state, "working");
+  assert.equal(lanes[0]?.issueId, undefined);
+  assert.equal(lanes[0]?.worktree, undefined);
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0]?.source, join(slotsPath(PREFIX, root), "1"));
+  assert.match(errors[0]?.message ?? "", /\.\.\/outside/);
+});
