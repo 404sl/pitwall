@@ -1,0 +1,10 @@
+{
+  "idPrefix": "mw",
+  "repos": {
+    "site": {
+      "path": ".",
+      "test": "npm test",
+      "lint": "npm run lint"
+    }
+  }
+}

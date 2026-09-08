@@ -1,5 +1,6 @@
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { join, resolve } from "node:path";
+import { promisify } from "node:util";
 import {
   Issue,
   resolveOrigin,
@@ -10,6 +11,8 @@ import {
 } from "@404sl/pitwall-schema";
 import { collectionError } from "./errors.js";
 import { classify, type UnclassifiedIssue } from "./classify.js";
+
+const run = promisify(execFile);
 
 export const BEADS_DIR = ".beads";
 export const BEADS_DIR_VAR = "BEADS_DIR";
@@ -56,17 +59,22 @@ export interface ReadIssuesOptions {
   timeoutMs?: number;
 }
 
+export interface ClosedIssue extends UnclassifiedIssue {
+  closedAt: string | undefined;
+}
+
 export interface CollectedIssues {
   issues: Issue[];
-  closed: UnclassifiedIssue[];
+  closed: ClosedIssue[];
   errors: CollectionError[];
 }
 
 function failureOf(cause: unknown, timeoutMs: number): string {
-  if ((cause as { code?: unknown } | null)?.code === "ETIMEDOUT") {
+  const failed = cause as { killed?: unknown; stderr?: unknown } | null;
+  if (failed?.killed === true) {
     return `timed out after ${timeoutMs}ms`;
   }
-  const stderr = (cause as { stderr?: unknown } | null)?.stderr;
+  const stderr = failed?.stderr;
   const reported = typeof stderr === "string" ? stderr.trim() : "";
   if (reported !== "") {
     return reported.split("\n")[0] ?? reported;
@@ -74,23 +82,22 @@ function failureOf(cause: unknown, timeoutMs: number): string {
   return cause instanceof Error ? cause.message : String(cause);
 }
 
-function bd<T>(
+async function bd<T>(
   args: readonly string[],
   beadsDir: string,
   env: Record<string, string | undefined>,
   timeoutMs: number,
   shape: (parsed: unknown) => T,
-): T {
+): Promise<T> {
   const command = ["bd", ...args].join(" ");
   let stdout: string;
   try {
-    stdout = execFileSync("bd", args, {
+    ({ stdout } = await run("bd", args as string[], {
       encoding: "utf8",
       env: { ...env, [BEADS_DIR_VAR]: beadsDir },
       maxBuffer: MAX_OUTPUT,
-      stdio: ["ignore", "pipe", "pipe"],
       timeout: timeoutMs,
-    });
+    }));
   } catch (cause) {
     throw new Error(`${command}: ${failureOf(cause, timeoutMs)}`);
   }
@@ -191,7 +198,7 @@ function toIssue(
   categories: ReadonlyMap<string, string>,
   edges: ReadonlyMap<string, string[]>,
   parked: Map<string, Classification>,
-): UnclassifiedIssue {
+): ClosedIssue {
   const id = row["id"];
   if (typeof id !== "string") {
     throw new TypeError("an issue has no id");
@@ -215,17 +222,21 @@ function toIssue(
     updatedAt: textOf(row["updated_at"]),
     blockedBy: edges.get(id) ?? [],
     origin: originOf(row["metadata"]),
+    closedAt: textOf(row["closed_at"]),
   };
 }
 
-export function readIssues(root: string, options: ReadIssuesOptions = {}): CollectedIssues {
+export async function readIssues(
+  root: string,
+  options: ReadIssuesOptions = {},
+): Promise<CollectedIssues> {
   const beadsDir = join(resolve(root), BEADS_DIR);
   const env = options.env ?? process.env;
   const timeoutMs = options.timeoutMs ?? TIMEOUT_MS;
   try {
-    const categories = categoriesOf(bd(STATUSES_ARGS, beadsDir, env, timeoutMs, asRecord));
-    const rows = bd(LIST_ARGS, beadsDir, env, timeoutMs, asRows);
-    const edges = blockedEdges(bd(BLOCKED_ARGS, beadsDir, env, timeoutMs, asRows));
+    const categories = categoriesOf(await bd(STATUSES_ARGS, beadsDir, env, timeoutMs, asRecord));
+    const rows = await bd(LIST_ARGS, beadsDir, env, timeoutMs, asRows);
+    const edges = blockedEdges(await bd(BLOCKED_ARGS, beadsDir, env, timeoutMs, asRows));
     const parked = new Map<string, Classification>();
     const all = rows.map((row) => toIssue(row, categories, edges, parked));
     const active = all.filter((issue) => issue.status !== "closed");

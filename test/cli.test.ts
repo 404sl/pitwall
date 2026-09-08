@@ -38,3 +38,22 @@ test("a port that is not a port exits non-zero and shows usage", () => {
 test("usage names the serve command", () => {
   assert.match(run(["--help"]).out, new RegExp(`pitwall serve[\\s\\S]*${DEFAULT_PORT}`));
 });
+
+test("snapshot is a command of its own and takes no arguments", () => {
+  const { code, out, snapshot } = run(["snapshot"]);
+  assert.equal(code, 0);
+  assert.equal(out, "");
+  assert.equal(snapshot, true);
+});
+
+test("an argument after snapshot exits non-zero and shows usage", () => {
+  const { code, out, snapshot } = run(["snapshot", "--nope"]);
+  assert.equal(code, 2);
+  assert.equal(snapshot, undefined);
+  assert.match(out, /unknown argument --nope/);
+  assert.match(out, /pitwall --help/);
+});
+
+test("usage names the snapshot command", () => {
+  assert.match(run(["--help"]).out, /pitwall snapshot/);
+});
