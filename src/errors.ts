@@ -20,3 +20,12 @@ export function failureOf(cause: unknown, timeoutMs: number): string {
   }
   return cause instanceof Error ? cause.message : String(cause);
 }
+
+export function recordOnce(errors: CollectionError[], error: CollectionError): void {
+  const known = errors.some(
+    (other) => other.source === error.source && other.message === error.message,
+  );
+  if (!known) {
+    errors.push(error);
+  }
+}

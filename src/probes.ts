@@ -1,11 +1,14 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import type { CollectionError } from "@404sl/pitwall-schema";
+import { collectionError, failureOf, recordOnce } from "./errors.js";
 import { PRECONDITIONS, type PullReference, type PullState } from "./staleness.js";
 
 const run = promisify(execFile);
 
 const PROBE_TIMEOUT_MS = 10_000;
 const MAX_OUTPUT = 1024 * 1024;
+const PULL_SOURCE = "gh pr view";
 
 const PULL_STATES = new Map<string, PullState>([
   ["MERGED", "merged"],
@@ -16,6 +19,7 @@ const PULL_STATES = new Map<string, PullState>([
 export interface ProbeOptions {
   env?: Record<string, string | undefined>;
   timeoutMs?: number;
+  errors?: CollectionError[];
 }
 
 export interface PullLookupOptions extends ProbeOptions {
@@ -30,10 +34,23 @@ function allowed(command: readonly string[]): boolean {
   );
 }
 
+function unreadable(
+  options: ProbeOptions,
+  source: string,
+  cause: unknown,
+  timeoutMs: number,
+): void {
+  if (options.errors === undefined) {
+    return;
+  }
+  recordOnce(options.errors, collectionError(source, failureOf(cause, timeoutMs)));
+}
+
 export function preconditionProbe(
   options: ProbeOptions = {},
 ): (command: readonly string[]) => Promise<boolean | undefined> {
   const answers = new Map<string, Promise<boolean | undefined>>();
+  const timeoutMs = options.timeoutMs ?? PROBE_TIMEOUT_MS;
   return (command) => {
     if (!allowed(command)) {
       return Promise.resolve(undefined);
@@ -48,11 +65,16 @@ export function preconditionProbe(
       encoding: "utf8",
       env: options.env ?? process.env,
       maxBuffer: MAX_OUTPUT,
-      timeout: options.timeoutMs ?? PROBE_TIMEOUT_MS,
+      timeout: timeoutMs,
     }).then(
       () => true,
-      (cause: { code?: unknown; killed?: unknown }) =>
-        cause.killed === true || typeof cause.code !== "number" ? undefined : false,
+      (cause: { code?: unknown; killed?: unknown }) => {
+        if (cause.killed !== true && typeof cause.code === "number") {
+          return false;
+        }
+        unreadable(options, key, cause, timeoutMs);
+        return undefined;
+      },
     );
     answers.set(key, asked);
     return asked;
@@ -60,20 +82,44 @@ export function preconditionProbe(
 }
 
 function locate(reference: PullReference, repos: ReadonlyMap<string, string>): string | undefined {
+  const named = reference.repo === undefined ? undefined : repos.get(reference.repo);
+  if (named !== undefined) {
+    return named;
+  }
   const anywhere = [...repos.values()][0];
   if (reference.url !== undefined) {
     return anywhere;
   }
-  if (reference.repo !== undefined) {
-    return repos.get(reference.repo);
+  return reference.repo === undefined && repos.size === 1 ? anywhere : undefined;
+}
+
+async function viewed(
+  target: string,
+  cwd: string,
+  options: PullLookupOptions,
+  timeoutMs: number,
+): Promise<PullState | undefined> {
+  try {
+    const { stdout } = await run("gh", ["pr", "view", target, "--json", "state"], {
+      cwd,
+      encoding: "utf8",
+      env: options.env ?? process.env,
+      maxBuffer: MAX_OUTPUT,
+      timeout: timeoutMs,
+    });
+    const state = (JSON.parse(stdout) as { state?: unknown }).state;
+    return typeof state === "string" ? PULL_STATES.get(state) : undefined;
+  } catch (cause) {
+    unreadable(options, PULL_SOURCE, cause, timeoutMs);
+    return undefined;
   }
-  return repos.size === 1 ? anywhere : undefined;
 }
 
 export function pullLookup(
   options: PullLookupOptions,
 ): (reference: PullReference) => Promise<PullState | undefined> {
   const answers = new Map<string, Promise<PullState | undefined>>();
+  const timeoutMs = options.timeoutMs ?? PROBE_TIMEOUT_MS;
   return (reference) => {
     const cwd = locate(reference, options.repos);
     if (cwd === undefined) {
@@ -85,19 +131,7 @@ export function pullLookup(
     if (known !== undefined) {
       return known;
     }
-    const asked = run("gh", ["pr", "view", target, "--json", "state"], {
-      cwd,
-      encoding: "utf8",
-      env: options.env ?? process.env,
-      maxBuffer: MAX_OUTPUT,
-      timeout: options.timeoutMs ?? PROBE_TIMEOUT_MS,
-    }).then(
-      ({ stdout }) => {
-        const state = (JSON.parse(stdout) as { state?: unknown }).state;
-        return typeof state === "string" ? PULL_STATES.get(state) : undefined;
-      },
-      () => undefined,
-    );
+    const asked = viewed(target, cwd, options, timeoutMs);
     answers.set(key, asked);
     return asked;
   };
