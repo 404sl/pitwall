@@ -1,20 +1,7 @@
 import type { NeedsYouGroup, NeedsYouRow } from "../model.js";
-import { clock, priorityLabel } from "../format.js";
+import { VERDICT_CLASS, VERDICT_WORD, clock, priorityLabel } from "../format.js";
+import { issueHref } from "../routes.js";
 import { strings } from "../strings.js";
-
-const VERDICT_WORD = {
-  unchecked: strings.stale.unchecked,
-  "still-blocking": strings.stale.stillBlocking,
-  "likely-stale": strings.stale.likelyStale,
-  resolved: strings.stale.resolved,
-};
-
-const VERDICT_CLASS = {
-  unchecked: "pw-stale--unchecked",
-  "still-blocking": "pw-stale--still-blocking",
-  "likely-stale": "pw-stale--likely-stale",
-  resolved: "pw-stale--resolved",
-};
 
 function Staleness({ row }: { row: NeedsYouRow }) {
   const title = row.checkedAt === undefined ? undefined : `${strings.stale.checkedAt} ${clock(row.checkedAt)}`;
@@ -55,7 +42,11 @@ export function NeedsYou({ groups }: { groups: NeedsYouGroup[] }) {
                 {priorityLabel(row.priority)}
               </td>
               <td className="pw-cell pw-cell--kind">{strings.kind[row.kind]}</td>
-              <td className="pw-cell pw-cell--title">{row.title}</td>
+              <td className="pw-cell pw-cell--title">
+                <a className="pw-link" href={issueHref(group.projectId, row.id)}>
+                  {row.title}
+                </a>
+              </td>
               <td className="pw-cell pw-cell--stale">
                 <Staleness row={row} />
               </td>

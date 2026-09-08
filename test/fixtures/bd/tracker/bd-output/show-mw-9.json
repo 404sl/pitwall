@@ -1,0 +1,27 @@
+[
+  {
+    "id": "mw-9",
+    "title": "Add the frontend toolchain",
+    "description": "Vite, React and one stylesheet. Nothing else.\n",
+    "status": "closed",
+    "priority": 2,
+    "issue_type": "chore",
+    "notes": "Landed 2026-09-03. The build emits into dist/ui.",
+    "created_at": "2026-09-02T08:00:00Z",
+    "updated_at": "2026-09-03T09:00:00Z",
+    "closed_at": "2026-09-03T09:00:00Z",
+    "metadata": null,
+    "dependencies": null,
+    "dependents": [
+      {
+        "id": "mw-1",
+        "title": "The console - urgency-first screen over every project",
+        "status": "open",
+        "dependency_type": "blocks"
+      }
+    ],
+    "dependency_count": 0,
+    "dependent_count": 1,
+    "comment_count": 0
+  }
+]

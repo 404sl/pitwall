@@ -1,0 +1,25 @@
+[
+  {
+    "id": "mw-4",
+    "title": "Record every session event",
+    "description": "Everything the replay needs, recorded once.\n",
+    "status": "closed",
+    "priority": 1,
+    "issue_type": "epic",
+    "notes": null,
+    "created_at": "2026-09-01T08:00:00Z",
+    "updated_at": "2026-09-04T17:20:00Z",
+    "closed_at": "2026-09-04T17:20:00Z",
+    "metadata": {
+      "origin": {
+        "ref": "41ba07",
+        "session": "mw-replay-session"
+      }
+    },
+    "dependencies": null,
+    "dependents": null,
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "comment_count": 0
+  }
+]
