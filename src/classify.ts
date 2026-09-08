@@ -22,7 +22,7 @@ function laneIsWorking(issue: UnclassifiedIssue, lanes: readonly Lane[]): boolea
   return lanes.some((lane) => lane.state === "working" && lane.issueId === issue.id);
 }
 
-function isUmbrella(issue: UnclassifiedIssue, issues: readonly UnclassifiedIssue[]): boolean {
+export function isUmbrella(issue: UnclassifiedIssue, issues: readonly UnclassifiedIssue[]): boolean {
   if (issue.issueType === "epic") return true;
   if (issue.title.includes(EPIC_TITLE_MARKER)) return true;
   return issues.some(
@@ -36,7 +36,7 @@ function parentIdOf(id: string): string | undefined {
   return cut === -1 ? undefined : id.slice(0, cut);
 }
 
-function isBlocked(issue: UnclassifiedIssue, context: ClassifyContext): boolean {
+export function isBlocked(issue: UnclassifiedIssue, context: ClassifyContext): boolean {
   const byId = new Map(context.issues.map((other) => [other.id, other]));
   const hasUnclosedEdge = issue.blockedBy.some((id) => {
     const blocker = byId.get(id);
@@ -46,6 +46,13 @@ function isBlocked(issue: UnclassifiedIssue, context: ClassifyContext): boolean 
   if (hasUnclosedEdge) return true;
   const parentId = parentIdOf(issue.id);
   return parentId !== undefined && byId.get(parentId)?.status === "in_progress";
+}
+
+export function hasLiveStructuralBlocker(
+  issue: UnclassifiedIssue,
+  context: ClassifyContext,
+): boolean {
+  return isUmbrella(issue, context.issues) || isBlocked(issue, context);
 }
 
 export function classify(issue: UnclassifiedIssue, context: ClassifyContext): Classification {

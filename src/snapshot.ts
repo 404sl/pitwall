@@ -7,14 +7,19 @@ import {
   type Metrics,
   type Snapshot,
 } from "@404sl/pitwall-schema";
-import { readIssues, type ClosedIssue } from "./beads.js";
+import { readIssues, type ClosedIssue, type IssueText } from "./beads.js";
+import { hasLiveStructuralBlocker, type ClassifyContext } from "./classify.js";
 import { collectProjects, type RootsOptions } from "./config.js";
+import { preconditionProbe, pullLookup } from "./probes.js";
 import { writeSnapshot } from "./state.js";
+import { assess, isAssessable, type StalenessContext } from "./staleness.js";
 import { VERSION } from "./version.js";
 
 export interface SnapshotOptions extends RootsOptions {
   timeoutMs?: number;
   now?: Date;
+  pullState?: StalenessContext["pullState"];
+  probe?: StalenessContext["probe"];
 }
 
 export interface SnapshotResult {
@@ -52,6 +57,55 @@ function metricsOf(
   };
 }
 
+function stalenessContext(
+  project: Project,
+  collected: { issues: readonly Issue[]; closed: readonly ClosedIssue[] },
+  options: SnapshotOptions,
+  day: Date,
+): StalenessContext {
+  const repos = new Map(project.repos.map((repo) => [repo.name, repo.path]));
+  return {
+    idPrefix: project.authority.idPrefix,
+    knownIds: new Set([...collected.issues, ...collected.closed].map((issue) => issue.id)),
+    closedIds: new Set(collected.closed.map((issue) => issue.id)),
+    pullState:
+      options.pullState ??
+      (repos.size === 0
+        ? undefined
+        : pullLookup({ repos, env: options.env, timeoutMs: options.timeoutMs })),
+    probe: options.probe ?? preconditionProbe({ env: options.env, timeoutMs: options.timeoutMs }),
+    now: day,
+  };
+}
+
+async function assessed(
+  issue: Issue,
+  texts: ReadonlyMap<string, IssueText>,
+  context: StalenessContext,
+  structure: ClassifyContext,
+): Promise<Issue> {
+  if (!isAssessable(issue.classification)) {
+    return issue;
+  }
+  const text = texts.get(issue.id);
+  return {
+    ...issue,
+    staleness: await assess(
+      {
+        id: issue.id,
+        title: issue.title,
+        classification: issue.classification,
+        labels: issue.labels,
+        blockedBy: issue.blockedBy,
+        structurallyBlocked: hasLiveStructuralBlocker(issue, structure),
+        description: text?.description,
+        notes: text?.notes,
+      },
+      context,
+    ),
+  };
+}
+
 async function gather(project: Project, options: SnapshotOptions, day: Date): Promise<Project> {
   const collected = await readIssues(project.root, {
     env: options.env,
@@ -59,10 +113,19 @@ async function gather(project: Project, options: SnapshotOptions, day: Date): Pr
     errors: project.errors,
     timeoutMs: options.timeoutMs,
   });
+  const context = stalenessContext(project, collected, options, day);
+  const structure: ClassifyContext = {
+    issues: [...collected.issues, ...collected.closed],
+    lanes: project.lanes,
+    collectionComplete: project.errors.length === 0,
+  };
+  const issues = await Promise.all(
+    collected.issues.map((issue) => assessed(issue, collected.texts, context, structure)),
+  );
   return Project.parse({
     ...project,
-    issues: collected.issues,
-    metrics: metricsOf(collected.issues, collected.closed, day),
+    issues,
+    metrics: metricsOf(issues, collected.closed, day),
     errors: [...project.errors, ...collected.errors],
   });
 }
