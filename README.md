@@ -1,11 +1,12 @@
-<!-- Absolute URLs, not repository-relative. npmjs.com renders this same file when the
-     package is published and resolves relative paths against its own host, where they do
-     not exist - so a relative logo works on GitHub and is a broken image on the page most
-     people arrive at. -->
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/404sl/pitwall/master/ui/brand/logo/pitwall-lockup-dark.svg">
-  <img alt="Pitwall" src="https://raw.githubusercontent.com/404sl/pitwall/master/ui/brand/logo/pitwall-lockup-light.svg" width="280">
-</picture>
+<!-- THE MARK, NOT THE LOCKUP, and deliberately.
+     The lockup and wordmark SVGs set live text in Barlow Condensed. GitHub does not have
+     that font, falls back to something much wider, and the text overflows the viewBox and
+     is CLIPPED - "pitwall.buil". The brand package says so in as many words: on a platform
+     that cannot load the font, convert the text to outlines or use the mark alone.
+     The mark is three rectangles and a tile. It has no font to miss. -->
+<img alt="Pitwall" width="96" src="https://raw.githubusercontent.com/404sl/pitwall/master/ui/brand/logo/pitwall-mark.svg">
+
+# Pitwall
 
 One screen over every project you have work running in — what is blocked, what needs
 a person, and whether that is still true.
