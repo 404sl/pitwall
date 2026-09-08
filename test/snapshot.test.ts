@@ -1,0 +1,120 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { SCHEMA_VERSION, isYours, parseSnapshot } from "@404sl/pitwall-schema";
+import { collectSnapshot, emitSnapshot } from "../src/snapshot.ts";
+import { readSnapshot, snapshotPath } from "../src/state.ts";
+import { VERSION } from "../src/version.ts";
+
+const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), "fixtures");
+const TRACKER = join(FIXTURES, "bd", "tracker");
+const NO_TRACKER = join(FIXTURES, "plain");
+const PATH_WITH_BD = `${join(FIXTURES, "bd", "ok")}:/usr/bin:/bin`;
+
+interface Workspace {
+  home: string;
+  env: Record<string, string>;
+  configPath: string;
+}
+
+function withConfig(contents: string): Workspace {
+  const home = mkdtempSync(join(tmpdir(), "pitwall-snapshot-"));
+  const configPath = join(home, ".config", "pitwall", "config.json");
+  mkdirSync(dirname(configPath), { recursive: true });
+  mkdirSync(join(home, "work", "here"), { recursive: true });
+  writeFileSync(configPath, contents);
+  return { home, configPath, env: { PATH: PATH_WITH_BD, XDG_STATE_HOME: join(home, "state") } };
+}
+
+function workspace(roots: string[]): Workspace {
+  return withConfig(JSON.stringify({ roots }));
+}
+
+function options(place: Workspace, now?: Date) {
+  return {
+    env: place.env,
+    home: place.home,
+    cwd: join(place.home, "work", "here"),
+    lockRoot: mkdtempSync(join(tmpdir(), "pitwall-snapshot-lock-")),
+    now,
+  };
+}
+
+test("the assembled document is one the contract accepts", async () => {
+  const place = workspace([TRACKER]);
+  const at = new Date("2026-09-08T09:00:00Z");
+  const snapshot = await collectSnapshot(options(place, at));
+  assert.doesNotThrow(() => parseSnapshot(snapshot));
+  assert.equal(snapshot.schemaVersion, SCHEMA_VERSION);
+  assert.equal(snapshot.agent.version, VERSION);
+  assert.equal(snapshot.generatedAt, at.toISOString());
+  assert.equal(snapshot.projects.length, 1);
+  assert.equal(snapshot.projects[0]?.issues.length, 15);
+});
+
+test("a project whose tracker cannot be read still appears and the others are unaffected", async () => {
+  const place = workspace([NO_TRACKER, TRACKER]);
+  const snapshot = await collectSnapshot(options(place));
+  assert.deepEqual(
+    snapshot.projects.map((project) => project.id),
+    ["plain", "tracker"],
+  );
+  const unreadable = snapshot.projects[0];
+  assert.equal(unreadable?.errors.length, 1);
+  assert.equal(unreadable?.errors[0]?.source, join(NO_TRACKER, ".beads"));
+  assert.deepEqual(unreadable?.issues, []);
+  const read = snapshot.projects[1];
+  assert.deepEqual(read?.errors, []);
+  assert.equal(read?.issues.length, 15);
+  assert.equal(read?.metrics.readyCount, 2);
+});
+
+test("inboxCount is what is yours to answer and never counts a parked issue", async () => {
+  const place = workspace([TRACKER]);
+  const snapshot = await collectSnapshot(options(place));
+  const project = snapshot.projects[0];
+  const issues = project?.issues ?? [];
+  const parked = issues.filter((issue) => issue.classification.startsWith("parked:"));
+  assert.ok(parked.length > 0);
+  assert.deepEqual(
+    issues.filter((issue) => isYours(issue.classification)).map((issue) => issue.id),
+    ["mw-3"],
+  );
+  assert.equal(project?.metrics.inboxCount, 1);
+  assert.equal(project?.metrics.readyCount, 2);
+});
+
+test("closedToday counts the issues closed on the day collection started", async () => {
+  const place = workspace([TRACKER]);
+  const onTheDay = await collectSnapshot(options(place, new Date("2026-09-04T17:20:00Z")));
+  assert.equal(onTheDay.projects[0]?.metrics.closedToday, 1);
+  const later = await collectSnapshot(options(place, new Date("2026-09-08T09:00:00Z")));
+  assert.equal(later.projects[0]?.metrics.closedToday, 0);
+});
+
+test("a config that could not be read is carried by the snapshot itself", async () => {
+  const place = withConfig('{ "roots": [1, 2] ');
+  const snapshot = await collectSnapshot(options(place));
+  assert.deepEqual(snapshot.projects, []);
+  assert.equal(snapshot.errors.length, 1);
+  assert.equal(snapshot.errors[0]?.source, place.configPath);
+});
+
+test("the snapshot is written where serve reads it", async () => {
+  const place = workspace([TRACKER]);
+  const result = await emitSnapshot(options(place));
+  assert.equal(result.path, snapshotPath({ env: place.env, home: place.home }));
+  const stored = readSnapshot({ env: place.env, home: place.home });
+  assert.equal(stored.error, undefined);
+  assert.deepEqual(stored.snapshot, JSON.parse(JSON.stringify(result.snapshot)));
+});
+
+test("a complete snapshot exits zero and one where every project failed does not", async () => {
+  assert.equal((await emitSnapshot(options(workspace([TRACKER])))).code, 0);
+  assert.equal((await emitSnapshot(options(workspace([TRACKER, NO_TRACKER])))).code, 0);
+  assert.equal((await emitSnapshot(options(workspace([NO_TRACKER])))).code, 1);
+  assert.equal((await emitSnapshot(options(workspace([])))).code, 0);
+});

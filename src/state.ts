@@ -1,6 +1,6 @@
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { parseSnapshot, type CollectionError, type Snapshot } from "@404sl/pitwall-schema";
 import { collectionError } from "./errors.js";
 
@@ -34,4 +34,13 @@ export function readSnapshot(options: StateOptions = {}): StoredSnapshot {
   } catch (cause) {
     return { path, error: collectionError(path, cause) };
   }
+}
+
+export function writeSnapshot(snapshot: Snapshot, options: StateOptions = {}): string {
+  const path = snapshotPath(options);
+  const staging = `${path}.${process.pid}`;
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(staging, `${JSON.stringify(snapshot, null, 2)}\n`);
+  renameSync(staging, path);
+  return path;
 }
