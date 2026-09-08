@@ -10,6 +10,7 @@ import {
 import { readIssues, type ClosedIssue, type IssueText } from "./beads.js";
 import { hasLiveStructuralBlocker, type ClassifyContext } from "./classify.js";
 import { collectProjects, type RootsOptions } from "./config.js";
+import { readPipeline } from "./pipeline.js";
 import { preconditionProbe, pullLookup } from "./probes.js";
 import { writeSnapshot } from "./state.js";
 import { assess, isAssessable, type StalenessContext } from "./staleness.js";
@@ -122,11 +123,16 @@ async function gather(project: Project, options: SnapshotOptions, day: Date): Pr
   const issues = await Promise.all(
     collected.issues.map((issue) => assessed(issue, collected.texts, context, structure)),
   );
+  const pipeline = await readPipeline(project, {
+    env: options.env,
+    timeoutMs: options.timeoutMs,
+  });
   return Project.parse({
     ...project,
     issues,
+    pipeline: pipeline.pipeline,
     metrics: metricsOf(issues, collected.closed, day),
-    errors: [...project.errors, ...collected.errors],
+    errors: [...project.errors, ...collected.errors, ...pipeline.errors],
   });
 }
 
