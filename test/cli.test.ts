@@ -57,3 +57,26 @@ test("an argument after snapshot exits non-zero and shows usage", () => {
 test("usage names the snapshot command", () => {
   assert.match(run(["--help"]).out, /pitwall snapshot/);
 });
+
+test("status is a command of its own and defaults to the state path", () => {
+  const { code, out, status } = run(["status"]);
+  assert.equal(code, 0);
+  assert.equal(out, "");
+  assert.deepEqual(status, {});
+});
+
+test("status takes --from so a snapshot on disk can be read instead", () => {
+  assert.deepEqual(run(["status", "--from", "/tmp/snap.json"]).status, { from: "/tmp/snap.json" });
+});
+
+test("a --from without a path exits non-zero and shows usage", () => {
+  const { code, out, status } = run(["status", "--from"]);
+  assert.equal(code, 2);
+  assert.equal(status, undefined);
+  assert.match(out, /--from expects a path/);
+  assert.match(out, /pitwall --help/);
+});
+
+test("usage names the status command", () => {
+  assert.match(run(["--help"]).out, /pitwall status/);
+});

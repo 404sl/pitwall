@@ -2,10 +2,14 @@
 import { SCHEMA_VERSION } from "@404sl/pitwall-schema";
 import { DEFAULT_PORT, HOST, createConsoleServer, listen, parseServeArgs } from "./serve.js";
 import { emitSnapshot } from "./snapshot.js";
+import { readSnapshot, readSnapshotFrom } from "./state.js";
+import { parseStatusArgs, renderStatus, wantsColor } from "./status.js";
 import { VERSION } from "./version.js";
 
 const USAGE = `pitwall ${VERSION}
 
+  pitwall status       print the latest snapshot as one screen
+    --from <path>      read the snapshot from this file instead of the state path
   pitwall snapshot     collect every project and print the snapshot as JSON
   pitwall serve        serve the console on http://${HOST}:${DEFAULT_PORT}/
     --port <n>         listen on another port
@@ -18,6 +22,7 @@ export interface CommandResult {
   out: string;
   serve?: { port: number };
   snapshot?: true;
+  status?: { from?: string };
 }
 
 export function run(argv: string[]): CommandResult {
@@ -27,6 +32,13 @@ export function run(argv: string[]): CommandResult {
   }
   if (arg === undefined || arg === "--help" || arg === "-h") {
     return { code: 0, out: USAGE };
+  }
+  if (arg === "status") {
+    const parsed = parseStatusArgs(rest);
+    if ("error" in parsed) {
+      return { code: 2, out: `pitwall status: ${parsed.error}\n\n${USAGE}` };
+    }
+    return { code: 0, out: "", status: parsed };
   }
   if (arg === "snapshot") {
     if (rest.length > 0) {
@@ -46,7 +58,7 @@ export function run(argv: string[]): CommandResult {
 
 const isEntry = process.argv[1] && import.meta.url.endsWith(process.argv[1].split("/").pop()!);
 if (isEntry) {
-  const { code, out, serve, snapshot } = run(process.argv.slice(2));
+  const { code, out, serve, snapshot, status } = run(process.argv.slice(2));
   process.stdout.write(out);
   if (snapshot !== undefined) {
     emitSnapshot().then(
@@ -59,6 +71,19 @@ if (isEntry) {
         process.exitCode = 1;
       },
     );
+  } else if (status !== undefined) {
+    const stored = status.from === undefined ? readSnapshot() : readSnapshotFrom(status.from);
+    if (stored.snapshot === undefined) {
+      const { error } = stored;
+      process.stderr.write(
+        `pitwall status: No snapshot to show yet - ${error.source} could not be read: ${error.message}\n`,
+      );
+      process.exitCode = 1;
+    } else {
+      process.stdout.write(
+        renderStatus(stored.snapshot, { color: wantsColor(process.env, process.stdout.isTTY === true) }),
+      );
+    }
   } else if (serve === undefined) {
     process.exit(code);
   } else {
