@@ -62,6 +62,7 @@ test("the fallback says that it scanned, and where", () => {
   const said = describeRoots(resolved);
   assert.match(said, /scanning/);
   assert.ok(said.includes(SCAN));
+  assert.match(said, /no config/);
   assert.ok(said.includes(resolved.configPath));
 
   const { home: withOne } = config([join(FIXTURES, "plain")]);
@@ -104,4 +105,28 @@ test("one unreadable root does not stop the others loading", () => {
   );
   assert.equal(projects[3]?.repos.length, 3);
   assert.equal(projects[3]?.authority.idPrefix, "mw");
+});
+
+test("a config that could not be read is named as the reason for the scan", () => {
+  const { home, path } = withConfig(JSON.stringify({ roots: [1, 2] }));
+  const resolved = resolveRoots({ env: {}, home, cwd: join(SCAN, "alpha") });
+  const said = describeRoots(resolved);
+  assert.equal(resolved.source, "scan");
+  assert.doesNotMatch(said, /no config/);
+  assert.ok(said.includes(path));
+  assert.ok(said.includes(resolved.errors[0]?.message ?? "unset"));
+});
+
+test("a PITWALL_CONFIG pointing at a directory is named the same way", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pitwall-notafile-"));
+  const resolved = resolveRoots({
+    env: { PITWALL_CONFIG: dir },
+    home: "/home/nobody",
+    cwd: join(SCAN, "alpha"),
+  });
+  const said = describeRoots(resolved);
+  assert.equal(resolved.source, "scan");
+  assert.equal(resolved.errors[0]?.source, dir);
+  assert.doesNotMatch(said, /no config/);
+  assert.ok(said.includes(resolved.errors[0]?.message ?? "unset"));
 });

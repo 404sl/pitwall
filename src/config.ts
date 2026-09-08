@@ -78,6 +78,10 @@ export function describeRoots(resolved: ResolvedRoots): string {
   if (resolved.source === "config") {
     return `${count} from ${resolved.from}`;
   }
+  const rejected = resolved.errors.find((error) => error.source === resolved.configPath);
+  if (rejected) {
+    return `${count} found by scanning ${resolved.from}, because the config at ${resolved.configPath} could not be read: ${rejected.message}`;
+  }
   return `${count} found by scanning ${resolved.from}, because there is no config at ${resolved.configPath}`;
 }
 
