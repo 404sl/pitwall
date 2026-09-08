@@ -80,19 +80,17 @@ export function handoffArgs(): string[] {
     "--limit",
     HANDOFF_LIMIT,
     "--json",
-    "headRefName,title,body",
+    "headRefName",
   ];
 }
 
-function textsOf(parsed: unknown): string[] {
+function branchesOf(parsed: unknown): string[] {
   if (!Array.isArray(parsed)) {
     throw new TypeError("output is not an array of pull requests");
   }
   return parsed.map((entry) => {
-    const pull = entry as Record<string, unknown> | null;
-    return ["headRefName", "title", "body"]
-      .map((field) => (typeof pull?.[field] === "string" ? (pull[field] as string) : ""))
-      .join("\n");
+    const branch = (entry as Record<string, unknown> | null)?.["headRefName"];
+    return typeof branch === "string" ? branch : "";
   });
 }
 
@@ -110,7 +108,7 @@ function labelledIn(repo: string, errors: CollectionError[]): string[] {
     return [];
   }
   try {
-    return textsOf(JSON.parse(listed.stdout ?? ""));
+    return branchesOf(JSON.parse(listed.stdout ?? ""));
   } catch (cause) {
     errors.push(collectionError(repo, cause));
     return [];
@@ -119,7 +117,7 @@ function labelledIn(repo: string, errors: CollectionError[]): string[] {
 
 function mentions(text: string, issueId: string): boolean {
   const escaped = issueId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`(?<![A-Za-z0-9])${escaped}(?![A-Za-z0-9])`).test(text);
+  return new RegExp(`(?<![A-Za-z0-9])${escaped}(?![.A-Za-z0-9])`).test(text);
 }
 
 function handoffReader(
@@ -129,7 +127,7 @@ function handoffReader(
   let labelled: string[] | undefined;
   return (issueId) => {
     labelled ??= repos.flatMap((repo) => labelledIn(repo, errors));
-    return labelled.some((text) => mentions(text, issueId));
+    return labelled.some((branch) => mentions(branch, issueId));
   };
 }
 

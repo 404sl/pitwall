@@ -188,10 +188,8 @@ test("a claim with no worktree and a labelled pull request is handed-off", () =>
   claim(root, 1, "pw-landed");
   const checkout = repo(root);
 
-  const { lanes, errors } = withStub(
-    "gh",
-    ghListing({ headRefName: "autofix/pw-landed", title: "Fix the thing", body: "Refs pw-landed" }),
-    () => readLanes(PREFIX, { lockRoot: root, repos: [checkout] }),
+  const { lanes, errors } = withStub("gh", ghListing({ headRefName: "autofix/pw-landed" }), () =>
+    readLanes(PREFIX, { lockRoot: root, repos: [checkout] }),
   );
 
   assert.deepEqual(errors, []);
@@ -200,15 +198,45 @@ test("a claim with no worktree and a labelled pull request is handed-off", () =>
   assert.equal(lanes[0]?.worktree, undefined);
 });
 
+test("a labelled pull request that only cross-references the id does not hand it off", () => {
+  const root = lockRoot();
+  claim(root, 1, "pw-designing");
+  const checkout = repo(root);
+
+  const { lanes, errors } = withStub(
+    "gh",
+    ghListing({
+      headRefName: "autofix/pw-other",
+      title: "Refs pw-designing",
+      body: "Refs pw-designing",
+    }),
+    () => readLanes(PREFIX, { lockRoot: root, repos: [checkout] }),
+  );
+
+  assert.deepEqual(errors, []);
+  assert.equal(lanes[0]?.state, "working");
+  assert.equal(lanes[0]?.issueId, "pw-designing");
+});
+
+test("a labelled pull request for a dotted child does not hand off its parent", () => {
+  const root = lockRoot();
+  claim(root, 1, "pw-parent");
+  const checkout = repo(root);
+
+  const { lanes } = withStub("gh", ghListing({ headRefName: "autofix/pw-parent.1" }), () =>
+    readLanes(PREFIX, { lockRoot: root, repos: [checkout] }),
+  );
+
+  assert.equal(lanes[0]?.state, "working");
+});
+
 test("a labelled pull request for a longer id does not hand off the shorter one", () => {
   const root = lockRoot();
   claim(root, 1, "pw-land");
   const checkout = repo(root);
 
-  const { lanes } = withStub(
-    "gh",
-    ghListing({ headRefName: "autofix/pw-landed", title: "Fix the thing", body: "Refs pw-landed" }),
-    () => readLanes(PREFIX, { lockRoot: root, repos: [checkout] }),
+  const { lanes } = withStub("gh", ghListing({ headRefName: "autofix/pw-landed" }), () =>
+    readLanes(PREFIX, { lockRoot: root, repos: [checkout] }),
   );
 
   assert.equal(lanes[0]?.state, "working");
@@ -240,7 +268,7 @@ test("handoff asks gh for open pull requests carrying lane-verified", () => {
     "--limit",
     "200",
     "--json",
-    "headRefName,title,body",
+    "headRefName",
   ]);
 });
 
