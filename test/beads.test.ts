@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { Issue, type Lane } from "@404sl/pitwall-schema";
+import { Issue, type CollectionError, type Lane } from "@404sl/pitwall-schema";
 import { readIssues } from "../src/beads.ts";
 
 const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "bd");
@@ -121,6 +121,36 @@ test("an edge onto an open blocker is blocked and one onto a closed blocker is n
   const collected = await readIssues(TRACKER, { env: env("ok") });
   const byId = new Map(collected.issues.map((issue) => [issue.id, issue]));
   assert.equal(byId.get("mw-1.1")?.classification, "blocked");
+  assert.equal(byId.get("mw-6")?.classification, "ready");
+});
+
+const ALREADY_FAILED: CollectionError[] = [
+  { source: "/workspace/.autofix.json", message: "lanes could not be read", at: "2026-09-08T14:00:00Z" },
+];
+
+test("a blocker missing from a clean collection still reads as closed", async () => {
+  const collected = await readIssues(TRACKER, {
+    env: { ...env("ok"), BD_LIST_FIXTURE: "partial" },
+  });
+  const byId = byIdOf(collected);
+  assert.deepEqual(collected.errors, []);
+  assert.deepEqual(byId.get("mw-6")?.blockedBy, ["mw-9"]);
+  assert.equal(byId.get("mw-6")?.classification, "ready");
+});
+
+test("a blocker missing from an incomplete collection is blocking, not closed", async () => {
+  const byId = byIdOf(
+    await readIssues(TRACKER, {
+      env: { ...env("ok"), BD_LIST_FIXTURE: "partial" },
+      errors: ALREADY_FAILED,
+    }),
+  );
+  assert.equal(byId.get("mw-6")?.classification, "blocked");
+  assert.equal(byId.get("mw-5")?.classification, "ready");
+});
+
+test("an incomplete collection does not block an edge onto a blocker it did carry as closed", async () => {
+  const byId = byIdOf(await readIssues(TRACKER, { env: env("ok"), errors: ALREADY_FAILED }));
   assert.equal(byId.get("mw-6")?.classification, "ready");
 });
 

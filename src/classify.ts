@@ -5,6 +5,7 @@ export type UnclassifiedIssue = Omit<Issue, "classification" | "staleness">;
 export interface ClassifyContext {
   issues: readonly UnclassifiedIssue[];
   lanes: readonly Lane[];
+  collectionComplete: boolean;
   stored?: ReadonlyMap<string, Classification>;
 }
 
@@ -35,11 +36,12 @@ function parentIdOf(id: string): string | undefined {
   return cut === -1 ? undefined : id.slice(0, cut);
 }
 
-function isBlocked(issue: UnclassifiedIssue, issues: readonly UnclassifiedIssue[]): boolean {
-  const byId = new Map(issues.map((other) => [other.id, other]));
+function isBlocked(issue: UnclassifiedIssue, context: ClassifyContext): boolean {
+  const byId = new Map(context.issues.map((other) => [other.id, other]));
   const hasUnclosedEdge = issue.blockedBy.some((id) => {
     const blocker = byId.get(id);
-    return blocker !== undefined && blocker.status !== "closed";
+    if (blocker === undefined) return !context.collectionComplete;
+    return blocker.status !== "closed";
   });
   if (hasUnclosedEdge) return true;
   const parentId = parentIdOf(issue.id);
@@ -56,7 +58,7 @@ export function classify(issue: UnclassifiedIssue, context: ClassifyContext): Cl
     if (issue.labels.includes(label)) return parked;
   }
   if (isUmbrella(issue, context.issues)) return "parked:umbrella";
-  if (isBlocked(issue, context.issues)) return "blocked";
+  if (isBlocked(issue, context)) return "blocked";
   const stored = context.stored?.get(issue.id);
   if (stored !== undefined) return stored;
   return "ready";
