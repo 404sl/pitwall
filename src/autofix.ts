@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { Project, type RepoKind } from "@404sl/pitwall-schema";
 import { collectionError } from "./errors.js";
+import { defaultBranchOf } from "./git.js";
 import { readLanes } from "./lanes.js";
 
 export const WORKSPACE_FILE = ".pitwall.json";
@@ -51,6 +52,7 @@ interface WorkspaceRepo {
   name: string;
   path: string;
   kind: RepoKind;
+  defaultBranch?: string;
 }
 
 function reposOf(root: string, workspace: Record<string, unknown>): WorkspaceRepo[] {
@@ -62,7 +64,13 @@ function reposOf(root: string, workspace: Record<string, unknown>): WorkspaceRep
     .filter(([name]) => !name.startsWith("_"))
     .map(([name, value]) => {
       const repo = asRecord(value, `repo ${name}`);
-      return { name, path: repoPath(root, name, repo), kind: repoKind(repo["deploy"]) };
+      const path = repoPath(root, name, repo);
+      return {
+        name,
+        path,
+        kind: repoKind(repo["deploy"]),
+        defaultBranch: defaultBranchOf(path),
+      };
     });
 }
 
