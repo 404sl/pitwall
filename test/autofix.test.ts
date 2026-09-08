@@ -5,9 +5,10 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 import { Project } from "@404sl/pitwall-schema";
-import { readWorkspace } from "../src/autofix.ts";
+import { readWorkspace, workspaceFile } from "../src/autofix.ts";
 
 const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), "fixtures");
+const NAMES = join(FIXTURES, "names");
 const NO_REGISTRY = { lockRoot: mkdtempSync(join(tmpdir(), "pitwall-no-registry-")) };
 
 test("a multi-repo workspace becomes a Project the contract accepts", () => {
@@ -70,10 +71,10 @@ test("a root that does not exist is a CollectionError, not a throw", () => {
   assert.equal(project.root, missing);
   assert.deepEqual(project.repos, []);
   assert.equal(project.errors.length, 1);
-  assert.equal(project.errors[0]?.source, join(missing, ".autofix.json"));
+  assert.equal(project.errors[0]?.source, join(missing, ".pitwall.json"));
 });
 
-test("a root holding no .autofix.json is a CollectionError", () => {
+test("a root holding neither workspace file is a CollectionError", () => {
   const project = readWorkspace(join(FIXTURES, "empty"), NO_REGISTRY);
   assert.equal(project.errors.length, 1);
   assert.match(project.errors[0]?.message ?? "", /ENOENT/);
@@ -101,4 +102,46 @@ test("an error carries a timestamp the contract accepts", () => {
 test("a relative root is resolved", () => {
   const project = readWorkspace(join(FIXTURES, "multi", "..", "single"), NO_REGISTRY);
   assert.equal(project.root, resolve(FIXTURES, "single"));
+});
+
+test("a workspace named .pitwall.json is read", () => {
+  const project = readWorkspace(join(NAMES, "newonly"), NO_REGISTRY);
+  assert.deepEqual(project.errors, []);
+  assert.equal(project.authority.idPrefix, "newonly");
+});
+
+test("a workspace still named .autofix.json is read", () => {
+  const project = readWorkspace(join(NAMES, "oldonly"), NO_REGISTRY);
+  assert.deepEqual(project.errors, []);
+  assert.equal(project.authority.idPrefix, "oldonly");
+});
+
+test("both names in one directory is a migration, not an error, and the new one wins", () => {
+  const project = readWorkspace(join(NAMES, "both"), NO_REGISTRY);
+  assert.deepEqual(project.errors, []);
+  assert.equal(project.authority.idPrefix, "both-new");
+  assert.deepEqual(
+    project.repos.map((repo) => repo.name),
+    ["site"],
+  );
+});
+
+test("the nearest directory wins, so a parent's .pitwall.json loses to a nearer .autofix.json", () => {
+  assert.equal(workspaceFile(NAMES)?.name, ".pitwall.json");
+  assert.equal(workspaceFile(join(NAMES, "oldonly"))?.name, ".autofix.json");
+  const project = readWorkspace(join(NAMES, "oldonly"), NO_REGISTRY);
+  assert.equal(project.authority.idPrefix, "oldonly");
+});
+
+test("the filename actually used is reported, so a reader can say which one is live", () => {
+  assert.deepEqual(workspaceFile(join(NAMES, "newonly")), {
+    name: ".pitwall.json",
+    path: join(NAMES, "newonly", ".pitwall.json"),
+  });
+  assert.deepEqual(workspaceFile(join(NAMES, "oldonly")), {
+    name: ".autofix.json",
+    path: join(NAMES, "oldonly", ".autofix.json"),
+  });
+  assert.equal(workspaceFile(join(NAMES, "both"))?.name, ".pitwall.json");
+  assert.equal(workspaceFile(join(FIXTURES, "empty")), undefined);
 });

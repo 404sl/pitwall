@@ -2,7 +2,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type { CollectionError, Project } from "@404sl/pitwall-schema";
-import { AUTOFIX_FILE, readWorkspace } from "./autofix.js";
+import { readWorkspace, workspaceFile } from "./autofix.js";
 import { collectionError } from "./errors.js";
 
 export const CONFIG_VAR = "PITWALL_CONFIG";
@@ -51,7 +51,7 @@ function scanForWorkspaces(parent: string, errors: CollectionError[]): string[] 
   }
   return entries
     .map((entry) => join(parent, entry))
-    .filter((dir) => existsSync(join(dir, AUTOFIX_FILE)))
+    .filter((dir) => workspaceFile(dir) !== undefined)
     .sort();
 }
 

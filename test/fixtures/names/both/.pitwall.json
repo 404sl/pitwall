@@ -1,0 +1,6 @@
+{
+  "idPrefix": "both-new",
+  "repos": {
+    "site": { "path": ".", "test": "npm test" }
+  }
+}

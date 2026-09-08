@@ -59,9 +59,11 @@ built** — until it lands, `serve` gives you the API and a placeholder page.
 npx @404sl/pitwall snapshot
 ```
 
-Projects are found by looking for `.autofix.json` files, which describe a workspace: one
-authoritative tracker, and the repositories under it. Run it from a directory whose
-children are project workspaces, or configure the roots explicitly.
+Projects are found by looking for `.pitwall.json` files, which describe a workspace: one
+authoritative tracker, and the repositories under it. The older name `.autofix.json` is
+still read, so a workspace that has not been renamed keeps working; where a directory has
+both, `.pitwall.json` is the one in use. Run it from a directory whose children are
+project workspaces, or configure the roots explicitly.
 
 ## How it is put together
 

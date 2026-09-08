@@ -9,6 +9,7 @@ import { collectProjects, configPath, describeRoots, resolveRoots } from "../src
 
 const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), "fixtures");
 const SCAN = join(FIXTURES, "scan");
+const NAMES = join(FIXTURES, "names");
 
 function withConfig(contents: string): { home: string; path: string } {
   const home = mkdtempSync(join(tmpdir(), "pitwall-config-"));
@@ -158,4 +159,16 @@ test("a PITWALL_CONFIG pointing at a directory is named the same way", () => {
   assert.equal(resolved.errors[0]?.source, dir);
   assert.doesNotMatch(said, /no config/);
   assert.ok(said.includes(resolved.errors[0]?.message ?? "unset"));
+});
+
+test("the scan finds a workspace under either name", () => {
+  const home = mkdtempSync(join(tmpdir(), "pitwall-nohome-"));
+  const resolved = resolveRoots({ env: {}, home, cwd: join(NAMES, "newonly") });
+  assert.equal(resolved.source, "scan");
+  assert.deepEqual(resolved.roots, [
+    join(NAMES, "both"),
+    join(NAMES, "newonly"),
+    join(NAMES, "oldonly"),
+  ]);
+  assert.deepEqual(resolved.errors, []);
 });
