@@ -1,11 +1,13 @@
 import { createReadStream, existsSync, statSync } from "node:fs";
-import { createServer, type Server, type ServerResponse } from "node:http";
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { extname, resolve, sep } from "node:path";
+import { pipeline } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { readSnapshot, type StateOptions } from "./state.js";
 
 export const DEFAULT_PORT = 7373;
 export const HOST = "127.0.0.1";
+export const LOCAL_HOSTNAMES = ["127.0.0.1", "localhost", "[::1]"];
 export const UI_DIR = fileURLToPath(new URL("../dist/ui", import.meta.url));
 
 export interface ServeOptions extends StateOptions {
@@ -81,7 +83,36 @@ function fileFor(uiDir: string, pathname: string): string | undefined {
   if (file !== uiDir && !file.startsWith(uiDir + sep)) {
     return undefined;
   }
-  return existsSync(file) && statSync(file).isFile() ? file : undefined;
+  try {
+    return statSync(file).isFile() ? file : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function sendFile(res: ServerResponse, file: string): void {
+  const stream = createReadStream(file);
+  let open = false;
+  stream.once("open", () => {
+    open = true;
+    res.writeHead(200, { "content-type": CONTENT_TYPES[extname(file)] ?? "application/octet-stream" });
+    pipeline(stream, res, () => {});
+  });
+  stream.once("error", (cause: NodeJS.ErrnoException) => {
+    if (open) {
+      return;
+    }
+    stream.destroy();
+    send(res, 500, "text/plain; charset=utf-8", `Could not read ${file}: ${cause.message}\n`);
+  });
+}
+
+function isLocalHost(host: string | undefined): boolean {
+  if (host === undefined) {
+    return false;
+  }
+  const name = host.startsWith("[") ? host.slice(0, host.indexOf("]") + 1) : host.replace(/:\d*$/, "");
+  return LOCAL_HOSTNAMES.includes(name);
 }
 
 function serveConsole(res: ServerResponse, uiDir: string, pathname: string): void {
@@ -99,13 +130,16 @@ function serveConsole(res: ServerResponse, uiDir: string, pathname: string): voi
     send(res, 404, "text/plain; charset=utf-8", `Not found: ${pathname}\n`);
     return;
   }
-  res.writeHead(200, { "content-type": CONTENT_TYPES[extname(file)] ?? "application/octet-stream" });
-  createReadStream(file).pipe(res);
+  sendFile(res, file);
 }
 
 export function createConsoleServer(options: ServeOptions = {}): Server {
   const uiDir = resolve(options.uiDir ?? UI_DIR);
-  return createServer((req, res) => {
+  return createServer((req: IncomingMessage, res: ServerResponse) => {
+    if (!isLocalHost(req.headers.host)) {
+      send(res, 403, "text/plain; charset=utf-8", "The console answers requests addressed to localhost only.\n");
+      return;
+    }
     const { pathname } = new URL(req.url ?? "/", `http://${HOST}`);
     if (pathname === "/api/snapshot") {
       serveSnapshot(res, options);

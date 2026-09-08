@@ -1,8 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { connect } from "node:net";
+import { request } from "node:http";
 import { networkInterfaces, tmpdir } from "node:os";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
@@ -28,12 +29,32 @@ function stateWith(contents?: string): { env: Record<string, string | undefined>
   return { env: { XDG_STATE_HOME: home }, path };
 }
 
+const OUTSIDE_THE_CONSOLE = "a file the console must never hand out\n";
+
 function builtConsole(): string {
-  const dir = mkdtempSync(join(tmpdir(), "pitwall-ui-"));
+  const root = mkdtempSync(join(tmpdir(), "pitwall-ui-"));
+  const dir = join(root, "ui");
+  mkdirSync(join(dir, "assets"), { recursive: true });
   writeFileSync(join(dir, "index.html"), "<!doctype html><title>Pitwall</title>");
-  mkdirSync(join(dir, "assets"));
   writeFileSync(join(dir, "assets", "console.js"), "export const built = true;\n");
+  writeFileSync(join(root, "outside.txt"), OUTSIDE_THE_CONSOLE);
   return dir;
+}
+
+function withHost(origin: string, path: string, host: string): Promise<{ status: number; body: string }> {
+  const { hostname, port } = new URL(origin);
+  return new Promise((done, failed) => {
+    const call = request({ host: hostname, port, path, headers: { host } }, (response) => {
+      let body = "";
+      response.setEncoding("utf8");
+      response.on("data", (chunk: string) => {
+        body += chunk;
+      });
+      response.on("end", () => done({ status: response.statusCode ?? 0, body }));
+    });
+    call.on("error", failed);
+    call.end();
+  });
 }
 
 async function started(server: Server): Promise<{ origin: string; port: number }> {
@@ -154,7 +175,45 @@ test("an unbuilt console is a 503 naming what builds it, and a stray path is a 4
   t.after(() => built.close());
   const other = await started(built);
   assert.equal((await fetch(`${other.origin}/nope.js`)).status, 404);
-  assert.equal((await fetch(`${other.origin}/%2e%2e/%2e%2e/etc/hosts`)).status, 404);
+});
+
+test("a path that climbs out of the built console is a 404, and hands nothing over", async (t) => {
+  const { env } = stateWith(JSON.stringify(SNAPSHOT));
+  const server = createConsoleServer({ env, uiDir: builtConsole() });
+  t.after(() => server.close());
+  const { origin } = await started(server);
+
+  const climbed = await fetch(`${origin}/..%2foutside.txt`);
+  assert.equal(climbed.status, 404);
+  assert.equal((await climbed.text()).includes(OUTSIDE_THE_CONSOLE), false);
+});
+
+test("a file that cannot be read is an error, and leaves the server answering", { skip: process.getuid?.() === 0 }, async (t) => {
+  const { env } = stateWith(JSON.stringify(SNAPSHOT));
+  const uiDir = builtConsole();
+  chmodSync(join(uiDir, "assets", "console.js"), 0o000);
+  const server = createConsoleServer({ env, uiDir });
+  t.after(() => server.close());
+  const { origin } = await started(server);
+
+  const locked = await fetch(`${origin}/assets/console.js`);
+  assert.equal(locked.status, 500);
+  assert.equal(server.listening, true);
+  assert.equal((await fetch(`${origin}/`)).status, 200);
+});
+
+test("a request addressed to somewhere other than localhost is refused", async (t) => {
+  const { env } = stateWith(JSON.stringify(SNAPSHOT));
+  const server = createConsoleServer({ env, uiDir: builtConsole() });
+  t.after(() => server.close());
+  const { origin } = await started(server);
+
+  const rebound = await withHost(origin, "/api/snapshot", "console.example.com");
+  assert.equal(rebound.status, 403);
+  assert.equal(rebound.body.includes("projects"), false);
+
+  const named = await withHost(origin, "/api/snapshot", `localhost:${new URL(origin).port}`);
+  assert.equal(named.status, 200);
 });
 
 test("the server binds to localhost and is not reachable from the network", async (t) => {
