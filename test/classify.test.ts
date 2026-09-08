@@ -18,6 +18,7 @@ interface Case {
   issue: UnclassifiedIssue;
   siblings?: UnclassifiedIssue[];
   lanes?: Lane[];
+  complete?: boolean;
   stored?: Classification;
   expected: Classification;
 }
@@ -161,6 +162,19 @@ const cases: Case[] = [
     expected: "ready",
   },
   {
+    name: "a dependency edge on an issue absent from an incomplete collection blocks",
+    issue: anIssue("pitwall-a", { blockedBy: ["pitwall-gone"] }),
+    complete: false,
+    expected: "blocked",
+  },
+  {
+    name: "an incomplete collection does not block an edge on an issue it did carry as closed",
+    issue: anIssue("pitwall-a", { blockedBy: ["pitwall-b"] }),
+    siblings: [anIssue("pitwall-b", { status: "closed" })],
+    complete: false,
+    expected: "ready",
+  },
+  {
     name: "a parent in progress blocks its child",
     issue: anIssue("pitwall-a.1"),
     siblings: [anIssue("pitwall-a", { status: "in_progress" })],
@@ -201,6 +215,7 @@ function contextFor(scenario: Case): ClassifyContext {
   return {
     issues: [scenario.issue, ...(scenario.siblings ?? [])],
     lanes: scenario.lanes ?? [],
+    collectionComplete: scenario.complete ?? true,
     stored:
       scenario.stored === undefined ? undefined : new Map([[scenario.issue.id, scenario.stored]]),
   };

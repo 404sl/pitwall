@@ -56,6 +56,7 @@ async function gather(project: Project, options: SnapshotOptions, day: Date): Pr
   const collected = await readIssues(project.root, {
     env: options.env,
     lanes: project.lanes,
+    errors: project.errors,
     timeoutMs: options.timeoutMs,
   });
   return Project.parse({

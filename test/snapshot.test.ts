@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { SCHEMA_VERSION, isYours, parseSnapshot } from "@404sl/pitwall-schema";
 import { collectSnapshot, emitSnapshot } from "../src/snapshot.ts";
@@ -31,6 +31,13 @@ function withConfig(contents: string): Workspace {
 
 function workspace(roots: string[]): Workspace {
   return withConfig(JSON.stringify({ roots }));
+}
+
+function degradedRoot(): string {
+  const root = mkdtempSync(join(tmpdir(), "pitwall-degraded-"));
+  writeFileSync(join(root, ".autofix.json"), '{ "idPrefix": "degraded", "repos": {');
+  cpSync(join(TRACKER, "bd-output"), join(root, "bd-output"), { recursive: true });
+  return root;
 }
 
 function options(place: Workspace, now?: Date) {
@@ -93,6 +100,20 @@ test("closedToday counts the issues closed on the day collection started", async
   assert.equal(onTheDay.projects[0]?.metrics.closedToday, 1);
   const later = await collectSnapshot(options(place, new Date("2026-09-08T09:00:00Z")));
   assert.equal(later.projects[0]?.metrics.closedToday, 0);
+});
+
+test("a project that failed to collect blocks an issue whose blocker it never saw", async () => {
+  const place = workspace([degradedRoot()]);
+  const snapshot = await collectSnapshot({
+    ...options(place),
+    env: { ...place.env, BD_LIST_FIXTURE: "partial" },
+  });
+  const project = snapshot.projects[0];
+  assert.equal(project?.errors.length, 1);
+  const byId = new Map((project?.issues ?? []).map((issue) => [issue.id, issue]));
+  assert.deepEqual(byId.get("mw-6")?.blockedBy, ["mw-9"]);
+  assert.equal(byId.get("mw-6")?.classification, "blocked");
+  assert.equal(byId.get("mw-5")?.classification, "ready");
 });
 
 test("a config that could not be read is carried by the snapshot itself", async () => {
