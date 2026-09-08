@@ -6,7 +6,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
-import { SCHEMA_VERSION } from "@404sl/pitwall-schema";
+import { SCHEMA_VERSION, parseSnapshot } from "@404sl/pitwall-schema";
 import { DEFAULT_PORT, HOST, createConsoleServer, listen, parseServeArgs } from "../src/serve.ts";
 import { snapshotPath, stateHome } from "../src/state.ts";
 import { VERSION } from "../src/version.ts";
@@ -86,7 +86,7 @@ test("the snapshot endpoint serves what is stored", async (t) => {
 
   const response = await fetch(`${origin}/api/snapshot`);
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), SNAPSHOT);
+  assert.deepEqual(await response.json(), parseSnapshot(SNAPSHOT));
 });
 
 test("no snapshot is a 503 that says so, never an empty document", async (t) => {
