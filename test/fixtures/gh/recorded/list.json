@@ -26,5 +26,12 @@
     "labels": [],
     "headRefName": "chore/rename",
     "url": "https://github.com/acme/site/pull/104"
+  },
+  {
+    "number": 105,
+    "title": "Bump the contract package",
+    "labels": [],
+    "headRefName": "chore/bump-schema",
+    "url": "https://github.com/acme/site/pull/105"
   }
 ]

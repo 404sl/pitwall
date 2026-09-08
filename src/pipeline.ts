@@ -37,6 +37,7 @@ const CONTEXT_STATES = new Map<string, Checks>([
 export interface ReadPipelineOptions {
   env?: Record<string, string | undefined>;
   timeoutMs?: number;
+  knownIds?: ReadonlySet<string>;
 }
 
 export interface CollectedPipeline {
@@ -152,14 +153,25 @@ function escaped(prefix: string): string {
   return prefix.replace(/[.*+?^${}()|[\]\\-]/g, "\\$&");
 }
 
-export function issueMatcher(idPrefix: string | undefined): (text: string) => string | undefined {
-  if (idPrefix === undefined || idPrefix === "") {
+export function issueMatcher(
+  idPrefix: string | undefined,
+  knownIds: ReadonlySet<string>,
+): (text: string) => string | undefined {
+  if (idPrefix === undefined || idPrefix === "" || knownIds.size === 0) {
     return () => undefined;
   }
   const pattern = new RegExp(
-    `(?<![A-Za-z0-9-])${escaped(idPrefix)}-[A-Za-z0-9]+(?:\\.[A-Za-z0-9]+)*`,
+    `(?<![A-Za-z0-9])${escaped(idPrefix)}-[A-Za-z0-9]+(?:\\.[A-Za-z0-9]+)*`,
+    "g",
   );
-  return (text) => pattern.exec(text)?.[0];
+  return (text) => {
+    for (const found of text.matchAll(pattern)) {
+      if (knownIds.has(found[0])) {
+        return found[0];
+      }
+    }
+    return undefined;
+  };
 }
 
 async function pullsOf(
@@ -214,7 +226,7 @@ export async function readPipeline(
 ): Promise<CollectedPipeline> {
   const env = options.env ?? process.env;
   const timeoutMs = options.timeoutMs ?? TIMEOUT_MS;
-  const match = issueMatcher(project.authority.idPrefix);
+  const match = issueMatcher(project.authority.idPrefix, options.knownIds ?? new Set());
   const pipeline: PullRequest[] = [];
   const errors: CollectionError[] = [];
   const seen = new Set<string>();

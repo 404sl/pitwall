@@ -45,8 +45,10 @@ function env(bin: string, extra: Record<string, string> = {}): Record<string, st
   return { PATH: `${join(FIXTURES, bin)}:/usr/bin:/bin`, GH_OUTPUT: RECORDED, ...extra };
 }
 
+const KNOWN = new Set(["mw-7", "mw-12", "mw-1.1"]);
+
 async function collected(remote = HTTPS_REMOTE, bin = "ok", extra: Record<string, string> = {}) {
-  return readPipeline(project(remote), { env: env(bin, extra) });
+  return readPipeline(project(remote), { env: env(bin, extra), knownIds: KNOWN });
 }
 
 function byNumber(pipeline: readonly PullRequest[]): Map<number, PullRequest> {
@@ -87,7 +89,7 @@ test("every open pull request reported is one the contract accepts", async () =>
   assert.deepEqual(read.errors, []);
   assert.deepEqual(
     read.pipeline.map((pull) => pull.number),
-    [101, 102, 103, 104],
+    [101, 102, 103, 104, 105],
   );
   for (const pull of read.pipeline) {
     assert.doesNotThrow(() => PullRequest.parse(pull));
@@ -130,19 +132,36 @@ test("a pull request is linked to its issue by its branch name or by its body", 
   assert.equal(pulls.get(104)?.issueId, undefined);
 });
 
+test("a body that names a sibling repository is not read as an issue the tracker never had", async () => {
+  const pulls = byNumber((await collected()).pipeline);
+  assert.equal(pulls.get(105)?.issueId, undefined);
+});
+
 test("linkage takes the project's prefix and not a word that merely ends in it", () => {
-  const match = issueMatcher("mw");
+  const match = issueMatcher("mw", KNOWN);
   assert.equal(match("autofix/mw-1.1"), "mw-1.1");
-  assert.equal(match("homework-12 is not an id"), undefined);
+  assert.equal(match("teamw-12 is not an id"), undefined);
+  assert.equal(match("fix-mw-12"), "mw-12");
   assert.equal(match("nothing here"), undefined);
-  assert.equal(issueMatcher(undefined)("autofix/mw-12"), undefined);
+  assert.equal(issueMatcher(undefined, KNOWN)("autofix/mw-12"), undefined);
+});
+
+test("linkage names an issue the tracker knows or none at all", () => {
+  const match = issueMatcher("mw", KNOWN);
+  assert.equal(match("Bump mw-schema to 0.3.1"), undefined);
+  assert.equal(match("https://github.com/acme/mw-schema/pull/9"), undefined);
+  assert.equal(match("Bump mw-schema, which unblocks mw-7"), "mw-7");
+  assert.equal(issueMatcher("mw", new Set())("autofix/mw-12"), undefined);
 });
 
 test("a project with no idPrefix links nothing rather than guessing", async () => {
-  const read = await readPipeline(project(HTTPS_REMOTE, ""), { env: env("ok") });
+  const read = await readPipeline(project(HTTPS_REMOTE, ""), {
+    env: env("ok"),
+    knownIds: KNOWN,
+  });
   assert.deepEqual(
     read.pipeline.map((pull) => pull.issueId),
-    [undefined, undefined, undefined, undefined],
+    [undefined, undefined, undefined, undefined, undefined],
   );
 });
 
@@ -155,12 +174,13 @@ test("the command carries the slug derived from the remote", async () => {
     "pr list --repo acme/site --state open --limit 200 --json number,title,labels,headRefName,url",
   );
   assert.equal(asked[1], "pr view 101 --repo acme/site --json statusCheckRollup,body");
-  assert.equal(asked.length, 5);
+  assert.equal(asked.length, 6);
 });
 
 test("gh that is not installed is an error naming the command, not an empty pipeline", async () => {
   const read = await readPipeline(project(HTTPS_REMOTE), {
     env: { PATH: join(FIXTURES, "missing"), GH_OUTPUT: RECORDED },
+    knownIds: KNOWN,
   });
   assert.deepEqual(read.pipeline, []);
   assert.equal(read.errors.length, 1);
@@ -181,7 +201,7 @@ test("gh that cannot authenticate reports what it said rather than reporting not
 });
 
 test("a repo with no remote to name is passed over without inventing a failure", async () => {
-  const read = await readPipeline(project(), { env: env("ok") });
+  const read = await readPipeline(project(), { env: env("ok"), knownIds: KNOWN });
   assert.deepEqual(read.pipeline, []);
   assert.deepEqual(read.errors, []);
 });
