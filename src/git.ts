@@ -32,7 +32,7 @@ const ORIGIN = "origin";
 const GITHUB_HOST = "github.com";
 const SCHEME = /^([a-z][a-z0-9+.-]*):\/\//i;
 const GIT_SCHEMES = new Set(["http", "https", "ssh", "git"]);
-const AUTHORITY = /^([^/:]+)[:/](.+)$/;
+const AUTHORITY = /^([^/:]+)([:/])(.+)$/;
 const PORT = /^\d+\//;
 
 export function slugOf(url: string): string | undefined {
@@ -47,8 +47,9 @@ export function slugOf(url: string): string | undefined {
     return undefined;
   }
   const host = (split[1] ?? "").toLowerCase();
-  const routed = split[2] ?? "";
-  const path = (scheme === null ? routed : routed.replace(PORT, "")).replace(/\.git$/, "");
+  const routed = split[3] ?? "";
+  const ported = scheme !== null && split[2] === ":";
+  const path = (ported ? routed.replace(PORT, "") : routed).replace(/\.git$/, "");
   if (!path.includes("/") || path.startsWith("/") || path.endsWith("/")) {
     return undefined;
   }

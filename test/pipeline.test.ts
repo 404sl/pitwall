@@ -59,6 +59,8 @@ test("a slug is read out of the remote in both the https and the ssh form", () =
   assert.equal(slugOf("https://github.com/acme/site"), "acme/site");
   assert.equal(slugOf("ssh://git@github.com/acme/site.git"), "acme/site");
   assert.equal(slugOf("https://user@github.com/acme/site.git/"), "acme/site");
+  assert.equal(slugOf("ssh://git@github.com:22/acme/site.git"), "acme/site");
+  assert.equal(slugOf("https://github.com/12345/site.git"), "12345/site");
 });
 
 test("a remote on somebody else's host keeps the host rather than pointing at github", () => {
@@ -157,7 +159,9 @@ test("the command carries the slug derived from the remote", async () => {
 });
 
 test("gh that is not installed is an error naming the command, not an empty pipeline", async () => {
-  const read = await collected(HTTPS_REMOTE, "missing");
+  const read = await readPipeline(project(HTTPS_REMOTE), {
+    env: { PATH: join(FIXTURES, "missing"), GH_OUTPUT: RECORDED },
+  });
   assert.deepEqual(read.pipeline, []);
   assert.equal(read.errors.length, 1);
   assert.equal(
@@ -165,6 +169,7 @@ test("gh that is not installed is an error naming the command, not an empty pipe
     "gh pr list --repo acme/site --state open --limit 200 --json number,title,labels,headRefName,url",
   );
   assert.match(read.errors[0]?.message ?? "", /gh pr list --repo acme\/site/);
+  assert.match(read.errors[0]?.message ?? "", /ENOENT/);
 });
 
 test("gh that cannot authenticate reports what it said rather than reporting nothing open", async () => {
