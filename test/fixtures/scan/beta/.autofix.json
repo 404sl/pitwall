@@ -1,0 +1,4 @@
+{
+  "idPrefix": "beta",
+  "repos": { "site": { "path": ".", "test": "npm test", "deploy": ["ship it"] } }
+}

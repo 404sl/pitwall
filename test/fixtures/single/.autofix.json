@@ -1,0 +1,16 @@
+{
+  "_root": "ignored",
+  "root": "/nowhere/that/exists",
+  "idPrefix": "one",
+  "lockPrefix": "single",
+  "lanes": 1,
+  "repos": {
+    "site": {
+      "path": ".",
+      "role": "rails",
+      "test": "bundle exec rspec",
+      "lint": "bundle exec rubocop",
+      "deploy": ["timeout 900 bundle exec mina staging deploy"]
+    }
+  }
+}

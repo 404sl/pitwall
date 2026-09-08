@@ -1,0 +1,32 @@
+{
+  "_": "ignored",
+  "_root": "ignored",
+  "root": "/nowhere/that/exists",
+  "_idPrefix": "ignored",
+  "idPrefix": "mw",
+  "lockPrefix": "multi",
+  "lanes": 6,
+  "deployEvery": 3,
+  "repos": {
+    "_": "ignored",
+    "site": {
+      "_": "ignored",
+      "path": "site",
+      "role": "rails",
+      "test": "bundle exec rspec",
+      "lint": "bundle exec rubocop",
+      "deploy": ["deploy staging", "deploy production"]
+    },
+    "extension": {
+      "path": "extension",
+      "test": "npm test",
+      "lint": "npm run lint"
+    },
+    "docs": {
+      "_deploy": "ignored",
+      "path": "docs",
+      "test": "ruby script/check.rb",
+      "deploy": []
+    }
+  }
+}
