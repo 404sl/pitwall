@@ -56,7 +56,7 @@ const CATEGORY_CLASSIFICATION = new Map<string, Classification>([["frozen", "par
 export interface ReadIssuesOptions {
   env?: Record<string, string | undefined>;
   lanes?: readonly Lane[];
-  errors?: readonly CollectionError[];
+  errors: readonly CollectionError[];
   timeoutMs?: number;
 }
 
@@ -229,7 +229,7 @@ function toIssue(
 
 export async function readIssues(
   root: string,
-  options: ReadIssuesOptions = {},
+  options: ReadIssuesOptions,
 ): Promise<CollectedIssues> {
   const beadsDir = join(resolve(root), BEADS_DIR);
   const env = options.env ?? process.env;
@@ -246,7 +246,7 @@ export async function readIssues(
     const context: ClassifyContext = {
       issues: all,
       lanes: options.lanes ?? [],
-      collectionComplete: (options.errors?.length ?? 0) === 0,
+      collectionComplete: options.errors.length === 0,
       stored: parked,
     };
     const issues = active.map((issue) =>
