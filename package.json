@@ -27,7 +27,7 @@
     "dev": "tsx src/cli.ts"
   },
   "dependencies": {
-    "@404sl/pitwall-schema": "file:../schema"
+    "@404sl/pitwall-schema": "^0.3.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

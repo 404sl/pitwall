@@ -5,11 +5,11 @@ on:
     branches: [master]
   pull_request:
 
-# The CLI depends on the contract as file:../schema, which is how it resolves in a
-# developer's workspace and in an autofix worktree. So CI reproduces that layout
-# rather than working around it: both repos are checked out as siblings and the job
-# runs inside cli/. Publishing the contract to npm would remove the need for this,
-# and is deliberately not done yet.
+# The contract is now a published dependency, so CI installs it from the registry
+# like any other. This used to check both repositories out as siblings so that
+# file:../schema would resolve - that is gone, and with it the class of failure
+# where a lane compiled against whatever happened to be in the schema working tree
+# at that instant.
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -20,16 +20,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           path: cli
-      - uses: actions/checkout@v4
-        with:
-          repository: 404sl/pitwall-schema
-          ref: master
-          path: schema
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
-      - run: npm install
-        working-directory: schema
       - run: npm install
         working-directory: cli
       - run: npm run lint
