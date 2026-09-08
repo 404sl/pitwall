@@ -9,5 +9,13 @@ case "$*" in
   "statuses --json") cat "$out/statuses.json" ;;
   "list --all --limit 0 --json") cat "$out/${BD_LIST_FIXTURE:-all}.json" ;;
   "blocked --json") cat "$out/blocked.json" ;;
+  "show --id "*" --json --include-dependents")
+    if [ -f "$out/show-$3.json" ]; then
+      cat "$out/show-$3.json"
+    else
+      echo "Error fetching $3: no issue found matching \"$3\"" >&2
+      exit 1
+    fi
+    ;;
   *) echo "Error: unknown command: bd $*" >&2; exit 2 ;;
 esac

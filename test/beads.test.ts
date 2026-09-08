@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { Issue, type CollectionError, type Lane } from "@404sl/pitwall-schema";
-import { readIssues } from "../src/beads.ts";
+import { readIssue, readIssues, showArgs } from "../src/beads.ts";
 
 const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "bd");
 const TRACKER = join(FIXTURES, "tracker");
@@ -260,4 +260,97 @@ test("a failure carries a timestamp and a source the contract accepts", async ()
   const error = collected.errors[0];
   assert.equal(error?.source, join(TRACKER, ".beads"));
   assert.match(error?.at ?? "", /^\d{4}-\d{2}-\d{2}T/);
+});
+
+function keysIn(value: unknown, found: Set<string> = new Set()): Set<string> {
+  if (Array.isArray(value)) {
+    for (const entry of value) keysIn(entry, found);
+    return found;
+  }
+  if (typeof value === "object" && value !== null) {
+    for (const [key, entry] of Object.entries(value)) {
+      found.add(key);
+      keysIn(entry, found);
+    }
+  }
+  return found;
+}
+
+test("the collected issues carry no body, however much body the tracker reports", async () => {
+  const collected = await readIssues(TRACKER, { env: env("ok"), errors: [] });
+  const carried = keysIn(collected.issues);
+  assert.equal(carried.has("description"), false, "a description must never reach the snapshot");
+  assert.equal(carried.has("notes"), false, "notes must never reach the snapshot");
+  assert.equal(carried.has("acceptance_criteria"), false);
+  assert.ok(carried.has("title"));
+});
+
+test("one issue is read with its body, and with the rule that classified it", async () => {
+  const reading = await readIssue(TRACKER, "mw-1", { env: env("ok"), errors: [] });
+  assert.equal(reading.kind, "found");
+  if (reading.kind !== "found") return;
+  assert.match(reading.issue.description ?? "", /The screen this product exists to show/);
+  assert.match(reading.issue.notes ?? "", /Signal colours never decorate/);
+  assert.deepEqual(reading.issue.reason, { rule: "umbrella-open-child", childId: "mw-1.1" });
+  assert.equal(reading.issue.classification, "parked:umbrella");
+  assert.deepEqual(reading.issue.origin, { session: "mw-planning-session", ref: "c1796a" });
+});
+
+test("a dependency row is a blocking edge, never a merely related one", async () => {
+  const reading = await readIssue(TRACKER, "mw-1", { env: env("ok"), errors: [] });
+  assert.equal(reading.kind, "found");
+  if (reading.kind !== "found") return;
+  assert.deepEqual(
+    reading.issue.blockedBy.map((link) => [link.id, link.status]),
+    [["mw-9", "closed"]],
+  );
+  assert.deepEqual(
+    reading.issue.blocks.map((link) => [link.id, link.status]),
+    [["mw-1.1", "open"]],
+  );
+});
+
+test("a closed issue is read with its body and no active classification", async () => {
+  const reading = await readIssue(TRACKER, "mw-9", { env: env("ok"), errors: [] });
+  assert.equal(reading.kind, "found");
+  if (reading.kind !== "found") return;
+  assert.equal(reading.issue.status, "closed");
+  assert.notEqual(reading.issue.classification, "ready", "finished work must not read as ready");
+  assert.equal(reading.issue.classification, undefined);
+  assert.deepEqual(reading.issue.reason, { rule: "closed" });
+  assert.match(reading.issue.description ?? "", /Vite, React and one stylesheet/);
+  assert.deepEqual(
+    reading.issue.blocks.map((link) => link.id),
+    ["mw-1"],
+  );
+});
+
+test("a closed umbrella is not parked either - a closed issue is parked by nothing", async () => {
+  const reading = await readIssue(TRACKER, "mw-4", { env: env("ok"), errors: [] });
+  assert.equal(reading.kind, "found");
+  if (reading.kind !== "found") return;
+  assert.equal(reading.issue.classification, undefined);
+  assert.deepEqual(reading.issue.reason, { rule: "closed" });
+});
+
+test("an issue the tracker does not hold is missing, not a failure to read", async () => {
+  const reading = await readIssue(TRACKER, "mw-nope", { env: env("ok"), errors: [] });
+  assert.equal(reading.kind, "missing");
+  assert.ok(reading.tried.length > 0);
+});
+
+test("an authority that cannot be read says what it ran, and does not read as absence", async () => {
+  const reading = await readIssue(TRACKER, "mw-1", { env: env("failing"), errors: [] });
+  assert.equal(reading.kind, "unreadable");
+  if (reading.kind !== "unreadable") return;
+  assert.deepEqual(reading.tried, ["bd statuses --json"]);
+  assert.match(reading.error.message, /bd statuses --json/);
+  assert.match(reading.error.source, /\.beads$/);
+});
+
+test("reading one issue runs nothing that could write to the tracker", async () => {
+  const reading = await readIssue(TRACKER, "mw-1", { env: env("ok"), errors: [] });
+  const ran = reading.tried.map((command) => command.split(" ")[1]);
+  assert.deepEqual(ran, ["statuses", "list", "blocked", "show"]);
+  assert.deepEqual(showArgs("mw-1"), ["show", "--id", "mw-1", "--json", "--include-dependents"]);
 });

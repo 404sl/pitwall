@@ -1,5 +1,6 @@
 import { LANE_CHIP_LIMIT, type LaneChip, type RunningRow, type RunningState, type RunningTotal } from "../model.js";
 import { elapsed } from "../format.js";
+import { issueHref } from "../routes.js";
 import { strings } from "../strings.js";
 
 const STATE_WORD: Record<RunningState, string> = {
@@ -22,14 +23,25 @@ function chipLabel(chip: LaneChip): string {
   return chip.id ?? `${strings.lane.unassigned} ${chip.slot}`;
 }
 
-function Chips({ chips }: { chips: LaneChip[] }) {
+function ChipId({ chip, projectId }: { chip: LaneChip; projectId: string }) {
+  if (chip.id === undefined) {
+    return <span className="pw-chip__id">{chipLabel(chip)}</span>;
+  }
+  return (
+    <a className="pw-chip__id pw-link pw-link--chip" href={issueHref(projectId, chip.id)}>
+      {chip.id}
+    </a>
+  );
+}
+
+function Chips({ chips, projectId }: { chips: LaneChip[]; projectId: string }) {
   const shown = chips.slice(0, LANE_CHIP_LIMIT);
   const rest = chips.length - shown.length;
   return (
     <span className="pw-chips">
       {shown.map((chip) => (
         <span key={`${chip.slot}`} className="pw-chip">
-          <span className="pw-chip__id">{chipLabel(chip)}</span>
+          <ChipId chip={chip} projectId={projectId} />
           <span
             className="pw-chip__elapsed"
             title={chip.elapsedMs === undefined ? strings.lane.noActivity : undefined}
@@ -67,7 +79,7 @@ export function Running({ rows }: { rows: RunningRow[] }) {
               <span className="pw-count">{row.count}</span> {STATE_WORD[row.state]}
             </td>
             <td className="pw-cell pw-cell--chips">
-              <Chips chips={row.chips} />
+              <Chips chips={row.chips} projectId={row.projectId} />
             </td>
           </tr>
         ))}

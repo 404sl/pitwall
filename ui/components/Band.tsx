@@ -5,16 +5,18 @@ interface BandProps {
   label: string;
   count?: ReactNode;
   alert?: boolean;
+  level?: "h2" | "h3";
   children: ReactNode;
 }
 
-export function Band({ id, label, count, alert = false, children }: BandProps) {
+export function Band({ id, label, count, alert = false, level = "h2", children }: BandProps) {
+  const Head = level;
   return (
     <section className={alert ? "pw-band pw-band--alert" : "pw-band"} aria-labelledby={`band-${id}`}>
-      <h2 className="pw-band__head" id={`band-${id}`}>
+      <Head className="pw-band__head" id={`band-${id}`}>
         <span className="pw-band__label">{label}</span>
         {count === undefined ? null : <span className="pw-band__count">{count}</span>}
-      </h2>
+      </Head>
       {children}
     </section>
   );
