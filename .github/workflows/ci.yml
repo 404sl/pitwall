@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+# The CLI depends on the contract as file:../schema, which is how it resolves in a
+# developer's workspace and in an autofix worktree. So CI reproduces that layout
+# rather than working around it: both repos are checked out as siblings and the job
+# runs inside cli/. Publishing the contract to npm would remove the need for this,
+# and is deliberately not done yet.
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: ["20", "22"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: cli
+      - uses: actions/checkout@v4
+        with:
+          repository: 404sl/pitwall-schema
+          ref: master
+          path: schema
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - run: npm install
+        working-directory: schema
+      - run: npm install
+        working-directory: cli
+      - run: npm run lint
+        working-directory: cli
+      - run: npm test
+        working-directory: cli
+      - run: npm run build
+        working-directory: cli
