@@ -1,6 +1,10 @@
+<!-- Absolute URLs, not repository-relative. npmjs.com renders this same file when the
+     package is published and resolves relative paths against its own host, where they do
+     not exist - so a relative logo works on GitHub and is a broken image on the page most
+     people arrive at. -->
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="ui/brand/logo/pitwall-lockup-dark.svg">
-  <img alt="Pitwall" src="ui/brand/logo/pitwall-lockup-light.svg" width="280">
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/404sl/pitwall/master/ui/brand/logo/pitwall-lockup-dark.svg">
+  <img alt="Pitwall" src="https://raw.githubusercontent.com/404sl/pitwall/master/ui/brand/logo/pitwall-lockup-light.svg" width="280">
 </picture>
 
 One screen over every project you have work running in — what is blocked, what needs
