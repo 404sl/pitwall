@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.1.5
+
+**A pull request number is meaningless without its repository, and `cd`-ing first is not
+enough.** `gh pr view 20` means "number 20 in whatever repository this directory points at",
+so a run routed to the wrong checkout gets a real, plausible answer instead of an error.
+
+In a workspace of three repositories, numbers 1-10 existed in all three and 1-20 in two. A
+bare number never 404s, so there is no failing case to notice. A run nearly labelled an
+unrelated, already-merged pull request as verified - which the lander merges on sight - and
+it was caught only because the two titles happened to be absurdly different. Two tickets of
+the same kind would not have that tell.
+
+Every `gh pr` command a run is given now carries `--repo`, and the lane's brief says to use it
+on every one, including inside the checkout.
+
+This does not fix the misrouting itself, which is tracked separately. It removes the
+consequence: a run in the wrong checkout now fails to find its pull request instead of finding
+somebody else's.
+
+
 ## 0.1.4
 
 A lane may be handed an instruction to append authorship trailers to commits and a

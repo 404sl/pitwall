@@ -314,6 +314,13 @@ NON-NEGOTIABLE RULES. They outrank speed, and they outrank finishing the task.
    they failed every commit. Do NOT run 'bd hooks install' to repair them - it also installs
    a prepare-commit-msg hook that appends agent identity trailers to commit messages, which
    rule 1 forbids. If a commit is blocked by a hook, say so and stop.
+12. EVERY `gh pr` COMMAND CARRIES ITS REPOSITORY. Use `--repo <owner/name>` on every one,
+   including inside the checkout. A bare number means "whichever repository this directory
+   points at", which is the assumption that is wrong when a run has been routed to the wrong
+   checkout - and pull request numbers overlap across the repositories here, so a bare number
+   returns a real answer rather than an error. There is no failing case to catch it.
+   The slug for this run is given above. If a command needs a number from another repository,
+   name that repository explicitly too.
 `
 
 // The config may place a repo anywhere under the workspace; falling back to the repo's own name
@@ -962,6 +969,16 @@ Do not modify the branch, do not push, do not merge, do not deploy. Never use 2>
 function handoffPrompt(task, work) {
   const wtPath = work.worktree || `${WT}/${task.id}`
   const repo = repoPath(task.repo)
+  // A PULL REQUEST NUMBER IS MEANINGLESS WITHOUT ITS REPOSITORY, and `cd`-ing first is not
+  // enough. `gh pr view 20` means "number 20 in whatever repo this directory points at", so a
+  // run that was routed to the wrong checkout gets a real, plausible answer instead of an
+  // error. In this workspace numbers 1-10 exist in ALL THREE repositories and 1-20 in two, so
+  // a bare number NEVER 404s - there is no failing case to notice.
+  //
+  // That nearly labelled an unrelated merged pull request as verified, which the lander merges
+  // on sight. It was caught only because the two titles were absurdly different; two tickets
+  // of the same kind would not have that tell, and this queue produces those constantly.
+  const slug = (REPOS[task.repo] || {}).slug
   return `This change passed an automated adversarial review by another agent. NO HUMAN HAS
 REVIEWED IT. Do not describe it as human-approved to anyone or in anything you write.
 
@@ -975,7 +992,7 @@ Repo: ${task.repo}
 PR: ${work.prUrl || work.prNumber}
 
 1. WAIT FOR THE PR'S OWN CHECKS AND CONFIRM THEY ARE GREEN. Poll, do not assume:
-     cd ${repo} && gh pr view ${work.prNumber} --json statusCheckRollup,headRefOid
+     cd ${repo} && gh pr view ${work.prNumber} --repo ${slug} --json statusCheckRollup,headRefOid
 
    Every check must have conclusion SUCCESS, AND THERE MUST BE AT LEAST ONE. For the first
    minute or so after a push the rollup is an EMPTY ARRAY - GitHub has not registered the run
@@ -1007,10 +1024,10 @@ PR: ${work.prUrl || work.prNumber}
 
 2. CHECK COMPLIANCE BEFORE YOU LABEL. Read the PR body back from GitHub and the commit
    messages back from git - not what you meant to write, what is actually there:
-     cd ${repo} && gh pr view ${work.prNumber} --json body
+     cd ${repo} && gh pr view ${work.prNumber} --repo ${slug} --json body
      cd ${repo} && git log origin/master..origin/devloop/${task.id} --format=%B
    If anything mentions AI, assistants, automated authorship or tooling, FIX IT NOW rather
-   than labelling it: edit the body with 'gh pr edit ${work.prNumber} --body-file <file>', and
+   than labelling it: edit the body with 'gh pr edit ${work.prNumber} --repo ${slug} --body-file <file>', and
    if a commit message is the problem say so in 'notes' and return 'blocked' - rewriting
    history under a pushed branch is not something to do unattended.
 
@@ -1072,7 +1089,7 @@ PR: ${work.prUrl || work.prNumber}
    Use --check-only to see the verdict without changing anything.
 
    If the script is missing, do it by hand with the steps below, which are the same sequence:
-     cd ${repo} && gh pr edit ${work.prNumber} --add-label lane-verified
+     cd ${repo} && gh pr edit ${work.prNumber} --repo ${slug} --add-label lane-verified
 
    If that fails because the label does not exist in this repository, create it once and
    retry:
@@ -1080,7 +1097,7 @@ PR: ${work.prUrl || work.prNumber}
 
    Then READ IT BACK. gh often prints nothing on success, and silence looks exactly like
    failure:
-     cd ${repo} && gh pr view ${work.prNumber} --json labels
+     cd ${repo} && gh pr view ${work.prNumber} --repo ${slug} --json labels
    The label must be in that list. If it is not, the lander will never see this PR and the
    work is invisible - say so in 'notes' and return 'blocked'.
 
