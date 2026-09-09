@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.1.6
+
+**0.1.5 could not be dispatched.** Rule 12 was written with backticks around 'gh pr' and
+'--repo <owner/name>'. The rules are one large template literal, so those closed it early and
+the Workflow runner refused the file:
+
+    Invalid workflow script: Script parse error: Unexpected token (317:11)
+
+No run could start. The rule is now quoted with single quotes and reads identically.
+
+**Why nothing caught it.** The file stayed VALID JavaScript - it became a different program,
+not a broken one - so `node --check` reported it fine, and CI passed, because nothing in CI
+loads these files the way the runner does. Another signal answering a narrower question than
+the one being asked of it.
+
+There is now a test asserting the invariant directly: the brief a run is given contains no
+backticks at all. It was verified to fail on the broken file and pass on the fixed one, rather
+than assumed to work.
+
+
 ## 0.1.5
 
 **A pull request number is meaningless without its repository, and `cd`-ing first is not

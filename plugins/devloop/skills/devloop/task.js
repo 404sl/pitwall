@@ -314,7 +314,7 @@ NON-NEGOTIABLE RULES. They outrank speed, and they outrank finishing the task.
    they failed every commit. Do NOT run 'bd hooks install' to repair them - it also installs
    a prepare-commit-msg hook that appends agent identity trailers to commit messages, which
    rule 1 forbids. If a commit is blocked by a hook, say so and stop.
-12. EVERY `gh pr` COMMAND CARRIES ITS REPOSITORY. Use `--repo <owner/name>` on every one,
+12. EVERY 'gh pr' COMMAND CARRIES ITS REPOSITORY. Use '--repo <owner/name>' on every one,
    including inside the checkout. A bare number means "whichever repository this directory
    points at", which is the assumption that is wrong when a run has been routed to the wrong
    checkout - and pull request numbers overlap across the repositories here, so a bare number

@@ -10,7 +10,7 @@
     {
       "name": "devloop",
       "description": "Work a project backlog unattended: pick eligible issues by priority, fix each in its own git worktree, review adversarially, and land the green pull request. One pool of lanes, a serial lander, and a monitor that speaks only when something needs a person.",
-      "version": "0.1.5",
+      "version": "0.1.6",
       "author": {
         "name": "404 Software Labs"
       },
