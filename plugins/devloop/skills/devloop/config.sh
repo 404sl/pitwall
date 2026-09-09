@@ -39,6 +39,15 @@ set -u
 # The environment override still names one file explicitly and is unaffected. It keeps
 # its old variable name deliberately - renaming a variable that people have in shell
 # profiles and dispatch scripts breaks them silently, and it costs nothing to leave.
+# WHERE THIS SKILL LIVES. The workflow scripts need it to invoke their siblings -
+# lane-handoff.sh, rspec-quiet.sh - and they have no filesystem access to find it
+# themselves, so it has to travel in the args object like everything else.
+#
+# It is DERIVED here rather than configured. This file sits beside those scripts by
+# definition, and the install path carries a version segment that changes on every
+# update, so anything written down would be wrong by the next release.
+SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 CONFIG_NAMES=".pitwall.json .autofix.json"
 
 find_config() {
@@ -138,12 +147,13 @@ PY
   --args)
     # config.sh --args <issue-id> <slot>  ->  the args object for a task.js dispatch
     [ $# -ge 3 ] || { echo "usage: config.sh --args <issue-id> <slot>" >&2; exit 2; }
-    python3 - "$CONFIG" "$2" "$3" <<'PY'
+    python3 - "$CONFIG" "$2" "$3" "$SKILL_DIR" <<'PY'
 import json, sys
 cfg = json.load(open(sys.argv[1]))
 print(json.dumps({
     "id": sys.argv[2],
     "slot": int(sys.argv[3]),
+    "skillDir": sys.argv[4],
     "root": cfg["root"],
     "idPrefix": cfg.get("idPrefix", "sr"),
     "lockPrefix": cfg.get("lockPrefix", "devloop"),
@@ -161,19 +171,20 @@ PY
     # GIVEN NONE, THE FIELD IS OMITTED, which land.js reads as do-not-filter. That is the
     # old behaviour and it is safe; an empty list would instead mean land nothing.
     shift
-    python3 - "$CONFIG" "$@" <<'PY'
+    python3 - "$CONFIG" "$SKILL_DIR" "$@" <<'PY'
 import json, sys
 cfg = json.load(open(sys.argv[1]))
 repos = cfg.get("repos", {})
 out = {
-    "root": cfg["root"],
+    "skillDir": sys.argv[2],
+        "root": cfg["root"],
     "idPrefix": cfg.get("idPrefix", "sr"),
     "lockPrefix": cfg.get("lockPrefix", "devloop"),
     "deployEvery": cfg.get("deployEvery", 3),
     "repos": repos,
 }
 pre = []
-for a in sys.argv[2:]:
+for a in sys.argv[3:]:
     a = a.strip()
     if not a:
         continue

@@ -22,6 +22,24 @@ export const meta = {
 // the one that wrote them. A default that is right for its author is invisible to its author.
 const input = (typeof args === 'string' ? JSON.parse(args) : args) || {}
 const SKILL_DIR = input.skillDir
+
+// REFUSE RATHER THAN RENDER "undefined". This value is interpolated into shell commands
+// the lane is told to run - `bash ${SKILL_DIR}/lane-handoff.sh` and, for a Rails repo,
+// `bash ${SKILL_DIR}/rspec-quiet.sh`. Absent, those render as `bash undefined/...`, and a
+// lane that cannot find a script does not stop: it does the steps by hand and the run
+// SUCCEEDS, leaving no trace in the outcome.
+//
+// That is why this is fatal rather than a warning. lane-handoff.sh is the gate that refuses
+// to label a pull request whose checks are empty, failing or stale; a lane doing it by hand
+// asserts the label on its own judgement instead. rspec-quiet.sh is how a Rails lane gets
+// TEST_ENV_NUMBER, so without it the suite runs against the shared database.
+//
+// Silent degradation into a manual path that usually works is worse than a broken one that
+// stops, because nothing downstream can tell the difference.
+if (!SKILL_DIR) {
+  return { status: 'error', notes: 'skillDir was not supplied. config.sh --args emits it; a hand-built args object must too. Refusing rather than running lanes against `undefined`.' }
+}
+
 const ROOT = input.root
 
 // FOUR REPOSITORIES CARRY lane-verified PULL REQUESTS, NOT ONE. An earlier version of this file
