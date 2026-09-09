@@ -4,34 +4,56 @@
     "title": "Read each repo's real default branch instead of defaulting to main",
     "labels": [{ "id": "LA_1", "name": "lane-verified", "color": "0e8a16" }],
     "headRefName": "autofix/mw-12",
-    "url": "https://github.com/acme/site/pull/101"
+    "url": "https://github.com/acme/site/pull/101",
+    "body": "Reads origin/HEAD rather than assuming main.",
+    "statusCheckRollup": [
+      { "__typename": "CheckRun", "name": "test (20)", "status": "COMPLETED", "conclusion": "SUCCESS" },
+      { "__typename": "CheckRun", "name": "test (22)", "status": "COMPLETED", "conclusion": "SKIPPED" },
+      { "__typename": "StatusContext", "context": "license/cla", "state": "SUCCESS" }
+    ]
   },
   {
     "number": 102,
     "title": "Harden the lane reader against a slot registry it did not write",
     "labels": [],
     "headRefName": "fix/lane-registry",
-    "url": "https://github.com/acme/site/pull/102"
+    "url": "https://github.com/acme/site/pull/102",
+    "body": "Fixes mw-7 - a registry written by another tool was read as ours.",
+    "statusCheckRollup": [
+      { "__typename": "CheckRun", "name": "test (20)", "status": "COMPLETED", "conclusion": "SUCCESS" },
+      { "__typename": "CheckRun", "name": "test (22)", "status": "COMPLETED", "conclusion": "FAILURE" }
+    ]
   },
   {
     "number": 103,
     "title": "Serve the console from the snapshot on disk",
     "labels": [{ "id": "LA_2", "name": "needs-review", "color": "d93f0b" }],
     "headRefName": "feature/console-serve",
-    "url": "https://github.com/acme/site/pull/103"
+    "url": "https://github.com/acme/site/pull/103",
+    "body": "No tracker id here.",
+    "statusCheckRollup": [
+      { "__typename": "CheckRun", "name": "test (20)", "status": "COMPLETED", "conclusion": "SUCCESS" },
+      { "__typename": "CheckRun", "name": "test (22)", "status": "IN_PROGRESS", "conclusion": "" }
+    ]
   },
   {
     "number": 104,
     "title": "Rename the workspace file",
     "labels": [],
     "headRefName": "chore/rename",
-    "url": "https://github.com/acme/site/pull/104"
+    "url": "https://github.com/acme/site/pull/104",
+    "body": "No tracker id here either.",
+    "statusCheckRollup": []
   },
   {
     "number": 105,
     "title": "Bump the contract package",
     "labels": [],
     "headRefName": "chore/bump-schema",
-    "url": "https://github.com/acme/site/pull/105"
+    "url": "https://github.com/acme/site/pull/105",
+    "body": "Bump mw-schema to 0.3.1 - see https://github.com/acme/mw-schema/pull/9.",
+    "statusCheckRollup": [
+      { "__typename": "CheckRun", "name": "test (20)", "status": "COMPLETED", "conclusion": "SUCCESS" }
+    ]
   }
 ]

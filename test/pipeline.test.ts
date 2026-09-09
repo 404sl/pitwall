@@ -8,7 +8,7 @@ import { dirname, join } from "node:path";
 import { PullRequest, type Project } from "@404sl/pitwall-schema";
 import { readWorkspace, WORKSPACE_FILE } from "../src/autofix.ts";
 import { remoteSlugOf, slugOf } from "../src/git.ts";
-import { issueMatcher, readPipeline, rollupChecks } from "../src/pipeline.ts";
+import { LIST_LIMIT, issueMatcher, readPipeline, rollupChecks } from "../src/pipeline.ts";
 
 const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "gh");
 const RECORDED = join(FIXTURES, "recorded");
@@ -171,10 +171,39 @@ test("the command carries the slug derived from the remote", async () => {
   const asked = readFileSync(log, "utf8").trim().split("\n");
   assert.equal(
     asked[0],
-    "pr list --repo acme/site --state open --limit 200 --json number,title,labels,headRefName,url",
+    "pr list --repo acme/site --state open --limit 200 --json number,title,labels,headRefName,url,statusCheckRollup,body",
   );
-  assert.equal(asked[1], "pr view 101 --repo acme/site --json statusCheckRollup,body");
-  assert.equal(asked.length, 6);
+  assert.equal(asked.length, 1);
+});
+
+test("a repo is read in one call rather than one call for every pull request it has open", async () => {
+  const log = join(mkdtempSync(join(tmpdir(), "pitwall-ghlog-")), "asked");
+  const read = await collected(HTTPS_REMOTE, "ok", { GH_LOG: log });
+  assert.equal(read.pipeline.length, 5);
+  assert.equal(readFileSync(log, "utf8").trim().split("\n").length, 1);
+});
+
+test("a listing that came back at the limit is reported rather than read as everything open", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pitwall-atlimit-"));
+  writeFileSync(
+    join(dir, "list.json"),
+    JSON.stringify(
+      Array.from({ length: LIST_LIMIT }, (_unused, index) => ({
+        number: index + 1,
+        title: `Pull ${index + 1}`,
+        labels: [],
+        headRefName: `chore/${index + 1}`,
+        url: `https://github.com/acme/site/pull/${index + 1}`,
+        body: "",
+        statusCheckRollup: [],
+      })),
+    ),
+  );
+  const read = await collected(HTTPS_REMOTE, "ok", { GH_OUTPUT: dir });
+  assert.equal(read.pipeline.length, LIST_LIMIT);
+  assert.equal(read.errors.length, 1);
+  assert.match(read.errors[0]?.source ?? "", /^gh pr list --repo acme\/site/);
+  assert.match(read.errors[0]?.message ?? "", new RegExp(`${LIST_LIMIT} pull request limit`));
 });
 
 test("gh that is not installed is an error naming the command, not an empty pipeline", async () => {
@@ -186,7 +215,7 @@ test("gh that is not installed is an error naming the command, not an empty pipe
   assert.equal(read.errors.length, 1);
   assert.equal(
     read.errors[0]?.source,
-    "gh pr list --repo acme/site --state open --limit 200 --json number,title,labels,headRefName,url",
+    "gh pr list --repo acme/site --state open --limit 200 --json number,title,labels,headRefName,url,statusCheckRollup,body",
   );
   assert.match(read.errors[0]?.message ?? "", /gh pr list --repo acme\/site/);
   assert.match(read.errors[0]?.message ?? "", /ENOENT/);
@@ -198,6 +227,25 @@ test("gh that cannot authenticate reports what it said rather than reporting not
   assert.equal(read.errors.length, 1);
   assert.match(read.errors[0]?.source ?? "", /^gh pr list --repo acme\/site/);
   assert.match(read.errors[0]?.message ?? "", /gh auth login/);
+});
+
+test("a second repo sharing one origin is recorded as dropped, not merged into the first", async () => {
+  const root = mkdtempSync(join(tmpdir(), "pitwall-pipeline-"));
+  checkout(root, "site", HTTPS_REMOTE);
+  checkout(root, "mirror", SSH_REMOTE);
+  writeFileSync(
+    join(root, WORKSPACE_FILE),
+    JSON.stringify({
+      idPrefix: "mw",
+      repos: { site: { path: "site" }, mirror: { path: "mirror" } },
+    }),
+  );
+  const read = await readPipeline(readWorkspace(root), { env: env("ok"), knownIds: KNOWN });
+  assert.deepEqual(new Set(read.pipeline.map((pull) => pull.repo)), new Set(["site"]));
+  assert.equal(read.pipeline.length, 5);
+  assert.equal(read.errors.length, 1);
+  assert.equal(read.errors[0]?.source, join(root, "mirror"));
+  assert.match(read.errors[0]?.message ?? "", /mirror shares the origin acme\/site with site/);
 });
 
 test("a repo with no remote to name is passed over without inventing a failure", async () => {

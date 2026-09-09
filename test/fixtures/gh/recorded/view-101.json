@@ -1,8 +1,0 @@
-{
-  "body": "Reads origin/HEAD rather than assuming main.",
-  "statusCheckRollup": [
-    { "__typename": "CheckRun", "name": "test (20)", "status": "COMPLETED", "conclusion": "SUCCESS" },
-    { "__typename": "CheckRun", "name": "test (22)", "status": "COMPLETED", "conclusion": "SKIPPED" },
-    { "__typename": "StatusContext", "context": "license/cla", "state": "SUCCESS" }
-  ]
-}
