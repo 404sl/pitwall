@@ -187,7 +187,8 @@ function metricsOf(frames: readonly Frame[], day: Date): HistoryMetrics {
       (track) => track.closedAt !== undefined && sameDay(track.closedAt, day),
     ).length,
     medianTimeToLandMinutes: median(durations.filter((minutes) => minutes >= 0)),
-    bounceRate: claimed.length === 0 ? undefined : bounced.length / claimed.length,
+    bounceRate:
+      frames.length < 2 || claimed.length === 0 ? undefined : bounced.length / claimed.length,
   };
 }
 
@@ -197,7 +198,7 @@ function append(db: DatabaseSync, snapshot: Snapshot): void {
 
 function prune(db: DatabaseSync, limits: HistoryLimits, now: Date): void {
   db.prepare(DELETE_OLDER).run(new Date(now.getTime() - limits.maxAgeDays * DAY_MS).toISOString());
-  db.prepare(DELETE_BEYOND).run(limits.maxSnapshots);
+  db.prepare(DELETE_BEYOND).run(Math.max(Math.floor(limits.maxSnapshots), 1));
 }
 
 function derive(db: DatabaseSync, windowDays: number, now: Date): Map<string, HistoryMetrics> {
@@ -213,11 +214,11 @@ function derive(db: DatabaseSync, windowDays: number, now: Date): Map<string, Hi
   return derived;
 }
 
-async function sqlite(): Promise<typeof import("node:sqlite")> {
+async function sqlite(): Promise<typeof import("node:sqlite") | undefined> {
   try {
     return await import("node:sqlite");
   } catch {
-    throw new Error("node:sqlite is not in this Node - history needs Node 22.13 or newer");
+    return undefined;
   }
 }
 
@@ -228,11 +229,14 @@ export async function recordSnapshot(
   const path = historyPath(options);
   const now = options.now ?? new Date(snapshot.generatedAt);
   const limits = options.limits ?? DEFAULT_LIMITS;
+  const sql = await sqlite();
+  if (sql === undefined) {
+    return { path, metrics: new Map() };
+  }
   let db: DatabaseSync | undefined;
   try {
-    const { DatabaseSync } = await sqlite();
     mkdirSync(dirname(path), { recursive: true });
-    db = new DatabaseSync(path);
+    db = new sql.DatabaseSync(path);
     db.exec(CREATE);
     append(db, snapshot);
     prune(db, limits, now);

@@ -315,11 +315,16 @@ test("emitting a snapshot appends it to the history store", { skip: !hasSqlite }
   const rows = readFileSync(historyPath(state));
   assert.ok(rows.length > 0);
   assert.equal(result.snapshot.projects[0]?.metrics.landedToday, 0);
-  assert.deepEqual(result.snapshot.errors, []);
   assert.doesNotThrow(() => parseSnapshot(result.snapshot));
 });
 
-test("a history store that cannot be opened costs the metrics, not the snapshot", async () => {
+test("the snapshot carries no run-level error on any supported Node", async () => {
+  const place = workspace([TRACKER]);
+  const result = await emitSnapshot(options(place, new Date("2026-09-08T09:00:00Z")));
+  assert.deepEqual(result.snapshot.errors, []);
+});
+
+test("a history store that cannot be opened costs the metrics, not the snapshot", { skip: !hasSqlite }, async () => {
   const place = workspace([TRACKER]);
   const path = historyPath({ env: place.env, home: place.home });
   mkdirSync(path, { recursive: true });

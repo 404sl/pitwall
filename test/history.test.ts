@@ -1,6 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { SCHEMA_VERSION, parseSnapshot, type Snapshot } from "@404sl/pitwall-schema";
@@ -158,7 +160,37 @@ test("a single snapshot answers nothing it cannot see", { skip: withoutSqlite },
   const metrics = only.metrics.get("mw");
   assert.equal(metrics?.landedToday, 0);
   assert.equal(metrics?.medianTimeToLandMinutes, undefined);
-  assert.equal(metrics?.bounceRate, 0);
+  assert.equal(metrics?.bounceRate, undefined);
+});
+
+test("a second reading is what turns a bounce rate into a number", { skip: withoutSqlite }, async () => {
+  const { home, env } = place();
+  await record(home, env, document(at(60), [{ id: "mw-1", status: "in_progress" }]), DEFAULT_LIMITS, new Date(at(60)));
+  const second = await record(
+    home,
+    env,
+    document(at(0), [{ id: "mw-1", status: "in_progress" }]),
+    DEFAULT_LIMITS,
+    NOW,
+  );
+  assert.equal(second.metrics.get("mw")?.bounceRate, 0);
+});
+
+test("a Node without node:sqlite loses the metrics and reports nothing", { skip: withoutSqlite }, () => {
+  const { home, env } = place();
+  const source = fileURLToPath(new URL("../src/history.ts", import.meta.url));
+  const probe = [
+    `const { recordSnapshot } = await import(${JSON.stringify(source)});`,
+    `const result = await recordSnapshot(${JSON.stringify(document(at(0), []))}, { env: ${JSON.stringify(env)}, home: ${JSON.stringify(home)} });`,
+    "console.log(JSON.stringify({ error: result.error ?? null, metrics: result.metrics.size }));",
+  ].join("\n");
+  const run = spawnSync(
+    process.execPath,
+    ["--no-experimental-sqlite", "--import", "tsx", "--input-type=module", "-e", probe],
+    { encoding: "utf8" },
+  );
+  assert.equal(run.status, 0, run.stderr);
+  assert.deepEqual(JSON.parse(run.stdout.trim()), { error: null, metrics: 0 });
 });
 
 test("a snapshot that could not read a project is not read as everything closing", { skip: withoutSqlite }, async () => {
@@ -188,6 +220,19 @@ test("writing past the bound prunes the oldest rows rather than growing", { skip
   );
 });
 
+test("a bound the store cannot hold is floored rather than refused", { skip: withoutSqlite }, async () => {
+  const { home, env } = place();
+  const limits = { maxSnapshots: 2.5, maxAgeDays: 30 };
+  for (const minutes of [30, 20, 10, 0]) {
+    await record(home, env, document(at(minutes), []), limits, new Date(at(minutes)));
+  }
+  const rows = stored(historyPath({ env, home }));
+  assert.deepEqual(
+    rows.map((row) => row.generated_at),
+    [at(10), at(0)],
+  );
+});
+
 test("a row older than the age bound does not survive the next write", { skip: withoutSqlite }, async () => {
   const { home, env } = place();
   const limits = { maxSnapshots: DEFAULT_LIMITS.maxSnapshots, maxAgeDays: 30 };
@@ -213,7 +258,7 @@ test("a corrupt store reports the failure and answers no history metrics", { ski
   assert.ok((result.error?.message ?? "") !== "");
 });
 
-test("a store that cannot be written degrades rather than throwing", async () => {
+test("a store that cannot be written degrades rather than throwing", { skip: withoutSqlite }, async () => {
   const { home, env } = place();
   const path = historyPath({ env, home });
   mkdirSync(dirname(dirname(path)), { recursive: true });
