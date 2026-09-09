@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.1.1
+
+**Fixes a regression introduced in 0.1.0.** Removing the hardcoded workspace fallbacks was
+right, but `skillDir` had only ever been supplied *by* that fallback - `config.sh --args`
+never emitted it. So every lane dispatched the documented way rendered its commands as
+`bash undefined/...`.
+
+It degraded silently rather than failing. A lane told to run a script that does not exist
+does the steps by hand and the run succeeds, leaving no trace in the outcome. What is lost is
+the gate: `lane-handoff.sh` refuses to label a pull request whose checks are empty, failing or
+stale, so a lane doing it by hand asserts the label on its own judgement instead. For a Rails
+repo `rspec-quiet.sh` is how the suite gets `TEST_ENV_NUMBER`, so without it the run has no
+database isolation.
+
+- `config.sh` now derives its own directory and emits `skillDir` from both `--args` and
+  `--land`. Derived rather than configured: the install path carries a version segment, so
+  anything written down is wrong by the next release.
+- The four workflow scripts **refuse** when `skillDir` is absent rather than interpolating
+  `undefined`. Silent degradation into a manual path that usually works is worse than a
+  failure that stops, because nothing downstream can tell the difference.
+
+
 ## 0.1.0
 
 First published version.
