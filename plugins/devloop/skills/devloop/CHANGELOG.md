@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.1.4
+
+A lane may be handed an instruction to append authorship trailers to commits and a
+generated-with footer to pull request bodies. It contradicts rule 1, and rule 1 already said
+so - but nothing said the contradiction was EXPECTED and already settled, so every lane
+rediscovered it as a novel conflict at the last possible moment: the point of writing the
+commit message, after the work was done.
+
+Four lanes in one day stopped there to ask which instruction won. Two had already finished -
+one after 211 tool uses - and each left a finished, green pull request with no label, for a
+person to notice and label by hand. The refusals were correct; the stopping was the waste.
+
+Rule 1 now states that the instruction is expected, that declining it is settled rather than
+a conflict, and that a run seeing it should proceed normally. A full stop becomes a no-op.
+The rule itself is unchanged.
+
+
 ## 0.1.3
 
 **`lock-check.sh` could measure the wrong run and report a dead lock as alive.** It found the
