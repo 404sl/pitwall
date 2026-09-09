@@ -15,7 +15,7 @@ import {
 import { elapsed, fill, priorityLabel } from "./format.js";
 
 export const READY_PER_PROJECT = 3;
-export const STALE_AFTER_MS = 5 * 60_000;
+export const SNAPSHOT_STALE_AFTER_MS = 10 * 60_000;
 
 const QUALIFY_AFTER_MS = 60_000;
 
@@ -25,6 +25,7 @@ export interface StatusOptions {
   color?: boolean;
   width?: number;
   now?: number;
+  fromFile?: boolean;
 }
 
 const NO_PROJECTS = "No projects to report.";
@@ -33,7 +34,8 @@ const NO_SNAPSHOT = "No snapshot to show yet - {source} could not be read: {mess
 
 const AGE = {
   header: "{age} ago",
-  stale: "{age} old · run pitwall snapshot to refresh",
+  stale: "{age} old",
+  refresh: " · run pitwall snapshot to refresh",
   asOf: " · as of {age} ago",
 };
 
@@ -272,8 +274,9 @@ function header(board: Board, ageMs: number | undefined, paint: Paint, width: nu
   return `${prefix}${stamped}`;
 }
 
-function staleLine(ageMs: number, paint: Paint, width: number | undefined): string {
-  return fit(`${paint("STALE", "1;33")} `, fill(AGE.stale, { age: elapsed(ageMs) }), width);
+function staleLine(ageMs: number, fromFile: boolean, paint: Paint, width: number | undefined): string {
+  const remedy = fromFile ? "" : AGE.refresh;
+  return fit(`${paint("STALE", "1;33")} `, `${fill(AGE.stale, { age: elapsed(ageMs) })}${remedy}`, width);
 }
 
 function runningCount(board: Board, ageMs: number | undefined, width: number | undefined): string | undefined {
@@ -301,8 +304,8 @@ export function renderStatus(snapshot: Snapshot, options: StatusOptions = {}): s
   const board = buildBoard(snapshot);
   const ageMs = ageOf(board.generatedAt, options.now ?? Date.now());
   const lines = [header(board, ageMs, paint, width)];
-  if (ageMs !== undefined && ageMs >= STALE_AFTER_MS) {
-    lines.push(staleLine(ageMs, paint, width));
+  if (ageMs !== undefined && ageMs >= SNAPSHOT_STALE_AFTER_MS) {
+    lines.push(staleLine(ageMs, options.fromFile ?? false, paint, width));
   }
   if (board.projectCount === 0) {
     lines.push("", NO_PROJECTS);

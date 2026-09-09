@@ -72,7 +72,8 @@ if (isEntry) {
       },
     );
   } else if (status !== undefined) {
-    const stored = status.from === undefined ? readSnapshot() : readSnapshotFrom(status.from);
+    const { from } = status;
+    const stored = from === undefined ? readSnapshot() : readSnapshotFrom(from);
     if (stored.snapshot === undefined) {
       process.stderr.write(`pitwall status: ${missingSnapshotMessage(stored.error)}\n`);
       process.exitCode = 1;
@@ -81,6 +82,7 @@ if (isEntry) {
         renderStatus(stored.snapshot, {
           color: wantsColor(process.env, process.stdout.isTTY === true),
           width: terminalWidth(process.stdout),
+          fromFile: from !== undefined,
         }),
       );
     }

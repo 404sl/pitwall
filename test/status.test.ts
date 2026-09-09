@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { SCHEMA_VERSION, parseSnapshot, type Snapshot } from "@404sl/pitwall-schema";
 import {
   READY_PER_PROJECT,
-  STALE_AFTER_MS,
+  SNAPSHOT_STALE_AFTER_MS,
   missingSnapshotMessage,
   renderStatus,
   parseStatusArgs,
@@ -305,13 +305,26 @@ test("a snapshot taken moments ago carries its age quietly and is not called sta
 });
 
 test("the stale threshold is a boundary, and the running qualifier starts a minute in", () => {
-  const almost = render(BUSY, { now: NOW + STALE_AFTER_MS - 1 });
+  const almost = render(BUSY, { now: NOW + SNAPSHOT_STALE_AFTER_MS - 1 });
   assert.doesNotMatch(almost, /STALE/);
-  assert.match(almost, /RUNNING 1 working · 1 awaiting lander · as of 4m ago/);
-  const over = render(BUSY, { now: NOW + STALE_AFTER_MS });
-  assert.match(over, /^STALE 5m old/m);
-  assert.match(over, /as of 5m ago/);
+  assert.match(almost, /RUNNING 1 working · 1 awaiting lander · as of 9m ago/);
+  const over = render(BUSY, { now: NOW + SNAPSHOT_STALE_AFTER_MS });
+  assert.match(over, /^STALE 10m old/m);
+  assert.match(over, /as of 10m ago/);
   assert.match(render(BUSY, { now: NOW + 59_999 }), /^RUNNING 1 working · 1 awaiting lander$/m);
+});
+
+test("the terminal calls a snapshot stale at the same age the console does", () => {
+  assert.equal(SNAPSHOT_STALE_AFTER_MS, 10 * 60_000);
+});
+
+test("a file read with --from is still called stale but is not told to run a command that would not touch it", () => {
+  const aged = { now: NOW + 25 * 60_000 };
+  assert.match(lineAt(render(BUSY, aged), 1), /^STALE 25m old · run pitwall snapshot to refresh$/);
+  const given = render(BUSY, { ...aged, fromFile: true });
+  assert.match(lineAt(given, 1), /^STALE 25m old$/);
+  assert.doesNotMatch(given, /refresh/);
+  assert.match(given, /as of 25m ago/);
 });
 
 test("a narrow terminal keeps the age and drops the timestamp whole rather than cutting it", () => {
