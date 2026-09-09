@@ -72,7 +72,6 @@ body {
   align-items: baseline;
   flex-wrap: wrap;
   gap: 4px 12px;
-  min-inline-size: 0;
 }
 
 .pw-header__meta,

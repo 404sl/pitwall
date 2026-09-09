@@ -117,7 +117,7 @@ export function App() {
       }
       if (running !== undefined) {
         setVersion(running.running);
-        setUpdate((known) => running.update ?? known);
+        setUpdate(running.update);
       }
       const next = buildBoard(snapshot);
       held.current = next;
