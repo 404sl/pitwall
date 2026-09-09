@@ -82,12 +82,35 @@ function asRecord(value: unknown, what: string): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
+function triedOf(roots: ResolvedRoots): string {
+  return roots.source === "config" ? `read ${roots.configPath}` : `scan ${roots.from}`;
+}
+
 function rootsCheck(roots: ResolvedRoots): Check {
-  const tried = roots.source === "config" ? `read ${roots.configPath}` : `scan ${roots.from}`;
   const rejected = roots.errors.some((error) => error.source === roots.configPath);
   const severity: Severity =
     roots.roots.length === 0 ? "fail" : rejected ? "warn" : "ok";
-  return { severity, name: "roots", tried, result: describeRoots(roots) };
+  return { severity, name: "roots", tried: triedOf(roots), result: describeRoots(roots) };
+}
+
+function timesListed(roots: ResolvedRoots): Map<string, number> {
+  const counted = new Map<string, number>();
+  for (const root of roots.roots) {
+    const dir = resolve(root);
+    counted.set(dir, (counted.get(dir) ?? 0) + 1);
+  }
+  return counted;
+}
+
+function repeatedRootChecks(roots: ResolvedRoots, counted: ReadonlyMap<string, number>): Check[] {
+  return [...counted]
+    .filter(([, times]) => times > 1)
+    .map(([dir, times]) => ({
+      severity: "fail" as const,
+      name: `${basename(dir)} listed`,
+      tried: triedOf(roots),
+      result: `${dir} is listed ${times} times · the console reports this workspace ${times} times`,
+    }));
 }
 
 async function ghCheck(
@@ -312,9 +335,14 @@ export async function diagnose(options: DoctorOptions = {}): Promise<Diagnosis> 
   const env = options.env ?? process.env;
   const timeoutMs = options.timeoutMs ?? PROBE_TIMEOUT_MS;
   const roots = resolveRoots(options);
-  const checks: Check[] = [rootsCheck(roots), await ghCheck(env, timeoutMs)];
+  const counted = timesListed(roots);
+  const checks: Check[] = [
+    rootsCheck(roots),
+    ...repeatedRootChecks(roots, counted),
+    await ghCheck(env, timeoutMs),
+  ];
   const claims = new Map<string, string[]>();
-  for (const root of new Set(roots.roots)) {
+  for (const root of counted.keys()) {
     const reading = await workspaceChecks(root, options);
     checks.push(...reading.checks);
     if (reading.lockPrefix !== undefined) {

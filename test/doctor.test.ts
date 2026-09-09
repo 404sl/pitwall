@@ -243,17 +243,20 @@ test("a workspace whose repos is not an object fails without abandoning the rest
   }
 });
 
-test("the same root listed twice is checked once and is not a shared lockPrefix", async () => {
+test("the same root listed twice is checked once and is reported as listed twice", async () => {
   const dir = healthy();
   const twice = await diagnose(options([dir, dir]));
   assert.equal(twice.checks.filter((check) => check.name === basename(dir)).length, 1);
   assert.equal(named(twice, "lockPrefix").severity, "ok");
-  assert.equal(twice.code, 0);
+  const repeated = named(twice, `${basename(dir)} listed`);
+  assert.equal(repeated.severity, "fail");
+  assert.ok(repeated.result.includes(dir), `result does not name the root: ${repeated.result}`);
+  assert.match(repeated.result, /listed 2 times/);
+  assert.match(repeated.result, /the console reports this workspace 2 times/);
+  assert.equal(twice.code, 1);
   const once = await diagnose(options([dir]));
-  assert.deepEqual(
-    twice.checks.map((check) => check.name),
-    once.checks.map((check) => check.name),
-  );
+  assert.equal(once.checks.filter((check) => check.name.endsWith(" listed")).length, 0);
+  assert.equal(once.code, 0);
 });
 
 test("the report prints one line per check, plus a header and a count", () => {
