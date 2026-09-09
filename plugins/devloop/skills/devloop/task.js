@@ -880,6 +880,21 @@ Otherwise:
    a verdict - whoever reads it should not have to re-derive it. If part of the ticket does
    hold, say which part and leave that as its own issue rather than closing it away.
    Never invent a change to justify a ticket.
+
+   CONFIRM IT AGAINST THE RUNNING THING, NOT THE SOURCE, wherever the answer depends on the
+   cascade, on runtime state, or on how pieces compose. Reading the source tells you what a
+   rule SAYS; it does not tell you what wins. A ticket reported a credit at 1.05:1 - white on
+   a near-white surface - and the stylesheet agreed with it. The rendered page did not: a class
+   selector beat the rule the ticket had read, and the measured contrast was 18.17:1. Reading
+   the code would have CONFIRMED a bug that does not exist.
+
+   THEN CHECK THE REMEDY THE SAME WAY, because a ticket can be wrong twice. That same ticket
+   proposed switching to a token which, on those routes, resolves to its light value - 2.98:1,
+   a real failure. The suggested fix would have introduced the defect the ticket was written to
+   remove. A premise you have disproved does not make the remedy safe; it makes it unexamined.
+
+   This costs one lane and no commit when the ticket is wrong, and it is the cheapest check
+   available. Do it before the work, not after.
 2. Make the smallest change that fixes it. Match the surrounding style and naming.
 
    WRITE NO COMMENTS. The owner's instruction, 2026-08-28, in their own words: "I don't need
