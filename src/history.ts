@@ -12,22 +12,30 @@ export const DEFAULT_WINDOW_DAYS = 14;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const MINUTE_MS = 60 * 1000;
 
+export const STORE_VERSION = 2;
+
 const CREATE = `
 CREATE TABLE IF NOT EXISTS snapshots (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   schema_version TEXT NOT NULL,
   generated_at TEXT NOT NULL,
-  document TEXT NOT NULL
+  document TEXT NOT NULL,
+  frame TEXT
 );
 CREATE INDEX IF NOT EXISTS snapshots_generated_at ON snapshots (generated_at);
 `;
 
-const INSERT = "INSERT INTO snapshots (schema_version, generated_at, document) VALUES (?, ?, ?)";
+const SELECT_FRAME_COLUMN =
+  "SELECT count(*) AS held FROM pragma_table_info('snapshots') WHERE name = 'frame'";
+const ADD_FRAME_COLUMN = "ALTER TABLE snapshots ADD COLUMN frame TEXT";
+const SELECT_STORE_VERSION = "PRAGMA user_version";
+const INSERT =
+  "INSERT INTO snapshots (schema_version, generated_at, document, frame) VALUES (?, ?, ?, ?)";
 const DELETE_OLDER = "DELETE FROM snapshots WHERE generated_at < ?";
 const DELETE_BEYOND =
   "DELETE FROM snapshots WHERE id NOT IN (SELECT id FROM snapshots ORDER BY id DESC LIMIT ?)";
 const SELECT_WINDOW =
-  "SELECT generated_at, document FROM snapshots WHERE generated_at >= ? ORDER BY generated_at ASC, id ASC";
+  "SELECT generated_at, frame, CASE WHEN frame IS NULL THEN document END AS document FROM snapshots WHERE generated_at >= ? ORDER BY generated_at ASC, id ASC";
 
 export interface HistoryLimits {
   maxSnapshots: number;
@@ -66,12 +74,27 @@ interface StoredDocument {
 
 interface StoredRow {
   generated_at: string;
-  document: string;
+  frame: string | null;
+  document: string | null;
+}
+
+interface HeldProject {
+  id?: unknown;
+  statuses?: Record<string, unknown>;
+}
+
+interface HeldFrame {
+  projects?: HeldProject[];
 }
 
 interface Frame {
   at: Date;
   statuses: Map<string, Status>;
+}
+
+interface Reading {
+  at: Date;
+  projects: { id: string; statuses: Map<string, Status> }[];
 }
 
 interface Track {
@@ -93,7 +116,7 @@ function statusOf(value: unknown): Status | undefined {
   return value === "open" || value === "in_progress" || value === "closed" ? value : undefined;
 }
 
-function frameOf(project: StoredProject, at: Date): Frame | undefined {
+function statusesOf(project: StoredProject): Map<string, Status> | undefined {
   const issues = project.issues ?? [];
   if (issues.length === 0 && (project.errors ?? []).length > 0) {
     return undefined;
@@ -105,25 +128,78 @@ function frameOf(project: StoredProject, at: Date): Frame | undefined {
       statuses.set(issue.id, status);
     }
   }
-  return { at, statuses };
+  return statuses;
+}
+
+function frameText(snapshot: Snapshot): string {
+  const projects: { id: string; statuses: Record<string, Status> }[] = [];
+  for (const project of snapshot.projects) {
+    const statuses = statusesOf(project);
+    if (statuses === undefined) {
+      continue;
+    }
+    projects.push({ id: project.id, statuses: Object.fromEntries(statuses) });
+  }
+  return JSON.stringify({ projects });
+}
+
+function readingOfFrame(text: string, at: Date): Reading {
+  const held = JSON.parse(text) as HeldFrame;
+  const projects: Reading["projects"] = [];
+  for (const project of held.projects ?? []) {
+    if (typeof project.id !== "string") {
+      continue;
+    }
+    const statuses = new Map<string, Status>();
+    for (const [id, value] of Object.entries(project.statuses ?? {})) {
+      const status = statusOf(value);
+      if (status !== undefined) {
+        statuses.set(id, status);
+      }
+    }
+    projects.push({ id: project.id, statuses });
+  }
+  return { at, projects };
+}
+
+function readingOfDocument(text: string, generatedAt: string): Reading | undefined {
+  const document = JSON.parse(text) as StoredDocument;
+  const stamp = typeof document.generatedAt === "string" ? document.generatedAt : generatedAt;
+  const at = new Date(stamp);
+  if (Number.isNaN(at.getTime())) {
+    return undefined;
+  }
+  const projects: Reading["projects"] = [];
+  for (const project of document.projects ?? []) {
+    const statuses = statusesOf(project);
+    if (statuses === undefined) {
+      continue;
+    }
+    projects.push({ id: project.id, statuses });
+  }
+  return { at, projects };
+}
+
+function readingOf(row: StoredRow): Reading | undefined {
+  if (typeof row.frame === "string") {
+    const at = new Date(row.generated_at);
+    return Number.isNaN(at.getTime()) ? undefined : readingOfFrame(row.frame, at);
+  }
+  return typeof row.document === "string"
+    ? readingOfDocument(row.document, row.generated_at)
+    : undefined;
 }
 
 function framesByProject(rows: Iterable<StoredRow>): Map<string, Frame[]> {
   const frames = new Map<string, Frame[]>();
   for (const row of rows) {
-    const document = JSON.parse(row.document) as StoredDocument;
-    const stamp = typeof document.generatedAt === "string" ? document.generatedAt : row.generated_at;
-    const at = new Date(stamp);
-    if (Number.isNaN(at.getTime())) {
+    const reading = readingOf(row);
+    if (reading === undefined) {
       continue;
     }
-    for (const project of document.projects ?? []) {
-      const frame = frameOf(project, at);
-      if (frame === undefined) {
-        continue;
-      }
+    for (const project of reading.projects) {
       const seen = frames.get(project.id) ?? [];
-      seen.push(frame);
+      seen.push({ at: reading.at, statuses: project.statuses });
       frames.set(project.id, seen);
     }
   }
@@ -197,8 +273,24 @@ function metricsOf(frames: readonly Frame[], day: Date): HistoryMetrics {
   };
 }
 
+function migrate(db: DatabaseSync): void {
+  const held = db.prepare(SELECT_FRAME_COLUMN).get() as { held: number };
+  if (held.held === 0) {
+    db.exec(ADD_FRAME_COLUMN);
+  }
+  const version = db.prepare(SELECT_STORE_VERSION).get() as { user_version: number };
+  if (version.user_version !== STORE_VERSION) {
+    db.exec(`PRAGMA user_version = ${STORE_VERSION}`);
+  }
+}
+
 function append(db: DatabaseSync, snapshot: Snapshot): void {
-  db.prepare(INSERT).run(snapshot.schemaVersion, snapshot.generatedAt, JSON.stringify(snapshot));
+  db.prepare(INSERT).run(
+    snapshot.schemaVersion,
+    snapshot.generatedAt,
+    JSON.stringify(snapshot),
+    frameText(snapshot),
+  );
 }
 
 function prune(db: DatabaseSync, limits: HistoryLimits, now: Date): void {
@@ -240,6 +332,7 @@ export async function recordSnapshot(
     mkdirSync(dirname(path), { recursive: true });
     db = new sql.DatabaseSync(path);
     db.exec(CREATE);
+    migrate(db);
     append(db, snapshot);
     prune(db, limits, now);
     return { path, metrics: derive(db, options.windowDays ?? DEFAULT_WINDOW_DAYS, now) };

@@ -5,8 +5,9 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import type { DatabaseSync } from "node:sqlite";
 import { SCHEMA_VERSION, parseSnapshot, type Snapshot } from "@404sl/pitwall-schema";
-import { DEFAULT_LIMITS, historyPath, recordSnapshot } from "../src/history.ts";
+import { DEFAULT_LIMITS, STORE_VERSION, historyPath, recordSnapshot } from "../src/history.ts";
 import { VERSION } from "../src/version.ts";
 
 const sqlite = await import("node:sqlite").then(
@@ -67,6 +68,23 @@ function stored(path: string): { schema_version: string; generated_at: string }[
   } finally {
     db.close();
   }
+}
+
+function inside<T>(path: string, read: (db: DatabaseSync) => T): T {
+  const db = new sqlite!.DatabaseSync(path);
+  try {
+    return read(db);
+  } finally {
+    db.close();
+  }
+}
+
+function frames(path: string): (string | null)[] {
+  return inside(path, (db) =>
+    (db.prepare("SELECT frame FROM snapshots ORDER BY id ASC").all() as unknown as {
+      frame: string | null;
+    }[]).map((row) => row.frame),
+  );
 }
 
 async function record(
@@ -234,6 +252,80 @@ test("the window is read a snapshot at a time rather than held whole", { skip: w
       bounceRate: 0,
     },
   });
+});
+
+test("the window derives off the frames and reads a document only where one is missing", { skip: withoutSqlite }, async () => {
+  const { home, env } = place();
+  const readings: readonly [string, Observed[]][] = [
+    [
+      at(1560),
+      [
+        { id: "mw-1", status: "open" },
+        { id: "mw-2", status: "open" },
+        { id: "mw-3", status: "in_progress" },
+      ],
+    ],
+    [
+      at(180),
+      [
+        { id: "mw-1", status: "in_progress" },
+        { id: "mw-2", status: "open" },
+        { id: "mw-3", status: "in_progress" },
+      ],
+    ],
+    [
+      at(60),
+      [
+        { id: "mw-2", status: "in_progress" },
+        { id: "mw-3", status: "in_progress" },
+      ],
+    ],
+  ];
+  for (const [generatedAt, issues] of readings) {
+    await record(home, env, document(generatedAt, issues), DEFAULT_LIMITS, new Date(generatedAt));
+  }
+  const path = historyPath({ env, home });
+  inside(path, (db) => {
+    db.exec("UPDATE snapshots SET frame = NULL WHERE id = 1");
+    db.exec("UPDATE snapshots SET document = 'not a document' WHERE id > 1");
+  });
+  const last = await record(home, env, document(at(0), [{ id: "mw-2", status: "open" }]), DEFAULT_LIMITS, new Date(at(0)));
+  const metrics = last.metrics.get("mw");
+  assert.equal(last.error, undefined);
+  assert.equal(metrics?.landedToday, 2);
+  assert.equal(metrics?.closedToday, 2);
+  assert.equal(metrics?.medianTimeToLandMinutes, 840);
+  assert.equal(metrics?.bounceRate, 1 / 3);
+});
+
+test("a store written before the frame column gains it and still derives across both", { skip: withoutSqlite }, async () => {
+  const { home, env } = place();
+  const path = historyPath({ env, home });
+  mkdirSync(dirname(path), { recursive: true });
+  inside(path, (db) => {
+    db.exec(
+      "CREATE TABLE snapshots (id INTEGER PRIMARY KEY AUTOINCREMENT, schema_version TEXT NOT NULL, generated_at TEXT NOT NULL, document TEXT NOT NULL)",
+    );
+    const insert = db.prepare(
+      "INSERT INTO snapshots (schema_version, generated_at, document) VALUES (?, ?, ?)",
+    );
+    for (const minutes of [120, 60]) {
+      const held = document(at(minutes), [{ id: "mw-1", status: "in_progress" }]);
+      insert.run(SCHEMA_VERSION, at(minutes), JSON.stringify(held));
+    }
+  });
+  const last = await record(home, env, document(at(0), []), DEFAULT_LIMITS, NOW);
+  const metrics = last.metrics.get("mw");
+  assert.equal(last.error, undefined);
+  assert.equal(metrics?.landedToday, 1);
+  assert.equal(metrics?.closedToday, 1);
+  assert.equal(metrics?.medianTimeToLandMinutes, 120);
+  assert.deepEqual(frames(path).slice(0, 2), [null, null]);
+  assert.equal(JSON.parse(frames(path)[2] as string).projects[0].id, "mw");
+  assert.equal(
+    inside(path, (db) => (db.prepare("PRAGMA user_version").get() as unknown as { user_version: number }).user_version),
+    STORE_VERSION,
+  );
 });
 
 test("a snapshot that could not read a project is not read as everything closing", { skip: withoutSqlite }, async () => {
