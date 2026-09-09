@@ -84,10 +84,15 @@ const PULL_URL = /https:\/\/github\.com\/[\w.-]+\/([\w.-]+)\/pull\/(\d+)/g;
 const NAMED_PULL = /([A-Za-z][\w.-]*)#(\d+)/g;
 const BARE_PULL = /(?<!\])(^|[^\w#/-])#(\d+)\b/g;
 
-const ASSESSABLE = ["yours:", "parked:", "blocked"];
+const STOPPED_FOR_A_REASON = ["yours:", "parked:", "blocked"];
+const LANDING = "landing";
+
+function stoppedForAReason(classification: Classification): boolean {
+  return STOPPED_FOR_A_REASON.some((prefix) => classification.startsWith(prefix));
+}
 
 export function isAssessable(classification: Classification): boolean {
-  return ASSESSABLE.some((prefix) => classification.startsWith(prefix));
+  return stoppedForAReason(classification) || classification === LANDING;
 }
 
 function reasonOf(record: ParkedRecord): string {
@@ -311,7 +316,7 @@ async function preconditionNowHolds(
   return { ran, fired, evidence, failures };
 }
 
-const NEVER_CONCLUDED = ["yours:", "blocked", "parked:umbrella"];
+const NEVER_CONCLUDED = ["yours:", "blocked", "parked:umbrella", LANDING];
 
 function machineMayConclude(record: ParkedRecord, context: StalenessContext): boolean {
   if (record.structurallyBlocked) {
@@ -351,12 +356,14 @@ export async function assess(
   record: ParkedRecord,
   context: StalenessContext = {},
 ): Promise<Assessment> {
-  const checks = [
-    noteAfterLabel(record),
-    referencedIssuesClosed(record, context),
-    await referencedPullMerged(record, context),
-    await preconditionNowHolds(record, context),
-  ];
+  const checks = stoppedForAReason(record.classification)
+    ? [
+        noteAfterLabel(record),
+        referencedIssuesClosed(record, context),
+        await referencedPullMerged(record, context),
+        await preconditionNowHolds(record, context),
+      ]
+    : [await referencedPullMerged(record, context)];
   const at = (context.now ?? new Date()).toISOString();
   return {
     staleness: verdictOf(record, context, checks, at),

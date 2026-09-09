@@ -394,6 +394,23 @@ test("a history store that cannot be opened costs the metrics, not the snapshot"
   assert.equal(readSnapshot({ env: place.env, home: place.home }).error, undefined);
 });
 
+test("an issue left in progress after its pull request merged is reported, not left running", async () => {
+  const place = workspace([TRACKER]);
+  const snapshot = await collectSnapshot({
+    ...options(place, new Date("2026-09-08T09:00:00Z")),
+    env: { ...place.env, BD_LIST_FIXTURE: "stale" },
+    probe: async () => true,
+    pullState: async (reference) => (reference.text === "site#16" ? "merged" : undefined),
+  });
+  const byId = new Map((snapshot.projects[0]?.issues ?? []).map((issue) => [issue.id, issue]));
+  assert.equal(byId.get("mw-26")?.classification, "landing");
+  assert.equal(byId.get("mw-26")?.staleness.verdict, "likely-stale");
+  assert.ok(
+    byId.get("mw-26")?.staleness.evidence.some((line) => line.includes("site#16")),
+    "the verdict does not name the pull request that merged",
+  );
+});
+
 test("a staleness probe that could not be run reaches the project as one error", async () => {
   const place = workspace([TRACKER]);
   const snapshot = await collectSnapshot({
