@@ -136,13 +136,28 @@ function Reason({
         <span className="pw-reason__because">
           {strings.issue.because}
           <Interpolated
-            template={strings.issue.reason[reason.rule]}
+            template={reasonTemplate(reason)}
             values={reasonValues(reason, project, filter)}
           />
         </span>
       )}
     </p>
   );
+}
+
+export function reasonTemplate(reason: Exclude<ClassificationReason, { rule: "closed" }>): string {
+  switch (reason.rule) {
+    case "blocked-open":
+      return reason.ids.length === 1
+        ? strings.issue.reason["blocked-open-one"]
+        : strings.issue.reason["blocked-open-many"];
+    case "blocked-unreadable":
+      return reason.ids.length === 1
+        ? strings.issue.reason["blocked-unreadable-one"]
+        : strings.issue.reason["blocked-unreadable-many"];
+    default:
+      return strings.issue.reason[reason.rule];
+  }
 }
 
 export function callFor(

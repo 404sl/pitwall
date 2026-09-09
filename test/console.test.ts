@@ -18,6 +18,7 @@ import type { Board, FilterState, IssuePayload, IssuePreview } from "../ui/model
 import { strings } from "../ui/strings.ts";
 import { countLabel } from "../ui/format.ts";
 import { boardHref, filterOf, filterQuery, issueHref, routeOf } from "../ui/routes.ts";
+import type { ClassificationReason } from "../src/classify.ts";
 import { VERSION } from "../src/version.ts";
 
 register("./support/svg-stub.mjs", import.meta.url);
@@ -559,7 +560,7 @@ test("a header rendered from a stamp it cannot read shows the stamp and claims n
   assert.doesNotMatch(markup, /<time/);
 });
 
-const { IssuePage, callFor } = await import("../ui/components/IssuePage.tsx");
+const { IssuePage, callFor, reasonTemplate } = await import("../ui/components/IssuePage.tsx");
 
 function aPreview(over: Partial<IssuePreview> = {}): IssuePreview {
   return {
@@ -634,6 +635,38 @@ test("a call is a sentence about what to do, one per classification and verdict"
     const call = callFor(classification, "unchecked", false);
     assert.ok(call.text.length > 0, `${classification} has no call`);
     assert.equal(call.tone, isYours(classification) ? "yours" : "waiting", classification);
+  }
+});
+
+test("a blocked sentence agrees in number with the blockers it names", () => {
+  assert.equal(reasonTemplate({ rule: "blocked-open", ids: ["pitwall-a"] }), "{ids} is open");
+  assert.equal(
+    reasonTemplate({ rule: "blocked-open", ids: ["pitwall-a", "pitwall-b"] }),
+    "{ids} are open",
+  );
+  assert.equal(
+    reasonTemplate({ rule: "blocked-unreadable", ids: ["pitwall-a"] }),
+    "{ids} could not be read",
+  );
+  assert.equal(
+    reasonTemplate({ rule: "blocked-unreadable", ids: ["pitwall-a", "pitwall-b"] }),
+    "{ids} could not be read",
+  );
+  const others: Array<
+    Exclude<ClassificationReason, { rule: "closed" | "blocked-open" | "blocked-unreadable" }>
+  > = [
+    { rule: "in-progress-lane", slot: 3 },
+    { rule: "in-progress-no-lane" },
+    { rule: "label", label: "watch" },
+    { rule: "umbrella-type", issueType: "epic" },
+    { rule: "umbrella-title-marker" },
+    { rule: "umbrella-open-child", childId: "pitwall-a.1" },
+    { rule: "blocked-parent-in-progress", parentId: "pitwall-a" },
+    { rule: "stored-status", status: "blocked" },
+    { rule: "default" },
+  ];
+  for (const reason of others) {
+    assert.equal(reasonTemplate(reason), strings.issue.reason[reason.rule], reason.rule);
   }
 });
 
