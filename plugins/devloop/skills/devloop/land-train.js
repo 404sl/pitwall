@@ -351,8 +351,8 @@ refused, and every train leaked its lock and needed clearing by hand. Mint a tok
   cat /tmp/devloop-merge.lock/holder
 
 Report status "taken" and the token EXACTLY as cat printed it back, not as you intended to write
-it. The release step will remove the lock only if the holder still reads exactly this, so a token
-you report but did not write means a lock nobody can release.`,
+it. The release step is handed what you report and can compare against nothing else, so a token
+you omit or retype is a lock this run cannot give back.`,
   { schema: { type: 'object', required: ['status'], properties: {
       status: { type: 'string', enum: ['taken', 'held'] }, token: { type: 'string' } } },
     model: 'haiku', effort: 'low', phase: 'Lock' },
@@ -371,6 +371,9 @@ const flakes = []
 // on 2026-08-29 and were only found by going to look. Collected here so the run can say so.
 const skipped = new Set()
 let lastSha = null
+let outcome = { stopped: null }
+let stranded = []
+let released = null
 
 // Build a train, test it, and merge it if green. On red, split and recurse: the failure is in one
 // half or the other, and log2(n) CI runs finds it. Depth is capped because a train that keeps
@@ -450,7 +453,8 @@ branch and the train's own pull request are yours to remove.`,
   return runTrain(included.slice(half), `${suffix || 'b'}b${depth}`, depth + 1)
 }
 
-const outcome = await runTrain(ONLY, '', 0)
+try {
+outcome = await runTrain(ONLY, '', 0)
 
 // A RED MASTER IS NEVER DEPLOYED. This condition used to be `landed.length && lastSha` alone,
 // and that is not the same thing as "it went well": runTrain pushes to `landed` BEFORE it
@@ -485,7 +489,7 @@ if (landed.length && lastSha && !masterIsRed) {
 // SAY WHICH BRANCHES WERE DROPPED, ON THE PULL REQUESTS THEMSELVES. Anything landed in this run
 // is gone from the list, because a branch dropped from an early build often goes on a later one
 // once whatever it clashed with has merged.
-const stranded = [...skipped].filter((n) => !landed.includes(n))
+stranded = [...skipped].filter((n) => !landed.includes(n))
 if (stranded.length) {
   await agent(
     `These pull requests on ${SLUG} were dropped from a release train for conflicting with
@@ -506,13 +510,13 @@ case this step is trying to stop.`,
     { model: 'haiku', effort: 'low', phase: 'Close', label: 'strand-notice' },
   )
 }
-
+} finally {
 // The holder file lives INSIDE the lock directory, and rmdir refuses a directory that is not
 // empty - so removing the lock means removing the holder first. Getting this wrong on
 // 2026-08-29 left the lock held after a clean run and the next train stood down against a
 // lander that had already finished. Verify rather than report: a lock that is still there
 // after this is a leak that blocks every future train until somebody clears it by hand.
-const released = await agent(
+released = await agent(
   `Release the serial merge lock - but only if it is still THIS run's lock.
 
 RELEASE IS CONDITIONAL ON OWNERSHIP, and that is the point of this step rather than a formality.
@@ -523,6 +527,12 @@ the lock is yours by matching the token this run stamped into it:
   EXPECTED='${lock.token || ''}'
   ACTUAL="$(cat /tmp/devloop-merge.lock/holder 2>/dev/null)"
   echo "expected=[$EXPECTED] actual=[$ACTUAL]"
+
+THE TOKEN IS ALREADY IN THAT COMMAND. Run it exactly as it stands - do not ask anybody for a
+token and do not stop for want of one. A sibling lander's release step was once told to
+"substitute the token the lock step reported", read that as an instruction to go and find one,
+concluded it had been given nothing, and returned that refusal as its answer while the run
+reported success. The lock outlived it by 25 minutes.
 
 If EXPECTED is empty, or the two do not match exactly, STOP. Do not remove anything. Report status
 "leaked" with both values in the notes - a lock held by somebody else, or one this run cannot prove
@@ -545,6 +555,7 @@ cleared by hand, so this must be visible rather than silently reported as done.`
       status: { type: 'string', enum: ['released', 'leaked'] }, notes: { type: 'string' } } },
     model: 'haiku', effort: 'low', phase: 'Close', label: 'release' },
 )
+}
 
 return {
   landed,

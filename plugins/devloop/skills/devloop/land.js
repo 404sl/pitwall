@@ -212,8 +212,17 @@ const LOCK = {
   required: ['status'],
   properties: {
     status: { enum: ['taken', 'held_by_other'] },
-    token: { type: 'string', description: 'the token written into the holder file, verbatim - the release step compares against it' },
+    token: { type: 'string', description: 'the token read back out of the holder file, verbatim - reported for the log only, since the release step already holds it' },
     holder: { type: 'string', description: 'what the holder file said, when somebody else has it' },
+    notes: { type: 'string' }
+  }
+}
+
+const RELEASE = {
+  type: 'object',
+  required: ['status'],
+  properties: {
+    status: { enum: ['released', 'not_mine', 'still_held'] },
     notes: { type: 'string' }
   }
 }
@@ -230,8 +239,9 @@ function lockPrompt() {
   cat ${MERGE_LOCK}/holder
   echo GOT_MERGE_LOCK
 
-REPORT THAT TOKEN VERBATIM as 'token' in your result. The release step compares against it and
-cannot compare against a value nobody carried forward.
+REPORT THAT TOKEN VERBATIM as 'token' in your result, exactly as cat printed it back. The release
+step is handed what you report and can compare against nothing else, so a token you omit or
+retype is a lock this run cannot give back.
 
 It used to be the bare word 'lander', which could not tell two concurrent landers apart: both
 wrote the same string, so each would read its own name in the other's lock and delete it. That
@@ -263,10 +273,21 @@ or failed - because a lock left behind blocks everything afterwards for no reaso
 merged successfully, ended before its release step, and held up every other lane for twenty
 minutes with nothing behind it.
 
-Check it is yours before removing it, and never remove one that is not. Substitute the token the
-lock step reported, and RUN IT AS ONE COMMAND:
+Check it is yours before removing it, and never remove one that is not. THE TOKEN IS ALREADY
+WRITTEN INTO THE COMMAND BELOW. Run it EXACTLY AS IT STANDS, AS ONE COMMAND:
 
-  [ "$(cat ${MERGE_LOCK}/holder 2>/dev/null)" = "${token || 'THE-TOKEN-WAS-NOT-CARRIED'}" ] && rm -rf ${MERGE_LOCK} || echo NOT_MINE
+  [ "$(cat ${MERGE_LOCK}/holder 2>/dev/null)" = '${token || ''}' ] && rm -rf ${MERGE_LOCK} || echo NOT_MINE
+
+DO NOT ASK ANYBODY FOR A TOKEN AND DO NOT STOP FOR WANT OF ONE. This paragraph used to read
+"substitute the token the lock step reported", and on 2026-09-09 a release step read that as an
+instruction to go and find one, concluded it had not been given anything to substitute, declined
+to touch the lock and returned that refusal as its answer. The run had merged, deployed and
+reported success; the lock sat there for 25 minutes with two pull requests queued behind it. There
+is nothing to substitute - the value is in the command.
+
+If the quoted value above is EMPTY, the token did not survive the run. Do not remove anything:
+report status 'not_mine' and say the token was empty. A lock left standing is recoverable; one
+deleted out from under another live lander is not.
 
 DO NOT SPLIT THAT INTO A cat AND THEN AN rm. On 2026-09-09 a release step ran the read and the
 removal as two separate commands, so the comparison never happened and the removal was
@@ -283,7 +304,8 @@ not empty" and the lock is never given back.
 Then confirm it is gone:
   [ -d ${MERGE_LOCK} ] && echo STILL_HELD || echo RELEASED
 
-Say which you saw. Change nothing else.
+Report status 'released' only if that printed RELEASED. Report 'not_mine' if the guard printed
+NOT_MINE, and 'still_held' if it printed STILL_HELD. Change nothing else.
 ${LAW}`
 }
 
@@ -1071,7 +1093,10 @@ try {
 } finally {
   // However this ended. A run that merged and then died before releasing held every other
   // lane up for twenty minutes with nothing behind it.
-  await agent(releasePrompt(lock?.token), { label: 'release', phase: 'Deploy', model: 'haiku', effort: 'low' })
+  const released = await agent(releasePrompt(lock?.token), { label: 'release', phase: 'Deploy', model: 'haiku', effort: 'low', schema: RELEASE })
+  if (!released || released.status !== 'released') {
+    log(`MERGE LOCK NOT RELEASED - ${MERGE_LOCK} is still held by ${lock?.token || 'an unreported token'}. Nothing else can land until it is cleared.\n    ${(released && released.notes) || 'the release agent returned nothing'}`)
+  }
 }
 
 if (PREFLIGHTED) {

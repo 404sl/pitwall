@@ -1,5 +1,58 @@
 # Changelog
 
+## 0.1.13
+
+**The lander asked its release step to substitute a token, and the release step said it had not
+been given one.** The lock survived a run that merged, deployed, closed its issue and reported
+success. Nothing landed for 25 minutes behind it, with two pull requests queued, one of which
+deploys on merge.
+
+`land.js` already released inside a `finally`, and the journal shows that `finally` ran. The
+failure was one step further in, in the prompt. The release step was told to *substitute the
+token the lock step reported*, and the token was interpolated into the command directly below
+that sentence. The agent read the instruction as a job to do, looked for a token it had been
+handed separately, found none, and declined to touch a lock it believed it could not prove it
+owned:
+
+    "I cannot safely remove it because I was not provided with a token to verify
+     ownership against."
+
+That is correct behaviour on the text it was reading. The step had no schema, so the refusal came
+back as prose and was recorded as a completed step; the run returned success with the lock still
+held.
+
+Both release prompts now say the token is already in the command and to run it exactly as it
+stands, and both name this failure so it is not reworded back. `THE-TOKEN-WAS-NOT-CARRIED` is
+gone: a sentinel that guarantees the ownership guard fails is a guaranteed leak in the shape of a
+safety check. An empty token now reports `not_mine` instead, which is a visible leak rather than
+a wrong deletion.
+
+**A positive instruction beats a negative one here, for the same reason the 0.1.10 filter failed.**
+The bug was never a missing value - the lock step reported the token correctly. It was a sentence
+that gave the agent a task it could not complete. Removing the task removes the failure.
+
+**`land-train.js` had no trap at all.** It took the lock near the top and released it at the
+bottom of the straight-line path, so any throw in between - a build agent dying, the bisect
+recursion, a guard tripping after acquisition - left the lock behind. Its body is now wrapped in
+`try`/`finally` with the release inside, as `land.js` does it. An exception still propagates; it
+no longer takes the lock with it.
+
+**Why a `finally` and not the shell trap the report asked for.** The lock is taken by a subagent
+whose shell exits as soon as the command returns, so a trap there would fire immediately and
+release a lock the run is still using. The workflow script's `finally` is the process-lifetime
+equivalent. Neither covers a killed runner, and nothing in the script can - that case stays
+`lock-check.sh`'s.
+
+**A refusal is now reported rather than swallowed.** `land.js`'s release step had no schema, so
+its answer went nowhere. It returns `released`, `not_mine` or `still_held`, and anything but the
+first is logged as a held lock naming the token to clear.
+
+**The token is still minted by the lock agent, deliberately.** Minting it in the script looks
+tidier and is wrong twice over: `Date.now()` and `Math.random()` throw in the workflow runner
+because they would break resume, so the script would die on its first line with lint, tests and
+CI all green - and a random token would not survive a `resumeFromRunId` even if it ran. A test
+now asserts no lander reaches for either global.
+
 ## 0.1.12
 
 **Before parking a ticket for a person, ask whether the answer would differ from any competent
@@ -48,6 +101,7 @@ reported separately: a note read back and found absent should be appended, while
 not be read back may well have landed, and appending on top of that manufactures the duplicate
 `bd-note.sh` exists to avoid. An empty read is not a clean read - the same rule this script already
 applies to a pull request body.
+
 
 ## 0.1.11
 
