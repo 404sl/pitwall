@@ -171,6 +171,23 @@ test("a workspace whose root names another directory fails", async () => {
   assert.equal(diagnosis.code, 1);
 });
 
+test("a workspace whose root is not a string fails rather than dropping the check", async () => {
+  for (const declared of [5, null, [], {}]) {
+    const dir = healthy();
+    describe(dir, { root: declared, idPrefix: "doc", lockPrefix: "doctor", repos: {} });
+    const diagnosis = await diagnose(options([dir]));
+    const check = named(diagnosis, `${basename(dir)} root`);
+    assert.equal(check.severity, "fail");
+    assert.ok(check.tried.includes(WORKSPACE_FILE), `tried does not name the file: ${check.tried}`);
+    assert.ok(
+      check.result.includes(JSON.stringify(declared)),
+      `result does not say what it found: ${check.result}`,
+    );
+    assert.equal(named(diagnosis, `${basename(dir)} tracker`).severity, "ok");
+    assert.equal(diagnosis.code, 1);
+  }
+});
+
 test("a root with no tracker fails, because an empty screen is what that looks like", async () => {
   const dir = root();
   checkout(dir, "cli");
