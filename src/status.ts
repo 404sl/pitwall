@@ -13,6 +13,7 @@ import {
   type RunningTotal,
 } from "./board.js";
 import { elapsed, fill, priorityLabel } from "./format.js";
+import { characterColumns, displayWidth } from "./width.js";
 
 export const READY_PER_PROJECT = 3;
 export const SNAPSHOT_STALE_AFTER_MS = 10 * 60_000;
@@ -81,7 +82,7 @@ const ELLIPSIS = "\u2026";
 const MIN_WIDTH = 20;
 
 function plainWidth(text: string): number {
-  return [...text.replace(SGR, "")].length;
+  return displayWidth(text.replace(SGR, ""));
 }
 
 function clip(text: string, budget: number): string {
@@ -92,9 +93,15 @@ function clip(text: string, budget: number): string {
       out += part;
       continue;
     }
-    const chars = [...part];
-    out += chars.slice(0, left).join("");
-    left = Math.max(0, left - chars.length);
+    for (const character of part) {
+      const columns = characterColumns(character);
+      if (columns > left) {
+        left = 0;
+        break;
+      }
+      out += character;
+      left -= columns;
+    }
   }
   return out;
 }

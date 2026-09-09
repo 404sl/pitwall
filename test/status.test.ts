@@ -12,10 +12,12 @@ import {
   type StatusOptions,
 } from "../src/status.ts";
 import { VERSION } from "../src/version.ts";
+import { displayWidth, eastAsianWidth } from "../src/width.ts";
 
 const GENERATED_AT = "2026-09-08T14:11:00Z";
 const NOW = Date.parse(GENERATED_AT);
 const ESCAPE = /\u001b\[/;
+const WIDE_ROW_PREFIX = "    sr-1 P0 decision still blocking ";
 const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 
 function render(snapshot: Snapshot, options: StatusOptions = {}): string {
@@ -278,14 +280,49 @@ test("a width too small to lay a row out at all is ignored rather than obeyed", 
   assert.notEqual(render(WIDE, { width: 20 }), render(WIDE));
 });
 
-test("a title of astral characters is measured and cut by character, never mid-pair", () => {
-  const whole = "\u{1F680}".repeat(40);
+test("a title of astral characters is measured and cut by column, never mid-pair", () => {
+  const whole = "\u{1F680}".repeat(22);
   const kept = rowFor(render(titled(whole), { width: 80 }), "sr-1");
   assert.ok(kept.includes(whole), kept);
   assert.doesNotMatch(kept, /\u2026/);
+  assert.equal(displayWidth(kept), 80);
   const cut = rowFor(render(titled("\u{1F680}".repeat(60)), { width: 80 }), "sr-1");
   assert.doesNotMatch(cut, LONE_SURROGATE);
-  assert.ok([...cut].length <= 80, `${[...cut].length} characters: ${cut}`);
+  assert.ok(displayWidth(cut) <= 80, `${displayWidth(cut)} columns: ${cut}`);
+});
+
+test("a wide title is cut to the columns it occupies, not the characters it holds", () => {
+  const title = "\u4F9D\u983C\u95A2\u4FC2".repeat(30);
+  assert.equal(
+    rowFor(render(titled(title), { width: 80 }), "sr-1"),
+    `${WIDE_ROW_PREFIX}${title.slice(0, 21)}\u2026`,
+  );
+  assert.equal(
+    rowFor(render(titled(title), { width: 81 }), "sr-1"),
+    `${WIDE_ROW_PREFIX}${title.slice(0, 22)}\u2026`,
+  );
+});
+
+test("every line of a wide-glyph screen stays inside the terminal it was given", () => {
+  for (const title of ["\u4F9D\u983C\u95A2\u4FC2".repeat(30), "\u{1F680}".repeat(60)]) {
+    for (const width of [80, 81, 61, 45, 43]) {
+      const out = render(titled(title), { width });
+      for (const line of out.split("\n")) {
+        assert.ok(displayWidth(line) <= width, `width ${width}: ${displayWidth(line)} columns: ${line}`);
+      }
+    }
+  }
+});
+
+test("an ambiguous-width code point is given a stated column rather than the narrow default", () => {
+  assert.equal(eastAsianWidth(0x00b1), "ambiguous");
+  assert.equal(eastAsianWidth(0x4f9d), "wide");
+  assert.equal(eastAsianWidth(0x1f680), "wide");
+  assert.equal(eastAsianWidth(0x0061), "narrow");
+  const title = "\u00b1".repeat(44);
+  const row = rowFor(render(titled(title), { width: 80 }), "sr-1");
+  assert.ok(row.endsWith(title), row);
+  assert.equal(displayWidth(row), 80);
 });
 
 test("an aged snapshot says how old it is rather than reading as the present", () => {
