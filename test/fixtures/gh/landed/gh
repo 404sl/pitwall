@@ -1,0 +1,8 @@
+#!/bin/sh
+case "$1 $2 $3" in
+  "pr view 12") echo '{"state":"MERGED","headRefName":"devloop/mw-7b1","body":"Refs mw-9"}' ;;
+  "pr view 13") echo '{"state":"MERGED","headRefName":"topic/tidy-up","body":"Follows mw-9, refs nothing else."}' ;;
+  "pr view 14") echo '{"state":"MERGED","headRefName":"topic/tidy-up","body":"No ticket here."}' ;;
+  "pr view 15") echo '{"state":"DRAFTED","headRefName":"devloop/mw-9","body":"Refs mw-9"}' ;;
+  *) echo "unknown command: gh $*" >&2; exit 1 ;;
+esac

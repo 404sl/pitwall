@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import type { CollectionError } from "@404sl/pitwall-schema";
+import { issueMatcher } from "../src/pipeline.ts";
 import { preconditionProbe, pullLookup } from "../src/probes.ts";
 import type { PullReference } from "../src/staleness.ts";
 
@@ -15,6 +16,7 @@ const NOTFOUND_GH = `${join(FIXTURES, "gh", "notfound")}:/usr/bin:/bin`;
 const RATELIMIT_GH = `${join(FIXTURES, "gh", "ratelimit")}:/usr/bin:/bin`;
 const GARBLED_GH = `${join(FIXTURES, "gh", "garbled")}:/usr/bin:/bin`;
 const SLOW_GH = `${join(FIXTURES, "gh", "slow")}:/usr/bin:/bin`;
+const LANDED_GH = `${join(FIXTURES, "gh", "landed")}:/usr/bin:/bin`;
 
 function aReference(over: Partial<PullReference> = {}): PullReference {
   return { number: 12, repo: undefined, url: undefined, text: "#12", ...over };
@@ -22,6 +24,14 @@ function aReference(over: Partial<PullReference> = {}): PullReference {
 
 function aRepo(): string {
   return mkdtempSync(join(tmpdir(), "pitwall-probe-"));
+}
+
+function aLanding(): (reference: PullReference) => Promise<unknown> {
+  return pullLookup({
+    repos: new Map([["site", aRepo()]]),
+    names: issueMatcher("mw", new Set(["mw-7b1", "mw-9"])),
+    env: { PATH: LANDED_GH },
+  });
 }
 
 test("a precondition that could not be run at all is recorded once, not once per issue", async () => {
@@ -155,4 +165,44 @@ test("a pull request lookup that never comes back is recorded", async () => {
   assert.equal(errors.length, 1);
   assert.equal(errors[0]?.source, "gh pr view");
   assert.match(errors[0]?.message ?? "", /timed out/);
+});
+
+test("the issue a merged pull request belongs to is read from its branch first", async () => {
+  const lookup = aLanding();
+  assert.deepEqual(await lookup(aReference({ number: 12, text: "#12" })), {
+    state: "merged",
+    issueId: "mw-7b1",
+  });
+});
+
+test("a pull request whose branch names no issue falls back to its body", async () => {
+  const lookup = aLanding();
+  assert.deepEqual(await lookup(aReference({ number: 13, text: "#13" })), {
+    state: "merged",
+    issueId: "mw-9",
+  });
+});
+
+test("a pull request that names no issue at all still reports the state it is in", async () => {
+  const lookup = aLanding();
+  assert.deepEqual(await lookup(aReference({ number: 14, text: "#14" })), {
+    state: "merged",
+    issueId: undefined,
+  });
+});
+
+test("a pull request in a state nobody recognises is not an answer", async () => {
+  const lookup = aLanding();
+  assert.equal(await lookup(aReference({ number: 15, text: "#15" })), undefined);
+});
+
+test("nothing is attributed to an issue when the run has no id prefix to match", async () => {
+  const lookup = pullLookup({
+    repos: new Map([["site", aRepo()]]),
+    env: { PATH: LANDED_GH },
+  });
+  assert.deepEqual(await lookup(aReference({ number: 12, text: "#12" })), {
+    state: "merged",
+    issueId: undefined,
+  });
 });
