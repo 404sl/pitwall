@@ -750,3 +750,49 @@ test("a 503 with a failed collection behind it says why the collection failed to
   assert.match(message, /No snapshot to show yet/);
   assert.match(message, /The last collection failed too: bd is not on PATH/);
 });
+
+test("a 503 with a collection that read nothing never claims a board is still showing", async (t) => {
+  const { env } = stateWith();
+  const { collect, calls } = collector([
+    () =>
+      Promise.resolve({
+        read: false,
+        errors: [
+          { source: "/x/.beads: bd statuses --json", message: "spawn bd ENOENT", at: SNAPSHOT.generatedAt },
+        ],
+      }),
+  ]);
+  const server = createConsoleServer({ env, uiDir: builtConsole(), collect });
+  t.after(() => server.close());
+  const { origin } = await started(server);
+
+  await fetch(`${origin}/api/snapshot`);
+  await (calls[0] as Promise<Collection>);
+  await settle();
+
+  const response = await fetch(`${origin}/api/snapshot`);
+  assert.equal(response.status, 503);
+  const { message } = (await response.json()) as { message: string };
+  assert.match(message, /No snapshot to show yet/);
+  assert.match(
+    message,
+    /The last collection could read no project either: \/x\/\.beads: bd statuses --json: spawn bd ENOENT/,
+  );
+  assert.doesNotMatch(message, /still shows the last snapshot/);
+});
+
+test("a 503 with a collection that read nothing and named no cause still reads as one sentence", async (t) => {
+  const { env } = stateWith();
+  const { collect, calls } = collector([() => Promise.resolve(READ_NOTHING)]);
+  const server = createConsoleServer({ env, uiDir: builtConsole(), collect });
+  t.after(() => server.close());
+  const { origin } = await started(server);
+
+  await fetch(`${origin}/api/snapshot`);
+  await (calls[0] as Promise<Collection>);
+  await settle();
+
+  const { message } = (await (await fetch(`${origin}/api/snapshot`)).json()) as { message: string };
+  assert.match(message, /The last collection could read no project either\.$/);
+  assert.doesNotMatch(message, /still shows the last snapshot/);
+});

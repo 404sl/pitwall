@@ -21,6 +21,8 @@ export const ISSUE_PREFIX = "/api/issue/";
 export const VERSION_ROUTE = "/api/version";
 export const REFRESH_FLOOR_MS = 60_000;
 export const NOTHING_READ = "No project could be read. The board still shows the last snapshot collected.";
+const NOTHING_READ_YET = "The last collection could read no project either";
+const REFRESH_FAILED_TOO = "The last collection failed too";
 
 export interface Collection {
   read: boolean;
@@ -93,14 +95,37 @@ function sendJson(res: ServerResponse, code: number, body: unknown): void {
   send(res, code, "application/json; charset=utf-8", JSON.stringify(body));
 }
 
-interface Refresher {
-  consider: (stored: StoredSnapshot) => void;
-  failure: () => CollectionError | undefined;
+interface RefreshFailure {
+  cause: string;
+  nothingRead: boolean;
+  at: string;
 }
 
-function nothingRead(errors: readonly CollectionError[]): string {
+interface Refresher {
+  consider: (stored: StoredSnapshot) => void;
+  failure: () => RefreshFailure | undefined;
+}
+
+function causeOf(errors: readonly CollectionError[]): string {
   const first = errors[0];
-  return first === undefined ? NOTHING_READ : `${NOTHING_READ} ${first.source}: ${first.message}`;
+  return first === undefined ? "" : `${first.source}: ${first.message}`;
+}
+
+function refreshFailure(cause: unknown, nothingRead: boolean): RefreshFailure {
+  const { message, at } = collectionError(REFRESH_SOURCE, cause);
+  return { cause: message, nothingRead, at };
+}
+
+function messageWithBoard(failure: RefreshFailure): string {
+  if (!failure.nothingRead) {
+    return failure.cause;
+  }
+  return failure.cause === "" ? NOTHING_READ : `${NOTHING_READ} ${failure.cause}`;
+}
+
+function messageWithoutBoard(failure: RefreshFailure): string {
+  const lead = failure.nothingRead ? NOTHING_READ_YET : REFRESH_FAILED_TOO;
+  return failure.cause === "" ? `${lead}.` : `${lead}: ${failure.cause}`;
 }
 
 function started(collect: Collector): Promise<Collection> {
@@ -125,7 +150,7 @@ export function createRefresher(options: ServeOptions): Refresher {
   const clock = options.now ?? Date.now;
   let attemptedAt: number | undefined;
   let running = false;
-  let failure: CollectionError | undefined;
+  let failure: RefreshFailure | undefined;
   return {
     failure: () => failure,
     consider: (stored: StoredSnapshot) => {
@@ -144,12 +169,10 @@ export function createRefresher(options: ServeOptions): Refresher {
       void started(collect)
         .then(
           (collection) => {
-            failure = collection.read
-              ? undefined
-              : collectionError(REFRESH_SOURCE, nothingRead(collection.errors));
+            failure = collection.read ? undefined : refreshFailure(causeOf(collection.errors), true);
           },
           (cause: unknown) => {
-            failure = collectionError(REFRESH_SOURCE, cause);
+            failure = refreshFailure(cause, false);
           },
         )
         .finally(() => {
@@ -159,11 +182,16 @@ export function createRefresher(options: ServeOptions): Refresher {
   };
 }
 
-function withRefreshFailure(snapshot: Snapshot, failure: CollectionError | undefined): Snapshot {
+function withRefreshFailure(snapshot: Snapshot, failure: RefreshFailure | undefined): Snapshot {
   if (failure === undefined) {
     return snapshot;
   }
-  return { ...snapshot, errors: [...(snapshot.errors ?? []), failure] };
+  const error: CollectionError = {
+    source: REFRESH_SOURCE,
+    message: messageWithBoard(failure),
+    at: failure.at,
+  };
+  return { ...snapshot, errors: [...(snapshot.errors ?? []), error] };
 }
 
 function serveSnapshot(res: ServerResponse, options: ServeOptions, refresher: Refresher): void {
@@ -177,7 +205,7 @@ function serveSnapshot(res: ServerResponse, options: ServeOptions, refresher: Re
   const failure = refresher.failure();
   const read = `No snapshot to show yet - ${error.source} could not be read: ${error.message}`;
   sendJson(res, 503, {
-    message: failure === undefined ? read : `${read} The last collection failed too: ${failure.message}`,
+    message: failure === undefined ? read : `${read} ${messageWithoutBoard(failure)}`,
     source: error.source,
     at: error.at,
   });
