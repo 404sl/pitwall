@@ -492,7 +492,7 @@ body {
 .pw-call__ask {
   margin: 6px 0 0;
   max-inline-size: 60ch;
-  padding-inline-start: 19px;
+  padding-inline-start: calc(var(--pw-rail) + 16px);
 }
 
 .pw-call__ask-label {
