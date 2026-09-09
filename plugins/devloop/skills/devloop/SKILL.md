@@ -12,6 +12,12 @@ one at a time and carrying each from tracker to deployed.
 reason for the design gate, the adversarial reviewer and the exclusion list. Do not loosen
 those to make it finish more.
 
+## Filing tickets
+
+Anything this pipeline files - a split child, a follow-up, a bug found in passing - follows
+`WRITING-TICKETS.md` in this directory. One instruction, the traps, a link to the evidence,
+checkable acceptance. Nothing else.
+
 ## Shape
 
 A **supervisor loop** in the session, **one background workflow per issue**, and **one
