@@ -17,5 +17,13 @@ case "$*" in
       exit 1
     fi
     ;;
+  "update "*" --append-notes "*)
+    if [ -z "$BD_NOTES_LOG" ]; then
+      echo "Error: nowhere to record notes" >&2
+      exit 1
+    fi
+    printf '%s\n' "$2 $4" >> "$BD_NOTES_LOG"
+    echo "✓ Updated issue: $2"
+    ;;
   *) echo "Error: unknown command: bd $*" >&2; exit 2 ;;
 esac

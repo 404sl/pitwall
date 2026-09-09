@@ -1,9 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { Issue, type CollectionError, type Lane } from "@404sl/pitwall-schema";
-import { readIssue, readIssues, showArgs } from "../src/beads.ts";
+import { appendNotesArgs, noteAppender, readIssue, readIssues, showArgs } from "../src/beads.ts";
 
 const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "bd");
 const TRACKER = join(FIXTURES, "tracker");
@@ -353,4 +355,20 @@ test("reading one issue runs nothing that could write to the tracker", async () 
   const ran = reading.tried.map((command) => command.split(" ")[1]);
   assert.deepEqual(ran, ["statuses", "list", "blocked", "show"]);
   assert.deepEqual(showArgs("mw-1"), ["show", "--id", "mw-1", "--json", "--include-dependents"]);
+});
+
+test("an undelivered notice is appended to the issue rather than dropped", async () => {
+  const log = join(mkdtempSync(join(tmpdir(), "pitwall-notes-")), "notes.log");
+  const append = noteAppender(TRACKER, { env: { ...env("ok"), BD_NOTES_LOG: log } });
+  await append("mw-1", "could not be delivered to c1796a");
+  assert.equal(readFileSync(log, "utf8"), "mw-1 could not be delivered to c1796a\n");
+  assert.deepEqual(appendNotesArgs("mw-1", "text"), ["update", "mw-1", "--append-notes", "text"]);
+});
+
+test("a tracker that refuses the note says what it ran", async () => {
+  const append = noteAppender(TRACKER, { env: env("ok") });
+  await assert.rejects(
+    () => append("mw-1", "could not be delivered"),
+    /bd update mw-1 --append-notes: /,
+  );
 });
