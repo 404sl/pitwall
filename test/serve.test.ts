@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { connect } from "node:net";
-import { request } from "node:http";
+import { createServer, request } from "node:http";
 import { networkInterfaces, tmpdir } from "node:os";
 import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -9,7 +9,14 @@ import { dirname, join } from "node:path";
 import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
 import { SCHEMA_VERSION, parseSnapshot } from "@404sl/pitwall-schema";
-import { DEFAULT_PORT, HOST, createConsoleServer, listen, parseServeArgs } from "../src/serve.ts";
+import {
+  DEFAULT_PORT,
+  HOST,
+  createConsoleServer,
+  listen,
+  parseServeArgs,
+  sendIssueFailure,
+} from "../src/serve.ts";
 import { snapshotPath, stateHome } from "../src/state.ts";
 import { VERSION } from "../src/version.ts";
 
@@ -401,4 +408,48 @@ test("an issue path that is not a project and an id is not found", async (t) => 
 
   assert.equal((await fetch(`${origin}/api/issue/mw`)).status, 404);
   assert.equal((await fetch(`${origin}/api/issue/mw/mw-1/extra`)).status, 404);
+});
+
+const LATE_ROUTE = { project: "mw", id: "mw-1" };
+const LATE_PATH = "/api/issue/mw/mw-1";
+
+test("an issue that fails before anything is written is a 503 naming what was tried", async (t) => {
+  const server = createServer((_request, res) => {
+    sendIssueFailure(res, LATE_PATH, LATE_ROUTE, new Error("the tracker went away"));
+  });
+  t.after(() => server.close());
+  const { origin } = await started(server);
+
+  const response = await fetch(`${origin}${LATE_PATH}`);
+  assert.equal(response.status, 503);
+  const body = (await response.json()) as { message: string; source: string; tried: string[] };
+  assert.equal(body.message, "mw-1 could not be read: the tracker went away");
+  assert.deepEqual(body.tried, [LATE_PATH]);
+});
+
+test("an issue that fails after its response has gone out is logged, never written twice", async (t) => {
+  const logged: string[] = [];
+  t.mock.method(process.stderr, "write", (chunk: string | Uint8Array) => {
+    logged.push(chunk.toString());
+    return true;
+  });
+  let threw: unknown;
+  const server = createServer((_request, res) => {
+    res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+    res.end(JSON.stringify({ issue: { id: "mw-1" } }));
+    try {
+      sendIssueFailure(res, LATE_PATH, LATE_ROUTE, new Error("read after the body"));
+    } catch (cause) {
+      threw = cause;
+    }
+  });
+  t.after(() => server.close());
+  const { origin } = await started(server);
+
+  const response = await fetch(`${origin}${LATE_PATH}`);
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { issue: { id: "mw-1" } });
+  assert.equal(threw, undefined);
+  assert.equal(logged.length, 1);
+  assert.match(logged[0] as string, /mw-1 could not be read: read after the body/);
 });

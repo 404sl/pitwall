@@ -164,6 +164,20 @@ async function serveIssue(
   });
 }
 
+export function sendIssueFailure(
+  res: ServerResponse,
+  pathname: string,
+  route: { project: string; id: string },
+  cause: unknown,
+): void {
+  const message = `${route.id} could not be read: ${cause instanceof Error ? cause.message : String(cause)}`;
+  if (res.headersSent) {
+    process.stderr.write(`pitwall serve: ${message}, after the response had gone out\n`);
+    return;
+  }
+  sendJson(res, 503, { message, source: pathname, tried: [pathname] });
+}
+
 function fileFor(uiDir: string, pathname: string): string | undefined {
   let relative: string;
   try {
@@ -244,11 +258,7 @@ export function createConsoleServer(options: ServeOptions = {}): Server {
         return;
       }
       void serveIssue(res, options, route).catch((cause: unknown) => {
-        sendJson(res, 503, {
-          message: `${route.id} could not be read: ${cause instanceof Error ? cause.message : String(cause)}`,
-          source: pathname,
-          tried: [pathname],
-        });
+        sendIssueFailure(res, pathname, route, cause);
       });
       return;
     }
