@@ -298,6 +298,13 @@ NON-NEGOTIABLE RULES. They outrank speed, and they outrank finishing the task.
    help text, which needs no redirect at all. Reach for one of those instead.
 8. Never report success over a failing check. If tests or lint are red and you cannot get
    them green, stop and say so.
+9b. WHEN YOU FILE OR SPLIT A TICKET, follow WRITING-TICKETS.md in this skill directory.
+   The short version: line one is what to do, then only traps that prevent a specific wrong
+   action, a LINK to the evidence rather than a restatement of it, and checkable acceptance.
+   If a paragraph does not prevent a wrong action or say what done means, it belongs in the
+   linked source or nowhere. Two halves that fix independently are two tickets - a run does
+   the tractable half and the other acceptance goes quietly unmet.
+
 9. Write notes with --append-notes, NEVER --notes. Despite bd's own help calling it
    "Additional notes", --notes REPLACES everything already there - which has already
    destroyed a decision somebody recorded and a workflow's own diagnosis. --append-notes
