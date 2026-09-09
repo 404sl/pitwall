@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.1.2
+
+Adds `lock-check.sh`, which answers whether the merge lock is held by something still alive.
+
+It exists because `[ -d $lock ]` was being read as "a lander is running". A lander that dies
+without releasing therefore reads as a healthy train forever: the ready-to-land event stops
+firing, the drift alarm stays suppressed, and the pipeline goes quiet with green pull requests
+queued behind it. That cost 38 minutes and a person going to look, because nothing anywhere
+reported an error.
+
+It does not use age, because a legitimate hold can be very long - the lander deploys staging
+and production inside the lock, each with a 1500s timeout. It asks instead whether the run that
+took the lock is still WRITING, found by attribution rather than by a clock. The pid in the lock
+token is deliberately not consulted: it belongs to a shell that has already exited, so `ps -p`
+reports a perfectly live lander as gone.
+
+
 ## 0.1.1
 
 **Fixes a regression introduced in 0.1.0.** Removing the hardcoded workspace fallbacks was
