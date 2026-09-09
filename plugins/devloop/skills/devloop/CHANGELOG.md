@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.1.12
+
+**`lane-handoff.sh` reported a tracker note as written when it was not, and exit 0 said so.**
+Reported as https://github.com/404sl/pitwall/issues/44 by the lane it happened to: the note was
+absent afterwards, the lane found it by reading the field back itself, and appended it by hand.
+Three separate holes, all the same shape - the step reported on the attempt rather than the
+result.
+
+**A `--note-file` with no `--issue` skipped the whole step in silence.** `--issue` is optional, so
+the record block simply never ran and the script printed "handed off". `rework.js` produced
+exactly that shape whenever it had no issue id: its template made `--issue` conditional and left
+`--note-file` unconditional. The two now travel together, and a note with nowhere to go is a usage
+error refused BEFORE anything is labelled, so the repair is to fix the arguments and run it again.
+A missing note file is refused there too, rather than warned about after the label is on.
+
+**The read-back could confirm a note that was entirely lost.** It probed with the note's LONGEST
+LINE and asked whether that string was in the field. A handoff note's longest line is usually a
+pull request link or a heading, and an earlier note on the same issue very often already carries
+it - so the check passed on somebody else's text. It now compares the whole note, punctuation
+stripped from both sides the way `bd-note.sh` does it. `bd-note.sh`'s 24-character token is
+deliberately lenient because it drives a retry loop; this is the verdict, so it is strict.
+
+**An unconfirmed note is no longer a handoff.** It used to warn and exit 0, which reads as success
+to anything that checks a status - which is every caller. There is now an exit 5, and it says
+plainly that the label IS on, the worktree IS gone and only the note is outstanding, so nobody
+re-runs a handoff that cannot help. MISSING and UNREADABLE ask for different repairs and are
+reported separately: a note read back and found absent should be appended, while a note that could
+not be read back may well have landed, and appending on top of that manufactures the duplicate
+`bd-note.sh` exists to avoid. An empty read is not a clean read - the same rule this script already
+applies to a pull request body.
+
 ## 0.1.11
 
 **A park label is a claim, and it stops everything.** Verify the constraint before writing
