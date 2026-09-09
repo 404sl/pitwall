@@ -7,13 +7,14 @@ import {
   type Metrics,
   type Snapshot,
 } from "@404sl/pitwall-schema";
-import { readIssues, type ClosedIssue, type IssueText } from "./beads.js";
+import { noteAppender, readIssues, type ClosedIssue, type IssueText } from "./beads.js";
 import { hasLiveStructuralBlocker, type ClassifyContext } from "./classify.js";
 import { collectProjects, historyLimits, type RootsOptions } from "./config.js";
 import { recordSnapshot, type HistoryMetrics } from "./history.js";
+import { deliver, noticesFor, type Delivered, type Noter, type Sender } from "./notify.js";
 import { readPipeline } from "./pipeline.js";
 import { preconditionProbe, pullLookup } from "./probes.js";
-import { writeSnapshot } from "./state.js";
+import { readSnapshot, writeSnapshot } from "./state.js";
 import { assess, isAssessable, type StalenessContext } from "./staleness.js";
 import { VERSION } from "./version.js";
 
@@ -22,12 +23,16 @@ export interface SnapshotOptions extends RootsOptions {
   now?: Date;
   pullState?: StalenessContext["pullState"];
   probe?: StalenessContext["probe"];
+  sender?: Sender;
+  sessionRef?: string;
+  note?: Noter;
 }
 
 export interface SnapshotResult {
   snapshot: Snapshot;
   path: string;
   code: number;
+  delivered: Delivered[];
 }
 
 type GatheredMetrics = Pick<Metrics, "readyCount" | "inboxCount" | "closedToday">;
@@ -110,6 +115,7 @@ async function assessed(
 
 interface Gathered {
   project: Project;
+  closed: readonly ClosedIssue[];
   unreadable: boolean;
 }
 
@@ -135,6 +141,7 @@ async function gather(project: Project, options: SnapshotOptions, day: Date): Pr
     knownIds: context.knownIds,
   });
   return {
+    closed: collected.closed,
     project: Project.parse({
       ...project,
       issues,
@@ -150,7 +157,13 @@ function everyProjectFailed(gathered: readonly Gathered[]): boolean {
   return gathered.length > 0 && gathered.every((entry) => entry.unreadable);
 }
 
-async function assemble(options: SnapshotOptions): Promise<{ snapshot: Snapshot; code: number }> {
+interface Assembled {
+  snapshot: Snapshot;
+  code: number;
+  gathered: Gathered[];
+}
+
+async function assemble(options: SnapshotOptions): Promise<Assembled> {
   const startedAt = options.now ?? new Date();
   const { projects, roots } = collectProjects(options);
   const gathered = await Promise.all(projects.map((project) => gather(project, options, startedAt)));
@@ -163,7 +176,36 @@ async function assemble(options: SnapshotOptions): Promise<{ snapshot: Snapshot;
       errors: roots.errors,
     }),
     code: everyProjectFailed(gathered) ? 1 : 0,
+    gathered,
   };
+}
+
+async function announce(
+  gathered: readonly Gathered[],
+  previous: Snapshot | undefined,
+  options: SnapshotOptions,
+): Promise<Delivered[]> {
+  const sender = options.sender;
+  if (sender === undefined) {
+    return [];
+  }
+  const delivered: Delivered[] = [];
+  for (const entry of gathered) {
+    const notices = noticesFor({
+      previous: previous?.projects.find((project) => project.id === entry.project.id),
+      issues: entry.project.issues,
+      closed: entry.closed,
+      sessionRef: options.sessionRef,
+    });
+    if (notices.length === 0) {
+      continue;
+    }
+    const note =
+      options.note ??
+      noteAppender(entry.project.root, { env: options.env, timeoutMs: options.timeoutMs });
+    delivered.push(...(await deliver(notices, { sender, note })));
+  }
+  return delivered;
 }
 
 export async function collectSnapshot(options: SnapshotOptions = {}): Promise<Snapshot> {
@@ -185,7 +227,8 @@ function withHistory(project: Project, derived: HistoryMetrics | undefined): Pro
 }
 
 export async function emitSnapshot(options: SnapshotOptions = {}): Promise<SnapshotResult> {
-  const { snapshot, code } = await assemble(options);
+  const previous = readSnapshot(options).snapshot;
+  const { snapshot, code, gathered } = await assemble(options);
   const history = await recordSnapshot(snapshot, {
     env: options.env,
     home: options.home,
@@ -199,5 +242,6 @@ export async function emitSnapshot(options: SnapshotOptions = {}): Promise<Snaps
     ),
     errors: history.error === undefined ? snapshot.errors : [...snapshot.errors, history.error],
   });
-  return { snapshot: recorded, path: writeSnapshot(recorded, options), code };
+  const path = writeSnapshot(recorded, options);
+  return { snapshot: recorded, path, code, delivered: await announce(gathered, previous, options) };
 }

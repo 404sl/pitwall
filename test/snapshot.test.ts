@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { SCHEMA_VERSION, isYours, parseSnapshot } from "@404sl/pitwall-schema";
+import type { Notice } from "../src/notify.ts";
 import { collectSnapshot, emitSnapshot } from "../src/snapshot.ts";
 import { historyPath } from "../src/history.ts";
 import { readSnapshot, snapshotPath } from "../src/state.ts";
@@ -182,6 +183,61 @@ test("a complete snapshot exits zero and one where every project failed does not
   assert.equal((await emitSnapshot(options(workspace([TRACKER, NO_TRACKER])))).code, 0);
   assert.equal((await emitSnapshot(options(workspace([NO_TRACKER])))).code, 1);
   assert.equal((await emitSnapshot(options(workspace([])))).code, 0);
+});
+
+function announcing(place: Workspace, sessionRef?: string) {
+  const sent: Notice[] = [];
+  return {
+    sent,
+    run: () =>
+      emitSnapshot({
+        ...options(place),
+        env: { ...place.env, BD_LIST_FIXTURE: "landed" },
+        sessionRef,
+        sender: (notice: Notice) => {
+          sent.push(notice);
+          return Promise.resolve({ delivered: true as const });
+        },
+        note: () => Promise.reject(new Error("no note should be needed")),
+      }),
+  };
+}
+
+test("an issue that closed since the previous collection reaches the session that asked", async () => {
+  const place = workspace([TRACKER]);
+  await emitSnapshot(options(place));
+  const announced = announcing(place);
+  const result = await announced.run();
+  assert.deepEqual(
+    announced.sent.map((notice) => [notice.issueId, notice.origin.ref, notice.origin.session]),
+    [
+      ["mw-1", "c1796a", "mw-planning-session"],
+      ["mw-1.1", "c1796a", "mw-planning-session"],
+    ],
+  );
+  assert.deepEqual(
+    result.delivered.map((entry) => entry.delivery.delivered),
+    [true, true],
+  );
+});
+
+test("nothing is announced to the session that closed the work itself", async () => {
+  const place = workspace([TRACKER]);
+  await emitSnapshot(options(place));
+  const announced = announcing(place, "c1796a");
+  const result = await announced.run();
+  assert.deepEqual(announced.sent, []);
+  assert.deepEqual(result.delivered, []);
+});
+
+test("a collection with no sender delivers nothing at all", async () => {
+  const place = workspace([TRACKER]);
+  await emitSnapshot(options(place));
+  const result = await emitSnapshot({
+    ...options(place),
+    env: { ...place.env, BD_LIST_FIXTURE: "landed" },
+  });
+  assert.deepEqual(result.delivered, []);
 });
 
 function pipelineRoot(remote: string): string {

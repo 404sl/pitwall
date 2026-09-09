@@ -353,6 +353,32 @@ export async function readIssues(
   }
 }
 
+export function appendNotesArgs(id: string, text: string): string[] {
+  return ["update", id, "--append-notes", text];
+}
+
+export function noteAppender(
+  root: string,
+  options: Omit<ReadIssuesOptions, "errors"> = {},
+): (id: string, text: string) => Promise<void> {
+  const beadsDir = join(resolve(root), BEADS_DIR);
+  const env = options.env ?? process.env;
+  const timeoutMs = options.timeoutMs ?? TIMEOUT_MS;
+  return async (id, text) => {
+    const args = appendNotesArgs(id, text);
+    try {
+      await run("bd", args, {
+        encoding: "utf8",
+        env: { ...env, [BEADS_DIR_VAR]: beadsDir },
+        maxBuffer: MAX_OUTPUT,
+        timeout: timeoutMs,
+      });
+    } catch (cause) {
+      throw new Error(`bd update ${id} --append-notes: ${failureOf(cause, timeoutMs)}`);
+    }
+  };
+}
+
 function linksOf(value: unknown, categories: ReadonlyMap<string, string>): DependencyLink[] {
   if (!Array.isArray(value)) {
     return [];
