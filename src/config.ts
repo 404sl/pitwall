@@ -42,8 +42,11 @@ function readRoots(path: string): string[] {
   return (roots as string[]).map((root) => resolve(root));
 }
 
-function bound(value: unknown, fallback: number): number {
-  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : fallback;
+function bound(value: unknown, fallback: number, whole: boolean): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    return fallback;
+  }
+  return whole ? Math.floor(value) : value;
 }
 
 export function historyLimits(options: RootsOptions = {}): HistoryLimits {
@@ -57,8 +60,8 @@ export function historyLimits(options: RootsOptions = {}): HistoryLimits {
     configured = {};
   }
   return {
-    maxSnapshots: bound(configured.maxSnapshots, DEFAULT_LIMITS.maxSnapshots),
-    maxAgeDays: bound(configured.maxAgeDays, DEFAULT_LIMITS.maxAgeDays),
+    maxSnapshots: Math.max(bound(configured.maxSnapshots, DEFAULT_LIMITS.maxSnapshots, true), 1),
+    maxAgeDays: bound(configured.maxAgeDays, DEFAULT_LIMITS.maxAgeDays, false),
   };
 }
 

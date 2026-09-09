@@ -5,7 +5,8 @@ import { dirname, join } from "node:path";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { Project } from "@404sl/pitwall-schema";
-import { collectProjects, configPath, describeRoots, resolveRoots } from "../src/config.ts";
+import { collectProjects, configPath, describeRoots, historyLimits, resolveRoots } from "../src/config.ts";
+import { DEFAULT_LIMITS } from "../src/history.ts";
 
 const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), "fixtures");
 const SCAN = join(FIXTURES, "scan");
@@ -171,4 +172,21 @@ test("the scan finds a workspace under either name", () => {
     join(NAMES, "oldonly"),
   ]);
   assert.deepEqual(resolved.errors, []);
+});
+
+test("the history bounds default until the config moves them", () => {
+  const { home } = withConfig(JSON.stringify({ roots: [], history: { maxSnapshots: 12, maxAgeDays: 3 } }));
+  assert.deepEqual(historyLimits({ env: {}, home }), { maxSnapshots: 12, maxAgeDays: 3 });
+  const bare = withConfig(JSON.stringify({ roots: [] }));
+  assert.deepEqual(historyLimits({ env: {}, home: bare.home }), DEFAULT_LIMITS);
+  assert.deepEqual(historyLimits({ env: {}, home: "/home/nobody" }), DEFAULT_LIMITS);
+});
+
+test("a bound that a store cannot hold is not passed on as it was written", () => {
+  const fractional = withConfig(JSON.stringify({ roots: [], history: { maxSnapshots: 2.5 } }));
+  assert.equal(historyLimits({ env: {}, home: fractional.home }).maxSnapshots, 2);
+  const nonsense = withConfig(JSON.stringify({ roots: [], history: { maxSnapshots: "lots", maxAgeDays: -4 } }));
+  assert.deepEqual(historyLimits({ env: {}, home: nonsense.home }), DEFAULT_LIMITS);
+  const tiny = withConfig(JSON.stringify({ roots: [], history: { maxSnapshots: 0.5 } }));
+  assert.equal(historyLimits({ env: {}, home: tiny.home }).maxSnapshots, 1);
 });
