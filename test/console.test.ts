@@ -787,7 +787,7 @@ test("problems render whole under every filter, because a hidden collection fail
     createElement(Band, {
       id: "problems",
       label: strings.band.problems,
-      note: strings.filters.notFiltered,
+      count: strings.filters.notFiltered,
       children: createElement(Problems, { rows: buildBoard(MIXED, { type: "bug" }).problems }),
     }),
   );
@@ -931,4 +931,145 @@ test("filtering is a view over the snapshot and never a change to it", () => {
   }
   assert.deepEqual(read, pristine, "a filter must not touch the document the console was given");
   assert.equal(buildBoard(read, { project: "pitwall" }).projectCount, 2, "the header counts the snapshot, not the view");
+});
+
+const { Parked } = await import("../ui/components/Parked.tsx");
+const { Running, runningSummary } = await import("../ui/components/Running.tsx");
+
+function parkedIssues(reason: string, count: number, bugs: number): Array<Record<string, unknown>> {
+  return Array.from({ length: count }, (_, index) =>
+    issue(`pw-${reason.replace(":", "-")}-${index}`, reason, { issueType: index < bugs ? "bug" : "task" }),
+  );
+}
+
+const PARKED_MIX = snapshotOf([
+  project("pitwall", {
+    issues: [
+      ...parkedIssues("parked:tooling", 3, 1),
+      ...parkedIssues("parked:watch", 2, 1),
+      ...parkedIssues("parked:umbrella", 4, 0),
+      ...parkedIssues("parked:roadmap", 6, 2),
+      ...parkedIssues("blocked", 5, 0),
+    ],
+  }),
+]);
+
+function textOf(markup: string): string {
+  return markup.replace(/<[^>]*>/g, "");
+}
+
+function parkedMarkup(board: Board): string {
+  return renderToStaticMarkup(
+    createElement(Band, {
+      id: "parked",
+      label: strings.band.parked,
+      children: createElement(Parked, {
+        entries: board.parked,
+        totals: board.filtered ? board.totals.parked : undefined,
+        filteredEmpty: board.filtered ? filterSentence(board.filter, board.options) : undefined,
+      }),
+    }),
+  );
+}
+
+test("a parked reason under a filter counts itself, and the reasons are still never summed", () => {
+  const plain = buildBoard(PARKED_MIX);
+  assert.equal(parkedSummary(plain.parked), "tooling 3 · watch 2 · umbrella 4 · roadmap 6");
+  assert.equal(blockedSummary(plain.parked), "blocked 5");
+
+  const board = buildBoard(PARKED_MIX, { type: "bug" });
+  assert.equal(
+    parkedSummary(board.parked, board.totals.parked),
+    "tooling 1 of 3 · watch 1 of 2 · umbrella 0 of 4 · roadmap 2 of 6",
+    "a reason that filters away must still say what it filtered out",
+  );
+  assert.equal(blockedSummary(board.parked, board.totals.parked), "blocked 0 of 5");
+  assert.equal(
+    parkedSummary(board.parked, board.totals.parked).includes("blocked"),
+    false,
+    "blocked must not be joined into the parked reasons under a filter either",
+  );
+
+  const markup = parkedMarkup(board);
+  const read = textOf(markup);
+  assert.equal(markup.includes("pw-band__count"), false, "parked must carry no head count, filtered or not");
+  assert.equal(read.includes("20"), false, "a summed parked figure must never be rendered");
+  assert.ok(read.includes("tooling 1 of 3 · watch 1 of 2 · umbrella 0 of 4 · roadmap 2 of 6"));
+  assert.ok(read.includes("blocked 0 of 5"), "a reason with nothing left must render as none of its total");
+  assert.ok(markup.includes("pw-of"), "the total a count came from must read as the quieter half");
+
+  const bare = parkedMarkup(plain);
+  assert.equal(bare.includes("pw-of"), false);
+  assert.equal(bare.includes(" of "), false, "an unfiltered parked band must read exactly as it always has");
+  assert.ok(bare.includes("tooling 3"));
+  assert.ok(bare.includes("blocked 5"));
+});
+
+test("a parked band emptied by a filter says which filter emptied it", () => {
+  const board = buildBoard(PARKED_MIX, { type: "zzz" });
+  assert.deepEqual(board.parked, []);
+  const markup = parkedMarkup(board);
+  assert.ok(markup.includes("type zzz"), "the sentence must name the filter that emptied the band");
+  assert.equal(markup.includes(strings.empty.parked), false, "a filtered band must not claim nothing is parked");
+  assert.equal(markup.includes(" of "), false);
+});
+
+const RUNNING_MIX = snapshotOf([
+  project("maas", {
+    issues: [
+      issue("maas-1", "in-flight", { issueType: "bug" }),
+      issue("maas-2", "in-flight", { issueType: "bug" }),
+      issue("maas-3", "in-flight", { issueType: "task" }),
+      issue("maas-4", "landing", { issueType: "task" }),
+    ],
+  }),
+]);
+
+test("a running state a filter emptied still reports the work it left outside the view", () => {
+  const plain = buildBoard(RUNNING_MIX);
+  assert.equal(runningSummary(plain.runningTotals), "3 working · 1 awaiting lander");
+
+  const board = buildBoard(RUNNING_MIX, { type: "bug" });
+  assert.equal(
+    runningSummary(board.runningTotals, board.totals.runningStates),
+    "2 of 3 working · 0 of 1 awaiting lander",
+    "a state with unfiltered work must stay on the head even when the filter empties it",
+  );
+
+  const markup = renderToStaticMarkup(createElement(Running, { rows: board.running }));
+  assert.ok(textOf(markup).includes("2 of 3 working"), "a running row under a filter must say what it is counting");
+  assert.ok(markup.includes("pw-of"));
+  const bare = renderToStaticMarkup(createElement(Running, { rows: plain.running }));
+  assert.equal(bare.includes(" of "), false, "an unfiltered running row stays a plain count");
+});
+
+test("no filter control is ever disabled, because a control that cannot be used cannot explain itself", () => {
+  const board = buildBoard(snapshotOf([project("pitwall", { issues: [issue("pitwall-1", "ready")] })]));
+  const markup = renderToStaticMarkup(
+    createElement(Filters, {
+      filter: board.filter,
+      options: board.options,
+      shown: board.issueCount,
+      total: board.totals.issues,
+    }),
+  );
+  assert.equal(markup.includes("disabled"), false);
+  assert.equal((markup.match(/<select/g) ?? []).length, 4);
+});
+
+test("a filter value the snapshot never knew says so where it is chosen and where it is stated", () => {
+  const board = buildBoard(MIXED, { type: "zzz" });
+  const markup = renderToStaticMarkup(
+    createElement(Filters, {
+      filter: board.filter,
+      options: board.options,
+      shown: board.issueCount,
+      total: board.totals.issues,
+    }),
+  );
+  const named = "zzz — not in this snapshot";
+  assert.ok(/<option value="zzz"[^>]*selected/.test(markup), "an unknown value must stay selected");
+  assert.ok(textOf(markup).includes(named), "an unknown value must name itself where it is chosen");
+  assert.ok(textOf(markup).includes(`type ${named}`), "the stated filter must name it as one the snapshot has not");
+  assert.ok(markup.includes("0 of 5 issues"));
 });

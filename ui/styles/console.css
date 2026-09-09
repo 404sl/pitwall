@@ -2,6 +2,14 @@
   box-sizing: border-box;
 }
 
+:root {
+  color-scheme: dark;
+}
+
+[data-theme="light"] {
+  color-scheme: light;
+}
+
 html,
 body {
   margin: 0;
@@ -119,19 +127,22 @@ body {
 .pw-filters {
   border-inline-start: var(--pw-rail) solid transparent;
   padding-inline-start: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
-.pw-filters__controls {
+.pw-filters__fields {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px 16px;
+  gap: 12px 24px;
   align-items: end;
 }
 
 .pw-filters__field {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 4px;
 }
 
 .pw-filters__label {
@@ -142,47 +153,36 @@ body {
   color: var(--pw-muted);
 }
 
-.pw-filters__select {
-  min-block-size: 36px;
-  padding: 4px 8px;
-  font-family: var(--pw-font-ui);
-  font-size: 15px;
-  line-height: 1.5;
+.pw-select {
+  font-family: var(--pw-font-data);
+  font-size: 12px;
+  letter-spacing: 0.02em;
   color: var(--pw-ink);
   background: var(--pw-surface);
   border: 1px solid var(--pw-muted);
   border-radius: var(--pw-radius-control);
+  padding: 4px 8px;
+  min-block-size: 32px;
+  min-inline-size: 12ch;
+  max-inline-size: 22ch;
   transition: border-color var(--pw-dur-state) var(--pw-ease);
 }
 
-.pw-filters__select:hover {
+.pw-select:hover {
   border-color: var(--pw-ink);
 }
 
-.pw-filters__select:disabled {
-  color: var(--pw-muted);
-  border-color: var(--pw-line);
-}
-
 .pw-filters__clear {
+  align-self: end;
+  padding-block: 6px;
   font-family: var(--pw-font-data);
   font-size: 12px;
   line-height: 1.6;
   letter-spacing: 0.02em;
-  margin-block-end: 8px;
 }
 
-.pw-notice--filters {
-  margin-block-start: 12px;
-}
-
-.pw-band__note {
-  font-family: var(--pw-font-data);
-  font-size: 12px;
-  line-height: 1.6;
-  letter-spacing: 0.02em;
+.pw-of {
   color: var(--pw-muted);
-  text-transform: uppercase;
 }
 
 .pw-band {
@@ -598,22 +598,20 @@ body {
     flex-basis: 100%;
   }
 
-  .pw-filters__controls {
-    display: block;
+  .pw-filters__fields {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
   }
 
-  .pw-filters__field + .pw-filters__field {
-    margin-block-start: 8px;
-  }
-
-  .pw-filters__select {
+  .pw-select {
     inline-size: 100%;
+    max-inline-size: none;
     min-block-size: 44px;
   }
 
   .pw-filters__clear {
-    display: inline-block;
-    margin-block: 12px 0;
+    align-self: start;
   }
 
   .pw-table,

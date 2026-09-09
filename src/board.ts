@@ -12,7 +12,7 @@ import {
   type Staleness,
   type StalenessVerdict,
 } from "@404sl/pitwall-schema";
-import type { ClassificationReason } from "./classify.js";
+import { parentIdOf, type ClassificationReason } from "./classify.js";
 import { priorityLabel } from "./format.js";
 import { stalenessSource, unresolvedCount } from "./staleness.js";
 
@@ -48,6 +48,7 @@ export interface RunningRow {
   projectId: string;
   state: RunningState;
   count: number;
+  total?: number;
   chips: LaneChip[];
 }
 
@@ -71,6 +72,12 @@ export interface ReadyGroup {
 export interface ParkedEntry {
   reason: string;
   count: number;
+}
+
+export interface ParkedCount {
+  reason: string;
+  count: number;
+  total?: number;
 }
 
 export interface ProblemRow {
@@ -99,6 +106,7 @@ export type FilterOptions = Record<FilterKey, FilterOption[]>;
 export interface BoardTotals {
   needsYou: number;
   running: number;
+  runningStates: RunningTotal[];
   ready: number;
   parked: ParkedEntry[];
   issues: number;
@@ -257,6 +265,15 @@ function runningRows(projects: Project[], generatedAt: string): RunningRow[] {
     .flatMap((group) => group.rows);
 }
 
+function runningKey(row: { projectId: string; state: RunningState }): string {
+  return `${row.projectId}\u0000${row.state}`;
+}
+
+function withRunningTotals(rows: RunningRow[], unfiltered: RunningRow[]): RunningRow[] {
+  const totals = new Map(unfiltered.map((row) => [runningKey(row), row.count]));
+  return rows.map((row) => ({ ...row, total: totals.get(runningKey(row)) ?? row.count }));
+}
+
 function runningTotals(rows: RunningRow[]): RunningTotal[] {
   return RUNNING_ORDER.map((state) => ({
     state,
@@ -319,16 +336,28 @@ function parkedEntries(projects: Project[]): ParkedEntry[] {
     .filter((entry) => entry.count > 0);
 }
 
-export function parkedSummary(entries: ParkedEntry[]): string {
-  return entries
-    .filter((entry) => entry.reason !== "blocked")
-    .map((entry) => `${entry.reason} ${entry.count}`)
+export function parkedCounts(entries: ParkedEntry[], totals?: ParkedEntry[]): ParkedCount[] {
+  if (totals === undefined) {
+    return entries.map((entry) => ({ reason: entry.reason, count: entry.count }));
+  }
+  const shown = new Map(entries.map((entry) => [entry.reason, entry.count]));
+  return totals.map((entry) => ({ reason: entry.reason, count: shown.get(entry.reason) ?? 0, total: entry.count }));
+}
+
+export function countOf(part: ParkedCount): string {
+  return part.total === undefined ? String(part.count) : `${part.count} of ${part.total}`;
+}
+
+export function parkedSummary(entries: ParkedEntry[], totals?: ParkedEntry[]): string {
+  return parkedCounts(entries, totals)
+    .filter((part) => part.reason !== "blocked")
+    .map((part) => `${part.reason} ${countOf(part)}`)
     .join(" \u00b7 ");
 }
 
-export function blockedSummary(entries: ParkedEntry[]): string {
-  const blocked = entries.find((entry) => entry.reason === "blocked");
-  return blocked === undefined ? "" : `blocked ${blocked.count}`;
+export function blockedSummary(entries: ParkedEntry[], totals?: ParkedEntry[]): string {
+  const blocked = parkedCounts(entries, totals).find((part) => part.reason === "blocked");
+  return blocked === undefined ? "" : `blocked ${countOf(blocked)}`;
 }
 
 function problemRows(snapshot: Snapshot): ProblemRow[] {
@@ -355,10 +384,7 @@ export const ISSUE_TYPES = ["bug", "feature", "task", "chore", "epic", "decision
 
 export const PRIORITIES = [0, 1, 2, 3, 4];
 
-export function epicOf(id: string): string | undefined {
-  const cut = id.lastIndexOf(".");
-  return cut === -1 ? undefined : id.slice(0, cut);
-}
+export const epicOf = parentIdOf;
 
 export function isFiltered(filter: FilterState): boolean {
   return FILTER_KEYS.some((key) => filter[key] !== undefined);
@@ -431,10 +457,11 @@ function filterOptions(projects: Project[]): FilterOptions {
   };
 }
 
-function boardTotals(projects: Project[], generatedAt: string): BoardTotals {
+function boardTotals(projects: Project[], generatedAt: string, running: RunningRow[]): BoardTotals {
   return {
     needsYou: needsYouGroups(projects).reduce((sum, group) => sum + group.rows.length, 0),
-    running: runningRows(projects, generatedAt).reduce((sum, row) => sum + row.count, 0),
+    running: running.reduce((sum, row) => sum + row.count, 0),
+    runningStates: runningTotals(running),
     ready: readyRows(projects).length,
     parked: parkedEntries(projects),
     issues: projects.reduce((sum, project) => sum + issuesOf(project).length, 0),
@@ -445,8 +472,10 @@ export function buildBoard(snapshot: Snapshot, filter: FilterState = {}): Board 
   const projects = snapshot.projects ?? [];
   const generatedAt = snapshot.generatedAt;
   const shown = filteredProjects(projects, filter);
+  const filtered = isFiltered(filter);
   const needsYou = needsYouGroups(shown);
-  const running = runningRows(shown, generatedAt);
+  const everyRunning = runningRows(projects, generatedAt);
+  const running = filtered ? withRunningTotals(runningRows(shown, generatedAt), everyRunning) : everyRunning;
   const ready = readyRows(shown);
   const parked = parkedEntries(shown);
   return {
@@ -463,10 +492,10 @@ export function buildBoard(snapshot: Snapshot, filter: FilterState = {}): Board 
     parked,
     problems: problemRows(snapshot),
     filter,
-    filtered: isFiltered(filter),
+    filtered,
     options: filterOptions(projects),
     issueCount: shown.reduce((sum, project) => sum + issuesOf(project).length, 0),
-    totals: boardTotals(projects, generatedAt),
+    totals: boardTotals(projects, generatedAt, everyRunning),
   };
 }
 

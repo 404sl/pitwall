@@ -100,10 +100,6 @@ function useHash(): string {
   return hash;
 }
 
-function runningCount(shown: string, summary: string): string {
-  return [shown, summary].filter((part) => part !== "").join(" \u00b7 ");
-}
-
 export function App() {
   const hash = useHash();
   const route = useMemo(() => routeOf(hash), [hash]);
@@ -222,9 +218,9 @@ export function App() {
         <Band
           id="running"
           label={strings.band.running}
-          count={runningCount(
-            board.filtered ? countLabel(board.runningCount, board.totals.running, true) : "",
-            runningSummary(board.runningTotals),
+          count={runningSummary(
+            board.runningTotals,
+            board.filtered ? board.totals.runningStates : undefined,
           )}
         >
           <Running rows={board.running} filter={filter} filteredEmpty={emptyOf(board.totals.running)} />
@@ -242,12 +238,16 @@ export function App() {
           />
         </Band>
         <Band id="parked" label={strings.band.parked}>
-          <Parked entries={board.parked} filteredEmpty={emptyOf(board.totals.parked.length)} />
+          <Parked
+            entries={board.parked}
+            totals={board.filtered ? board.totals.parked : undefined}
+            filteredEmpty={emptyOf(board.totals.parked.length)}
+          />
         </Band>
         <Band
           id="problems"
           label={strings.band.problems}
-          note={board.filtered ? strings.filters.notFiltered : undefined}
+          count={board.filtered ? strings.filters.notFiltered : undefined}
           alert={problems.length > 0}
         >
           <Problems rows={problems} />
