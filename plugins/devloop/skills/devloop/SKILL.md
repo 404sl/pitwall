@@ -476,6 +476,34 @@ and leaves the branch and PR alone:
 
 A question written onto the issue is a success. A guess merged unattended is not.
 
+## A bug in the loop is not a ticket in your backlog
+
+**Problems with this tooling go to <https://github.com/404sl/pitwall/issues>, not to the
+tracker you are working.** That includes anything in this skill or its scripts: a lane that
+dies the same way twice, a check that passes on evidence it never read, a command that
+recommends something destructive, output that says one thing and means another.
+
+Two reasons, and the second is the one that bites.
+
+**A local ticket would be picked up by this loop.** Anything filed in the workspace tracker
+becomes dispatchable work, so a lane would claim it and try to fix the loop while running
+inside it. The plugin is installed in a versioned directory that a lane has no business
+editing - a fix there survives until the next `/plugin update` and is invisible to everybody
+else. So the loop would consume a lane, produce a diff nobody can merge, and quietly diverge
+the tool from the version it reports.
+
+**The evidence is worth more than the fix.** Most of the unusual code here exists because
+something failed once in a way nobody predicted, and the comment recording that is what stops
+it being rewritten back. A report that says what ran, what it printed and what was actually
+true is more useful than a patch, because the patch is the easy half.
+
+Include the version - `/plugin` lists it - and what the loop printed at the point it went
+wrong, verbatim. "It got confused" is not reproducible; a lane's own output is.
+
+**A bug in the software you are working on is a different thing**, and belongs in your
+tracker as normal. The test is whether the fix would live in your repositories or in this
+plugin.
+
 ## Deploy behaviour
 
 - **site** - `mina staging deploy`, never production. mina ships `origin/master`, so it

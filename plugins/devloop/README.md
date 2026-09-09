@@ -48,6 +48,19 @@ than explaining syntax. They are the point: each one is a run that went wrong on
 reason the code now looks unusual. Rewriting one to be shorter generally means removing the
 only record of why the obvious version does not work.
 
+## Reporting a problem with the loop
+
+<https://github.com/404sl/pitwall/issues>
+
+Not into the tracker you are working. Anything filed there becomes dispatchable work, so a
+lane would claim it and try to fix this plugin from inside a run - editing a versioned install
+directory, producing a diff nobody can merge, and diverging the tool from the version it
+reports.
+
+Include the version and the loop's own output at the point it went wrong. The evidence is
+worth more than a patch; most of the unusual code here exists because something failed once in
+a way nobody predicted.
+
 ## Licence
 
 AGPL-3.0, with the rest of Pitwall.
