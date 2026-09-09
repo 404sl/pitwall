@@ -56,11 +56,33 @@ fi
 
 # Find the run that reported this token. Journals live per session; search them all rather than
 # assuming this session owns the lock - another session on this machine may legitimately hold it.
-owner=""
+#
+# A RUN BLOCKED BY THE LOCK ALSO NAMES THE TOKEN. It records it as lockedOutBy, so a naive
+# search matches the victim as readily as the holder - and the victim is, by definition,
+# writing right now. Taking the first match reported a finished holder as ALIVE by measuring
+# a live run that was waiting on it.
+#
+# That mistake has a feedback loop, which is what makes it expensive rather than merely wrong:
+# every retry against a leaked lock creates ANOTHER run whose journal names the token and
+# which is writing. The more a supervisor retries, the more alive the dead lock looks.
+# Responding to "nothing is landing" by trying again is both the obvious move and the worst.
+#
+# So: consider only journals where the token appears on a line that is NOT a lockedOutBy
+# record, take every match rather than the first, and refuse to guess between two.
+owner=""; others=0
 for j in "$HOME"/.claude/projects/*/*/subagents/workflows/*/journal.jsonl; do
   [ -f "$j" ] || continue
-  if grep -qF "$token" "$j" 2>/dev/null; then owner=$(dirname "$j"); break; fi
+  grep -qF "$token" "$j" 2>/dev/null || continue
+  grep -F "$token" "$j" 2>/dev/null | grep -qv "lockedOutBy" || continue
+  if [ -n "$owner" ]; then others=$((others + 1)); else owner=$(dirname "$j"); fi
 done
+
+if [ "$others" -gt 0 ]; then
+  echo "MERGE LOCK held ${held_min}m by ${token} - $((others + 1)) runs claim this token as holder."
+  echo "  Refusing to measure one of them and call it the answer. Confirm by hand which is real,"
+  echo "  and confirm nothing is deploying, before touching the lock."
+  exit 1
+fi
 
 if [ -z "$owner" ]; then
   echo "MERGE LOCK held ${held_min}m by ${token} - NO workflow journal claims this token."
