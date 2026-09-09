@@ -489,6 +489,25 @@ body {
   border-inline-start-color: var(--pw-muted);
 }
 
+.pw-call__ask {
+  margin: 6px 0 0;
+  max-inline-size: 60ch;
+  padding-inline-start: 19px;
+}
+
+.pw-call__ask-label {
+  font-family: var(--pw-font-data);
+  font-size: 12px;
+  line-height: 1.6;
+  letter-spacing: 0.02em;
+  color: var(--pw-muted);
+  margin-inline-end: 8px;
+}
+
+.pw-call__ask-text {
+  color: var(--pw-ink);
+}
+
 .pw-empty--method {
   margin-block-start: 12px;
   max-inline-size: 68ch;
@@ -564,6 +583,46 @@ body {
   overflow-wrap: anywhere;
 }
 
+.pw-disclosure {
+  margin: 8px 0 0;
+  padding-inline-start: 12px;
+}
+
+.pw-disclosure__summary {
+  padding-block: 6px;
+  margin-block: -6px;
+  cursor: pointer;
+  font-family: var(--pw-font-ui);
+}
+
+.pw-disclosure__label {
+  color: var(--pw-ink);
+  text-decoration: underline;
+  text-decoration-color: var(--pw-muted);
+  text-underline-offset: 3px;
+}
+
+.pw-disclosure__summary:hover .pw-disclosure__label,
+.pw-disclosure__summary:focus-visible .pw-disclosure__label {
+  text-decoration-color: var(--pw-ink);
+}
+
+.pw-disclosure__separator {
+  color: var(--pw-muted);
+}
+
+.pw-disclosure__hint {
+  font-family: var(--pw-font-data);
+  font-size: 12px;
+  line-height: 1.6;
+  letter-spacing: 0.02em;
+  color: var(--pw-muted);
+}
+
+.pw-disclosure .pw-recorded {
+  padding-inline-start: 0;
+}
+
 .pw-evidence {
   margin: 8px 0 0;
   padding-inline-start: 32px;
@@ -578,6 +637,18 @@ body {
   .pw-call {
     font-size: 16px;
     max-inline-size: 100%;
+  }
+
+  .pw-call__ask {
+    max-inline-size: 100%;
+  }
+
+  .pw-disclosure__separator {
+    display: none;
+  }
+
+  .pw-disclosure__hint {
+    display: block;
   }
 
   .pw-header,

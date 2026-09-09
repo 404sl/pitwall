@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { classify, hasLiveStructuralBlocker } from "../src/classify.ts";
 import type { ClassifyContext, UnclassifiedIssue } from "../src/classify.ts";
 import { preconditionProbe } from "../src/probes.ts";
-import { assess, isAssessable, unresolvedCount } from "../src/staleness.ts";
+import { assess, isAssessable, noteBlocks, unresolvedCount } from "../src/staleness.ts";
 import type { ParkedRecord, PullState, StalenessContext } from "../src/staleness.ts";
 
 const CHECKED_AT = new Date("2026-09-08T09:00:00Z");
@@ -136,6 +136,38 @@ test("a later note that defers rather than answers is not an answer", async () =
   );
   assert.equal(staleness.verdict, "still-blocking");
   assert.ok(matches(staleness.evidence, /defers rather than answers/));
+});
+
+const LAYERED_NOTES = [
+  "Parked behind the migration, not yet.",
+  "Chased the owner again.",
+  "Answered: go ahead with the smaller shape.",
+].join("\n\n");
+
+test("a note is one blank-line-separated block, and the count a reader sees is the block the check reads", async () => {
+  assert.deepEqual(noteBlocks(LAYERED_NOTES), [
+    "Parked behind the migration, not yet.",
+    "Chased the owner again.",
+    "Answered: go ahead with the smaller shape.",
+  ]);
+  assert.deepEqual(noteBlocks(""), []);
+  assert.deepEqual(noteBlocks("  \n \n  "), []);
+  const { staleness } = await assess(
+    aRecord({
+      classification: "yours:access",
+      labels: ["needs-access"],
+      labelledAt: "2026-09-01T10:00:00Z",
+      notedAt: "2026-09-05T14:00:00Z",
+      notes: LAYERED_NOTES,
+    }),
+    aContext(),
+  );
+  assert.equal(staleness.verdict, "likely-stale");
+  assert.ok(matches(staleness.evidence, /Answered: go ahead with the smaller shape\./));
+  assert.ok(
+    !matches(staleness.evidence, /defers rather than answers/),
+    "an earlier block that defers is history, not the standing note",
+  );
 });
 
 test("a tracker that does not record when a label went on leaves the check unrun and states nothing", async () => {

@@ -126,6 +126,13 @@ export const strings = {
       parked: "Nothing for you — it is parked: {reason}.",
       blocked: "Nothing for you — something else has to close first.",
       closed: "Nothing for you — this issue is closed.",
+      latestNote: "Latest note",
+    },
+    notes: {
+      count: "{count} notes",
+      one: "1 note",
+      separator: " · ",
+      hint: "append-only history, newest last",
     },
     vintage: "read at {at}",
     because: ", because ",
