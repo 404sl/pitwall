@@ -36,8 +36,8 @@ jobs:
       - run: npm install -g npm@latest
       - run: npm install
       - run: npm run lint
-      - run: npm test
       - run: npm run build
+      - run: npm test
 
       # A tag that disagrees with package.json publishes a version nobody asked
       # for, under a name that says otherwise. Cheaper to stop here.
