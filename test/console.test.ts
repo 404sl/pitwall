@@ -24,12 +24,13 @@ const { Header } = await import("../ui/components/Header.tsx");
 
 const GENERATED_AT = "2026-09-08T14:11:00Z";
 const HEADER_NOW = Date.parse("2026-09-08T14:49:00Z");
+const RUNNING_VERSION = VERSION.replace(/\./g, "\\.");
 
-function headerMarkup(projectCount: number, generatedAt: string): string {
+function headerMarkup(projectCount: number, generatedAt: string, update?: string): string {
   const realNow = Date.now;
   Date.now = () => HEADER_NOW;
   try {
-    return renderToStaticMarkup(createElement(Header, { projectCount, generatedAt }));
+    return renderToStaticMarkup(createElement(Header, { projectCount, generatedAt, version: VERSION, update }));
   } finally {
     Date.now = realNow;
   }
@@ -534,6 +535,19 @@ test("the rendered header stays grey below the staleness threshold and goes loud
   assert.match(stale, /<header class="pw-header pw-header--stale">/);
   assert.match(stale, /<span aria-hidden="true"> · stale<\/span>/);
   assert.match(stale, /<span class="pw-sr">Snapshot is stale\. It may no longer be true\.<\/span>/);
+});
+
+test("the header names the version it is serving, and says nothing about an update it has not confirmed", () => {
+  const markup = headerAged(60_000);
+  assert.match(markup, new RegExp(`<span class="pw-sr">version </span>${RUNNING_VERSION}<span`));
+  assert.match(markup, /<span class="pw-header__update" role="status"><\/span>/);
+  assert.doesNotMatch(markup, /available/);
+});
+
+test("a confirmed newer release is named beside the running version", () => {
+  const markup = headerMarkup(3, new Date(HEADER_NOW - 60_000).toISOString(), "0.1.99");
+  assert.match(markup, new RegExp(`</span>${RUNNING_VERSION}<span class="pw-header__update" role="status">`));
+  assert.match(markup, /<span aria-hidden="true"> · <\/span>0\.1\.99 available<\/span>/);
 });
 
 test("a header rendered from a stamp it cannot read shows the stamp and claims nothing about it", () => {

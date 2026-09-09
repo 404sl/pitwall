@@ -9,6 +9,8 @@ const TICK_MS = 30_000;
 interface HeaderProps {
   projectCount: number;
   generatedAt: string;
+  version: string;
+  update?: string;
 }
 
 function useNow(): number {
@@ -20,7 +22,7 @@ function useNow(): number {
   return now;
 }
 
-export function Header({ projectCount, generatedAt }: HeaderProps) {
+export function Header({ projectCount, generatedAt, version, update }: HeaderProps) {
   const noun = projectCount === 1 ? strings.header.project : strings.header.projects;
   const now = useNow();
   const age = snapshotAge(generatedAt, now);
@@ -28,7 +30,21 @@ export function Header({ projectCount, generatedAt }: HeaderProps) {
     <header className={age.stale ? "pw-header pw-header--stale" : "pw-header"}>
       <div className="pw-header__brand">
         <img className="pw-header__mark" src={mark} width="24" height="24" alt="" />
-        <h1 className="pw-wordmark">{strings.brand}</h1>
+        <div className="pw-header__title">
+          <h1 className="pw-wordmark">{strings.brand}</h1>
+          <p className="pw-header__version">
+            <span className="pw-sr">{`${strings.header.versionLabel} `}</span>
+            {version}
+            <span className="pw-header__update" role="status">
+              {update === undefined ? null : (
+                <>
+                  <span aria-hidden="true">{" · "}</span>
+                  {fill(strings.header.update, { version: update })}
+                </>
+              )}
+            </span>
+          </p>
+        </div>
       </div>
       <p className="pw-header__meta" title={stamp(generatedAt)}>
         {`${projectCount} ${noun} · `}

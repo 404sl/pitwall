@@ -14,7 +14,13 @@ import { routeOf, type IssueRoute } from "./routes.js";
 import { strings } from "./strings.js";
 
 const SNAPSHOT_URL = "/api/snapshot";
+const VERSION_URL = "/api/version";
 const POLL_MS = 30_000;
+
+interface RunningVersion {
+  running: string;
+  update?: string;
+}
 
 class SnapshotFailure extends Error {
   readonly source: string;
@@ -51,6 +57,26 @@ async function readSnapshot(signal: AbortSignal): Promise<Snapshot> {
   return JSON.parse(body) as Snapshot;
 }
 
+async function readVersion(signal: AbortSignal): Promise<RunningVersion | undefined> {
+  try {
+    const response = await fetch(VERSION_URL, { signal, headers: { accept: "application/json" } });
+    if (!response.ok) {
+      return undefined;
+    }
+    const body: unknown = await response.json();
+    if (typeof body !== "object" || body === null) {
+      return undefined;
+    }
+    const { running, update } = body as { running?: unknown; update?: unknown };
+    if (typeof running !== "string") {
+      return undefined;
+    }
+    return typeof update === "string" ? { running, update } : { running };
+  } catch {
+    return undefined;
+  }
+}
+
 function consoleProblem(cause: unknown): ProblemRow {
   const failure = cause instanceof SnapshotFailure ? cause : undefined;
   return {
@@ -79,13 +105,19 @@ export function App() {
   const [failure, setFailure] = useState<string | undefined>(undefined);
   const [refetchFailure, setRefetchFailure] = useState<ProblemRow | undefined>(undefined);
   const [loading, setLoading] = useState(true);
+  const [version, setVersion] = useState("");
+  const [update, setUpdate] = useState<string | undefined>(undefined);
   const held = useRef<Board | undefined>(undefined);
 
   const load = useCallback(async (signal: AbortSignal) => {
     try {
-      const snapshot = await readSnapshot(signal);
+      const [snapshot, running] = await Promise.all([readSnapshot(signal), readVersion(signal)]);
       if (signal.aborted) {
         return;
+      }
+      if (running !== undefined) {
+        setVersion(running.running);
+        setUpdate((known) => running.update ?? known);
       }
       const next = buildBoard(snapshot);
       held.current = next;
@@ -132,7 +164,12 @@ export function App() {
     return (
       <>
         {board === undefined ? null : (
-          <Header projectCount={board.projectCount} generatedAt={board.generatedAt} />
+          <Header
+            projectCount={board.projectCount}
+            generatedAt={board.generatedAt}
+            version={version}
+            update={update}
+          />
         )}
         <main className="pw-console">
           <IssuePage
@@ -156,7 +193,12 @@ export function App() {
 
   return (
     <>
-      <Header projectCount={board.projectCount} generatedAt={board.generatedAt} />
+      <Header
+        projectCount={board.projectCount}
+        generatedAt={board.generatedAt}
+        version={version}
+        update={update}
+      />
       <main className="pw-console">
         <Band id="needs" label={strings.band.needsYou} count={board.needsYouCount} alert={board.needsYouCount > 0}>
           <NeedsYou groups={board.needsYou} />

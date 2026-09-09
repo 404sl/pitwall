@@ -19,6 +19,8 @@ const USAGE = `pitwall ${VERSION}
     --port <n>         listen on another port
   pitwall --version    print the agent and contract versions
   pitwall --help       this message
+
+Run the current release with npx @404sl/pitwall@latest.
 `;
 
 export interface CommandResult {

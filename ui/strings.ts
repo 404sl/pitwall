@@ -7,6 +7,8 @@ export const strings = {
     takenAt: "Snapshot taken {at}.",
     staleFlag: "stale",
     staleNotice: "Snapshot is stale. It may no longer be true.",
+    versionLabel: "version",
+    update: "{version} available",
   },
   band: {
     needsYou: "Needs you",
