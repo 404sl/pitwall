@@ -1,4 +1,4 @@
-import type { Classification, Staleness } from "@404sl/pitwall-schema";
+import type { Classification, CollectionError, Staleness } from "@404sl/pitwall-schema";
 
 export type PullState = "merged" | "open" | "closed";
 
@@ -36,10 +36,41 @@ export interface StalenessContext {
   now?: Date;
 }
 
+type FailureScope = "issue" | "run";
+
+interface Failure {
+  scope: FailureScope;
+  message: string;
+}
+
 interface Check {
   ran: boolean;
   fired: boolean;
   evidence: string[];
+  failures?: Failure[];
+}
+
+export interface Assessment {
+  staleness: Staleness;
+  errors: CollectionError[];
+}
+
+export const STALENESS_SOURCE = "staleness";
+
+export function stalenessSource(id: string): string {
+  return `${STALENESS_SOURCE} ${id}`;
+}
+
+export function unresolvedCount(message: string): number {
+  const leading = /^(\d+) /.exec(message);
+  return leading === null ? 0 : Number(leading[1]);
+}
+
+function couldNotCheck(count: number, noun: string, verb: string, named: string[]): Failure {
+  return {
+    scope: "issue",
+    message: `${count} ${count === 1 ? noun : `${noun}s`} could not be ${verb}: ${named.join(", ")}`,
+  };
 }
 
 export const PRECONDITIONS: readonly Precondition[] = [
@@ -96,13 +127,7 @@ function noteAfterLabel(record: ParkedRecord): Check {
   const labelled = instantOf(record.labelledAt);
   const noted = instantOf(record.notedAt);
   if (labelled === undefined || noted === undefined) {
-    return {
-      ran: false,
-      fired: false,
-      evidence: [
-        `the tracker does not record when the ${label} label was applied, so a note written after it cannot be recognised`,
-      ],
-    };
+    return { ran: false, fired: false, evidence: [] };
   }
   if (noted <= labelled) {
     return {
@@ -146,18 +171,20 @@ function referencedIssuesClosed(record: ParkedRecord, context: StalenessContext)
     return {
       ran: false,
       fired: false,
-      evidence: ["the project records no issue id prefix, so referenced issues cannot be recognised"],
+      evidence: [],
+      failures: [
+        {
+          scope: "run",
+          message: "the project records no issue id prefix, so referenced issues cannot be recognised",
+        },
+      ],
     };
   }
   const known = context.knownIds ?? new Set<string>();
   const closed = context.closedIds ?? new Set<string>();
   const referenced = referencedIssues(record, prefix).filter((id) => known.has(id));
   if (referenced.length === 0) {
-    return {
-      ran: false,
-      fired: false,
-      evidence: ["it names no other issue of this project"],
-    };
+    return { ran: false, fired: false, evidence: [] };
   }
   const open = referenced.filter((id) => !closed.has(id));
   if (open.length > 0) {
@@ -200,14 +227,20 @@ async function referencedPullMerged(
 ): Promise<Check> {
   const references = referencedPulls(record);
   if (references.length === 0) {
-    return { ran: false, fired: false, evidence: ["it names no pull request"] };
+    return { ran: false, fired: false, evidence: [] };
   }
   const resolve = context.pullState;
   if (resolve === undefined) {
     return {
       ran: false,
       fired: false,
-      evidence: [`no pull request host is configured, so ${references[0]?.text} could not be looked up`],
+      evidence: [],
+      failures: [
+        {
+          scope: "run",
+          message: "no pull request host is configured, so pull requests could not be looked up",
+        },
+      ],
     };
   }
   const states = await Promise.all(
@@ -224,10 +257,11 @@ async function referencedPullMerged(
   const resolved = states.filter((entry) => entry.state !== undefined);
   const unresolved = states.filter((entry) => entry.state === undefined);
   const evidence = resolved.map((entry) => `${entry.reference.text} is ${entry.state}, not merged`);
-  for (const entry of unresolved) {
-    evidence.push(`could not resolve ${entry.reference.text} to a pull request`);
-  }
-  return { ran: resolved.length > 0, fired: false, evidence };
+  const failures =
+    unresolved.length === 0
+      ? []
+      : [couldNotCheck(unresolved.length, "reference", "checked", unresolved.map((entry) => entry.reference.text))];
+  return { ran: resolved.length > 0, fired: false, evidence, failures };
 }
 
 async function preconditionNowHolds(
@@ -237,29 +271,32 @@ async function preconditionNowHolds(
   const reason = reasonOf(record);
   const named = PRECONDITIONS.filter((precondition) => reason.includes(precondition.phrase));
   if (named.length === 0) {
-    return {
-      ran: false,
-      fired: false,
-      evidence: ["the recorded reason names no condition that can be tested from here"],
-    };
+    return { ran: false, fired: false, evidence: [] };
   }
   const probe = context.probe;
   if (probe === undefined) {
     return {
       ran: false,
       fired: false,
-      evidence: [`the recorded reason names \`${named[0]?.phrase}\`, which was not run`],
+      evidence: [],
+      failures: [
+        {
+          scope: "run",
+          message: "no precondition probe is configured, so named preconditions could not be run",
+        },
+      ],
     };
   }
   const results = await Promise.all(
     named.map(async (precondition) => ({ precondition, passed: await probe(precondition.command) })),
   );
   const evidence: string[] = [];
+  const unrunnable: string[] = [];
   let ran = false;
   let fired = false;
   for (const { precondition, passed } of results) {
     if (passed === undefined) {
-      evidence.push(`\`${precondition.phrase}\` could not be run from here`);
+      unrunnable.push(`\`${precondition.phrase}\``);
       continue;
     }
     ran = true;
@@ -270,7 +307,8 @@ async function preconditionNowHolds(
       evidence.push(`the recorded reason rests on \`${precondition.phrase}\`, which still fails`);
     }
   }
-  return { ran, fired, evidence };
+  const failures = unrunnable.length === 0 ? [] : [couldNotCheck(unrunnable.length, "precondition", "run", unrunnable)];
+  return { ran, fired, evidence, failures };
 }
 
 const NEVER_CONCLUDED = ["yours:", "blocked", "parked:umbrella"];
@@ -286,30 +324,48 @@ function machineMayConclude(record: ParkedRecord, context: StalenessContext): bo
   return record.blockedBy.every((id) => closed.has(id));
 }
 
+function verdictOf(
+  record: ParkedRecord,
+  context: StalenessContext,
+  checks: readonly Check[],
+  at: string,
+): Staleness {
+  const evidence = checks.flatMap((check) => check.evidence);
+  if (!checks.some((check) => check.ran)) {
+    return { verdict: "unchecked", evidence };
+  }
+  if (!checks.some((check) => check.fired)) {
+    return { verdict: "still-blocking", checkedAt: at, evidence };
+  }
+  if (machineMayConclude(record, context)) {
+    return {
+      verdict: "resolved",
+      checkedAt: at,
+      evidence: [...evidence, "no open dependency of its own remains"],
+    };
+  }
+  return { verdict: "likely-stale", checkedAt: at, evidence };
+}
+
 export async function assess(
   record: ParkedRecord,
   context: StalenessContext = {},
-): Promise<Staleness> {
+): Promise<Assessment> {
   const checks = [
     noteAfterLabel(record),
     referencedIssuesClosed(record, context),
     await referencedPullMerged(record, context),
     await preconditionNowHolds(record, context),
   ];
-  const evidence = checks.flatMap((check) => check.evidence);
-  if (!checks.some((check) => check.ran)) {
-    return { verdict: "unchecked", evidence };
-  }
-  const checkedAt = (context.now ?? new Date()).toISOString();
-  if (!checks.some((check) => check.fired)) {
-    return { verdict: "still-blocking", checkedAt, evidence };
-  }
-  if (machineMayConclude(record, context)) {
-    return {
-      verdict: "resolved",
-      checkedAt,
-      evidence: [...evidence, "no open dependency of its own remains"],
-    };
-  }
-  return { verdict: "likely-stale", checkedAt, evidence };
+  const at = (context.now ?? new Date()).toISOString();
+  return {
+    staleness: verdictOf(record, context, checks, at),
+    errors: checks
+      .flatMap((check) => check.failures ?? [])
+      .map((failure) => ({
+        source: failure.scope === "issue" ? stalenessSource(record.id) : STALENESS_SOURCE,
+        message: failure.message,
+        at,
+      })),
+  };
 }

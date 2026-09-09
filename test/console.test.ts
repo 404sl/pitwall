@@ -11,9 +11,11 @@ import {
   buildIssueView,
   parkedReasons,
   parkedSummary,
+  previewIssue,
   snapshotAge,
 } from "../ui/model.ts";
-import type { IssuePayload } from "../ui/model.ts";
+import type { IssuePayload, IssuePreview } from "../ui/model.ts";
+import { strings } from "../ui/strings.ts";
 import { issueHref, routeOf } from "../ui/routes.ts";
 import { VERSION } from "../src/version.ts";
 
@@ -540,4 +542,176 @@ test("a header rendered from a stamp it cannot read shows the stamp and claims n
   assert.match(markup, /<span class="pw-header__age">not-a-date<\/span>/);
   assert.doesNotMatch(markup, /pw-header--stale/);
   assert.doesNotMatch(markup, /<time/);
+});
+
+const { IssuePage, callFor } = await import("../ui/components/IssuePage.tsx");
+
+function aPreview(over: Partial<IssuePreview> = {}): IssuePreview {
+  return {
+    id: "sr-15s2",
+    title: "Honour paid checkout?",
+    status: "open",
+    issueType: "decision",
+    priority: 1,
+    labels: ["needs-decision"],
+    project: "session-replay",
+    projectName: "session-replay",
+    classification: "yours:decision",
+    closed: false,
+    staleness: {
+      verdict: "still-blocking",
+      checked: true,
+      checkedAt: "2026-09-08T13:00:00Z",
+      evidence: ["it names sr-tot5, still open"],
+      unresolved: 0,
+    },
+    ...over,
+  };
+}
+
+function pageMarkup(preview?: IssuePreview): string {
+  return renderToStaticMarkup(
+    createElement(IssuePage, { route: { project: "session-replay", id: "sr-15s2" }, preview }),
+  );
+}
+
+test("the ticket view leads with the action, and the machinery comes under it", () => {
+  const markup = pageMarkup(aPreview());
+  const call = markup.indexOf("pw-call");
+  const title = markup.indexOf("pw-issue__title");
+  const id = markup.indexOf("pw-issue__id");
+  const token = markup.indexOf("pw-reason__token");
+  assert.ok(call > 0, "the page states a call to act");
+  assert.ok(title < call, "the title names the thing the call is about");
+  assert.ok(call < id && call < token, "the call is read before the id and the classification");
+  assert.match(markup, /class="pw-call pw-call--yours">Decide this — nothing else can/);
+});
+
+test("a call is a sentence about what to do, one per classification and verdict", () => {
+  assert.deepEqual(callFor("yours:decision", "still-blocking", false), {
+    text: strings.issue.call.decision.standing,
+    tone: "yours",
+  });
+  assert.deepEqual(callFor("yours:decision", "unchecked", false), {
+    text: strings.issue.call.decision.standing,
+    tone: "yours",
+  });
+  assert.deepEqual(callFor("yours:decision", "likely-stale", false), {
+    text: strings.issue.call.decision.stale,
+    tone: "yours",
+  });
+  assert.deepEqual(callFor("yours:access", "resolved", false), {
+    text: strings.issue.call.access.stale,
+    tone: "yours",
+  });
+  assert.deepEqual(callFor("yours:access", "still-blocking", false), {
+    text: strings.issue.call.access.standing,
+    tone: "yours",
+  });
+  assert.equal(callFor("parked:tooling", "unchecked", false).text, "Nothing for you — it is parked: tooling.");
+  assert.equal(callFor("in-flight", "unchecked", false).text, strings.issue.call.inFlight);
+  assert.equal(callFor("landing", "unchecked", false).text, strings.issue.call.landing);
+  assert.equal(callFor("ready", "unchecked", false).text, strings.issue.call.ready);
+  assert.equal(callFor("blocked", "unchecked", false).text, strings.issue.call.blocked);
+  assert.equal(callFor(undefined, "unchecked", true).text, strings.issue.call.closed);
+  assert.equal(callFor("yours:decision", "still-blocking", true).tone, "waiting");
+  for (const classification of Classification.options) {
+    const call = callFor(classification, "unchecked", false);
+    assert.ok(call.text.length > 0, `${classification} has no call`);
+    assert.equal(call.tone, isYours(classification) ? "yours" : "waiting", classification);
+  }
+});
+
+test("a row clicked from the board paints its answer before the fetch, never a blank page", () => {
+  const markup = pageMarkup(aPreview());
+  assert.match(markup, /Honour paid checkout\?/);
+  assert.match(markup, /it names sr-tot5, still open/);
+  assert.match(markup, /aria-busy="true"/);
+  assert.match(markup, /<p class="pw-empty" role="status">Reading the issue…<\/p>/);
+  assert.doesNotMatch(markup, /band-description/);
+  assert.doesNotMatch(markup, /band-notes/);
+  assert.doesNotMatch(markup, /band-dependencies/);
+  assert.doesNotMatch(markup, /, because /, "the reason is not in the snapshot, so nothing claims it is");
+  assert.match(markup, /<span class="pw-reason__token">yours:decision<\/span>/);
+});
+
+test("a page with nothing to preview still says it is working", () => {
+  const markup = pageMarkup(undefined);
+  assert.match(markup, /Back to the board/);
+  assert.match(markup, /<p class="pw-empty" role="status">Reading the issue…<\/p>/);
+  assert.doesNotMatch(markup, /pw-issue__title/);
+  assert.doesNotMatch(markup, /pw-call/);
+});
+
+test("the staleness band states its method once and never lists what it could not check", () => {
+  const markup = pageMarkup(
+    aPreview({
+      staleness: {
+        verdict: "still-blocking",
+        checked: true,
+        checkedAt: "2026-09-08T13:00:00Z",
+        evidence: ["it names sr-tot5, still open"],
+        unresolved: 3,
+      },
+    }),
+  );
+  const method = "It cannot see anything outside that.";
+  assert.ok(strings.issue.stale.method.endsWith(method));
+  assert.equal(markup.split(method).length - 1, 1, "the method is stated once, not once per finding");
+  assert.match(markup, /3 references could not be checked; they are recorded under Problems\./);
+  assert.doesNotMatch(markup, /could not resolve/);
+
+  const one = pageMarkup(
+    aPreview({
+      staleness: { verdict: "still-blocking", checked: true, evidence: ["a"], unresolved: 1 },
+    }),
+  );
+  assert.match(one, /1 reference could not be checked; it is recorded under Problems\./);
+
+  const none = pageMarkup(aPreview());
+  assert.doesNotMatch(none, /could not be checked/);
+});
+
+test("a verdict with no evidence to act on says so rather than showing an empty list", () => {
+  const markup = pageMarkup(
+    aPreview({
+      staleness: { verdict: "still-blocking", checked: true, evidence: [], unresolved: 0 },
+    }),
+  );
+  assert.match(markup, /Checked; nothing has changed that this check can see\./);
+  assert.doesNotMatch(markup, /<ul class="pw-evidence">/);
+});
+
+test("the preview a click starts from is the snapshot's own record of the issue", () => {
+  const snapshot = snapshotOf([
+    project("session-replay", {
+      issues: [issue("sr-15s2", "yours:decision", { labels: ["needs-access"], staleness: { verdict: "still-blocking", checkedAt: "2026-09-08T13:00:00Z", evidence: ["site#1128 is closed, not merged"] } })],
+      errors: [
+        { source: "staleness sr-15s2", message: "3 references could not be checked: ext#144, ext#148, ext#150", at: GENERATED_AT },
+        { source: "staleness sr-other", message: "1 reference could not be checked: ext#9", at: GENERATED_AT },
+      ],
+    }),
+  ]);
+  const preview = previewIssue(snapshot, "session-replay", "sr-15s2");
+  assert.equal(preview?.title, "title for sr-15s2");
+  assert.equal(preview?.projectName, "session-replay");
+  assert.equal(preview?.classification, "yours:decision");
+  assert.equal(preview?.closed, false);
+  assert.deepEqual(preview?.staleness.evidence, ["site#1128 is closed, not merged"]);
+  assert.equal(preview?.staleness.unresolved, 3, "only this issue's own failed lookups are counted");
+  assert.equal(previewIssue(snapshot, "session-replay", "sr-nope"), undefined);
+  assert.equal(previewIssue(snapshot, "nowhere", "sr-15s2"), undefined);
+});
+
+test("the count of references a check could not make is the count the failure recorded", () => {
+  const view = buildIssueView({
+    ...payload({ staleness: { verdict: "still-blocking", evidence: ["site#1128 is closed, not merged"] } }),
+    errors: [
+      { source: "staleness sr-i6yt", message: "2 references could not be checked: ext#144, ext#148", at: GENERATED_AT },
+      { source: "staleness sr-i6yt", message: "1 precondition could not be run: `npm whoami`", at: GENERATED_AT },
+    ],
+  });
+  assert.equal(view.staleness.unresolved, 3);
+  assert.deepEqual(view.staleness.evidence, ["site#1128 is closed, not merged"]);
+  assert.equal(buildIssueView(payload()).staleness.unresolved, 0);
 });

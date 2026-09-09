@@ -130,7 +130,8 @@ test("a project that failed to collect blocks an issue whose blocker it never sa
     env: { ...place.env, BD_LIST_FIXTURE: "partial" },
   });
   const project = snapshot.projects[0];
-  assert.equal(project?.errors.length, 1);
+  const collection = (project?.errors ?? []).filter((error) => !error.source.startsWith("staleness"));
+  assert.equal(collection.length, 1);
   const byId = new Map((project?.issues ?? []).map((issue) => [issue.id, issue]));
   assert.deepEqual(byId.get("mw-6")?.blockedBy, ["mw-9"]);
   assert.equal(byId.get("mw-6")?.classification, "blocked");
@@ -404,10 +405,72 @@ test("a staleness probe that could not be run reaches the project as one error",
   assert.equal(recorded.length, 1);
   assert.match(recorded[0]?.message ?? "", /ENOENT/);
   const byId = new Map((project?.issues ?? []).map((issue) => [issue.id, issue]));
-  assert.ok(
-    byId
-      .get("mw-21")
-      ?.staleness.evidence.some((line) => line.includes("could not be run from here")),
-    "the issue that names the precondition still says it was not run",
+  assert.deepEqual(
+    (project?.errors ?? [])
+      .filter((error) => error.source === "staleness mw-21")
+      .map((error) => error.message),
+    ["1 precondition could not be run: `npm whoami`"],
+    "the probe that could not be run is recorded against the issue it was run for",
   );
+  assert.ok(
+    !byId.get("mw-21")?.staleness.evidence.some((line) => line.includes("could not be run")),
+    "a probe that could not run is a collection failure, not a finding about the issue",
+  );
+});
+
+test("references the run could not resolve leave the evidence and reach the project errors", async () => {
+  const place = workspace([TRACKER]);
+  const snapshot = await collectSnapshot({
+    ...options(place, new Date("2026-09-08T09:00:00Z")),
+    env: { ...place.env, BD_LIST_FIXTURE: "stale" },
+    probe: async () => true,
+    pullState: async () => undefined,
+  });
+  const project = snapshot.projects[0];
+  const unresolved = (project?.errors ?? []).filter((error) => error.source.startsWith("staleness "));
+  assert.ok(unresolved.length > 0, "a reference nobody could look up is recorded somewhere");
+  for (const error of unresolved) {
+    assert.match(error.message, /^\d+ references? could not be checked: /);
+  }
+  for (const issue of project?.issues ?? []) {
+    assert.ok(
+      !issue.staleness.evidence.some((line) => line.includes("could not resolve")),
+      `${issue.id} still renders a failed lookup as a finding`,
+    );
+  }
+  assert.equal(
+    (project?.errors ?? []).filter((error) => error.source === "staleness").length,
+    0,
+    "a configured run records no run-level staleness failure",
+  );
+});
+
+test("a staleness failure of the run itself is recorded once, not once per issue", async () => {
+  const place = workspace([degradedRoot()]);
+  const snapshot = await collectSnapshot({
+    ...options(place, new Date("2026-09-08T09:00:00Z")),
+    env: { ...place.env, BD_LIST_FIXTURE: "stale" },
+  });
+  const project = snapshot.projects[0];
+  assert.ok((project?.issues ?? []).length > 1, "more than one issue was assessed");
+  const run = (project?.errors ?? []).filter((error) => error.source === "staleness");
+  assert.deepEqual(run.map((error) => error.message), [
+    "the project records no issue id prefix, so referenced issues cannot be recognised",
+    "no pull request host is configured, so pull requests could not be looked up",
+  ]);
+});
+
+test("a project whose references could not be looked up is not an unreadable project", async () => {
+  const place = workspace([TRACKER]);
+  const result = await emitSnapshot({
+    ...options(place, new Date("2026-09-08T09:00:00Z")),
+    env: { ...place.env, BD_LIST_FIXTURE: "stale" },
+    probe: async () => true,
+    pullState: async () => undefined,
+  });
+  assert.ok(
+    (result.snapshot.projects[0]?.errors ?? []).some((error) => error.source.startsWith("staleness ")),
+    "the run recorded at least one reference it could not check",
+  );
+  assert.equal(result.code, 0);
 });

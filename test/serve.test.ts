@@ -261,7 +261,10 @@ function indexed(
   return { id, title: `title for ${id}`, status, classification, ...extra };
 }
 
-function trackerSnapshot(issues: Array<Record<string, unknown>>): string {
+function trackerSnapshot(
+  issues: Array<Record<string, unknown>>,
+  errors: Array<Record<string, unknown>> = [],
+): string {
   return JSON.stringify({
     ...SNAPSHOT,
     projects: [
@@ -272,13 +275,18 @@ function trackerSnapshot(issues: Array<Record<string, unknown>>): string {
         authority: { kind: "beads", idPrefix: "mw" },
         metrics: {},
         issues,
+        errors,
       },
     ],
   });
 }
 
-function trackerServer(bin: string, issues: Array<Record<string, unknown>>): Server {
-  const { env } = stateWith(trackerSnapshot(issues));
+function trackerServer(
+  bin: string,
+  issues: Array<Record<string, unknown>>,
+  errors: Array<Record<string, unknown>> = [],
+): Server {
+  const { env } = stateWith(trackerSnapshot(issues, errors));
   return createConsoleServer({
     env: { ...env, PATH: `${join(BD_FIXTURES, bin)}:/usr/bin:/bin` },
     uiDir: builtConsole(),
@@ -372,6 +380,40 @@ test("a verdict the snapshot checked survives a reading that has since closed", 
   assert.equal(body.issue.staleness.verdict, "still-blocking");
   assert.equal(body.issue.staleness.checkedAt, "2026-09-08T13:02:00Z");
   assert.deepEqual(body.issue.staleness.evidence, ["mw-1 is still open"]);
+});
+
+test("an issue carries the references its own check could not resolve, and nobody else's", async (t) => {
+  const at = "2026-09-08T13:02:00Z";
+  const server = trackerServer(
+    "ok",
+    [indexed("mw-1", "open", "parked:umbrella")],
+    [
+      { source: "staleness mw-1", message: "2 references could not be checked: ext#144, ext#148", at },
+      { source: "staleness mw-9", message: "1 reference could not be checked: ext#150", at },
+      { source: "staleness", message: "no pull request host is configured, so pull requests could not be looked up", at },
+      { source: "bd list", message: "timed out", at },
+    ],
+  );
+  t.after(() => server.close());
+  const { origin } = await started(server);
+
+  const body = (await (await fetch(`${origin}/api/issue/mw/mw-1`)).json()) as {
+    errors: Array<{ source: string; message: string }>;
+  };
+  assert.deepEqual(body.errors, [
+    { source: "staleness mw-1", message: "2 references could not be checked: ext#144, ext#148", at },
+  ]);
+});
+
+test("an issue whose check resolved everything carries no errors at all", async (t) => {
+  const server = trackerServer("ok", [indexed("mw-1", "open", "parked:umbrella")]);
+  t.after(() => server.close());
+  const { origin } = await started(server);
+
+  const body = (await (await fetch(`${origin}/api/issue/mw/mw-1`)).json()) as {
+    errors: Array<{ source: string }>;
+  };
+  assert.deepEqual(body.errors, []);
 });
 
 test("an issue the snapshot never indexed is served without a snapshot to compare against", async (t) => {

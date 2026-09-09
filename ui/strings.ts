@@ -79,6 +79,22 @@ export const strings = {
   issue: {
     back: "Back to the board",
     loading: "Reading the issue…",
+    call: {
+      decision: {
+        standing: "Decide this — nothing else can, and nothing moves until you do.",
+        stale: "Decide this, or say the decision is already made — the check below found the reason may have expired.",
+      },
+      access: {
+        standing: "Run this yourself — no lane has the access it needs.",
+        stale: "Run this, or say it is already done — the check below found the reason may have expired.",
+      },
+      inFlight: "Nothing for you — a lane is working it.",
+      landing: "Nothing for you — it is waiting to be landed.",
+      ready: "Nothing for you — it is waiting for a lane to pick it up.",
+      parked: "Nothing for you — it is parked: {reason}.",
+      blocked: "Nothing for you — something else has to close first.",
+      closed: "Nothing for you — this issue is closed.",
+    },
     vintage: "read at {at}",
     because: ", because ",
     notClassified: "Not classified — this issue is closed, and the console classifies open work only.",
@@ -113,7 +129,11 @@ export const strings = {
       closedCheck:
         "Recorded in the snapshot. Closed work is not re-checked, so this is not a claim about the issue as it stands.",
       neverChecked: "Nothing has checked whether this is still true.",
-      noEvidence: "No evidence was recorded with the check.",
+      noEvidence: "Checked; nothing has changed that this check can see.",
+      unresolved: "{count} references could not be checked; they are recorded under Problems.",
+      unresolvedOne: "1 reference could not be checked; it is recorded under Problems.",
+      method:
+        "This check reads the issue's own text: notes recorded after the parking label, issues and pull requests it names, and a short list of testable preconditions. It cannot see anything outside that.",
       evidence: "Evidence",
     },
     deps: {
