@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.1.8
+
+**Escalate on consequence, not on ambiguity.** A ticket the owner had asked for by name sat
+finished-but-unshipped for a day because a run stopped to ask about the heading of one band.
+The analysis was right and the recommendation was right; stopping was the error.
+
+Stopping now needs a yes to one of three questions: does it change what the software does;
+will anything come to depend on it; and - the one that does the work - can you state which
+option you would take AND does anything written support that choice. A preference backed by a
+test or a recorded decision is taken. A preference backed by nothing is still worth a
+question, because picking there is not applying a rule, it is inventing product behaviour and
+attaching a rationale.
+
+The second question exists because reversible-in-code is not reversible-in-fact: an interface,
+a documented value or anything on a public surface is depended upon the moment it ships.
+
+Also: **when a brief contradicts a codified invariant, the invariant wins** - a test was
+written with evidence, a brief is a sketch made before anyone looked. The run keeps the
+invariant, finishes, and must record the divergence loudly enough that the brief gets
+corrected. Otherwise the brief stays wrong and the next run stops on the same contradiction.
+
+
 ## 0.1.7
 
 Adds `issues-watch.sh`: new issues on the workspace's repositories, reported once each, silent

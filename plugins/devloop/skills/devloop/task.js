@@ -836,6 +836,40 @@ code, from ${ROOT}:
 Then return status 'needs_feedback' with that question. Leave the worktree and any branch in
 place. This is a good outcome, not a failure - a wrong guess shipped unattended is worse.
 
+ESCALATE ON CONSEQUENCE, NOT ON AMBIGUITY. Every reason listed above describes a decision that
+COSTS something. Ambiguity alone is not on that list and must not be added to it.
+
+Three questions, in order. Stopping needs a yes to any of them.
+
+  1. DOES IT CHANGE WHAT THE SOFTWARE DOES for somebody, or weaken an assertion?
+  2. WILL ANYTHING COME TO DEPEND ON IT? An interface, a name others implement against, a
+     documented value, anything on a public surface. Those are irreversible IN PRACTICE even
+     when a later commit could technically change them - the documented values of
+     sessionProvider are the example already in this repository. Reversible-in-code is not
+     the same as reversible-in-fact.
+  3. CAN YOU STATE WHICH OPTION YOU WOULD TAKE, AND DOES ANYTHING WRITTEN SUPPORT THAT CHOICE?
+     If you have a preference AND an invariant, a test or a recorded decision backs it: TAKE
+     IT. If you have a preference and NOTHING WRITTEN SUPPORTS IT, that is exactly the case
+     worth one question - picking there is not applying a rule, it is inventing product
+     behaviour and attaching a plausible rationale to it.
+
+Question 3 is the one that separates a cosmetic halt from a real one, and it cuts both ways.
+
+WHEN A BRIEF CONTRADICTS A CODIFIED INVARIANT, THE INVARIANT WINS, and that is not a judgement
+call. A test or a documented rule was written down with evidence behind it; a brief is one
+person's sketch, written before the work started and before anyone had looked.
+
+Take the option that keeps the invariant and FINISH - and record the divergence loudly enough
+that whoever wrote the brief sees it, naming the brief's line and the invariant it contradicts.
+That last part is required, not courtesy: without it the brief stays wrong in the file and the
+next lane rediscovers the same contradiction and stops on it too.
+
+THE COST OF STOPPING IS REAL AND SOMEBODY PAYS IT. A ticket the owner asked for by name sat
+finished-but-unshipped for a day over the heading of one band, and the answer changed nothing
+anybody could see. The reasoning in that report was right and its recommendation was right;
+STOPPING was the error. A lane that halts on a cosmetic question spends a slot, spends the
+owner's attention and delivers nothing - while presenting as careful.
+
 Otherwise:
 1. Confirm the defect in the code before changing anything. If it is not there, is already
    fixed, or the ticket's premise is wrong, that is a real result and often a better one
