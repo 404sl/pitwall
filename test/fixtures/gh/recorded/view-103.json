@@ -1,7 +1,0 @@
-{
-  "body": "No tracker id here.",
-  "statusCheckRollup": [
-    { "__typename": "CheckRun", "name": "test (20)", "status": "COMPLETED", "conclusion": "SUCCESS" },
-    { "__typename": "CheckRun", "name": "test (22)", "status": "IN_PROGRESS", "conclusion": "" }
-  ]
-}

@@ -5,6 +5,5 @@ if [ -n "$GH_LOG" ]; then
 fi
 case "$1 $2" in
   "pr list") cat "$out/list.json" ;;
-  "pr view") cat "$out/view-$3.json" ;;
   *) echo "unknown command: gh $*" >&2; exit 1 ;;
 esac

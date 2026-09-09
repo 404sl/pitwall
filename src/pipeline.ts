@@ -8,9 +8,8 @@ const run = promisify(execFile);
 
 const MAX_OUTPUT = 16 * 1024 * 1024;
 const TIMEOUT_MS = 30_000;
-const LIST_LIMIT = "200";
-const LIST_FIELDS = "number,title,labels,headRefName,url";
-const VIEW_FIELDS = "statusCheckRollup,body";
+export const LIST_LIMIT = 200;
+const LIST_FIELDS = "number,title,labels,headRefName,url,statusCheckRollup,body";
 
 type Checks = PullRequest["checks"];
 
@@ -46,11 +45,18 @@ export interface CollectedPipeline {
 }
 
 function listArgs(slug: string): string[] {
-  return ["pr", "list", "--repo", slug, "--state", "open", "--limit", LIST_LIMIT, "--json", LIST_FIELDS];
-}
-
-function viewArgs(slug: string, number: number): string[] {
-  return ["pr", "view", String(number), "--repo", slug, "--json", VIEW_FIELDS];
+  return [
+    "pr",
+    "list",
+    "--repo",
+    slug,
+    "--state",
+    "open",
+    "--limit",
+    String(LIST_LIMIT),
+    "--json",
+    LIST_FIELDS,
+  ];
 }
 
 function commandOf(args: readonly string[]): string {
@@ -92,13 +98,6 @@ function asRows(parsed: unknown): Record<string, unknown>[] {
     }
     return entry as Record<string, unknown>;
   });
-}
-
-function asRecord(parsed: unknown): Record<string, unknown> {
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    throw new TypeError("output is not an object");
-  }
-  return parsed as Record<string, unknown>;
 }
 
 function textOf(value: unknown): string | undefined {
@@ -189,18 +188,18 @@ async function pullsOf(
   } catch (cause) {
     return { pipeline: [], errors: [collectionError(commandOf(listing), cause)] };
   }
+  if (rows.length >= LIST_LIMIT) {
+    errors.push(
+      collectionError(
+        commandOf(listing),
+        `listing came back at the ${LIST_LIMIT} pull request limit; any open pull request past it was not read`,
+      ),
+    );
+  }
   const pipeline: PullRequest[] = [];
   for (const row of rows) {
     const number = row["number"];
     if (typeof number !== "number" || !Number.isInteger(number) || number <= 0) {
-      continue;
-    }
-    const viewing = viewArgs(slug, number);
-    let viewed: Record<string, unknown>;
-    try {
-      viewed = await gh(viewing, env, timeoutMs, asRecord);
-    } catch (cause) {
-      errors.push(collectionError(commandOf(viewing), cause));
       continue;
     }
     const branch = textOf(row["headRefName"]);
@@ -210,8 +209,8 @@ async function pullsOf(
         number,
         title: textOf(row["title"]),
         issueId:
-          (branch === undefined ? undefined : match(branch)) ?? match(textOf(viewed["body"]) ?? ""),
-        checks: rollupChecks(viewed["statusCheckRollup"]),
+          (branch === undefined ? undefined : match(branch)) ?? match(textOf(row["body"]) ?? ""),
+        checks: rollupChecks(row["statusCheckRollup"]),
         labels: labelsOf(row["labels"]),
         url: textOf(row["url"]),
       }),
@@ -229,13 +228,23 @@ export async function readPipeline(
   const match = issueMatcher(project.authority.idPrefix, options.knownIds ?? new Set());
   const pipeline: PullRequest[] = [];
   const errors: CollectionError[] = [];
-  const seen = new Set<string>();
+  const seen = new Map<string, string>();
   for (const repo of project.repos) {
     const slug = remoteSlugOf(repo.path);
-    if (slug === undefined || seen.has(slug)) {
+    if (slug === undefined) {
       continue;
     }
-    seen.add(slug);
+    const already = seen.get(slug);
+    if (already !== undefined) {
+      errors.push(
+        collectionError(
+          repo.path,
+          `${repo.name} shares the origin ${slug} with ${already}; its pull requests were not read again`,
+        ),
+      );
+      continue;
+    }
+    seen.set(slug, repo.name);
     const read = await pullsOf(repo.name, slug, match, env, timeoutMs);
     pipeline.push(...read.pipeline);
     errors.push(...read.errors);
