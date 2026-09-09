@@ -65,8 +65,14 @@ being built** — until it lands, `serve` gives you the API and a placeholder pa
 ## Try it
 
 ```bash
-npx @404sl/pitwall snapshot
+npx @404sl/pitwall@latest snapshot
+npx @404sl/pitwall@latest serve
 ```
+
+`@latest` on every invocation, rather than a global install. `serve` is meant to be started
+once and left running, and a copy installed globally is stale from the moment the next
+release goes out. The console header names the version it is serving, and names the newer
+one beside it whenever an hourly check of the registry has found one.
 
 Projects are found by looking for `.pitwall.json` files, which describe a workspace: one
 authoritative tracker, and the repositories under it. The older name `.autofix.json` is

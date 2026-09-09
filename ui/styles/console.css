@@ -67,16 +67,35 @@ body {
   text-transform: uppercase;
 }
 
-.pw-header__meta {
+.pw-header__title {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+
+.pw-header__meta,
+.pw-header__version {
   margin: 0;
   font-family: var(--pw-font-data);
   font-size: 12px;
   line-height: 1.6;
   letter-spacing: 0.02em;
   color: var(--pw-muted);
+}
+
+.pw-header__meta {
   border-inline-start: var(--pw-rail) solid transparent;
   padding-inline-start: 8px;
   margin-inline-start: calc(-1 * (var(--pw-rail) + 8px));
+}
+
+.pw-header__version {
+  white-space: nowrap;
+}
+
+.pw-header__update {
+  color: var(--pw-ink);
 }
 
 .pw-header--stale .pw-header__meta {

@@ -7,18 +7,22 @@ import type { Issue, Project, Snapshot } from "@404sl/pitwall-schema";
 import { readWorkspace } from "./autofix.js";
 import { stalenessErrors } from "./board.js";
 import { readIssue } from "./beads.js";
+import { createUpdateCheck, type UpdateCheck } from "./registry.js";
 import { readSnapshot, type StateOptions } from "./state.js";
+import { VERSION } from "./version.js";
 
 export const DEFAULT_PORT = 7373;
 export const HOST = "127.0.0.1";
 export const LOCAL_HOSTNAMES = ["127.0.0.1", "localhost", "[::1]"];
 export const UI_DIR = fileURLToPath(new URL("../dist/ui", import.meta.url));
 export const ISSUE_PREFIX = "/api/issue/";
+export const VERSION_ROUTE = "/api/version";
 
 export interface ServeOptions extends StateOptions {
   uiDir?: string;
   lockRoot?: string;
   timeoutMs?: number;
+  updates?: UpdateCheck;
 }
 
 export type ServeArgs = { port: number } | { error: string };
@@ -77,6 +81,11 @@ function serveSnapshot(res: ServerResponse, options: ServeOptions): void {
     source: error.source,
     at: error.at,
   });
+}
+
+function serveVersion(res: ServerResponse, updates: UpdateCheck): void {
+  const update = updates.update();
+  sendJson(res, 200, update === undefined ? { running: VERSION } : { running: VERSION, update });
 }
 
 function issueRoute(pathname: string): { project: string; id: string } | undefined {
@@ -243,6 +252,7 @@ function serveConsole(res: ServerResponse, uiDir: string, pathname: string): voi
 
 export function createConsoleServer(options: ServeOptions = {}): Server {
   const uiDir = resolve(options.uiDir ?? UI_DIR);
+  const updates = options.updates ?? createUpdateCheck();
   return createServer((req: IncomingMessage, res: ServerResponse) => {
     if (!isLocalHost(req.headers.host)) {
       send(res, 403, "text/plain; charset=utf-8", "The console answers requests addressed to localhost only.\n");
@@ -251,6 +261,10 @@ export function createConsoleServer(options: ServeOptions = {}): Server {
     const { pathname } = new URL(req.url ?? "/", `http://${HOST}`);
     if (pathname === "/api/snapshot") {
       serveSnapshot(res, options);
+      return;
+    }
+    if (pathname === VERSION_ROUTE) {
+      serveVersion(res, updates);
       return;
     }
     if (pathname.startsWith(ISSUE_PREFIX)) {

@@ -118,6 +118,52 @@ test("the snapshot endpoint serves what is stored", async (t) => {
   assert.deepEqual(await response.json(), parseSnapshot(SNAPSHOT));
 });
 
+test("the version endpoint names the running process, not the process that wrote the snapshot", async (t) => {
+  const { env } = stateWith(JSON.stringify({ ...SNAPSHOT, agent: { version: "0.0.1", executor: "local" } }));
+  const server = createConsoleServer({
+    env,
+    uiDir: builtConsole(),
+    updates: { update: () => undefined, refresh: () => Promise.resolve() },
+  });
+  t.after(() => server.close());
+  const { origin } = await started(server);
+
+  const response = await fetch(`${origin}/api/version`);
+  assert.equal(response.status, 200);
+  const body = (await response.json()) as Record<string, string>;
+  assert.equal(body.running, VERSION);
+  assert.equal("update" in body, false);
+});
+
+test("the version endpoint carries the newer release once a check has confirmed one", async (t) => {
+  const { env } = stateWith(JSON.stringify(SNAPSHOT));
+  const server = createConsoleServer({
+    env,
+    uiDir: builtConsole(),
+    updates: { update: () => "9.9.9", refresh: () => Promise.resolve() },
+  });
+  t.after(() => server.close());
+  const { origin } = await started(server);
+
+  const response = await fetch(`${origin}/api/version`);
+  assert.deepEqual(await response.json(), { running: VERSION, update: "9.9.9" });
+});
+
+test("the snapshot endpoint keeps its shape - the version is served beside it, never inside it", async (t) => {
+  const { env } = stateWith(JSON.stringify(SNAPSHOT));
+  const server = createConsoleServer({
+    env,
+    uiDir: builtConsole(),
+    updates: { update: () => "9.9.9", refresh: () => Promise.resolve() },
+  });
+  t.after(() => server.close());
+  const { origin } = await started(server);
+
+  const body = (await (await fetch(`${origin}/api/snapshot`)).json()) as Record<string, unknown>;
+  assert.deepEqual(body, parseSnapshot(SNAPSHOT));
+  assert.equal("update" in body, false);
+});
+
 test("no snapshot is a 503 that says so, never an empty document", async (t) => {
   const { env, path } = stateWith();
   const server = createConsoleServer({ env, uiDir: builtConsole() });
