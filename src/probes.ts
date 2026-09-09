@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { CollectionError } from "@404sl/pitwall-schema";
 import { collectionError, failureOf, recordOnce } from "./errors.js";
-import { PRECONDITIONS, type PullReference, type PullState } from "./staleness.js";
+import { PRECONDITIONS, type PullFacts, type PullReference, type PullState } from "./staleness.js";
 
 const run = promisify(execFile);
 
@@ -25,6 +25,7 @@ export interface ProbeOptions {
 
 export interface PullLookupOptions extends ProbeOptions {
   repos: ReadonlyMap<string, string>;
+  names?: (text: string) => string | undefined;
 }
 
 function allowed(command: readonly string[]): boolean {
@@ -90,6 +91,20 @@ export function preconditionProbe(
   };
 }
 
+function named(
+  pull: { headRefName?: unknown; body?: unknown },
+  names: ((text: string) => string | undefined) | undefined,
+): string | undefined {
+  if (names === undefined) {
+    return undefined;
+  }
+  const branch = typeof pull.headRefName === "string" ? names(pull.headRefName) : undefined;
+  if (branch !== undefined) {
+    return branch;
+  }
+  return typeof pull.body === "string" ? names(pull.body) : undefined;
+}
+
 function locate(reference: PullReference, repos: ReadonlyMap<string, string>): string | undefined {
   const named = reference.repo === undefined ? undefined : repos.get(reference.repo);
   if (named !== undefined) {
@@ -107,17 +122,25 @@ async function viewed(
   cwd: string,
   options: PullLookupOptions,
   timeoutMs: number,
-): Promise<PullState | undefined> {
+): Promise<PullFacts | undefined> {
   try {
-    const { stdout } = await run("gh", ["pr", "view", target, "--json", "state"], {
+    const { stdout } = await run("gh", ["pr", "view", target, "--json", "state,headRefName,body"], {
       cwd,
       encoding: "utf8",
       env: options.env ?? process.env,
       maxBuffer: MAX_OUTPUT,
       timeout: timeoutMs,
     });
-    const state = (JSON.parse(stdout) as { state?: unknown }).state;
-    return typeof state === "string" ? PULL_STATES.get(state) : undefined;
+    const viewedPull = JSON.parse(stdout) as {
+      state?: unknown;
+      headRefName?: unknown;
+      body?: unknown;
+    };
+    const state = typeof viewedPull.state === "string" ? PULL_STATES.get(viewedPull.state) : undefined;
+    if (state === undefined) {
+      return undefined;
+    }
+    return { state, issueId: named(viewedPull, options.names) };
   } catch (cause) {
     if (!answered(cause)) {
       unreadable(options, PULL_SOURCE, cause, timeoutMs);
@@ -128,8 +151,8 @@ async function viewed(
 
 export function pullLookup(
   options: PullLookupOptions,
-): (reference: PullReference) => Promise<PullState | undefined> {
-  const answers = new Map<string, Promise<PullState | undefined>>();
+): (reference: PullReference) => Promise<PullFacts | undefined> {
+  const answers = new Map<string, Promise<PullFacts | undefined>>();
   const timeoutMs = options.timeoutMs ?? PROBE_TIMEOUT_MS;
   return (reference) => {
     const cwd = locate(reference, options.repos);

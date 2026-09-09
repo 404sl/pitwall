@@ -65,8 +65,13 @@ function tracker(ids: Record<string, "open" | "closed">): Partial<StalenessConte
   };
 }
 
-function pulls(states: Record<string, PullState>): Partial<StalenessContext> {
-  return { pullState: async (reference) => states[reference.text] };
+function pulls(states: Record<string, PullState>, issueId?: string): Partial<StalenessContext> {
+  return {
+    pullFacts: async (reference) => {
+      const state = states[reference.text];
+      return state === undefined ? undefined : { state, issueId };
+    },
+  };
 }
 
 function answers(passed: boolean | undefined): {
@@ -274,7 +279,7 @@ test("a needs-decision issue is never reported resolved, however many checks fir
 test("an issue nobody has been able to check reports unchecked and claims no finding", async () => {
   const { staleness, errors } = await assess(
     aRecord({ classification: "parked:roadmap" }),
-    aContext({ idPrefix: "mw", probe: async () => true, pullState: async () => undefined }),
+    aContext({ idPrefix: "mw", probe: async () => true, pullFacts: async () => undefined }),
   );
   assert.equal(staleness.verdict, "unchecked");
   assert.equal(staleness.checkedAt, undefined);
@@ -309,10 +314,112 @@ test("every verdict that ran a check carries evidence a person can check by hand
 test("only an issue that stopped for a reason is worth checking", () => {
   assert.equal(isAssessable("ready"), false);
   assert.equal(isAssessable("in-flight"), false);
-  assert.equal(isAssessable("landing"), false);
+  assert.equal(isAssessable("landing"), true);
   assert.equal(isAssessable("blocked"), true);
   assert.equal(isAssessable("parked:watch"), true);
   assert.equal(isAssessable("yours:access"), true);
+});
+
+test("an issue left in progress after its pull request merged is reported likely stale", async () => {
+  const { staleness, errors } = await assess(
+    aRecord({ id: "mw-7b1", classification: "landing", notes: "Landed as site#16." }),
+    aContext({ idPrefix: "mw", ...pulls({ "site#16": "merged" }, "mw-7b1") }),
+  );
+  assert.equal(staleness.verdict, "likely-stale");
+  assert.equal(staleness.checkedAt, CHECKED_AT.toISOString());
+  assert.ok(matches(staleness.evidence, /site#16/), "the merged pull request is not in the evidence");
+  assert.deepEqual(errors, []);
+});
+
+test("an issue in progress whose pull request is still open is still blocking", async () => {
+  const { staleness } = await assess(
+    aRecord({ id: "mw-7b1", classification: "landing", notes: "Landing as site#16." }),
+    aContext({ idPrefix: "mw", ...pulls({ "site#16": "open" }, "mw-7b1") }),
+  );
+  assert.equal(staleness.verdict, "still-blocking");
+  assert.deepEqual(staleness.evidence, ["site#16 is open, not merged"]);
+});
+
+test("an issue somebody has only just picked up states no finding", async () => {
+  const { staleness, errors } = await assess(
+    aRecord({ classification: "landing", notes: "Claimed, nothing pushed yet." }),
+    aContext({ idPrefix: "mw", probe: async () => true, pullFacts: async () => undefined }),
+  );
+  assert.equal(staleness.verdict, "unchecked");
+  assert.deepEqual(staleness.evidence, [], "no lane working it is suspicious, never conclusive");
+  assert.deepEqual(errors, []);
+});
+
+test("nothing but a merged pull request concludes on an issue in progress", async () => {
+  const { staleness } = await assess(
+    aRecord({
+      classification: "landing",
+      description: "Follows the pattern set in mw-9, once npm whoami works.",
+    }),
+    aContext({ idPrefix: "mw", ...tracker({ "mw-9": "closed" }), probe: async () => true }),
+  );
+  assert.equal(staleness.verdict, "unchecked");
+  assert.deepEqual(staleness.evidence, []);
+});
+
+test("a merged pull request another issue owns is not this issue landing", async () => {
+  const { staleness, errors } = await assess(
+    aRecord({
+      id: "mw-0ai",
+      classification: "landing",
+      description: "Follow the shape of the repo field added in site#16. Nothing pushed yet.",
+    }),
+    aContext({ idPrefix: "mw", ...pulls({ "site#16": "merged" }, "mw-7b1") }),
+  );
+  assert.equal(staleness.verdict, "unchecked");
+  assert.deepEqual(staleness.evidence, [], "a reference it merely cites was read as its own landing");
+  assert.deepEqual(errors, []);
+});
+
+test("a merged pull request that names no issue is not this issue landing", async () => {
+  const { staleness } = await assess(
+    aRecord({ id: "mw-0ai", classification: "landing", description: "See site#16." }),
+    aContext({ idPrefix: "mw", ...pulls({ "site#16": "merged" }) }),
+  );
+  assert.equal(staleness.verdict, "unchecked");
+  assert.deepEqual(staleness.evidence, []);
+});
+
+test("only the pull request an issue owns concludes that it landed", async () => {
+  const owners: Record<string, string> = { "site#16": "mw-7b1", "site#41": "mw-0ai" };
+  const { staleness } = await assess(
+    aRecord({
+      id: "mw-0ai",
+      classification: "landing",
+      description: "Follows site#16.",
+      notes: "Landed as site#41.",
+    }),
+    aContext({
+      idPrefix: "mw",
+      pullFacts: async (reference) => ({
+        state: "merged" as PullState,
+        issueId: owners[reference.text],
+      }),
+    }),
+  );
+  assert.equal(staleness.verdict, "likely-stale");
+  assert.deepEqual(staleness.evidence, ["the pull request it waits on has merged: site#41"]);
+});
+
+test("a pull request that could not be looked up never reads as no merge", async () => {
+  const { staleness, errors } = await assess(
+    aRecord({ id: "mw-7b1", classification: "landing", notes: "Landed as site#16." }),
+    aContext({ idPrefix: "mw", pullFacts: async () => undefined }),
+  );
+  assert.equal(staleness.verdict, "unchecked");
+  assert.ok(!matches(staleness.evidence, /not merged/));
+  assert.deepEqual(errors, [
+    {
+      source: "staleness mw-7b1",
+      message: "1 reference could not be checked: site#16",
+      at: CHECKED_AT.toISOString(),
+    },
+  ]);
 });
 
 const ANSWERED = "Follows the pattern set in mw-9.";
@@ -412,7 +519,7 @@ test("a reference that could not be looked up is a collection failure, not a fin
       labels: ["needs-decision"],
       notes: "Waiting on ext#144, ext#148 and ext#150.",
     }),
-    aContext({ idPrefix: "mw", probe: async () => true, pullState: async () => undefined }),
+    aContext({ idPrefix: "mw", probe: async () => true, pullFacts: async () => undefined }),
   );
   assert.ok(!matches(staleness.evidence, /could not resolve/));
   assert.deepEqual(errors, [
@@ -435,7 +542,8 @@ test("a reference that resolved is still evidence beside the ones that did not",
     aContext({
       idPrefix: "mw",
       probe: async () => true,
-      pullState: async (reference) => (reference.text === "site#1128" ? "closed" : undefined),
+      pullFacts: async (reference) =>
+        reference.text === "site#1128" ? { state: "closed" as PullState } : undefined,
     }),
   );
   assert.deepEqual(staleness.evidence, ["site#1128 is closed, not merged"]);
@@ -485,7 +593,7 @@ test("what the run itself was not configured to do names no issue, so it can be 
 test("the count a reader is shown is the count the failure recorded", async () => {
   const { errors } = await assess(
     aRecord({ id: "mw-4", classification: "parked:tooling", notes: "Waiting on #141, #142 and #144." }),
-    aContext({ idPrefix: "mw", probe: async () => true, pullState: async () => undefined }),
+    aContext({ idPrefix: "mw", probe: async () => true, pullFacts: async () => undefined }),
   );
   assert.equal(errors.length, 1);
   assert.equal(unresolvedCount(errors[0]?.message ?? ""), 3);
