@@ -123,15 +123,19 @@ function instantOf(at: string | undefined): number | undefined {
   return Number.isNaN(parsed) ? undefined : parsed;
 }
 
-function lastNote(notes: string): string {
-  const paragraphs = notes
+export function noteBlocks(notes: string): string[] {
+  return notes
     .split(/\n\s*\n/)
     .map((paragraph) => paragraph.trim())
     .filter((paragraph) => paragraph !== "");
+}
+
+function lastNote(notes: string): string {
+  const paragraphs = noteBlocks(notes);
   return paragraphs[paragraphs.length - 1] ?? notes.trim();
 }
 
-function quote(text: string): string {
+export function quote(text: string): string {
   const line = text.split("\n")[0]?.trim() ?? "";
   return line.length > 120 ? `${line.slice(0, 117)}...` : line;
 }

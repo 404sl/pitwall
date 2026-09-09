@@ -595,7 +595,9 @@ test("a header rendered from a stamp it cannot read shows the stamp and claims n
   assert.doesNotMatch(markup, /<time/);
 });
 
-const { IssuePage, callFor, reasonTemplate } = await import("../ui/components/IssuePage.tsx");
+const { IssueDetail, IssuePage, LatestNote, Notes, callFor, reasonTemplate, shownOf } = await import(
+  "../ui/components/IssuePage.tsx"
+);
 
 function aPreview(over: Partial<IssuePreview> = {}): IssuePreview {
   return {
@@ -625,6 +627,116 @@ function pageMarkup(preview?: IssuePreview): string {
     createElement(IssuePage, { route: { project: "session-replay", id: "sr-15s2" }, preview }),
   );
 }
+
+function notesMarkup(text?: string): string {
+  return renderToStaticMarkup(
+    createElement(Notes, { authority: { kind: "beads" as const, location: ".beads" }, text }),
+  );
+}
+
+const FIRST_NOTE = "SPLIT: the latency half is now pitwall-463.";
+
+const THREE_NOTES = [
+  FIRST_NOTE,
+  "MEASURED: the page is showing history as though it were the brief.",
+  "Decide whether the count or a size is the honest summary.",
+].join("\n\n");
+
+function detailMarkup(over: Partial<IssuePayload["issue"]> = {}): string {
+  const view = buildIssueView(payload(over));
+  return renderToStaticMarkup(createElement(IssueDetail, { shown: shownOf(view), view }));
+}
+
+test("the notes a ticket has accumulated open behind a counted disclosure, not as a wall", () => {
+  const markup = notesMarkup(THREE_NOTES);
+  assert.match(markup, /<details class="pw-disclosure"/);
+  assert.doesNotMatch(markup, /<details[^>]* open/, "history nobody asked for does not open itself");
+  assert.match(markup, /<span class="pw-disclosure__label">3 notes<\/span>/);
+  assert.match(markup, /append-only history, newest last/);
+  assert.match(markup, /SPLIT: the latency half is now pitwall-463\./, "collapsed is not removed");
+  assert.match(markup, /Decide whether the count or a size is the honest summary\./);
+});
+
+test("a disclosure never opens onto nothing, and one note is not '1 notes'", () => {
+  assert.match(notesMarkup("Landed as site#16."), /<span class="pw-disclosure__label">1 note<\/span>/);
+  const none = notesMarkup(undefined);
+  assert.match(none, /<p class="pw-empty">No notes were recorded\.<\/p>/);
+  assert.doesNotMatch(none, /pw-disclosure/);
+  const blank = notesMarkup("\n  \n");
+  assert.match(blank, /<p class="pw-empty">No notes were recorded\.<\/p>/);
+  assert.doesNotMatch(blank, /pw-disclosure/);
+});
+
+test("the note quoted under the call is somebody's words, and only where somebody is being asked", () => {
+  const asked = renderToStaticMarkup(
+    createElement(LatestNote, { classification: "yours:decision", closed: false, notes: THREE_NOTES }),
+  );
+  assert.match(asked, /<p class="pw-call__ask">/);
+  assert.match(asked, /<span class="pw-call__ask-label">Latest note<\/span>/);
+  assert.match(
+    asked,
+    /<q class="pw-call__ask-text">Decide whether the count or a size is the honest summary\.<\/q>/,
+  );
+
+  const long = renderToStaticMarkup(
+    createElement(LatestNote, {
+      classification: "yours:access",
+      closed: false,
+      notes: `${"the token is still not on this machine, ".repeat(6)}end`,
+    }),
+  );
+  const quoted = /<q class="pw-call__ask-text">([^<]*)<\/q>/.exec(long)?.[1];
+  assert.ok(quoted !== undefined && quoted.length <= 120, "a citation is a line, not a paragraph");
+
+  for (const classification of ["in-flight", "landing", "parked:tooling", "blocked"] as const) {
+    assert.equal(
+      renderToStaticMarkup(createElement(LatestNote, { classification, closed: false, notes: THREE_NOTES })),
+      "",
+      `${classification} asks nothing of the reader, so it quotes nothing at them`,
+    );
+  }
+  assert.equal(
+    renderToStaticMarkup(
+      createElement(LatestNote, { classification: "yours:decision", closed: true, notes: THREE_NOTES }),
+    ),
+    "",
+  );
+  assert.equal(
+    renderToStaticMarkup(createElement(LatestNote, { classification: "yours:decision", closed: false })),
+    "",
+  );
+  assert.doesNotMatch(pageMarkup(aPreview()), /pw-call__ask/, "the snapshot carries no notes to quote");
+});
+
+test("the loaded ticket page puts the notes it fetched inside the disclosure, not down the page", () => {
+  const markup = detailMarkup({ notes: THREE_NOTES });
+  const opens = markup.indexOf('<details class="pw-disclosure"');
+  assert.ok(opens > -1, "a loaded ticket renders the counted disclosure, not a wall of notes");
+  const closes = markup.indexOf("</details>", opens);
+  const recorded = markup.indexOf(FIRST_NOTE);
+  assert.ok(
+    recorded > opens && recorded < closes,
+    "the history a reader did not ask for stays behind the control that counts it",
+  );
+  assert.match(markup, /<span class="pw-disclosure__label">3 notes<\/span>/);
+});
+
+test("the loaded ticket page cites the latest note between the call and the id, and only when asked", () => {
+  const asked = detailMarkup({ notes: THREE_NOTES });
+  const call = asked.indexOf('class="pw-call pw-call--yours"');
+  const ask = asked.indexOf('class="pw-call__ask"');
+  const id = asked.indexOf('class="pw-issue__id"');
+  assert.ok(ask > -1, "a ticket wanting a decision cites the note the decision is about");
+  assert.ok(call > -1 && call < ask, "the citation sits under the sentence, never above it");
+  assert.ok(ask < id, "the token and its derivation stay below both");
+
+  const parked = detailMarkup({
+    classification: "parked:tooling",
+    reason: { rule: "label", label: "parked-tooling" },
+    notes: THREE_NOTES,
+  });
+  assert.doesNotMatch(parked, /pw-call__ask/, "nothing is wanted from the reader, so nothing is quoted");
+});
 
 test("the ticket view leads with the action, and the machinery comes under it", () => {
   const markup = pageMarkup(aPreview());

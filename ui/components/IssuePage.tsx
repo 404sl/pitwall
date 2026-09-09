@@ -1,6 +1,7 @@
-import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import type { Authority, Classification, StalenessVerdict } from "@404sl/pitwall-schema";
+import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode, type Ref } from "react";
+import { isYours, type Authority, type Classification, type StalenessVerdict } from "@404sl/pitwall-schema";
 import type { ClassificationReason } from "../../src/classify.js";
+import { noteBlocks, quote } from "../../src/staleness.js";
 import {
   buildIssueView,
   type FilterState,
@@ -201,6 +202,28 @@ function Call({ shown }: { shown: IssuePreview }) {
   return <p className={`pw-call pw-call--${call.tone}`}>{call.text}</p>;
 }
 
+export function LatestNote({
+  classification,
+  closed,
+  notes,
+}: {
+  classification?: Classification;
+  closed: boolean;
+  notes?: string;
+}) {
+  const blocks = notes === undefined ? [] : noteBlocks(notes);
+  const latest = blocks[blocks.length - 1];
+  if (closed || classification === undefined || !isYours(classification) || latest === undefined) {
+    return null;
+  }
+  return (
+    <p className="pw-call__ask">
+      <span className="pw-call__ask-label">{strings.issue.call.latestNote}</span>
+      <q className="pw-call__ask-text">{quote(latest)}</q>
+    </p>
+  );
+}
+
 function Staleness({ staleness, closed }: { staleness: StalenessView; closed: boolean }) {
   if (closed && !staleness.checked) {
     return <p className="pw-empty">{strings.issue.stale.closed}</p>;
@@ -256,6 +279,29 @@ function Recorded({ authority, text, empty }: { authority: Authority; text?: str
       </figcaption>
       <pre className="pw-recorded__text">{text}</pre>
     </figure>
+  );
+}
+
+export function Notes({ authority, text }: { authority: Authority; text?: string }) {
+  const blocks = text === undefined ? [] : noteBlocks(text);
+  if (text === undefined || blocks.length === 0) {
+    return <p className="pw-empty">{strings.issue.empty.notes}</p>;
+  }
+  return (
+    <details className="pw-disclosure">
+      <summary className="pw-disclosure__summary">
+        <span className="pw-disclosure__label">
+          {blocks.length === 1
+            ? strings.issue.notes.one
+            : fill(strings.issue.notes.count, { count: String(blocks.length) })}
+        </span>
+        <span aria-hidden="true" className="pw-disclosure__separator">
+          {strings.issue.notes.separator}
+        </span>
+        <span className="pw-disclosure__hint">{strings.issue.notes.hint}</span>
+      </summary>
+      <Recorded authority={authority} text={text} empty={strings.issue.empty.notes} />
+    </details>
   );
 }
 
@@ -402,7 +448,7 @@ function Origin({ view }: { view: IssueView }) {
   );
 }
 
-function shownOf(view: IssueView): IssuePreview {
+export function shownOf(view: IssueView): IssuePreview {
   const { issue } = view;
   return {
     id: issue.id,
@@ -417,6 +463,123 @@ function shownOf(view: IssueView): IssuePreview {
     closed: view.closed,
     staleness: view.staleness,
   };
+}
+
+function backLink(filter: FilterState) {
+  return (
+    <a className="pw-link pw-link--back" href={boardHref(filter)}>
+      {strings.issue.back}
+    </a>
+  );
+}
+
+function failureBlock(failure?: PageFailure) {
+  if (failure === undefined) {
+    return null;
+  }
+  return (
+    <Failure heading={failure.heading} message={failure.message}>
+      {failure.tried.length === 0 ? null : (
+        <>
+          <p className="pw-recorded__source">{strings.issue.failure.tried}</p>
+          <ul className="pw-evidence">
+            {failure.tried.map((entry) => (
+              <li key={entry}>{entry}</li>
+            ))}
+          </ul>
+        </>
+      )}
+    </Failure>
+  );
+}
+
+export function IssueDetail({
+  shown,
+  view,
+  failure,
+  filter = {},
+  heading,
+}: {
+  shown: IssuePreview;
+  view?: IssueView;
+  failure?: PageFailure;
+  filter?: FilterState;
+  heading?: Ref<HTMLHeadingElement>;
+}) {
+  const failed = failureBlock(failure);
+  return (
+    <>
+      <div className="pw-issue__head">
+        {backLink(filter)}
+        <h2 className="pw-issue__title" ref={heading} tabIndex={-1}>
+          {shown.title}
+        </h2>
+        <Call shown={shown} />
+        {view === undefined ? null : (
+          <LatestNote
+            classification={shown.classification}
+            closed={shown.closed}
+            notes={view.issue.notes}
+          />
+        )}
+        <p className="pw-issue__id">{shown.id}</p>
+        {view?.closedSinceSnapshot === true && view.snapshot !== undefined ? (
+          <p className="pw-notice" role="status">
+            {fill(strings.issue.closedSince, { at: clock(view.snapshot.generatedAt) })}
+          </p>
+        ) : null}
+        <Facts
+          shown={shown}
+          superseded={
+            view?.closedSinceSnapshot === true && view.snapshot !== undefined
+              ? { status: view.snapshot.status, at: view.readAt }
+              : undefined
+          }
+        />
+      </div>
+      <Band
+        id="classification"
+        label={strings.issue.band.classification}
+        level="h3"
+        busy={view === undefined && failure === undefined}
+      >
+        <Reason
+          classification={shown.classification}
+          reason={view?.issue.reason}
+          project={shown.project}
+          filter={filter}
+        />
+      </Band>
+      <Band id="staleness" label={strings.issue.band.staleness} level="h3">
+        <Staleness staleness={shown.staleness} closed={shown.closed} />
+      </Band>
+      {failed ?? (
+        <p className={view === undefined ? "pw-empty" : "pw-issue__vintage"} role="status">
+          {view === undefined
+            ? strings.issue.loading
+            : fill(strings.issue.vintage, { at: clock(view.readAt) })}
+        </p>
+      )}
+      {view === undefined ? null : (
+        <>
+          <Band id="description" label={strings.issue.band.description} level="h3">
+            <Recorded
+              authority={view.issue.authority}
+              text={view.issue.description}
+              empty={strings.issue.empty.description}
+            />
+          </Band>
+          <Band id="notes" label={strings.issue.band.notes} level="h3">
+            <Notes authority={view.issue.authority} text={view.issue.notes} />
+          </Band>
+          <Band id="dependencies" label={strings.issue.band.dependencies} level="h3">
+            <Dependencies view={view} filter={filter} />
+          </Band>
+          <Origin view={view} />
+        </>
+      )}
+    </>
+  );
 }
 
 export function IssuePage({
@@ -497,110 +660,20 @@ export function IssuePage({
     }
   });
 
-  const back = (
-    <a className="pw-link pw-link--back" href={boardHref(filter)}>
-      {strings.issue.back}
-    </a>
-  );
-
-  const failed = failure === undefined ? null : (
-    <Failure heading={failure.heading} message={failure.message}>
-      {failure.tried.length === 0 ? null : (
-        <>
-          <p className="pw-recorded__source">{strings.issue.failure.tried}</p>
-          <ul className="pw-evidence">
-            {failure.tried.map((entry) => (
-              <li key={entry}>{entry}</li>
-            ))}
-          </ul>
-        </>
-      )}
-    </Failure>
-  );
-
   if (shown === undefined) {
     return (
       <>
-        {back}
+        {backLink(filter)}
         {loading ? (
           <p className="pw-empty" role="status">
             {strings.issue.loading}
           </p>
         ) : (
-          failed ?? <Failure message="" />
+          failureBlock(failure) ?? <Failure message="" />
         )}
       </>
     );
   }
 
-  return (
-    <>
-      <div className="pw-issue__head">
-        {back}
-        <h2 className="pw-issue__title" ref={heading} tabIndex={-1}>
-          {shown.title}
-        </h2>
-        <Call shown={shown} />
-        <p className="pw-issue__id">{shown.id}</p>
-        {view?.closedSinceSnapshot === true && view.snapshot !== undefined ? (
-          <p className="pw-notice" role="status">
-            {fill(strings.issue.closedSince, { at: clock(view.snapshot.generatedAt) })}
-          </p>
-        ) : null}
-        <Facts
-          shown={shown}
-          superseded={
-            view?.closedSinceSnapshot === true && view.snapshot !== undefined
-              ? { status: view.snapshot.status, at: view.readAt }
-              : undefined
-          }
-        />
-      </div>
-      <Band
-        id="classification"
-        label={strings.issue.band.classification}
-        level="h3"
-        busy={view === undefined && failure === undefined}
-      >
-        <Reason
-          classification={shown.classification}
-          reason={view?.issue.reason}
-          project={shown.project}
-          filter={filter}
-        />
-      </Band>
-      <Band id="staleness" label={strings.issue.band.staleness} level="h3">
-        <Staleness staleness={shown.staleness} closed={shown.closed} />
-      </Band>
-      {failed ?? (
-        <p className={view === undefined ? "pw-empty" : "pw-issue__vintage"} role="status">
-          {view === undefined
-            ? strings.issue.loading
-            : fill(strings.issue.vintage, { at: clock(view.readAt) })}
-        </p>
-      )}
-      {view === undefined ? null : (
-        <>
-          <Band id="description" label={strings.issue.band.description} level="h3">
-            <Recorded
-              authority={view.issue.authority}
-              text={view.issue.description}
-              empty={strings.issue.empty.description}
-            />
-          </Band>
-          <Band id="notes" label={strings.issue.band.notes} level="h3">
-            <Recorded
-              authority={view.issue.authority}
-              text={view.issue.notes}
-              empty={strings.issue.empty.notes}
-            />
-          </Band>
-          <Band id="dependencies" label={strings.issue.band.dependencies} level="h3">
-            <Dependencies view={view} filter={filter} />
-          </Band>
-          <Origin view={view} />
-        </>
-      )}
-    </>
-  );
+  return <IssueDetail shown={shown} view={view} failure={failure} filter={filter} heading={heading} />;
 }
