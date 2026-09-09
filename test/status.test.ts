@@ -71,6 +71,13 @@ function lineAt(out: string, index: number): string {
   return line;
 }
 
+function runningRow(out: string): string {
+  const band = out.slice(out.indexOf("RUNNING"), out.indexOf("READY"));
+  const row = band.split("\n").find((line) => line.startsWith("  session-replay"));
+  assert.ok(row !== undefined, `no running row in ${out}`);
+  return row;
+}
+
 function rowFor(out: string, id: string): string {
   const row = out.split("\n").find((line) => line.includes(id));
   assert.ok(row !== undefined, `no row for ${id} in ${out}`);
@@ -247,6 +254,10 @@ test("truncation counts the words rather than the colour codes", () => {
     const coloured = render(WIDE, { width, color: true });
     assert.equal(coloured.replace(/\u001b\[[0-9;]*m/g, ""), render(WIDE, { width }));
   }
+  for (const width of [80, 40]) {
+    const coloured = render(BUSY, { width, color: true });
+    assert.equal(coloured.replace(/\u001b\[[0-9;]*m/g, ""), render(BUSY, { width }));
+  }
 });
 
 test("an error is never cut short to fit the screen", () => {
@@ -272,6 +283,23 @@ test("every row stays inside a terminal narrower than eighty columns", () => {
     }
   }
   assert.match(render(WIDE, { width: 35 }), /^ {4}sr-1 P0 decision likely stale \u2026$/m);
+});
+
+test("a running row too narrow for every chip ends on a whole lane, a count, or the state", () => {
+  const prefixWidth = runningRow(render(WIDE)).indexOf("sr-lane-0");
+  for (let width = prefixWidth + 1; width <= prefixWidth + 60; width += 1) {
+    const row = runningRow(render(WIDE, { width }));
+    assert.doesNotMatch(row, /\u2026/, `width ${width}: ${row}`);
+    assert.ok(displayWidth(row) <= width, `width ${width}: ${displayWidth(row)} columns: ${row}`);
+    const shown = [...row.matchAll(/sr-lane-\d 1h0m/g)].length;
+    const dropped = row.match(/\+(\d+) more/);
+    if (shown === 0 && dropped === null) {
+      assert.ok(row.endsWith("6 working"), `width ${width}: ${row}`);
+      continue;
+    }
+    assert.match(row, /(?:sr-lane-\d 1h0m|\+\d+ more)$/, `width ${width}: ${row}`);
+    assert.equal(shown + Number(dropped?.[1] ?? 0), 6, `width ${width}: ${row}`);
+  }
 });
 
 test("a width too small to lay a row out at all is ignored rather than obeyed", () => {

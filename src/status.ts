@@ -79,6 +79,7 @@ type Paint = (text: string, code: string) => string;
 const SGR = /\u001b\[[0-9;]*m/g;
 const SGR_PART = /(\u001b\[[0-9;]*m)/;
 const ELLIPSIS = "\u2026";
+const CHIP_JOIN = " \u00b7 ";
 const MIN_WIDTH = 20;
 
 function plainWidth(text: string): number {
@@ -119,6 +120,14 @@ function fit(prefix: string, tail: string, width: number | undefined): string {
     return `${prefix}${tail}`;
   }
   return `${prefix}${clip(tail, budget - 1).trimEnd()}${ELLIPSIS}`;
+}
+
+function chipBudget(prefix: string, width: number | undefined): number | undefined {
+  if (width === undefined) {
+    return undefined;
+  }
+  const budget = width - plainWidth(prefix);
+  return budget < 1 ? undefined : budget;
 }
 
 export function terminalWidth(stdout: { isTTY?: boolean; columns?: number }): number | undefined {
@@ -195,14 +204,18 @@ function chipText(chip: LaneChip): string {
   return `${id} ${chip.elapsedMs === undefined ? "—" : elapsed(chip.elapsedMs)}`;
 }
 
-function chipsText(chips: LaneChip[]): string {
-  const shown = chips.slice(0, LANE_CHIP_LIMIT);
-  const rest = chips.length - shown.length;
-  const text = shown.map(chipText).join(" · ");
-  if (rest === 0) {
-    return text;
+function joinChips(texts: string[], rest: number): string {
+  return (rest === 0 ? texts : [...texts, `+${rest} more`]).join(CHIP_JOIN);
+}
+
+function chipsText(chips: LaneChip[], budget: number | undefined): string {
+  const texts = chips.slice(0, LANE_CHIP_LIMIT).map(chipText);
+  let text = joinChips(texts, chips.length - texts.length);
+  while (budget !== undefined && texts.length > 0 && displayWidth(text) > budget) {
+    texts.pop();
+    text = joinChips(texts, chips.length - texts.length);
   }
-  return text === "" ? `+${rest} more` : `${text} · +${rest} more`;
+  return budget !== undefined && displayWidth(text) > budget ? "" : text;
 }
 
 function stateText(row: RunningRow): string {
@@ -220,8 +233,10 @@ function runningLines(rows: RunningRow[], paint: Paint, width: number | undefine
   const projectWidth = widest(rows.map((row) => row.project));
   const stateWidth = widest(rows.map((row) => stateText(row)));
   return rows.map((row) => {
-    const state = paint(stateText(row).padEnd(stateWidth), STATE_COLOUR[row.state]);
-    return fit(`  ${row.project.padEnd(projectWidth)} ${state} `, chipsText(row.chips), width).trimEnd();
+    const state = stateText(row);
+    const pad = " ".repeat(stateWidth - state.length);
+    const prefix = `  ${row.project.padEnd(projectWidth)} ${paint(state, STATE_COLOUR[row.state])}${pad} `;
+    return fit(prefix, chipsText(row.chips, chipBudget(prefix, width)), width).trimEnd();
   });
 }
 
