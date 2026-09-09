@@ -838,6 +838,24 @@ STOP AND ASK instead of guessing, if any of these is true:
 - You cannot get tests green without weakening an assertion.
 To stop: write the question onto the issue so a person can answer it without re-reading the
 code, from ${ROOT}:
+  BEFORE YOU APPLY needs-decision, ASK: WOULD THE OWNER'S ANSWER DIFFER FROM ANY COMPETENT
+  ENGINEER'S? If no, IT IS NOT THEIRS. Decide it, write down what you chose and why, and carry
+  on. Which of three shapes, whether an old review still binds, where to dedupe, what a fallback
+  value should be, how a report formats a collision - none of those are the owner's, however
+  real the question is.
+
+  It is theirs when the answer is about what the product SHOULD DO, who it is for, what it is
+  worth, or what it is called. That is a much smaller set than "somebody must decide".
+
+  A DEPENDENCY IS NOT A DECISION. If the answer is "after that other ticket lands", record it
+  with bd dep add and do not park it - the tracker holds ordering natively and a label puts a
+  sequencing fact in a person's queue.
+
+  This is not a licence to guess. It is the difference between a question that needs AN answer
+  and one that needs THEIR answer. On 2026-09-10 ten tickets sat in the owner's queue and none
+  of them needed the owner: eight were engineering calls, one was a dependency, one was a park
+  whose condition had been met hours earlier. They found them by browsing.
+
   bd label add ${task.id} <needs-decision if a choice only a person can make, needs-access if it needs a deploy/dashboard/device they have and you do not>
   bd update ${task.id} -s open --append-notes "<what you found, the exact decision needed, and the options with your recommendation>"
 Then return status 'needs_feedback' with that question. Leave the worktree and any branch in
