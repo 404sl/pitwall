@@ -339,7 +339,7 @@ test("the snapshot reports whether the reason an issue stopped is still true", a
       asked.push([...command]);
       return true;
     },
-    pullState: async () => undefined,
+    pullFacts: async () => undefined,
   });
   const byId = new Map((snapshot.projects[0]?.issues ?? []).map((issue) => [issue.id, issue]));
   assert.equal(byId.get("mw-20")?.staleness.verdict, "resolved");
@@ -400,7 +400,8 @@ test("an issue left in progress after its pull request merged is reported, not l
     ...options(place, new Date("2026-09-08T09:00:00Z")),
     env: { ...place.env, BD_LIST_FIXTURE: "stale" },
     probe: async () => true,
-    pullState: async (reference) => (reference.text === "site#16" ? "merged" : undefined),
+    pullFacts: async (reference) =>
+      reference.text === "site#16" ? { state: "merged", issueId: "mw-26" } : undefined,
   });
   const byId = new Map((snapshot.projects[0]?.issues ?? []).map((issue) => [issue.id, issue]));
   assert.equal(byId.get("mw-26")?.classification, "landing");
@@ -441,7 +442,7 @@ test("references the run could not resolve leave the evidence and reach the proj
     ...options(place, new Date("2026-09-08T09:00:00Z")),
     env: { ...place.env, BD_LIST_FIXTURE: "stale" },
     probe: async () => true,
-    pullState: async () => undefined,
+    pullFacts: async () => undefined,
   });
   const project = snapshot.projects[0];
   const unresolved = (project?.errors ?? []).filter((error) => error.source.startsWith("staleness "));
@@ -483,7 +484,7 @@ test("a project whose references could not be looked up is not an unreadable pro
     ...options(place, new Date("2026-09-08T09:00:00Z")),
     env: { ...place.env, BD_LIST_FIXTURE: "stale" },
     probe: async () => true,
-    pullState: async () => undefined,
+    pullFacts: async () => undefined,
   });
   assert.ok(
     (result.snapshot.projects[0]?.errors ?? []).some((error) => error.source.startsWith("staleness ")),

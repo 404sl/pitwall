@@ -14,7 +14,7 @@ import { hasLiveStructuralBlocker, type ClassifyContext } from "./classify.js";
 import { collectProjects, historyLimits, type RootsOptions } from "./config.js";
 import { recordSnapshot, type HistoryMetrics } from "./history.js";
 import { deliver, noticesFor, type Delivered, type Noter, type Sender } from "./notify.js";
-import { readPipeline } from "./pipeline.js";
+import { issueMatcher, readPipeline } from "./pipeline.js";
 import { preconditionProbe, pullLookup } from "./probes.js";
 import { readSnapshot, writeSnapshot } from "./state.js";
 import { assess, isAssessable, type StalenessContext } from "./staleness.js";
@@ -23,7 +23,7 @@ import { VERSION } from "./version.js";
 export interface SnapshotOptions extends RootsOptions {
   timeoutMs?: number;
   now?: Date;
-  pullState?: StalenessContext["pullState"];
+  pullFacts?: StalenessContext["pullFacts"];
   probe?: StalenessContext["probe"];
   sender?: Sender;
   sessionRef?: string;
@@ -74,15 +74,22 @@ function stalenessContext(
   errors: CollectionError[],
 ): StalenessContext {
   const repos = new Map(project.repos.map((repo) => [repo.name, repo.path]));
+  const knownIds = new Set([...collected.issues, ...collected.closed].map((issue) => issue.id));
   return {
     idPrefix: project.authority.idPrefix,
-    knownIds: new Set([...collected.issues, ...collected.closed].map((issue) => issue.id)),
+    knownIds,
     closedIds: new Set(collected.closed.map((issue) => issue.id)),
-    pullState:
-      options.pullState ??
+    pullFacts:
+      options.pullFacts ??
       (repos.size === 0
         ? undefined
-        : pullLookup({ repos, env: options.env, timeoutMs: options.timeoutMs, errors })),
+        : pullLookup({
+            repos,
+            names: issueMatcher(project.authority.idPrefix, knownIds),
+            env: options.env,
+            timeoutMs: options.timeoutMs,
+            errors,
+          })),
     probe:
       options.probe ??
       preconditionProbe({ env: options.env, timeoutMs: options.timeoutMs, errors }),

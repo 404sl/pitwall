@@ -2,6 +2,11 @@ import type { Classification, CollectionError, Staleness } from "@404sl/pitwall-
 
 export type PullState = "merged" | "open" | "closed";
 
+export interface PullFacts {
+  state: PullState;
+  issueId?: string;
+}
+
 export interface PullReference {
   number: number;
   repo: string | undefined;
@@ -31,7 +36,7 @@ export interface StalenessContext {
   idPrefix?: string;
   knownIds?: ReadonlySet<string>;
   closedIds?: ReadonlySet<string>;
-  pullState?: (reference: PullReference) => Promise<PullState | undefined>;
+  pullFacts?: (reference: PullReference) => Promise<PullFacts | undefined>;
   probe?: (command: readonly string[]) => Promise<boolean | undefined>;
   now?: Date;
 }
@@ -87,12 +92,21 @@ const BARE_PULL = /(?<!\])(^|[^\w#/-])#(\d+)\b/g;
 const STOPPED_FOR_A_REASON = ["yours:", "parked:", "blocked"];
 const LANDING = "landing";
 
+type AssessmentScope = "stopped" | "landing";
+
 function stoppedForAReason(classification: Classification): boolean {
   return STOPPED_FOR_A_REASON.some((prefix) => classification.startsWith(prefix));
 }
 
+function scopeOf(classification: Classification): AssessmentScope | undefined {
+  if (classification === LANDING) {
+    return "landing";
+  }
+  return stoppedForAReason(classification) ? "stopped" : undefined;
+}
+
 export function isAssessable(classification: Classification): boolean {
-  return stoppedForAReason(classification) || classification === LANDING;
+  return scopeOf(classification) !== undefined;
 }
 
 function reasonOf(record: ParkedRecord): string {
@@ -229,12 +243,13 @@ function referencedPulls(record: ParkedRecord): PullReference[] {
 async function referencedPullMerged(
   record: ParkedRecord,
   context: StalenessContext,
+  scope: AssessmentScope,
 ): Promise<Check> {
   const references = referencedPulls(record);
   if (references.length === 0) {
     return { ran: false, fired: false, evidence: [] };
   }
-  const resolve = context.pullState;
+  const resolve = context.pullFacts;
   if (resolve === undefined) {
     return {
       ran: false,
@@ -248,10 +263,17 @@ async function referencedPullMerged(
       ],
     };
   }
-  const states = await Promise.all(
-    references.map(async (reference) => ({ reference, state: await resolve(reference) })),
+  const looked = await Promise.all(
+    references.map(async (reference) => ({ reference, facts: await resolve(reference) })),
   );
-  const merged = states.filter((entry) => entry.state === "merged");
+  const states =
+    scope === "landing"
+      ? looked.filter((entry) => entry.facts === undefined || entry.facts.issueId === record.id)
+      : looked;
+  if (states.length === 0) {
+    return { ran: false, fired: false, evidence: [] };
+  }
+  const merged = states.filter((entry) => entry.facts?.state === "merged");
   if (merged.length > 0) {
     return {
       ran: true,
@@ -259,9 +281,9 @@ async function referencedPullMerged(
       evidence: [`the pull request it waits on has merged: ${merged.map((entry) => entry.reference.text).join(", ")}`],
     };
   }
-  const resolved = states.filter((entry) => entry.state !== undefined);
-  const unresolved = states.filter((entry) => entry.state === undefined);
-  const evidence = resolved.map((entry) => `${entry.reference.text} is ${entry.state}, not merged`);
+  const resolved = states.filter((entry) => entry.facts !== undefined);
+  const unresolved = states.filter((entry) => entry.facts === undefined);
+  const evidence = resolved.map((entry) => `${entry.reference.text} is ${entry.facts?.state}, not merged`);
   const failures =
     unresolved.length === 0
       ? []
@@ -356,14 +378,18 @@ export async function assess(
   record: ParkedRecord,
   context: StalenessContext = {},
 ): Promise<Assessment> {
-  const checks = stoppedForAReason(record.classification)
-    ? [
-        noteAfterLabel(record),
-        referencedIssuesClosed(record, context),
-        await referencedPullMerged(record, context),
-        await preconditionNowHolds(record, context),
-      ]
-    : [await referencedPullMerged(record, context)];
+  const scope = scopeOf(record.classification);
+  const checks =
+    scope === undefined
+      ? []
+      : scope === "landing"
+        ? [await referencedPullMerged(record, context, scope)]
+        : [
+            noteAfterLabel(record),
+            referencedIssuesClosed(record, context),
+            await referencedPullMerged(record, context, scope),
+            await preconditionNowHolds(record, context),
+          ];
   const at = (context.now ?? new Date()).toISOString();
   return {
     staleness: verdictOf(record, context, checks, at),
