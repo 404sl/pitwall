@@ -155,3 +155,99 @@ test("land.js emits no removal command when the lock step reported no token", as
       "leak has to be in the result.",
   );
 });
+
+test("land.js does not tell a supervisor to clear a lock another run holds", async () => {
+  const { done } = runScript("land.js", LAND_ARGS, (call, n) => {
+    if (n === 1) return { status: "taken", token: "lander-1788964650-29574" };
+    if (call.label && call.label.startsWith("survey")) return { prs: [] };
+    if (call.label === "release") return { status: "not_mine" };
+    return {};
+  });
+  const result = (await done) as { lock?: string };
+
+  assert.doesNotMatch(
+    result.lock || "",
+    /LEAKED|clear it by hand/i,
+    "a release step that reported not_mine came back as a leak to clear by hand. The release " +
+      "prompt calls not_mine a correct outcome - something else holds the lock and will give " +
+      "it back - so telling a supervisor to remove it is an instruction to delete a live " +
+      "foreign lock, which is the one unrecoverable outcome here.",
+  );
+  assert.match(
+    result.lock || "",
+    /not_mine/,
+    "the result threw away the distinction the release schema draws: a supervisor cannot tell " +
+      "a stand-down from a release without it.",
+  );
+});
+
+test("land.js reports a lock it could not give back as leaked", async () => {
+  for (const reply of [{ status: "still_held" }, {}, undefined]) {
+    const { done } = runScript("land.js", LAND_ARGS, (call, n) => {
+      if (n === 1) return { status: "taken", token: "lander-1788964650-29574" };
+      if (call.label && call.label.startsWith("survey")) return { prs: [] };
+      if (call.label === "release") return reply;
+      return {};
+    });
+    const result = (await done) as { lock?: string };
+
+    assert.match(
+      result.lock || "",
+      /LEAKED/,
+      `a release step that answered ${JSON.stringify(reply)} left the lock standing, and the ` +
+        "run still has to say so in its result - the reported incident is a lander returning " +
+        "success while holding the lock.",
+    );
+  }
+});
+
+test("land.js settles NOT_MINE before it asks for a confirmation", async () => {
+  const { calls, done } = runScript("land.js", LAND_ARGS, (call, n) => {
+    if (n === 1) return { status: "taken", token: "lander-1788964650-29574" };
+    if (call.label && call.label.startsWith("survey")) return { prs: [] };
+    return { status: "released" };
+  });
+  await done;
+
+  const prompt = releasePromptOf(calls);
+  const confirmAt = prompt.indexOf("[ -d /tmp/devloop-merge.lock ]");
+  const stopAt = prompt.search(/do not run the confirm/i);
+
+  assert.notEqual(confirmAt, -1, "the release prompt no longer confirms the lock is gone");
+  assert.ok(
+    stopAt !== -1 && stopAt < confirmAt,
+    "a holder mismatch prints NOT_MINE and then the confirmation prints STILL_HELD, so both " +
+      "reporting rules apply at once and the agent picks one. The prompt has to settle " +
+      "NOT_MINE before it asks for a confirmation, or the two statuses mean nothing.",
+  );
+});
+
+test("land-train.js emits no removal command when the lock step reported no token", async () => {
+  const { calls, done } = runScript("land-train.js", LAND_ARGS, (call, n) => {
+    if (n === 1) return { status: "taken" };
+    return { status: "error", notes: "nothing to build" };
+  });
+  const result = (await done) as { lock?: string };
+
+  assert.equal(
+    calls.some((c) => c.label === "release"),
+    false,
+    "a release step ran for a lock this run cannot prove it owns. Its guard compares the " +
+      "holder file against an empty EXPECTED, and the same prompt tells the agent not to stop " +
+      "for want of a token - two instructions pointing opposite ways over a lock that may be " +
+      "somebody else's.",
+  );
+
+  const removals = calls.filter((c) => /rm -f |rmdir /.test(c.prompt));
+  assert.deepEqual(
+    removals.map((c) => c.label),
+    [],
+    "a removal was handed to an agent with no token to check it against",
+  );
+
+  assert.match(
+    result.lock || "",
+    /LEAKED/,
+    "the train returned without saying it was still holding the lock",
+  );
+});

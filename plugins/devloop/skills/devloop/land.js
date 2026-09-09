@@ -276,7 +276,7 @@ minutes with nothing behind it.
 Check it is yours before removing it, and never remove one that is not. THE TOKEN IS ALREADY
 WRITTEN INTO THE COMMAND BELOW. Run it EXACTLY AS IT STANDS, AS ONE COMMAND:
 
-  [ "$(cat ${MERGE_LOCK}/holder 2>/dev/null)" = '${token}' ] && rm -rf ${MERGE_LOCK} || echo NOT_MINE
+  if [ "$(cat ${MERGE_LOCK}/holder 2>/dev/null)" = '${token}' ]; then rm -rf ${MERGE_LOCK}; else echo NOT_MINE; fi
 
 DO NOT ASK ANYBODY FOR A TOKEN AND DO NOT STOP FOR WANT OF ONE. This paragraph used to read
 "substitute the token the lock step reported", and on 2026-09-09 a release step read that as an
@@ -291,17 +291,20 @@ unconditional. It removed its own lock and no harm followed, but a safety review
 it was right to: the same two commands would have deleted ANOTHER live lander's lock in exactly
 the same way. The guard only guards while it is joined to the thing it guards.
 
-If it prints NOT_MINE, say so and leave the lock alone. That is a correct outcome, not a failure
-to clean up: it means something else holds it and will give it back itself.
+IF IT PRINTED NOT_MINE, the holder file is somebody else's and nothing was removed. Report status
+'not_mine' and stop there - DO NOT RUN THE CONFIRMATION BELOW. The directory is still standing
+because another run is using it, and a confirmation would report that as this run failing to
+release. NOT_MINE settles the step. It is a correct outcome, not a failure to clean up: whoever
+holds it gives it back itself, and this run must leave it exactly alone.
 
 rm -rf, NOT rmdir. The holder file lives inside the directory, so rmdir fails with "Directory
 not empty" and the lock is never given back.
 
-Then confirm it is gone:
+IF IT PRINTED NOTHING, the removal ran and the lock was yours. Only then, confirm it is gone:
   [ -d ${MERGE_LOCK} ] && echo STILL_HELD || echo RELEASED
 
-Report status 'released' only if that printed RELEASED. Report 'not_mine' if the guard printed
-NOT_MINE, and 'still_held' if it printed STILL_HELD. Change nothing else.
+Report status 'released' if that printed RELEASED, and 'still_held' if it printed STILL_HELD - a
+removal that did not take is a leak and has to be visible. Change nothing else.
 ${LAW}`
 }
 
@@ -897,7 +900,7 @@ const skipped = []
 const matchedPreflight = new Set()
 let masterBroken = false
 let deployed = 'not_needed'
-let released = null
+let lockState = 'LEAKED - clear it by hand'
 
 try {
   // Drained rather than surveyed once: a lane can label a PR while this run is working, and
@@ -1093,8 +1096,13 @@ try {
   if (!lock?.token) {
     log(`MERGE LOCK LEAKED - ${MERGE_LOCK} is held under a token this run never reported, so ownership cannot be proved. Nothing was removed; clear it by hand.`)
   } else {
-    released = await agent(releasePrompt(lock.token), { label: 'release', phase: 'Deploy', model: 'haiku', effort: 'low', schema: RELEASE })
-    if (!released || released.status !== 'released') {
+    const released = await agent(releasePrompt(lock.token), { label: 'release', phase: 'Deploy', model: 'haiku', effort: 'low', schema: RELEASE })
+    if (released && released.status === 'released') {
+      lockState = 'released'
+    } else if (released && released.status === 'not_mine') {
+      lockState = 'not_mine - another run holds it, leave it alone'
+      log(`merge lock was not this run's to give back - ${MERGE_LOCK} did not hold ${lock.token}, so nothing was removed and nobody should remove it.\n    ${released.notes || 'the guard reported NOT_MINE and cannot say who does hold it'}`)
+    } else {
       log(`MERGE LOCK NOT RELEASED - ${MERGE_LOCK} is still held by ${lock.token}. Nothing else can land until it is cleared.\n    ${(released && released.notes) || 'the release agent returned nothing'}`)
     }
   }
@@ -1112,4 +1120,4 @@ if (PREFLIGHTED) {
 }
 
 log(`landed ${landed.length}, stopped ${stopped.length}, deploy ${deployed}`)
-return { landed, stopped, skipped, deployed, masterBroken, lock: released && released.status === 'released' ? 'released' : 'LEAKED - clear it by hand' }
+return { landed, stopped, skipped, deployed, masterBroken, lock: lockState }

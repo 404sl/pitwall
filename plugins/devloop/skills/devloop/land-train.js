@@ -516,6 +516,9 @@ case this step is trying to stop.`,
 // 2026-08-29 left the lock held after a clean run and the next train stood down against a
 // lander that had already finished. Verify rather than report: a lock that is still there
 // after this is a leak that blocks every future train until somebody clears it by hand.
+if (!lock.token) {
+  log(`MERGE LOCK LEAKED - /tmp/devloop-merge.lock is held under a token this run never reported, so ownership cannot be proved. Nothing was removed; clear it by hand.`)
+} else {
 released = await agent(
   `Release the serial merge lock - but only if it is still THIS run's lock.
 
@@ -524,12 +527,14 @@ An unconditional delete of a shared lock is refused, correctly: if another train
 it puts two trains on one repository and corrupts merges and deploys to both environments. So prove
 the lock is yours by matching the token this run stamped into it:
 
-  EXPECTED='${lock.token || ''}'
+  EXPECTED='${lock.token}'
   ACTUAL="$(cat /tmp/devloop-merge.lock/holder 2>/dev/null)"
   echo "expected=[$EXPECTED] actual=[$ACTUAL]"
 
-THE TOKEN IS ALREADY IN THAT COMMAND. Run it exactly as it stands - do not ask anybody for a
-token and do not stop for want of one. A sibling lander's release step was once told to
+THE TOKEN IS ALREADY IN THAT COMMAND. Run it exactly as it stands and do not ask anybody for a
+token. This step is only ever reached with one: the script does not ask at all when the lock step
+reported none, so nothing here has to be decided by weighing this paragraph against the STOP
+below. A sibling lander's release step was once told to
 "substitute the token the lock step reported", read that as an instruction to go and find one,
 concluded it had been given nothing, and returned that refusal as its answer while the run
 reported success. The lock outlived it by 25 minutes.
@@ -555,6 +560,7 @@ cleared by hand, so this must be visible rather than silently reported as done.`
       status: { type: 'string', enum: ['released', 'leaked'] }, notes: { type: 'string' } } },
     model: 'haiku', effort: 'low', phase: 'Close', label: 'release' },
 )
+}
 }
 
 return {

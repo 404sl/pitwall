@@ -45,7 +45,9 @@ that gave the agent a task it could not complete. Removing the task removes the 
 bottom of the straight-line path, so any throw in between - a build agent dying, the bisect
 recursion, a guard tripping after acquisition - left the lock behind. Its body is now wrapped in
 `try`/`finally` with the release inside, as `land.js` does it. An exception still propagates; it
-no longer takes the lock with it.
+no longer takes the lock with it. It branches on a missing token the same way `land.js` does,
+rather than interpolating an empty `EXPECTED` and leaving the outcome to be argued out between
+two paragraphs of prose in the prompt.
 
 **Why a `finally` and not the shell trap the report asked for.** The lock is taken by a subagent
 whose shell exits as soon as the command returns, so a trap there would fire immediately and
@@ -53,12 +55,26 @@ release a lock the run is still using. The workflow script's `finally` is the pr
 equivalent. Neither covers a killed runner, and nothing in the script can - that case stays
 `lock-check.sh`'s.
 
-**A refusal is now reported rather than swallowed.** `land.js`'s release step had no schema, so
-its answer went nowhere. It returns `released`, `not_mine` or `still_held`, and anything but the
-first is logged as a held lock naming the token to clear. The run's own result now carries `lock`
-too - `released`, or `LEAKED - clear it by hand` - because the incident was a lander reporting
-success while holding the lock, and a journal line a person reads afterwards is not what the
-supervisor consumes. `land-train.js` already reported it that way.
+**A refusal is now reported rather than swallowed, and a stand-down is not reported as a leak.**
+`land.js`'s release step had no schema, so its answer went nowhere. It returns `released`,
+`not_mine` or `still_held`, and the run's own result now carries `lock` - because the incident was
+a lander reporting success while holding the lock, and a journal line a person reads afterwards is
+not what the supervisor consumes.
+
+Those three answers are three different instructions to whoever reads the result, so the field
+keeps them apart. `not_mine` means the holder file was somebody else's and nothing was removed:
+the prompt calls that a correct outcome, and the result says `not_mine - another run holds it,
+leave it alone`. Only `still_held`, a missing status or no answer at all become `LEAKED - clear it
+by hand`. Folding `not_mine` into the leak told a supervisor to delete a lock that may be live and
+foreign, which is the outcome the rest of this entry exists to prevent. The journal line follows
+the same split: on `not_mine` the run cannot name the holder and does not pretend to.
+
+For that distinction to be worth anything the guard has to produce exactly one of the two, so it
+is now `if ... then rm -rf ... else echo NOT_MINE; fi` rather than `[ ... ] && rm -rf ... || echo
+NOT_MINE`. The `&&`/`||` form also printed NOT_MINE when the guard PASSED and the removal failed -
+a leak of this run's own lock, reported as a polite stand-down. And the confirmation that follows
+runs only on the removal path: a mismatch used to print NOT_MINE and then STILL_HELD from the
+confirmation, so both reporting rules applied at once and the agent picked one.
 
 **The token is still minted by the lock agent, deliberately.** Minting it in the script looks
 tidier and is wrong twice over: `Date.now()` and `Math.random()` throw in the workflow runner
