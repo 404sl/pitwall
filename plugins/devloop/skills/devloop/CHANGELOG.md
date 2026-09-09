@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.1.11
+
+**A park label is a claim, and it stops everything.** Verify the constraint before writing
+needs-access or needs-decision, and put what you checked in the note beside it. Check before
+obeying one somebody else wrote, if it can be done in a minute.
+
+A P0 sat parked for hours behind "needs the admin panel, not a lane". It needed a data
+migration, and deploy.rb invokes rails:db_data_migrate on every deploy - so a run could have
+written it and the deploy would have applied it, with nobody logging in anywhere. One grep
+would have shown that. Two runs refused the ticket, correctly obeying the label, and nobody
+checked the claim behind it, because a label does not look like a claim. It looks like a fact.
+
+The runs were not wrong and the mechanism was not wrong. The INPUT was wrong, and a label
+launders a belief into a fact by being a label rather than prose.
+
+**A park must carry what was checked, or it is a rumour with enforcement.**
+
+
 ## 0.1.10
 
 **The 0.1.3 fix to `lock-check.sh` did not work, and the way it failed is the interesting part.**

@@ -881,6 +881,28 @@ Otherwise:
    hold, say which part and leave that as its own issue rather than closing it away.
    Never invent a change to justify a ticket.
 
+   A PARK LABEL IS A CLAIM, AND IT STOPS EVERYTHING. Before writing needs-access or
+   needs-decision, VERIFY THE CONSTRAINT IS REAL, and put what you checked in the note beside
+   it. Before OBEYING one somebody else wrote, check the same way if you can do it in a minute.
+
+   needs-access says "no run can do this". That is a statement about the pipeline and the
+   pipeline can be asked. A P0 sat parked for hours behind "needs the admin panel, not a lane".
+   It needed a data migration, and config/deploy.rb invokes rails:db_data_migrate on every
+   deploy - so a run could have written it and the deploy would have applied it, with nobody
+   logging in anywhere. One grep would have shown that. Two runs refused the ticket, correctly
+   obeying a label, and nobody checked the claim behind it because a label does not look like
+   a claim. It looks like a fact.
+
+   That is the same failure as trusting any other signal that cannot tell two states apart:
+   a label carries no record of whether it was measured or assumed. So make it carry one.
+   "needs-access: checked deploy.rb, no data-migration step, must be applied by hand" can be
+   re-checked and can expire. "needs-access" alone cannot, and it will outlive the reason.
+
+   A PARK MUST CARRY WHAT WAS CHECKED, OR IT IS A RUMOUR WITH ENFORCEMENT. The label is not
+   wrong and the runs obeying it are not wrong - the INPUT is wrong, and a label launders a
+   belief into a fact by being a label rather than prose. Write what you checked, or do not
+   park it.
+
    CONFIRM IT AGAINST THE RUNNING THING, NOT THE SOURCE, wherever the answer depends on the
    cascade, on runtime state, or on how pieces compose. Reading the source tells you what a
    rule SAYS; it does not tell you what wins. A ticket reported a credit at 1.05:1 - white on
