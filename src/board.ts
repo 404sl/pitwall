@@ -13,6 +13,7 @@ import {
   type StalenessVerdict,
 } from "@404sl/pitwall-schema";
 import type { ClassificationReason } from "./classify.js";
+import { stalenessSource, unresolvedCount } from "./staleness.js";
 
 export type NeedsYouKind = "decision" | "access";
 export type RunningState = "working" | "awaiting-lander" | "stranded";
@@ -371,6 +372,7 @@ export interface IssuePayload {
   issue: IssueBody;
   readAt: string;
   snapshot?: { generatedAt: string; status: string };
+  errors?: CollectionError[];
 }
 
 export interface StalenessView {
@@ -378,6 +380,57 @@ export interface StalenessView {
   checked: boolean;
   checkedAt?: string;
   evidence: string[];
+  unresolved: number;
+}
+
+export interface IssuePreview {
+  id: string;
+  title: string;
+  status: string;
+  issueType?: string;
+  priority?: number;
+  labels: string[];
+  project: string;
+  projectName: string;
+  classification?: ClassificationValue;
+  closed: boolean;
+  staleness: StalenessView;
+}
+
+export function stalenessErrors(source: { errors?: CollectionError[] }, id: string): CollectionError[] {
+  return errorsOf(source).filter((error) => error.source === stalenessSource(id));
+}
+
+function stalenessView(staleness: Staleness | undefined, errors: readonly CollectionError[]): StalenessView {
+  const verdict = staleness?.verdict ?? "unchecked";
+  return {
+    verdict,
+    checked: verdict !== "unchecked",
+    checkedAt: staleness?.checkedAt,
+    evidence: staleness?.evidence ?? [],
+    unresolved: errors.reduce((sum, error) => sum + unresolvedCount(error.message), 0),
+  };
+}
+
+export function previewIssue(snapshot: Snapshot, project: string, id: string): IssuePreview | undefined {
+  const found = (snapshot.projects ?? []).find((entry) => entry.id === project);
+  const issue = found === undefined ? undefined : issuesOf(found).find((entry) => entry.id === id);
+  if (found === undefined || issue === undefined) {
+    return undefined;
+  }
+  return {
+    id: issue.id,
+    title: issue.title,
+    status: issue.status,
+    issueType: issue.issueType,
+    priority: issue.priority,
+    labels: issue.labels,
+    project: found.id,
+    projectName: found.name,
+    classification: issue.classification,
+    closed: issue.status === "closed",
+    staleness: stalenessView(issue.staleness, stalenessErrors(found, issue.id)),
+  };
 }
 
 export interface IssueView {
@@ -390,7 +443,6 @@ export interface IssueView {
 }
 
 export function buildIssueView(payload: IssuePayload): IssueView {
-  const staleness = payload.issue.staleness;
   return {
     issue: payload.issue,
     readAt: payload.readAt,
@@ -400,11 +452,6 @@ export function buildIssueView(payload: IssuePayload): IssueView {
       payload.snapshot !== undefined &&
       payload.snapshot.status !== "closed" &&
       payload.issue.status === "closed",
-    staleness: {
-      verdict: staleness.verdict,
-      checked: staleness.verdict !== "unchecked",
-      checkedAt: staleness.checkedAt,
-      evidence: staleness.evidence,
-    },
+    staleness: stalenessView(payload.issue.staleness, payload.errors ?? []),
   };
 }

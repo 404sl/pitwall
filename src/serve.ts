@@ -5,6 +5,7 @@ import { pipeline } from "node:stream";
 import { fileURLToPath } from "node:url";
 import type { Issue, Project, Snapshot } from "@404sl/pitwall-schema";
 import { readWorkspace } from "./autofix.js";
+import { stalenessErrors } from "./board.js";
 import { readIssue } from "./beads.js";
 import { readSnapshot, type StateOptions } from "./state.js";
 
@@ -157,6 +158,7 @@ async function serveIssue(
       staleness: snapshotStatus?.staleness ?? { verdict: "unchecked", evidence: [] },
     },
     readAt: new Date().toISOString(),
+    errors: stalenessErrors(indexed, route.id),
     snapshot:
       snapshotStatus === undefined
         ? undefined

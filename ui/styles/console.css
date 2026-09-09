@@ -382,6 +382,30 @@ body {
   padding-inline-start: 16px;
 }
 
+.pw-call {
+  margin: 12px 0 0;
+  max-inline-size: 60ch;
+  font-family: var(--pw-font-ui);
+  font-size: 18px;
+  line-height: 1.4;
+  color: var(--pw-ink);
+  border-inline-start: var(--pw-rail) solid;
+  padding-inline-start: 16px;
+}
+
+.pw-call--yours {
+  border-inline-start-color: var(--pw-alert);
+}
+
+.pw-call--waiting {
+  border-inline-start-color: var(--pw-muted);
+}
+
+.pw-empty--method {
+  margin-block-start: 12px;
+  max-inline-size: 68ch;
+}
+
 .pw-facts {
   margin: 16px 0 0;
   padding-inline-start: 12px;
@@ -463,6 +487,11 @@ body {
 }
 
 @media (max-width: 640px) {
+  .pw-call {
+    font-size: 16px;
+    max-inline-size: 100%;
+  }
+
   .pw-header,
   .pw-console {
     padding-inline: 16px;

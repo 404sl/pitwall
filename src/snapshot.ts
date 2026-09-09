@@ -9,6 +9,7 @@ import {
   type Snapshot,
 } from "@404sl/pitwall-schema";
 import { noteAppender, readIssues, type ClosedIssue, type IssueText } from "./beads.js";
+import { recordOnce } from "./errors.js";
 import { hasLiveStructuralBlocker, type ClassifyContext } from "./classify.js";
 import { collectProjects, historyLimits, type RootsOptions } from "./config.js";
 import { recordSnapshot, type HistoryMetrics } from "./history.js";
@@ -89,32 +90,35 @@ function stalenessContext(
   };
 }
 
+interface Assessed {
+  issue: Issue;
+  errors: readonly CollectionError[];
+}
+
 async function assessed(
   issue: Issue,
   texts: ReadonlyMap<string, IssueText>,
   context: StalenessContext,
   structure: ClassifyContext,
-): Promise<Issue> {
+): Promise<Assessed> {
   if (!isAssessable(issue.classification)) {
-    return issue;
+    return { issue, errors: [] };
   }
   const text = texts.get(issue.id);
-  return {
-    ...issue,
-    staleness: await assess(
-      {
-        id: issue.id,
-        title: issue.title,
-        classification: issue.classification,
-        labels: issue.labels,
-        blockedBy: issue.blockedBy,
-        structurallyBlocked: hasLiveStructuralBlocker(issue, structure),
-        description: text?.description,
-        notes: text?.notes,
-      },
-      context,
-    ),
-  };
+  const assessment = await assess(
+    {
+      id: issue.id,
+      title: issue.title,
+      classification: issue.classification,
+      labels: issue.labels,
+      blockedBy: issue.blockedBy,
+      structurallyBlocked: hasLiveStructuralBlocker(issue, structure),
+      description: text?.description,
+      notes: text?.notes,
+    },
+    context,
+  );
+  return { issue: { ...issue, staleness: assessment.staleness }, errors: assessment.errors };
 }
 
 interface Gathered {
@@ -137,9 +141,16 @@ async function gather(project: Project, options: SnapshotOptions, day: Date): Pr
     lanes: project.lanes,
     collectionComplete: project.errors.length === 0,
   };
-  const issues = await Promise.all(
+  const assessments = await Promise.all(
     collected.issues.map((issue) => assessed(issue, collected.texts, context, structure)),
   );
+  const issues = assessments.map((entry) => entry.issue);
+  const unassessable: CollectionError[] = [];
+  for (const entry of assessments) {
+    for (const error of entry.errors) {
+      recordOnce(unassessable, error);
+    }
+  }
   const pipeline = await readPipeline(project, {
     env: options.env,
     timeoutMs: options.timeoutMs,
@@ -152,7 +163,13 @@ async function gather(project: Project, options: SnapshotOptions, day: Date): Pr
       issues,
       pipeline: pipeline.pipeline,
       metrics: metricsOf(issues, collected.closed, day),
-      errors: [...project.errors, ...collected.errors, ...pipeline.errors, ...unchecked],
+      errors: [
+        ...project.errors,
+        ...collected.errors,
+        ...pipeline.errors,
+        ...unchecked,
+        ...unassessable,
+      ],
     }),
     unreadable: project.errors.length > 0 || collected.errors.length > 0,
   };

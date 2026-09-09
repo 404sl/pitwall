@@ -1,10 +1,11 @@
 import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import type { Authority } from "@404sl/pitwall-schema";
+import type { Authority, Classification, StalenessVerdict } from "@404sl/pitwall-schema";
 import type { ClassificationReason } from "../../src/classify.js";
 import {
   buildIssueView,
   type IssueLink,
   type IssuePayload,
+  type IssuePreview,
   type IssueView,
   type StalenessView,
 } from "../model.js";
@@ -109,23 +110,73 @@ function reasonValues(reason: ClassificationReason, project: string): Record<str
   }
 }
 
-function Reason({ view }: { view: IssueView }) {
-  const { classification, reason, project } = view.issue;
-  if (reason.rule === "closed" || classification === undefined) {
+function Reason({
+  classification,
+  reason,
+  project,
+}: {
+  classification?: Classification;
+  reason?: ClassificationReason;
+  project: string;
+}) {
+  if (classification === undefined || reason?.rule === "closed") {
     return <p className="pw-reason">{strings.issue.notClassified}</p>;
   }
   return (
     <p className="pw-reason">
       <span className="pw-reason__token">{classification}</span>
-      <span className="pw-reason__because">
-        {strings.issue.because}
-        <Interpolated
-          template={strings.issue.reason[reason.rule]}
-          values={reasonValues(reason, project)}
-        />
-      </span>
+      {reason === undefined ? null : (
+        <span className="pw-reason__because">
+          {strings.issue.because}
+          <Interpolated
+            template={strings.issue.reason[reason.rule]}
+            values={reasonValues(reason, project)}
+          />
+        </span>
+      )}
     </p>
   );
+}
+
+export function callFor(
+  classification: Classification | undefined,
+  verdict: StalenessVerdict,
+  closed: boolean,
+): { text: string; tone: "yours" | "waiting" } {
+  if (closed || classification === undefined) {
+    return { text: strings.issue.call.closed, tone: "waiting" };
+  }
+  const expired = verdict === "likely-stale" || verdict === "resolved";
+  switch (classification) {
+    case "yours:decision":
+      return {
+        text: expired ? strings.issue.call.decision.stale : strings.issue.call.decision.standing,
+        tone: "yours",
+      };
+    case "yours:access":
+      return {
+        text: expired ? strings.issue.call.access.stale : strings.issue.call.access.standing,
+        tone: "yours",
+      };
+    case "in-flight":
+      return { text: strings.issue.call.inFlight, tone: "waiting" };
+    case "landing":
+      return { text: strings.issue.call.landing, tone: "waiting" };
+    case "ready":
+      return { text: strings.issue.call.ready, tone: "waiting" };
+    case "blocked":
+      return { text: strings.issue.call.blocked, tone: "waiting" };
+    default:
+      return {
+        text: fill(strings.issue.call.parked, { reason: classification.slice("parked:".length) }),
+        tone: "waiting",
+      };
+  }
+}
+
+function Call({ shown }: { shown: IssuePreview }) {
+  const call = callFor(shown.classification, shown.staleness.verdict, shown.closed);
+  return <p className={`pw-call pw-call--${call.tone}`}>{call.text}</p>;
 }
 
 function Staleness({ staleness, closed }: { staleness: StalenessView; closed: boolean }) {
@@ -146,9 +197,6 @@ function Staleness({ staleness, closed }: { staleness: StalenessView; closed: bo
         <p className="pw-empty">{strings.issue.stale.closedCheck}</p>
       ) : null}
       {staleness.checked ? null : <p className="pw-empty">{strings.issue.stale.neverChecked}</p>}
-      {staleness.checked && staleness.evidence.length === 0 ? (
-        <p className="pw-empty">{strings.issue.stale.noEvidence}</p>
-      ) : null}
       {staleness.evidence.length === 0 ? null : (
         <ul className="pw-evidence">
           {staleness.evidence.map((entry) => (
@@ -156,6 +204,17 @@ function Staleness({ staleness, closed }: { staleness: StalenessView; closed: bo
           ))}
         </ul>
       )}
+      {staleness.checked && staleness.evidence.length === 0 ? (
+        <p className="pw-empty">{strings.issue.stale.noEvidence}</p>
+      ) : null}
+      {staleness.unresolved === 0 ? null : (
+        <p className="pw-empty pw-empty--method">
+          {staleness.unresolved === 1
+            ? strings.issue.stale.unresolvedOne
+            : fill(strings.issue.stale.unresolved, { count: String(staleness.unresolved) })}
+        </p>
+      )}
+      <p className="pw-empty pw-empty--method">{strings.issue.stale.method}</p>
     </>
   );
 }
@@ -242,44 +301,43 @@ function Dependencies({ view }: { view: IssueView }) {
   );
 }
 
-function Facts({ view }: { view: IssueView }) {
-  const { issue, closedSinceSnapshot, snapshot } = view;
+function Facts({ shown, superseded }: { shown: IssuePreview; superseded?: { status: string; at: string } }) {
   const none = strings.issue.facts.none;
   return (
-    <div className={closedSinceSnapshot ? "pw-facts pw-facts--superseded" : "pw-facts"}>
-      {closedSinceSnapshot && snapshot !== undefined ? (
+    <div className={superseded === undefined ? "pw-facts" : "pw-facts pw-facts--superseded"}>
+      {superseded === undefined ? null : (
         <p className="pw-facts__note">
           {fill(strings.issue.supersededFields, {
-            status: snapshot.status,
-            at: clock(view.readAt),
+            status: superseded.status,
+            at: clock(superseded.at),
           })}
         </p>
-      ) : null}
+      )}
       <dl className="pw-facts__list">
       <div className="pw-facts__pair">
         <dt className="pw-facts__term">{strings.issue.facts.project}</dt>
-        <dd className="pw-facts__value">{issue.projectName}</dd>
+        <dd className="pw-facts__value">{shown.projectName}</dd>
       </div>
       <div className="pw-facts__pair">
         <dt className="pw-facts__term">{strings.issue.facts.status}</dt>
-        <dd className="pw-facts__value pw-cell--data">{issue.status}</dd>
+        <dd className="pw-facts__value pw-cell--data">{shown.status}</dd>
       </div>
       <div className="pw-facts__pair">
         <dt className="pw-facts__term">{strings.issue.facts.priority}</dt>
-        <dd className="pw-facts__value pw-cell--data">{priorityLabel(issue.priority)}</dd>
+        <dd className="pw-facts__value pw-cell--data">{priorityLabel(shown.priority)}</dd>
       </div>
       <div className="pw-facts__pair">
         <dt className="pw-facts__term">{strings.issue.facts.type}</dt>
-        <dd className="pw-facts__value pw-cell--data">{issue.issueType ?? none}</dd>
+        <dd className="pw-facts__value pw-cell--data">{shown.issueType ?? none}</dd>
       </div>
       <div className="pw-facts__pair">
         <dt className="pw-facts__term">{strings.issue.facts.labels}</dt>
         <dd className="pw-facts__value">
-          {issue.labels.length === 0 ? (
+          {shown.labels.length === 0 ? (
             <span className="pw-cell--data">{none}</span>
           ) : (
             <span className="pw-chips">
-              {issue.labels.map((label) => (
+              {shown.labels.map((label) => (
                 <span key={label} className="pw-chip">
                   {label}
                 </span>
@@ -314,11 +372,29 @@ function Origin({ view }: { view: IssueView }) {
   );
 }
 
-export function IssuePage({ route }: { route: IssueRoute }) {
+function shownOf(view: IssueView): IssuePreview {
+  const { issue } = view;
+  return {
+    id: issue.id,
+    title: issue.title,
+    status: issue.status,
+    issueType: issue.issueType,
+    priority: issue.priority,
+    labels: issue.labels,
+    project: issue.project,
+    projectName: issue.projectName,
+    classification: issue.classification,
+    closed: view.closed,
+    staleness: view.staleness,
+  };
+}
+
+export function IssuePage({ route, preview }: { route: IssueRoute; preview?: IssuePreview }) {
   const [view, setView] = useState<IssueView | undefined>(undefined);
   const [failure, setFailure] = useState<PageFailure | undefined>(undefined);
   const [loading, setLoading] = useState(true);
   const heading = useRef<HTMLHeadingElement>(null);
+  const focused = useRef<string | undefined>(undefined);
 
   const load = useCallback(
     async (signal: AbortSignal) => {
@@ -373,11 +449,15 @@ export function IssuePage({ route }: { route: IssueRoute }) {
     };
   }, [route.id]);
 
+  const shown = view === undefined ? preview : shownOf(view);
+  const key = `${route.project}/${route.id}`;
+
   useEffect(() => {
-    if (view !== undefined) {
-      heading.current?.focus();
+    if (shown !== undefined && focused.current !== key && heading.current !== null) {
+      heading.current.focus();
+      focused.current = key;
     }
-  }, [view]);
+  });
 
   const back = (
     <a className="pw-link pw-link--back" href={BOARD_HASH}>
@@ -385,7 +465,22 @@ export function IssuePage({ route }: { route: IssueRoute }) {
     </a>
   );
 
-  if (view === undefined) {
+  const failed = failure === undefined ? null : (
+    <Failure heading={failure.heading} message={failure.message}>
+      {failure.tried.length === 0 ? null : (
+        <>
+          <p className="pw-recorded__source">{strings.issue.failure.tried}</p>
+          <ul className="pw-evidence">
+            {failure.tried.map((entry) => (
+              <li key={entry}>{entry}</li>
+            ))}
+          </ul>
+        </>
+      )}
+    </Failure>
+  );
+
+  if (shown === undefined) {
     return (
       <>
         {back}
@@ -394,60 +489,79 @@ export function IssuePage({ route }: { route: IssueRoute }) {
             {strings.issue.loading}
           </p>
         ) : (
-          <Failure heading={failure?.heading} message={failure?.message ?? ""}>
-            {failure === undefined || failure.tried.length === 0 ? null : (
-              <>
-                <p className="pw-recorded__source">{strings.issue.failure.tried}</p>
-                <ul className="pw-evidence">
-                  {failure.tried.map((entry) => (
-                    <li key={entry}>{entry}</li>
-                  ))}
-                </ul>
-              </>
-            )}
-          </Failure>
+          failed ?? <Failure message="" />
         )}
       </>
     );
   }
 
-  const { issue } = view;
   return (
     <>
       <div className="pw-issue__head">
         {back}
         <h2 className="pw-issue__title" ref={heading} tabIndex={-1}>
-          {issue.title}
+          {shown.title}
         </h2>
-        <p className="pw-issue__id">{issue.id}</p>
-        {view.closedSinceSnapshot && view.snapshot !== undefined ? (
+        <Call shown={shown} />
+        <p className="pw-issue__id">{shown.id}</p>
+        {view?.closedSinceSnapshot === true && view.snapshot !== undefined ? (
           <p className="pw-notice" role="status">
             {fill(strings.issue.closedSince, { at: clock(view.snapshot.generatedAt) })}
           </p>
         ) : null}
-        <Facts view={view} />
+        <Facts
+          shown={shown}
+          superseded={
+            view?.closedSinceSnapshot === true && view.snapshot !== undefined
+              ? { status: view.snapshot.status, at: view.readAt }
+              : undefined
+          }
+        />
       </div>
-      <Band id="classification" label={strings.issue.band.classification} level="h3">
-        <Reason view={view} />
-        <p className="pw-issue__vintage">{fill(strings.issue.vintage, { at: clock(view.readAt) })}</p>
-      </Band>
-      <Band id="staleness" label={strings.issue.band.staleness} level="h3">
-        <Staleness staleness={view.staleness} closed={view.closed} />
-      </Band>
-      <Band id="description" label={strings.issue.band.description} level="h3">
-        <Recorded
-          authority={issue.authority}
-          text={issue.description}
-          empty={strings.issue.empty.description}
+      <Band
+        id="classification"
+        label={strings.issue.band.classification}
+        level="h3"
+        busy={view === undefined && failure === undefined}
+      >
+        <Reason
+          classification={shown.classification}
+          reason={view?.issue.reason}
+          project={shown.project}
         />
       </Band>
-      <Band id="notes" label={strings.issue.band.notes} level="h3">
-        <Recorded authority={issue.authority} text={issue.notes} empty={strings.issue.empty.notes} />
+      <Band id="staleness" label={strings.issue.band.staleness} level="h3">
+        <Staleness staleness={shown.staleness} closed={shown.closed} />
       </Band>
-      <Band id="dependencies" label={strings.issue.band.dependencies} level="h3">
-        <Dependencies view={view} />
-      </Band>
-      <Origin view={view} />
+      {failed ?? (
+        <p className={view === undefined ? "pw-empty" : "pw-issue__vintage"} role="status">
+          {view === undefined
+            ? strings.issue.loading
+            : fill(strings.issue.vintage, { at: clock(view.readAt) })}
+        </p>
+      )}
+      {view === undefined ? null : (
+        <>
+          <Band id="description" label={strings.issue.band.description} level="h3">
+            <Recorded
+              authority={view.issue.authority}
+              text={view.issue.description}
+              empty={strings.issue.empty.description}
+            />
+          </Band>
+          <Band id="notes" label={strings.issue.band.notes} level="h3">
+            <Recorded
+              authority={view.issue.authority}
+              text={view.issue.notes}
+              empty={strings.issue.empty.notes}
+            />
+          </Band>
+          <Band id="dependencies" label={strings.issue.band.dependencies} level="h3">
+            <Dependencies view={view} />
+          </Band>
+          <Origin view={view} />
+        </>
+      )}
     </>
   );
 }

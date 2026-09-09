@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { classify, hasLiveStructuralBlocker } from "../src/classify.ts";
 import type { ClassifyContext, UnclassifiedIssue } from "../src/classify.ts";
 import { preconditionProbe } from "../src/probes.ts";
-import { assess, isAssessable } from "../src/staleness.ts";
+import { assess, isAssessable, unresolvedCount } from "../src/staleness.ts";
 import type { ParkedRecord, PullState, StalenessContext } from "../src/staleness.ts";
 
 const CHECKED_AT = new Date("2026-09-08T09:00:00Z");
@@ -88,7 +88,7 @@ function matches(evidence: readonly string[], pattern: RegExp): boolean {
 }
 
 test("a note written after the parking label reads as an answer", async () => {
-  const staleness = await assess(
+  const { staleness } = await assess(
     aRecord({
       classification: "yours:access",
       labels: ["needs-access"],
@@ -104,7 +104,7 @@ test("a note written after the parking label reads as an answer", async () => {
 });
 
 test("a note written before the parking label leaves the blocker standing", async () => {
-  const staleness = await assess(
+  const { staleness } = await assess(
     aRecord({
       classification: "yours:access",
       labels: ["needs-access"],
@@ -119,7 +119,7 @@ test("a note written before the parking label leaves the blocker standing", asyn
 });
 
 test("a later note that defers rather than answers is not an answer", async () => {
-  const staleness = await assess(
+  const { staleness } = await assess(
     aRecord({
       classification: "yours:decision",
       labels: ["needs-decision"],
@@ -133,8 +133,8 @@ test("a later note that defers rather than answers is not an answer", async () =
   assert.ok(matches(staleness.evidence, /defers rather than answers/));
 });
 
-test("a tracker that does not record when a label went on says so instead of guessing", async () => {
-  const staleness = await assess(
+test("a tracker that does not record when a label went on leaves the check unrun and states nothing", async () => {
+  const { staleness } = await assess(
     aRecord({
       classification: "yours:access",
       labels: ["needs-access"],
@@ -143,11 +143,11 @@ test("a tracker that does not record when a label went on says so instead of gue
     aContext(),
   );
   assert.equal(staleness.verdict, "unchecked");
-  assert.ok(matches(staleness.evidence, /does not record when the needs-access label was applied/));
+  assert.deepEqual(staleness.evidence, [], "a limitation of the method is not a finding about the issue");
 });
 
 test("an issue whose every named issue has closed is no longer waiting on the ordering", async () => {
-  const staleness = await assess(
+  const { staleness } = await assess(
     aRecord({ labels: ["blocked-tooling"], classification: "parked:tooling", notes: "Blocked until mw-9 lands." }),
     aContext({ idPrefix: "mw", ...tracker({ "mw-9": "closed" }) }),
   );
@@ -156,7 +156,7 @@ test("an issue whose every named issue has closed is no longer waiting on the or
 });
 
 test("an issue naming an issue that is still open keeps its blocker", async () => {
-  const staleness = await assess(
+  const { staleness } = await assess(
     aRecord({ labels: ["blocked-tooling"], classification: "parked:tooling", notes: "Blocked until mw-9 lands." }),
     aContext({ idPrefix: "mw", ...tracker({ "mw-9": "open" }) }),
   );
@@ -165,16 +165,16 @@ test("an issue naming an issue that is still open keeps its blocker", async () =
 });
 
 test("a name the tracker has never heard of is not read as a closed issue", async () => {
-  const staleness = await assess(
+  const { staleness } = await assess(
     aRecord({ classification: "parked:watch", notes: "Raised by mw-devloop in passing." }),
     aContext({ idPrefix: "mw", ...tracker({}) }),
   );
   assert.equal(staleness.verdict, "unchecked");
-  assert.ok(matches(staleness.evidence, /names no other issue of this project/));
+  assert.deepEqual(staleness.evidence, []);
 });
 
 test("a referenced pull request that has merged is reported as merged", async () => {
-  const staleness = await assess(
+  const { staleness } = await assess(
     aRecord({
       classification: "yours:decision",
       labels: ["needs-decision"],
@@ -187,7 +187,7 @@ test("a referenced pull request that has merged is reported as merged", async ()
 });
 
 test("a referenced pull request that is still open leaves the blocker standing", async () => {
-  const staleness = await assess(
+  const { staleness } = await assess(
     aRecord({
       classification: "yours:decision",
       labels: ["needs-decision"],
@@ -201,7 +201,7 @@ test("a referenced pull request that is still open leaves the blocker standing",
 
 test("a recorded reason whose command now succeeds is likely stale", async () => {
   const { probe, asked } = answers(true);
-  const staleness = await assess(
+  const { staleness } = await assess(
     aRecord({
       classification: "yours:access",
       labels: ["needs-access"],
@@ -216,7 +216,7 @@ test("a recorded reason whose command now succeeds is likely stale", async () =>
 
 test("a recorded reason whose command still fails is still blocking", async () => {
   const { probe } = answers(false);
-  const staleness = await assess(
+  const { staleness } = await assess(
     aRecord({
       classification: "yours:access",
       labels: ["needs-access"],
@@ -230,7 +230,7 @@ test("a recorded reason whose command still fails is still blocking", async () =
 
 test("only the commands on the allow-list are ever run", async () => {
   const { probe, asked } = answers(true);
-  const staleness = await assess(
+  const { staleness } = await assess(
     aRecord({
       classification: "yours:access",
       labels: ["needs-access"],
@@ -241,7 +241,7 @@ test("only the commands on the allow-list are ever run", async () => {
   );
   assert.deepEqual(asked, []);
   assert.equal(staleness.verdict, "unchecked");
-  assert.ok(matches(staleness.evidence, /names no condition that can be tested from here/));
+  assert.deepEqual(staleness.evidence, []);
 });
 
 test("the probe refuses a command that is not on the allow-list without spawning it", async () => {
@@ -252,7 +252,7 @@ test("the probe refuses a command that is not on the allow-list without spawning
 
 test("a needs-decision issue is never reported resolved, however many checks fire", async () => {
   const { probe } = answers(true);
-  const staleness = await assess(
+  const { staleness } = await assess(
     aRecord({
       classification: "yours:decision",
       labels: ["needs-decision"],
@@ -271,14 +271,18 @@ test("a needs-decision issue is never reported resolved, however many checks fir
   assert.equal(staleness.verdict, "likely-stale");
 });
 
-test("an issue nobody has been able to check reports unchecked, with what was looked for", async () => {
-  const staleness = await assess(aRecord({ classification: "parked:roadmap" }), aContext());
+test("an issue nobody has been able to check reports unchecked and claims no finding", async () => {
+  const { staleness, errors } = await assess(
+    aRecord({ classification: "parked:roadmap" }),
+    aContext({ idPrefix: "mw", probe: async () => true, pullState: async () => undefined }),
+  );
   assert.equal(staleness.verdict, "unchecked");
   assert.equal(staleness.checkedAt, undefined);
-  assert.ok(staleness.evidence.length > 0);
+  assert.deepEqual(staleness.evidence, []);
+  assert.deepEqual(errors, [], "nothing was checked, and nothing failed to be checked either");
 });
 
-test("every verdict carries evidence a person can check by hand", async () => {
+test("every verdict that ran a check carries evidence a person can check by hand", async () => {
   const { probe } = answers(true);
   const records: ParkedRecord[] = [
     aRecord({ classification: "parked:roadmap" }),
@@ -288,12 +292,16 @@ test("every verdict carries evidence a person can check by hand", async () => {
   ];
   const verdicts = new Set<string>();
   for (const record of records) {
-    const staleness = await assess(
+    const { staleness } = await assess(
       record,
       aContext({ idPrefix: "mw", ...tracker({ "mw-9": "closed", "mw-8": "open" }), probe }),
     );
     verdicts.add(staleness.verdict);
-    assert.ok(staleness.evidence.length > 0, `${record.classification} carried no evidence`);
+    if (staleness.verdict === "unchecked") {
+      assert.deepEqual(staleness.evidence, [], `${record.classification} stated a finding without checking`);
+    } else {
+      assert.ok(staleness.evidence.length > 0, `${record.classification} carried no evidence`);
+    }
   }
   assert.deepEqual([...verdicts].sort(), ["likely-stale", "resolved", "still-blocking", "unchecked"].sort());
 });
@@ -318,7 +326,7 @@ test("a child of an issue somebody is working is never reported resolved", async
   const record = asRecorded("mw-30.1", issues, { notes: ANSWERED });
   assert.equal(record.classification, "blocked");
   assert.equal(record.structurallyBlocked, true);
-  const staleness = await assess(record, aContext({ idPrefix: "mw", ...trackerOf(issues) }));
+  const { staleness } = await assess(record, aContext({ idPrefix: "mw", ...trackerOf(issues) }));
   assert.equal(staleness.verdict, "likely-stale");
   assert.ok(!matches(staleness.evidence, /no open dependency of its own remains/));
 });
@@ -328,7 +336,7 @@ test("an issue with an open child is never reported resolved", async () => {
   const record = asRecorded("mw-30", issues, { notes: ANSWERED });
   assert.equal(record.classification, "parked:umbrella");
   assert.equal(record.structurallyBlocked, true);
-  const staleness = await assess(record, aContext({ idPrefix: "mw", ...trackerOf(issues) }));
+  const { staleness } = await assess(record, aContext({ idPrefix: "mw", ...trackerOf(issues) }));
   assert.equal(staleness.verdict, "likely-stale");
   assert.ok(!matches(staleness.evidence, /no open dependency of its own remains/));
 });
@@ -342,7 +350,7 @@ test("a watch label does not hide an open child from the check", async () => {
   const record = asRecorded("mw-30", issues, { notes: ANSWERED });
   assert.equal(record.classification, "parked:watch");
   assert.equal(record.structurallyBlocked, true);
-  const staleness = await assess(record, aContext({ idPrefix: "mw", ...trackerOf(issues) }));
+  const { staleness } = await assess(record, aContext({ idPrefix: "mw", ...trackerOf(issues) }));
   assert.equal(staleness.verdict, "likely-stale");
   assert.ok(!matches(staleness.evidence, /no open dependency of its own remains/));
 });
@@ -356,7 +364,7 @@ test("a roadmap label does not hide a parent somebody is working from the check"
   const record = asRecorded("mw-30.1", issues, { notes: ANSWERED });
   assert.equal(record.classification, "parked:roadmap");
   assert.equal(record.structurallyBlocked, true);
-  const staleness = await assess(record, aContext({ idPrefix: "mw", ...trackerOf(issues) }));
+  const { staleness } = await assess(record, aContext({ idPrefix: "mw", ...trackerOf(issues) }));
   assert.equal(staleness.verdict, "likely-stale");
   assert.ok(!matches(staleness.evidence, /no open dependency of its own remains/));
 });
@@ -366,13 +374,13 @@ test("a parked issue with nothing of its own left open is still reported resolve
   const record = asRecorded("mw-30", issues, { notes: ANSWERED });
   assert.equal(record.classification, "parked:tooling");
   assert.equal(record.structurallyBlocked, false);
-  const staleness = await assess(record, aContext({ idPrefix: "mw", ...trackerOf(issues) }));
+  const { staleness } = await assess(record, aContext({ idPrefix: "mw", ...trackerOf(issues) }));
   assert.equal(staleness.verdict, "resolved");
   assert.ok(matches(staleness.evidence, /no open dependency of its own remains/));
 });
 
 test("a markdown anchor is not read as a pull request reference", async () => {
-  const staleness = await assess(
+  const { staleness } = await assess(
     aRecord({
       classification: "parked:tooling",
       description: "See [the naming section](#3) of docs/style.md before starting.",
@@ -380,11 +388,11 @@ test("a markdown anchor is not read as a pull request reference", async () => {
     aContext(pulls({ "#3": "merged" })),
   );
   assert.equal(staleness.verdict, "unchecked");
-  assert.ok(matches(staleness.evidence, /it names no pull request/));
+  assert.deepEqual(staleness.evidence, [], "an anchor that is not a reference is not a finding either");
 });
 
 test("a bare pull number in a merge title is still read as a pull request reference", async () => {
-  const staleness = await assess(
+  const { staleness } = await assess(
     aRecord({
       classification: "yours:decision",
       labels: ["needs-decision"],
@@ -394,4 +402,92 @@ test("a bare pull number in a merge title is still read as a pull request refere
   );
   assert.equal(staleness.verdict, "likely-stale");
   assert.ok(matches(staleness.evidence, /has merged: #12/));
+});
+
+test("a reference that could not be looked up is a collection failure, not a finding", async () => {
+  const { staleness, errors } = await assess(
+    aRecord({
+      id: "mw-4",
+      classification: "yours:decision",
+      labels: ["needs-decision"],
+      notes: "Waiting on ext#144, ext#148 and ext#150.",
+    }),
+    aContext({ idPrefix: "mw", probe: async () => true, pullState: async () => undefined }),
+  );
+  assert.ok(!matches(staleness.evidence, /could not resolve/));
+  assert.deepEqual(errors, [
+    {
+      source: "staleness mw-4",
+      message: "3 references could not be checked: ext#144, ext#148, ext#150",
+      at: CHECKED_AT.toISOString(),
+    },
+  ]);
+});
+
+test("a reference that resolved is still evidence beside the ones that did not", async () => {
+  const { staleness, errors } = await assess(
+    aRecord({
+      id: "mw-4",
+      classification: "yours:decision",
+      labels: ["needs-decision"],
+      notes: "Waiting on site#1128 and ext#150.",
+    }),
+    aContext({
+      idPrefix: "mw",
+      probe: async () => true,
+      pullState: async (reference) => (reference.text === "site#1128" ? "closed" : undefined),
+    }),
+  );
+  assert.deepEqual(staleness.evidence, ["site#1128 is closed, not merged"]);
+  assert.deepEqual(errors.map((error) => error.message), [
+    "1 reference could not be checked: ext#150",
+  ]);
+});
+
+test("a precondition that could not be run is recorded as a failure, not as a finding", async () => {
+  const { staleness, errors } = await assess(
+    aRecord({
+      id: "mw-4",
+      classification: "yours:access",
+      labels: ["needs-access"],
+      description: "npm whoami is a 401 on this machine, so nothing can be published.",
+    }),
+    aContext({ idPrefix: "mw", probe: async () => undefined }),
+  );
+  assert.equal(staleness.verdict, "unchecked");
+  assert.deepEqual(staleness.evidence, []);
+  assert.deepEqual(errors, [
+    {
+      source: "staleness mw-4",
+      message: "1 precondition could not be run: `npm whoami`",
+      at: CHECKED_AT.toISOString(),
+    },
+  ]);
+});
+
+test("what the run itself was not configured to do names no issue, so it can be recorded once", async () => {
+  const record = {
+    classification: "parked:tooling" as const,
+    notes: "Blocked until mw-9 lands and https://github.com/404sl/pitwall/pull/12 merges.",
+  };
+  const first = await assess(aRecord({ id: "mw-4", ...record }), aContext());
+  const second = await assess(aRecord({ id: "mw-5", ...record }), aContext());
+  assert.deepEqual(first.errors, second.errors, "a run-level failure must not vary by issue");
+  assert.deepEqual(
+    first.errors.map((error) => [error.source, error.message]),
+    [
+      ["staleness", "the project records no issue id prefix, so referenced issues cannot be recognised"],
+      ["staleness", "no pull request host is configured, so pull requests could not be looked up"],
+    ],
+  );
+});
+
+test("the count a reader is shown is the count the failure recorded", async () => {
+  const { errors } = await assess(
+    aRecord({ id: "mw-4", classification: "parked:tooling", notes: "Waiting on #141, #142 and #144." }),
+    aContext({ idPrefix: "mw", probe: async () => true, pullState: async () => undefined }),
+  );
+  assert.equal(errors.length, 1);
+  assert.equal(unresolvedCount(errors[0]?.message ?? ""), 3);
+  assert.equal(unresolvedCount("no pull request host is configured, so pull requests could not be looked up"), 0);
 });

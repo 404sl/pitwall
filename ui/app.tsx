@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Snapshot } from "@404sl/pitwall-schema";
-import { buildBoard, type Board, type ProblemRow } from "./model.js";
+import { buildBoard, previewIssue, type Board, type ProblemRow } from "./model.js";
 import { Band } from "./components/Band.js";
 import { Failure } from "./components/Failure.js";
 import { Header } from "./components/Header.js";
@@ -75,6 +75,7 @@ function useIssueRoute(): IssueRoute | undefined {
 export function App() {
   const route = useIssueRoute();
   const [board, setBoard] = useState<Board | undefined>(undefined);
+  const [taken, setTaken] = useState<Snapshot | undefined>(undefined);
   const [failure, setFailure] = useState<string | undefined>(undefined);
   const [refetchFailure, setRefetchFailure] = useState<ProblemRow | undefined>(undefined);
   const [loading, setLoading] = useState(true);
@@ -89,6 +90,7 @@ export function App() {
       const next = buildBoard(snapshot);
       held.current = next;
       setBoard(next);
+      setTaken(snapshot);
       setFailure(undefined);
       setRefetchFailure(undefined);
     } catch (cause) {
@@ -133,7 +135,10 @@ export function App() {
           <Header projectCount={board.projectCount} generatedAt={board.generatedAt} />
         )}
         <main className="pw-console">
-          <IssuePage route={route} />
+          <IssuePage
+            route={route}
+            preview={taken === undefined ? undefined : previewIssue(taken, route.project, route.id)}
+          />
         </main>
       </>
     );
