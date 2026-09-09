@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.1.10
+
+**The 0.1.3 fix to `lock-check.sh` did not work, and the way it failed is the interesting part.**
+
+It excluded journals whose token lines also said `lockedOutBy`, assuming that is how a blocked
+run records the token. It is not. Measured on two real runs, NEITHER journal contained that
+string - a blocked run carries the token by another route entirely. So the filter excluded
+nothing, both journals passed as candidates, and the ambiguity refusal fired every time two
+runs touched a token rather than only when there was real ambiguity. Safe, and not
+discriminating.
+
+What separates them is that only the run which TOOK the lock records the acquisition:
+
+    holder   token x1   status "taken" x1
+    victim   token x1   status "taken" x0
+
+So it now requires the claim rather than the absence of a disclaimer. **A positive test for
+the thing you mean is worth more than a negative filter on one of the ways it might not be
+meant** - the filter can be wrong about the format and go on quietly matching everything, which
+is what happened.
+
+Verified against the two runs that exposed it: exactly one journal now claims acquisition.
+
+
 ## 0.1.9
 
 **Confirm a defect against the running thing, not the source** - wherever the answer depends on

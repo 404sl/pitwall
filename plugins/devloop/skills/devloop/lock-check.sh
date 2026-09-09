@@ -57,23 +57,33 @@ fi
 # Find the run that reported this token. Journals live per session; search them all rather than
 # assuming this session owns the lock - another session on this machine may legitimately hold it.
 #
-# A RUN BLOCKED BY THE LOCK ALSO NAMES THE TOKEN. It records it as lockedOutBy, so a naive
-# search matches the victim as readily as the holder - and the victim is, by definition,
-# writing right now. Taking the first match reported a finished holder as ALIVE by measuring
-# a live run that was waiting on it.
+# A HOLDER CLAIMS THE LOCK; A VICTIM ONLY MENTIONS IT. Look for the claim.
 #
-# That mistake has a feedback loop, which is what makes it expensive rather than merely wrong:
-# every retry against a leaked lock creates ANOTHER run whose journal names the token and
-# which is writing. The more a supervisor retries, the more alive the dead lock looks.
-# Responding to "nothing is landing" by trying again is both the obvious move and the worst.
+# A run BLOCKED BY the lock carries the same token as the run that took it, so searching for
+# the token alone matches victim and holder alike - and the victim is, by definition, writing
+# right now. Taking the first match reported a finished holder as ALIVE by measuring a live
+# run that was waiting on it.
 #
-# So: consider only journals where the token appears on a line that is NOT a lockedOutBy
-# record, take every match rather than the first, and refuse to guess between two.
+# THE FIRST FIX FOR THIS DID NOT WORK, and the way it failed is worth keeping. It excluded
+# journals whose token lines also said lockedOutBy, on the assumption that is how a blocked run
+# records the token. It is not: measured on two real runs, NEITHER journal contained the string
+# at all - the blocked run carries the token by another route entirely. So the filter excluded
+# nothing, both journals passed as candidates, and the ambiguity refusal below fired every time
+# rather than only when there was genuine ambiguity. It was safe and it was not discriminating.
+#
+# What actually separates them is that only the run which TOOK the lock records the acquisition:
+#
+#     holder   token x1   status "taken" x1
+#     victim   token x1   status "taken" x0
+#
+# So require the claim, not the absence of a disclaimer. A positive test for the thing you mean
+# is worth more than a negative filter on one of the ways it might not be meant - the filter can
+# be wrong about the format and go on quietly matching everything.
 owner=""; others=0
 for j in "$HOME"/.claude/projects/*/*/subagents/workflows/*/journal.jsonl; do
   [ -f "$j" ] || continue
   grep -qF "$token" "$j" 2>/dev/null || continue
-  grep -F "$token" "$j" 2>/dev/null | grep -qv "lockedOutBy" || continue
+  grep -q '"status":"taken"' "$j" 2>/dev/null || continue
   if [ -n "$owner" ]; then others=$((others + 1)); else owner=$(dirname "$j"); fi
 done
 
