@@ -4,13 +4,14 @@ interface BandProps {
   id: string;
   label: string;
   count?: ReactNode;
+  note?: ReactNode;
   alert?: boolean;
   busy?: boolean;
   level?: "h2" | "h3";
   children: ReactNode;
 }
 
-export function Band({ id, label, count, alert = false, busy = false, level = "h2", children }: BandProps) {
+export function Band({ id, label, count, note, alert = false, busy = false, level = "h2", children }: BandProps) {
   const Head = level;
   return (
     <section
@@ -21,6 +22,7 @@ export function Band({ id, label, count, alert = false, busy = false, level = "h
       <Head className="pw-band__head" id={`band-${id}`}>
         <span className="pw-band__label">{label}</span>
         {count === undefined ? null : <span className="pw-band__count">{count}</span>}
+        {note === undefined ? null : <span className="pw-band__note">{note}</span>}
       </Head>
       {children}
     </section>

@@ -13,6 +13,7 @@ import {
   type StalenessVerdict,
 } from "@404sl/pitwall-schema";
 import type { ClassificationReason } from "./classify.js";
+import { priorityLabel } from "./format.js";
 import { stalenessSource, unresolvedCount } from "./staleness.js";
 
 export type NeedsYouKind = "decision" | "access";
@@ -80,6 +81,29 @@ export interface ProblemRow {
   at: string;
 }
 
+export const FILTER_NONE = "none";
+
+export const FILTER_KEYS = ["project", "type", "priority", "epic"] as const;
+
+export type FilterKey = (typeof FILTER_KEYS)[number];
+
+export type FilterState = Partial<Record<FilterKey, string>>;
+
+export interface FilterOption {
+  value: string;
+  label: string;
+}
+
+export type FilterOptions = Record<FilterKey, FilterOption[]>;
+
+export interface BoardTotals {
+  needsYou: number;
+  running: number;
+  ready: number;
+  parked: ParkedEntry[];
+  issues: number;
+}
+
 export interface Board {
   generatedAt: string;
   projectCount: number;
@@ -87,11 +111,17 @@ export interface Board {
   needsYouCount: number;
   running: RunningRow[];
   runningTotals: RunningTotal[];
+  runningCount: number;
   ready: ReadyRow[];
   readyCount: number;
   readyShown: number;
   parked: ParkedEntry[];
   problems: ProblemRow[];
+  filter: FilterState;
+  filtered: boolean;
+  options: FilterOptions;
+  issueCount: number;
+  totals: BoardTotals;
 }
 
 export const READY_LIMIT = 8;
@@ -321,12 +351,104 @@ function problemRows(snapshot: Snapshot): ProblemRow[] {
   return [...run, ...projects];
 }
 
-export function buildBoard(snapshot: Snapshot): Board {
+export const ISSUE_TYPES = ["bug", "feature", "task", "chore", "epic", "decision"];
+
+export const PRIORITIES = [0, 1, 2, 3, 4];
+
+export function epicOf(id: string): string | undefined {
+  const cut = id.lastIndexOf(".");
+  return cut === -1 ? undefined : id.slice(0, cut);
+}
+
+export function isFiltered(filter: FilterState): boolean {
+  return FILTER_KEYS.some((key) => filter[key] !== undefined);
+}
+
+interface Filterable {
+  id: string;
+  issueType?: string;
+  priority?: number;
+}
+
+function matchesValue(value: string | undefined, actual: string | undefined): boolean {
+  if (value === undefined) {
+    return true;
+  }
+  return value === FILTER_NONE ? actual === undefined : value === actual;
+}
+
+function issueMatches(projectId: string, issue: Filterable, filter: FilterState): boolean {
+  if (filter.project !== undefined && filter.project !== projectId) {
+    return false;
+  }
+  if (!matchesValue(filter.type, issue.issueType)) {
+    return false;
+  }
+  if (!matchesValue(filter.priority, issue.priority === undefined ? undefined : String(issue.priority))) {
+    return false;
+  }
+  if (filter.epic === undefined) {
+    return true;
+  }
+  return filter.epic === FILTER_NONE
+    ? epicOf(issue.id) === undefined
+    : issue.id.startsWith(`${filter.epic}.`);
+}
+
+const UNRESOLVED_LANE: Filterable = { id: "" };
+
+function laneMatches(project: Project, lane: Lane, filter: FilterState): boolean {
+  const issue = lane.issueId === undefined ? undefined : issuesOf(project).find((entry) => entry.id === lane.issueId);
+  return issueMatches(project.id, issue ?? UNRESOLVED_LANE, filter);
+}
+
+function filteredProjects(projects: Project[], filter: FilterState): Project[] {
+  if (!isFiltered(filter)) {
+    return projects;
+  }
+  return projects.map((project) => ({
+    ...project,
+    issues: issuesOf(project).filter((issue) => issueMatches(project.id, issue, filter)),
+    lanes: lanesOf(project).filter((lane) => laneMatches(project, lane, filter)),
+  }));
+}
+
+function filterOptions(projects: Project[]): FilterOptions {
+  const issues = projects.flatMap(issuesOf);
+  const extraTypes = [
+    ...new Set(
+      issues
+        .map((issue) => issue.issueType)
+        .filter((type): type is string => type !== undefined && !ISSUE_TYPES.includes(type)),
+    ),
+  ].sort();
+  const epics = [...new Set(issues.map((issue) => epicOf(issue.id)).filter((id): id is string => id !== undefined))].sort();
+  return {
+    project: projects.map((project) => ({ value: project.id, label: project.name })),
+    type: [...ISSUE_TYPES, ...extraTypes].map((type) => ({ value: type, label: type })),
+    priority: PRIORITIES.map((priority) => ({ value: String(priority), label: priorityLabel(priority) })),
+    epic: epics.map((id) => ({ value: id, label: id })),
+  };
+}
+
+function boardTotals(projects: Project[], generatedAt: string): BoardTotals {
+  return {
+    needsYou: needsYouGroups(projects).reduce((sum, group) => sum + group.rows.length, 0),
+    running: runningRows(projects, generatedAt).reduce((sum, row) => sum + row.count, 0),
+    ready: readyRows(projects).length,
+    parked: parkedEntries(projects),
+    issues: projects.reduce((sum, project) => sum + issuesOf(project).length, 0),
+  };
+}
+
+export function buildBoard(snapshot: Snapshot, filter: FilterState = {}): Board {
   const projects = snapshot.projects ?? [];
   const generatedAt = snapshot.generatedAt;
-  const needsYou = needsYouGroups(projects);
-  const running = runningRows(projects, generatedAt);
-  const ready = readyRows(projects);
+  const shown = filteredProjects(projects, filter);
+  const needsYou = needsYouGroups(shown);
+  const running = runningRows(shown, generatedAt);
+  const ready = readyRows(shown);
+  const parked = parkedEntries(shown);
   return {
     generatedAt,
     projectCount: projects.length,
@@ -334,11 +456,17 @@ export function buildBoard(snapshot: Snapshot): Board {
     needsYouCount: needsYou.reduce((sum, group) => sum + group.rows.length, 0),
     running,
     runningTotals: runningTotals(running),
+    runningCount: running.reduce((sum, row) => sum + row.count, 0),
     ready: ready.slice(0, READY_LIMIT),
     readyCount: ready.length,
     readyShown: Math.min(ready.length, READY_LIMIT),
-    parked: parkedEntries(projects),
+    parked,
     problems: problemRows(snapshot),
+    filter,
+    filtered: isFiltered(filter),
+    options: filterOptions(projects),
+    issueCount: shown.reduce((sum, project) => sum + issuesOf(project).length, 0),
+    totals: boardTotals(projects, generatedAt),
   };
 }
 

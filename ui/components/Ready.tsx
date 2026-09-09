@@ -1,4 +1,4 @@
-import type { ReadyRow } from "../model.js";
+import type { FilterState, ReadyRow } from "../model.js";
 import { priorityLabel } from "../format.js";
 import { issueHref } from "../routes.js";
 import { strings } from "../strings.js";
@@ -6,11 +6,13 @@ import { strings } from "../strings.js";
 interface ReadyProps {
   rows: ReadyRow[];
   total: number;
+  filter?: FilterState;
+  filteredEmpty?: string;
 }
 
-export function Ready({ rows, total }: ReadyProps) {
+export function Ready({ rows, total, filter, filteredEmpty }: ReadyProps) {
   if (rows.length === 0) {
-    return <p className="pw-empty">{strings.empty.ready}</p>;
+    return <p className="pw-empty">{filteredEmpty ?? strings.empty.ready}</p>;
   }
   const rest = total - rows.length;
   return (
@@ -36,7 +38,7 @@ export function Ready({ rows, total }: ReadyProps) {
                 {priorityLabel(row.priority)}
               </td>
               <td className="pw-cell pw-cell--title">
-                <a className="pw-link" href={issueHref(row.projectId, row.id)}>
+                <a className="pw-link" href={issueHref(row.projectId, row.id, filter)}>
                   {row.title}
                 </a>
               </td>

@@ -70,6 +70,33 @@ export const strings = {
   ready: {
     more: "more ready",
   },
+  filters: {
+    legend: "Filters",
+    project: "Project",
+    type: "Type",
+    priority: "Priority",
+    epic: "Epic",
+    all: "All",
+    none: {
+      type: "No type",
+      priority: "No priority",
+      epic: "No epic",
+    },
+    clear: "Clear filters",
+    countOf: "{shown} of {total}",
+    active: "Filtered:",
+    activeCount: "{shown} of {total} issues.",
+    separator: " · ",
+    dash: " — ",
+    notFiltered: "not filtered",
+    empty: "No row matches {filters}.",
+    phrase: {
+      project: "project {value}",
+      type: "type {value}",
+      priority: "{value}",
+      epic: "epic {value}",
+    },
+  },
   problems: {
     run: "run",
     console: "console",

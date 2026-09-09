@@ -3,6 +3,7 @@ import type { Authority, Classification, StalenessVerdict } from "@404sl/pitwall
 import type { ClassificationReason } from "../../src/classify.js";
 import {
   buildIssueView,
+  type FilterState,
   type IssueLink,
   type IssuePayload,
   type IssuePreview,
@@ -10,7 +11,7 @@ import {
   type StalenessView,
 } from "../model.js";
 import { VERDICT_CLASS, VERDICT_WORD, clock, fill, priorityLabel, stamp } from "../format.js";
-import { BOARD_HASH, issueHref, type IssueRoute } from "../routes.js";
+import { boardHref, issueHref, type IssueRoute } from "../routes.js";
 import { strings } from "../strings.js";
 import { Band } from "./Band.js";
 import { Failure } from "./Failure.js";
@@ -67,28 +68,32 @@ function Interpolated({ template, values }: { template: string; values: Record<s
   );
 }
 
-function IdLink({ project, id }: { project: string; id: string }) {
+function IdLink({ project, id, filter }: { project: string; id: string; filter: FilterState }) {
   return (
-    <a className="pw-link" href={issueHref(project, id)}>
+    <a className="pw-link" href={issueHref(project, id, filter)}>
       {id}
     </a>
   );
 }
 
-function IdList({ project, ids }: { project: string; ids: string[] }) {
+function IdList({ project, ids, filter }: { project: string; ids: string[]; filter: FilterState }) {
   return (
     <>
       {ids.map((id, index) => (
         <Fragment key={id}>
           {index === 0 ? null : strings.issue.reason.separator}
-          <IdLink project={project} id={id} />
+          <IdLink project={project} id={id} filter={filter} />
         </Fragment>
       ))}
     </>
   );
 }
 
-function reasonValues(reason: ClassificationReason, project: string): Record<string, ReactNode> {
+function reasonValues(
+  reason: ClassificationReason,
+  project: string,
+  filter: FilterState,
+): Record<string, ReactNode> {
   switch (reason.rule) {
     case "in-progress-lane":
       return { slot: String(reason.slot) };
@@ -97,12 +102,12 @@ function reasonValues(reason: ClassificationReason, project: string): Record<str
     case "umbrella-type":
       return { issueType: reason.issueType };
     case "umbrella-open-child":
-      return { childId: <IdLink project={project} id={reason.childId} /> };
+      return { childId: <IdLink project={project} id={reason.childId} filter={filter} /> };
     case "blocked-open":
     case "blocked-unreadable":
-      return { ids: <IdList project={project} ids={reason.ids} /> };
+      return { ids: <IdList project={project} ids={reason.ids} filter={filter} /> };
     case "blocked-parent-in-progress":
-      return { parentId: <IdLink project={project} id={reason.parentId} /> };
+      return { parentId: <IdLink project={project} id={reason.parentId} filter={filter} /> };
     case "stored-status":
       return { status: reason.status };
     default:
@@ -114,10 +119,12 @@ function Reason({
   classification,
   reason,
   project,
+  filter,
 }: {
   classification?: Classification;
   reason?: ClassificationReason;
   project: string;
+  filter: FilterState;
 }) {
   if (classification === undefined || reason?.rule === "closed") {
     return <p className="pw-reason">{strings.issue.notClassified}</p>;
@@ -130,7 +137,7 @@ function Reason({
           {strings.issue.because}
           <Interpolated
             template={strings.issue.reason[reason.rule]}
-            values={reasonValues(reason, project)}
+            values={reasonValues(reason, project, filter)}
           />
         </span>
       )}
@@ -237,13 +244,21 @@ function Recorded({ authority, text, empty }: { authority: Authority; text?: str
   );
 }
 
-function DependencyRows({ project, links }: { project: string; links: IssueLink[] }) {
+function DependencyRows({
+  project,
+  links,
+  filter,
+}: {
+  project: string;
+  links: IssueLink[];
+  filter: FilterState;
+}) {
   return (
     <>
       {links.map((link) => (
         <tr key={link.id} className="pw-row">
           <td className="pw-cell pw-cell--id">
-            <IdLink project={project} id={link.id} />
+            <IdLink project={project} id={link.id} filter={filter} />
           </td>
           <td className="pw-cell pw-cell--title">{link.title}</td>
           <td className="pw-cell pw-cell--data">{link.status}</td>
@@ -253,7 +268,7 @@ function DependencyRows({ project, links }: { project: string; links: IssueLink[
   );
 }
 
-function Dependencies({ view }: { view: IssueView }) {
+function Dependencies({ view, filter }: { view: IssueView; filter: FilterState }) {
   const { project, blockedBy, blocks } = view.issue;
   return (
     <table className="pw-table pw-table--deps">
@@ -278,7 +293,7 @@ function Dependencies({ view }: { view: IssueView }) {
             </td>
           </tr>
         ) : (
-          <DependencyRows project={project} links={blockedBy} />
+          <DependencyRows project={project} links={blockedBy} filter={filter} />
         )}
       </tbody>
       <tbody>
@@ -294,7 +309,7 @@ function Dependencies({ view }: { view: IssueView }) {
             </td>
           </tr>
         ) : (
-          <DependencyRows project={project} links={blocks} />
+          <DependencyRows project={project} links={blocks} filter={filter} />
         )}
       </tbody>
     </table>
@@ -389,7 +404,15 @@ function shownOf(view: IssueView): IssuePreview {
   };
 }
 
-export function IssuePage({ route, preview }: { route: IssueRoute; preview?: IssuePreview }) {
+export function IssuePage({
+  route,
+  preview,
+  filter = {},
+}: {
+  route: IssueRoute;
+  preview?: IssuePreview;
+  filter?: FilterState;
+}) {
   const [view, setView] = useState<IssueView | undefined>(undefined);
   const [failure, setFailure] = useState<PageFailure | undefined>(undefined);
   const [loading, setLoading] = useState(true);
@@ -460,7 +483,7 @@ export function IssuePage({ route, preview }: { route: IssueRoute; preview?: Iss
   });
 
   const back = (
-    <a className="pw-link pw-link--back" href={BOARD_HASH}>
+    <a className="pw-link pw-link--back" href={boardHref(filter)}>
       {strings.issue.back}
     </a>
   );
@@ -528,6 +551,7 @@ export function IssuePage({ route, preview }: { route: IssueRoute; preview?: Iss
           classification={shown.classification}
           reason={view?.issue.reason}
           project={shown.project}
+          filter={filter}
         />
       </Band>
       <Band id="staleness" label={strings.issue.band.staleness} level="h3">
@@ -557,7 +581,7 @@ export function IssuePage({ route, preview }: { route: IssueRoute; preview?: Iss
             />
           </Band>
           <Band id="dependencies" label={strings.issue.band.dependencies} level="h3">
-            <Dependencies view={view} />
+            <Dependencies view={view} filter={filter} />
           </Band>
           <Origin view={view} />
         </>
