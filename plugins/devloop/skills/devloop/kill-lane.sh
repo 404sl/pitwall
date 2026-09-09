@@ -16,7 +16,8 @@
 # The lock is the one that gets forgotten, because it is the only one whose name is not the issue
 # id: slot N takes lane N+1. That off-by-one is exactly why it gets missed by hand.
 #
-# Exit: 0 cleaned, 6 bad arguments, 7 refused because a lane may still be running.
+# Exit: 0 cleaned, 6 bad arguments, 7 refused because a lane may still be running or a
+# rebase is in progress in the worktree.
 
 set -u
 
@@ -81,6 +82,37 @@ if [ -z "$DRY" ] && [ -z "$FORCE" ]; then
       echo "  UNKNOWN is not dead. Confirm by hand, then re-run with --force." >&2
       exit 7 ;;
   esac
+fi
+
+busy_worktree() {
+  local wt="$1" p g
+  for p in rebase-merge rebase-apply MERGE_HEAD; do
+    g="$(git -C "$wt" rev-parse --git-path "$p" 2>/dev/null)" || return 1
+    case "$g" in /*) ;; *) g="$wt/$g" ;; esac
+    [ -e "$g" ] && { printf '%s' "$p"; return 0; }
+  done
+  return 1
+}
+
+if [ -z "$FORCE" ]; then
+  seen_probe=""
+  for raw in "/tmp/${PFX}-worktrees/${ID}" "/private/tmp/${PFX}-worktrees/${ID}" \
+             "/tmp/${PFX}-worktrees/${ID}-rework" "/private/tmp/${PFX}-worktrees/${ID}-rework"; do
+    [ -d "$raw" ] || continue
+    probe="$(cd "$raw" 2>/dev/null && pwd -P)" || continue
+    case " $seen_probe " in *" $probe "*) continue ;; esac
+    seen_probe="$seen_probe $probe"
+    state="$(busy_worktree "$probe")" || continue
+    if [ -n "$DRY" ]; then
+      echo "  would REFUSE: ${probe} is mid-${state}."
+      continue
+    fi
+    echo "REFUSING to clean up ${ID}: ${probe} is mid-${state}." >&2
+    echo "  The lander uses a lane's own worktree when it finds one holding the branch, so this" >&2
+    echo "  may be a merge somebody else is in the middle of. Removing it now loses that work." >&2
+    echo "  Wait for it, or --force once you have confirmed by hand." >&2
+    exit 7
+  done
 fi
 
 run() { if [ -n "$DRY" ]; then echo "  would: $*"; else eval "$@"; fi; }

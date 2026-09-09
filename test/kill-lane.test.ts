@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -82,6 +82,15 @@ function kill(space: Fixture, id: string, args: readonly string[] = []) {
   return { status: ran.status ?? -1, out: ran.stdout ?? "", err: ran.stderr ?? "" };
 }
 
+function worktreeMidRebase(space: Fixture, id: string): string {
+  const wt = join("/tmp", `${space.prefix}-worktrees`, id);
+  mkdirSync(join(wt, ".git", "objects"), { recursive: true });
+  mkdirSync(join(wt, ".git", "refs"), { recursive: true });
+  mkdirSync(join(wt, ".git", "rebase-merge"), { recursive: true });
+  writeFileSync(join(wt, ".git", "HEAD"), "ref: refs/heads/devloop/pitwall-90b\n");
+  return wt;
+}
+
 test("kill-lane refuses to clean up an issue whose lane is still running", () => {
   const space = fixture("running", "pitwall-90b");
   const { status, out, err } = kill(space, "pitwall-90b");
@@ -115,4 +124,32 @@ test("--force skips the check rather than paying for a verdict it discards", () 
   assert.doesNotMatch(err, /REFUSING/);
   assert.match(out, /Cleaning up lane/);
   assert.doesNotMatch(out, /still in flight/);
+});
+
+test("kill-lane refuses while a rebase is in progress in the worktree, and removes nothing", () => {
+  const space = fixture("not-running", "pitwall-90b");
+  const wt = worktreeMidRebase(space, "pitwall-90b");
+  try {
+    const { status, out, err } = kill(space, "pitwall-90b");
+    assert.equal(status, 7, `${out}${err}`);
+    assert.match(err, /REFUSING to clean up pitwall-90b/);
+    assert.match(err, /mid-rebase-merge/);
+    assert.equal(existsSync(wt), true, "the worktree was removed despite the refusal");
+    assert.doesNotMatch(out, /Cleaning up lane/);
+  } finally {
+    rmSync(join("/tmp", `${space.prefix}-worktrees`), { recursive: true, force: true });
+  }
+});
+
+test("--force clears a worktree mid-rebase once a person has confirmed it", () => {
+  const space = fixture("not-running", "pitwall-90b");
+  const wt = worktreeMidRebase(space, "pitwall-90b");
+  try {
+    const { status, out, err } = kill(space, "pitwall-90b", ["--force"]);
+    assert.equal(status, 0, `${out}${err}`);
+    assert.doesNotMatch(err, /REFUSING/);
+    assert.equal(existsSync(wt), false);
+  } finally {
+    rmSync(join("/tmp", `${space.prefix}-worktrees`), { recursive: true, force: true });
+  }
 });

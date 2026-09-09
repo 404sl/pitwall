@@ -33,17 +33,35 @@ labelled its phases `resolve:#<pr>` and `handoff:#<pr>` - the pull request numbe
 one answer this command must never give.
 
 Attribution is therefore keyed on the script the transcript records beside the task id, not on
-labels alone: a `task.js` journal whose labels are not this id belongs to another issue;
-`land.js` and `land-train.js` carry no issue id at all and are never any issue's lane; anything
-else in flight is `UNKNOWN`. Landers are counted separately in the `NOT-RUNNING` line, because
-attributing them positively is what lets `slot.sh --gc` free a slot at all - two landers are in
-flight most of the day, and treating them as unattributable would have made every verdict
-`UNKNOWN`.
+labels alone: a `task.js` journal whose labels are not this id belongs to another issue; so does
+a `rework.js` journal whose every label carries an id and none of them is this one; `land.js` and
+`land-train.js` carry no issue id at all and are no issue's lane; anything else in flight is
+`UNKNOWN`. Landers are counted separately in the `NOT-RUNNING` line, because attributing them
+positively is what lets `slot.sh --gc` free a slot at all - two landers are in flight most of the
+day, and treating them as unattributable would have made every verdict `UNKNOWN`.
 
-`rework.js` now labels `resolve:<id>#<pr>`, so its lanes are positively attributable, and the
-label match accepts the `#<n>` a retried `fix:` or `review:` phase appends. A rework lane
-already in flight when this ships still carries the old label and will read `UNKNOWN`: that is
-the safe answer, and cleaning up after it needs `--force` once a person has confirmed it by hand.
+`rework.js` now labels `resolve:<id>#<pr>` and `handoff:<id>#<pr>`, so its lanes are attributable
+in BOTH directions - as this lane when the id matches, and as another issue's lane when it does
+not - and the label match accepts the `#<n>` a retried `fix:` or `review:` phase appends.
+Attributing only the first direction would have reproduced the fault this release exists to fix,
+one step over: a rework runs on the stranded list after every train, so one is in flight
+routinely, and calling it unattributable would have made every OTHER id `UNKNOWN` for its whole
+duration - `slot.sh --gc` freeing nothing and `kill-lane.sh` refusing every id, with `--force`
+the only way past. A guard the operator is taught to force past is not a guard.
+
+One case is left, and it is the transitional one: a rework lane dispatched before this shipped
+carries the old id-less `resolve:#<pr>`, which names no issue, so while it is in flight every id
+reads `UNKNOWN` - `slot.sh --gc` frees nothing and `kill-lane.sh` refuses for all of them. That
+is the safe direction, it ends when that lane ends, and getting past it needs `--force` once a
+person has confirmed by hand.
+
+**A lander not being a lane does not make a lane's worktree free.** `land.js` tells the lander to
+reuse a worktree that already holds the branch rather than making a second one, so `NOT-RUNNING`
+for an id can be true at the same moment as a rebase running inside
+`/tmp/<prefix>-worktrees/<id>` - which `kill-lane.sh` then removes with `--force`. Same harm as
+the reported bug, reached by a different route. `kill-lane.sh` now reads the worktree itself for
+`rebase-merge`, `rebase-apply` or `MERGE_HEAD` before touching it and refuses with exit 7
+whatever the verdict said, so the attribution claim is never load-bearing for the removal.
 
 **`UNKNOWN` is never rendered as dead.** It is what the command says when no task directory
 exists for the workspace, or when a task in flight cannot be attributed - the caller is told
