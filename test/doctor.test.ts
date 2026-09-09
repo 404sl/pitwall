@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { cpSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { cpSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,8 +15,20 @@ const BD_OK = join(FIXTURES, "bd", "ok");
 const GH_OK = join(FIXTURES, "gh", "ok");
 const GH_UNAUTH = join(FIXTURES, "gh", "unauth");
 
-function env(...bins: string[]): Record<string, string | undefined> {
-  return { PATH: [...bins, "/usr/bin", "/bin"].join(":") };
+const SYSTEM = ["/usr/bin", "/bin"];
+
+function env(bins: readonly string[]): Record<string, string | undefined> {
+  return { PATH: bins.join(":") };
+}
+
+function withoutGh(): string {
+  const bin = mkdtempSync(join(tmpdir(), "pitwall-doctor-nogh-"));
+  for (const tool of ["dirname", "cat"]) {
+    const found = spawnSync("sh", ["-c", `command -v ${tool}`], { encoding: "utf8" });
+    assert.equal(found.status, 0, `${tool} is not on PATH`);
+    symlinkSync(found.stdout.trim(), join(bin, tool));
+  }
+  return bin;
 }
 
 function home(roots: string[]): string {
@@ -54,10 +67,10 @@ function healthy(lockPrefix = "doctor"): string {
   return dir;
 }
 
-function options(roots: string[], bins: string[] = [BD_OK, GH_OK]) {
+function options(roots: string[], bins: string[] = [BD_OK, GH_OK, ...SYSTEM]) {
   const place = home(roots);
   return {
-    env: env(...bins),
+    env: env(bins),
     home: place,
     cwd: place,
     lockRoot: mkdtempSync(join(tmpdir(), "pitwall-doctor-lock-")),
@@ -82,7 +95,7 @@ test("a workspace with every source in place passes and exits zero", async () =>
 
 test("bd missing from PATH fails the run and says so in the line it failed on", async () => {
   const dir = healthy();
-  const diagnosis = await diagnose(options([dir], [GH_OK]));
+  const diagnosis = await diagnose(options([dir], [GH_OK, ...SYSTEM]));
   const check = named(diagnosis, `${basename(dir)} bd`);
   assert.equal(check.severity, "fail");
   assert.match(check.result, /bd is not on PATH/);
@@ -92,7 +105,7 @@ test("bd missing from PATH fails the run and says so in the line it failed on", 
 
 test("gh unauthenticated is a warning, because the screen degrades rather than empties", async () => {
   const dir = healthy();
-  const diagnosis = await diagnose(options([dir], [BD_OK, GH_UNAUTH]));
+  const diagnosis = await diagnose(options([dir], [BD_OK, GH_UNAUTH, ...SYSTEM]));
   const check = named(diagnosis, "gh");
   assert.equal(check.severity, "warn");
   assert.match(check.result, /gh auth login|not authenticated|GH_TOKEN/);
@@ -101,7 +114,7 @@ test("gh unauthenticated is a warning, because the screen degrades rather than e
 
 test("gh missing from PATH is a warning that names the tool", async () => {
   const dir = healthy();
-  const diagnosis = await diagnose(options([dir], [BD_OK]));
+  const diagnosis = await diagnose(options([dir], [BD_OK, withoutGh()]));
   const check = named(diagnosis, "gh");
   assert.equal(check.severity, "warn");
   assert.match(check.result, /gh is not on PATH/);
