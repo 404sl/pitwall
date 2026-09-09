@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { fileURLToPath } from "node:url";
+import { realpathSync } from "node:fs";
 import { SCHEMA_VERSION } from "@404sl/pitwall-schema";
 import { diagnose, renderDoctor } from "./doctor.js";
 import { DEFAULT_PORT, HOST, createConsoleServer, listen, parseServeArgs } from "./serve.js";
@@ -74,7 +76,17 @@ function quitQuietlyOnBrokenPipe(stream: NodeJS.WriteStream): void {
   });
 }
 
-const isEntry = process.argv[1] && import.meta.url.endsWith(process.argv[1].split("/").pop()!);
+// WAS THIS FILE RUN, OR IMPORTED? Compare RESOLVED PATHS, not names.
+//
+// This used to ask whether import.meta.url ended with the basename of argv[1], which is true
+// when you run `node dist/cli.js` and FALSE for every installed copy: npm links the binary as
+// `pitwall`, so argv[1] ends "pitwall" while this module is still "cli.js". The guard failed,
+// nothing ran, and the process exited 0 - silently, with no output and no error.
+//
+// It survived local testing because locally you invoke the file by its own name. Every
+// published version before 0.1.2 did nothing at all when installed.
+const isEntry = process.argv[1] !== undefined
+  && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
 if (isEntry) {
   quitQuietlyOnBrokenPipe(process.stdout);
   quitQuietlyOnBrokenPipe(process.stderr);

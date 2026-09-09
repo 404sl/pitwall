@@ -1,6 +1,6 @@
 {
   "name": "@404sl/pitwall",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "One screen over every project you have work running in - what is blocked, what needs you, and whether that is still true",
   "license": "AGPL-3.0-only",
   "type": "module",
