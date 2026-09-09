@@ -9,6 +9,7 @@ const run = promisify(execFile);
 const PROBE_TIMEOUT_MS = 10_000;
 const MAX_OUTPUT = 1024 * 1024;
 const PULL_SOURCE = "gh pr view";
+const NO_SUCH_PULL = /Could not resolve to a PullRequest/;
 
 const PULL_STATES = new Map<string, PullState>([
   ["MERGED", "merged"],
@@ -44,6 +45,14 @@ function unreadable(
     return;
   }
   recordOnce(options.errors, collectionError(source, failureOf(cause, timeoutMs)));
+}
+
+function answered(cause: unknown): boolean {
+  const failed = cause as { killed?: unknown; stderr?: unknown } | null;
+  if (failed?.killed === true || typeof failed?.stderr !== "string") {
+    return false;
+  }
+  return NO_SUCH_PULL.test(failed.stderr);
 }
 
 export function preconditionProbe(
@@ -110,7 +119,9 @@ async function viewed(
     const state = (JSON.parse(stdout) as { state?: unknown }).state;
     return typeof state === "string" ? PULL_STATES.get(state) : undefined;
   } catch (cause) {
-    unreadable(options, PULL_SOURCE, cause, timeoutMs);
+    if (!answered(cause)) {
+      unreadable(options, PULL_SOURCE, cause, timeoutMs);
+    }
     return undefined;
   }
 }

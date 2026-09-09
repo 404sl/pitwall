@@ -11,6 +11,10 @@ import type { PullReference } from "../src/staleness.ts";
 const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), "fixtures");
 const NO_TOOLS = join(FIXTURES, "gh", "missing");
 const UNAUTH_GH = `${join(FIXTURES, "gh", "unauth")}:/usr/bin:/bin`;
+const NOTFOUND_GH = `${join(FIXTURES, "gh", "notfound")}:/usr/bin:/bin`;
+const RATELIMIT_GH = `${join(FIXTURES, "gh", "ratelimit")}:/usr/bin:/bin`;
+const GARBLED_GH = `${join(FIXTURES, "gh", "garbled")}:/usr/bin:/bin`;
+const SLOW_GH = `${join(FIXTURES, "gh", "slow")}:/usr/bin:/bin`;
 
 function aReference(over: Partial<PullReference> = {}): PullReference {
   return { number: 12, repo: undefined, url: undefined, text: "#12", ...over };
@@ -99,4 +103,56 @@ test("a bare number with more than one repository to choose from is never spawne
   });
   assert.equal(await lookup(aReference()), undefined);
   assert.deepEqual(errors, []);
+});
+
+test("a number that is not a pull request is an answer, not a collection error", async () => {
+  const errors: CollectionError[] = [];
+  const lookup = pullLookup({
+    repos: new Map([["site", aRepo()]]),
+    env: { PATH: NOTFOUND_GH },
+    errors,
+  });
+  assert.equal(await lookup(aReference({ number: 12, text: "#12" })), undefined);
+  assert.equal(await lookup(aReference({ number: 13, text: "#13" })), undefined);
+  assert.equal(await lookup(aReference({ number: 14, text: "#14" })), undefined);
+  assert.deepEqual(errors, []);
+});
+
+test("a pull request lookup the host refused is recorded", async () => {
+  const errors: CollectionError[] = [];
+  const lookup = pullLookup({
+    repos: new Map([["site", aRepo()]]),
+    env: { PATH: RATELIMIT_GH },
+    errors,
+  });
+  assert.equal(await lookup(aReference()), undefined);
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0]?.source, "gh pr view");
+  assert.match(errors[0]?.message ?? "", /rate limit exceeded/);
+});
+
+test("a pull request lookup that answers something unreadable is recorded", async () => {
+  const errors: CollectionError[] = [];
+  const lookup = pullLookup({
+    repos: new Map([["site", aRepo()]]),
+    env: { PATH: GARBLED_GH },
+    errors,
+  });
+  assert.equal(await lookup(aReference()), undefined);
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0]?.source, "gh pr view");
+});
+
+test("a pull request lookup that never comes back is recorded", async () => {
+  const errors: CollectionError[] = [];
+  const lookup = pullLookup({
+    repos: new Map([["site", aRepo()]]),
+    env: { PATH: SLOW_GH },
+    errors,
+    timeoutMs: 50,
+  });
+  assert.equal(await lookup(aReference()), undefined);
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0]?.source, "gh pr view");
+  assert.match(errors[0]?.message ?? "", /timed out/);
 });
