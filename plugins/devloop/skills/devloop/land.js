@@ -212,7 +212,7 @@ const LOCK = {
   required: ['status'],
   properties: {
     status: { enum: ['taken', 'held_by_other'] },
-    token: { type: 'string', description: 'the token read back out of the holder file, verbatim - reported for the log only, since the release step already holds it' },
+    token: { type: 'string', description: 'the token read back out of the holder file, verbatim - the release step is handed what you report and can compare against nothing else' },
     holder: { type: 'string', description: 'what the holder file said, when somebody else has it' },
     notes: { type: 'string' }
   }
@@ -276,7 +276,7 @@ minutes with nothing behind it.
 Check it is yours before removing it, and never remove one that is not. THE TOKEN IS ALREADY
 WRITTEN INTO THE COMMAND BELOW. Run it EXACTLY AS IT STANDS, AS ONE COMMAND:
 
-  [ "$(cat ${MERGE_LOCK}/holder 2>/dev/null)" = '${token || ''}' ] && rm -rf ${MERGE_LOCK} || echo NOT_MINE
+  [ "$(cat ${MERGE_LOCK}/holder 2>/dev/null)" = '${token}' ] && rm -rf ${MERGE_LOCK} || echo NOT_MINE
 
 DO NOT ASK ANYBODY FOR A TOKEN AND DO NOT STOP FOR WANT OF ONE. This paragraph used to read
 "substitute the token the lock step reported", and on 2026-09-09 a release step read that as an
@@ -284,10 +284,6 @@ instruction to go and find one, concluded it had not been given anything to subs
 to touch the lock and returned that refusal as its answer. The run had merged, deployed and
 reported success; the lock sat there for 25 minutes with two pull requests queued behind it. There
 is nothing to substitute - the value is in the command.
-
-If the quoted value above is EMPTY, the token did not survive the run. Do not remove anything:
-report status 'not_mine' and say the token was empty. A lock left standing is recoverable; one
-deleted out from under another live lander is not.
 
 DO NOT SPLIT THAT INTO A cat AND THEN AN rm. On 2026-09-09 a release step ran the read and the
 removal as two separate commands, so the comparison never happened and the removal was
@@ -901,6 +897,7 @@ const skipped = []
 const matchedPreflight = new Set()
 let masterBroken = false
 let deployed = 'not_needed'
+let released = null
 
 try {
   // Drained rather than surveyed once: a lane can label a PR while this run is working, and
@@ -1093,9 +1090,13 @@ try {
 } finally {
   // However this ended. A run that merged and then died before releasing held every other
   // lane up for twenty minutes with nothing behind it.
-  const released = await agent(releasePrompt(lock?.token), { label: 'release', phase: 'Deploy', model: 'haiku', effort: 'low', schema: RELEASE })
-  if (!released || released.status !== 'released') {
-    log(`MERGE LOCK NOT RELEASED - ${MERGE_LOCK} is still held by ${lock?.token || 'an unreported token'}. Nothing else can land until it is cleared.\n    ${(released && released.notes) || 'the release agent returned nothing'}`)
+  if (!lock?.token) {
+    log(`MERGE LOCK LEAKED - ${MERGE_LOCK} is held under a token this run never reported, so ownership cannot be proved. Nothing was removed; clear it by hand.`)
+  } else {
+    released = await agent(releasePrompt(lock.token), { label: 'release', phase: 'Deploy', model: 'haiku', effort: 'low', schema: RELEASE })
+    if (!released || released.status !== 'released') {
+      log(`MERGE LOCK NOT RELEASED - ${MERGE_LOCK} is still held by ${lock.token}. Nothing else can land until it is cleared.\n    ${(released && released.notes) || 'the release agent returned nothing'}`)
+    }
   }
 }
 
@@ -1111,4 +1112,4 @@ if (PREFLIGHTED) {
 }
 
 log(`landed ${landed.length}, stopped ${stopped.length}, deploy ${deployed}`)
-return { landed, stopped, skipped, deployed, masterBroken }
+return { landed, stopped, skipped, deployed, masterBroken, lock: released && released.status === 'released' ? 'released' : 'LEAKED - clear it by hand' }

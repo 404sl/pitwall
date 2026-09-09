@@ -24,8 +24,18 @@ held.
 Both release prompts now say the token is already in the command and to run it exactly as it
 stands, and both name this failure so it is not reworded back. `THE-TOKEN-WAS-NOT-CARRIED` is
 gone: a sentinel that guarantees the ownership guard fails is a guaranteed leak in the shape of a
-safety check. An empty token now reports `not_mine` instead, which is a visible leak rather than
-a wrong deletion.
+safety check.
+
+**A token that cannot be proved is decided in the script, not in the prompt.** Dropping the
+sentinel for a bare empty string would have been worse than the sentinel: that guard matches a
+holder file that is missing or empty, and a lock directory exists with no holder file for the
+window between another lander's `mkdir` and its `printf`, so the command would have deleted a live
+foreign lock - the outcome the prompt itself calls unrecoverable. So `land.js` now branches before
+it asks for anything: a run whose lock step reported no token emits no release command at all, logs
+the leak and carries it back in its result. A lock left standing is recoverable; one deleted out
+from under another live lander is not. Putting that condition in the prompt instead would have
+reintroduced this entry's own bug - conditional prose sitting under an instruction to run the
+command exactly as it stands.
 
 **A positive instruction beats a negative one here, for the same reason the 0.1.10 filter failed.**
 The bug was never a missing value - the lock step reported the token correctly. It was a sentence
@@ -45,7 +55,10 @@ equivalent. Neither covers a killed runner, and nothing in the script can - that
 
 **A refusal is now reported rather than swallowed.** `land.js`'s release step had no schema, so
 its answer went nowhere. It returns `released`, `not_mine` or `still_held`, and anything but the
-first is logged as a held lock naming the token to clear.
+first is logged as a held lock naming the token to clear. The run's own result now carries `lock`
+too - `released`, or `LEAKED - clear it by hand` - because the incident was a lander reporting
+success while holding the lock, and a journal line a person reads afterwards is not what the
+supervisor consumes. `land-train.js` already reported it that way.
 
 **The token is still minted by the lock agent, deliberately.** Minting it in the script looks
 tidier and is wrong twice over: `Date.now()` and `Math.random()` throw in the workflow runner

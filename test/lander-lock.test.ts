@@ -122,3 +122,36 @@ test("no lander calls a global the workflow sandbox refuses", () => {
     );
   }
 });
+
+test("land.js emits no removal command when the lock step reported no token", async () => {
+  const { calls, done } = runScript("land.js", LAND_ARGS, (call, n) => {
+    if (n === 1) return { status: "taken" };
+    if (call.label && call.label.startsWith("survey")) return { prs: [] };
+    return { status: "released" };
+  });
+  const result = (await done) as { lock?: string };
+
+  assert.equal(
+    calls.some((c) => c.label === "release"),
+    false,
+    "a release step ran for a lock this run cannot prove it owns. With no token the guard " +
+      "compares the holder file against an empty string, which matches whenever the holder " +
+      "file is missing or empty - a window that opens between another lander's mkdir and its " +
+      "printf - and the lock it then deletes belongs to somebody else.",
+  );
+
+  const removals = calls.filter((c) => c.prompt.includes("rm -rf"));
+  assert.deepEqual(
+    removals.map((c) => c.label),
+    [],
+    "an rm was handed to an agent with no token to check it against",
+  );
+
+  assert.match(
+    result.lock || "",
+    /LEAKED/,
+    "the run returned success while still holding the lock. That is the reported incident: a " +
+      "journal line a person reads afterwards is not what the supervisor consumes, so the " +
+      "leak has to be in the result.",
+  );
+});
