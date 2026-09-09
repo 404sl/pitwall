@@ -161,7 +161,8 @@ if [ -n "$suspect" ]; then
     exit 0
   fi
 
-  echo "DEAD - stop the workflow, then: kill-lane.sh --slot N --id <id>"
+  echo "DEAD BY TRANSCRIPT AGE - confirm with lane-running.sh <id>, which reads the task"
+  echo "output the harness writes when a run ends, then: kill-lane.sh --slot N --id <id>"
   printf "$dead"
   echo
   echo "Check each against its pull request before releasing - a lane between phases writes"

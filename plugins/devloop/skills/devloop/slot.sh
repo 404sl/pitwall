@@ -156,6 +156,12 @@ case "$1" in
         echo "keeping slot $n ($held): reserved in the last 30 minutes, too young to judge"
         continue
       fi
+      RUNNING="$(bash "$(dirname "${BASH_SOURCE[0]}")/lane-running.sh" --quiet "$held" 2>/dev/null)"
+      case "$?" in
+        1) ;;
+        0) echo "keeping slot $n ($held): a task for it is in flight, its result is not written"; continue ;;
+        *) echo "keeping slot $n ($held): ${RUNNING:-UNKNOWN} - cannot establish whether its lane is running"; continue ;;
+      esac
       # Wrote something in the last forty minutes -> alive, whatever the lock and worktree say.
       # Forty rather than ten because a lane waiting on a CI run writes nothing while it waits.
       if [ -n "$LIVEOUT" ] && echo "$LIVEOUT" | awk -v id="$held" '

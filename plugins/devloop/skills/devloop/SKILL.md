@@ -235,7 +235,26 @@ workflows must never carry the same one, which is what reserving it is for. Othe
 
 ## When a lane dies
 
-`lanes.sh` names the suspect and says whether its workflow transcript is still moving - a
+**Ask `lane-running.sh <id>` before you believe it.** It is the only thing that answers "is a
+lane for this id running right now": the harness creates a task output file empty at dispatch
+and writes it when the run ends, and the session transcript ties that task to the workflow
+whose journal labels its phases with the issue id. It answers `RUNNING`, `NOT-RUNNING` or
+`UNKNOWN`, and **`UNKNOWN` is not dead** - nothing may act on it as though it were.
+
+Nothing else answers the question, and each of the four signals that look like they do is
+silently wrong rather than merely narrow:
+
+| signal | what it actually answers |
+|---|---|
+| slot claim | a lane **started**, ever - written at dispatch, outlives the lane |
+| lane lock | a lane reached the locking phase **and still holds it** |
+| `TaskList` | **nothing about lanes, ever.** It lists `TaskCreate` to-do items and has never listed a workflow. `TaskGet` on a live workflow's own id answers "Task not found". An empty result is not evidence. |
+| worktree | a directory exists - a dead lane leaves one, and a live lane can be missing one |
+
+A supervisor tore down a healthy lane 42 minutes into its run on the strength of an empty
+`TaskList`. It survived only because it rebuilt its worktree and carried on.
+
+`lanes.sh` then names the suspect and says whether its workflow transcript is still moving - a
 transcript silent for longer than the staleness window means nothing is running, whatever the
 worktree looks like. A lane goes quiet whenever it is reading rather than writing, so worktree
 age alone cannot tell a slow lane from a dead one.
@@ -245,6 +264,10 @@ Stop the workflow with `TaskStop`, then clean up with **one command**, not by ha
 ```bash
 kill-lane.sh --slot 2 --id app-4m7h            # --dry-run first if unsure
 ```
+
+`kill-lane.sh` asks `lane-running.sh` first and refuses on `RUNNING` and on `UNKNOWN`; `--force`
+is the override once you have confirmed by hand. `slot.sh --gc` asks it too and keeps any slot it
+cannot prove idle.
 
 A lane holds four things and a hand cleanup reliably gets three. On 2026-08-30 app-4m7h was
 cleaned up by hand - worktree removed, branch deleted, slot freed - and the lane lock was left

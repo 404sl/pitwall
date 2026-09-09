@@ -2,40 +2,35 @@
 
 ## 0.1.14
 
-**A deploy shipped the right code with whatever configuration a shared checkout happened to be
-sitting on.** `deploy-one.sh` was handed `--repo-path` pointing at the main checkout and ran the
-deploy command there, so `config/deploy.rb` - and everything it loads - came from that working
-tree. The CODE is cloned on the server from origin at `:branch`, so the code is always current.
-HOST, USER, DOMAIN and BRANCH are read locally, and nothing downstream reads them back. Right
-code, wrong configuration, reported as success.
+**Nothing answered "is a lane for this id running right now", and four signals answered it
+wrongly.** A supervisor tore down a healthy lane 42 minutes into its run on the strength of an
+empty `TaskList`; it survived only because it rebuilt its worktree and carried on to a labelled
+pull request. A second lane torn down in the same pass was genuinely dead, and neither outcome
+was down to the judgement being right.
 
-Measured while fixing it: the marketing checkout was on `master`, nothing ahead, FOUR COMMITS
-BEHIND origin/master. `config/deploy.rb` was byte-identical across those four, which is why no
-deploy had been affected - but `config/app.yml`, which `deploy.rb` loads at parse time through
-`app_config`, was nine lines behind. Earlier the same day another checkout was found sitting on a
-feature branch with nobody knowing who left it there. Both give the same signature.
+A slot claim proves a lane STARTED, ever. A lane lock proves it reached the locking phase and
+still holds it. A worktree proves a directory exists - a dead lane leaves one behind and a live
+lane can be missing one, having had it deleted mid-run. `TaskList` is worse than narrow: it is
+unrelated. It lists `TaskCreate` to-do items and has never listed a workflow, so "No tasks
+found" is a correct answer to a question nobody asked, and `TaskGet` on a live workflow's own
+id answers "Task not found".
 
-**The revision check cannot catch this class, and it is not broken.** It compares the deployed
-`git_revision` against the merge sha; the code always comes from origin, so the comparison passes
-with certainty while the configuration is stale. It looks at the half that is never wrong.
+`lane-running.sh <issue-id>` answers the actual question and is now what the callers ask. The
+harness creates a task output file empty at dispatch and writes it when the run ends, so an
+empty one is a run still going; the session transcript carries `taskId` beside `runId`, and
+that workflow's journal labels its phases with the issue id. Following that chain attributes
+every in-flight task to a lane. `RUNNING` exits 0, `NOT-RUNNING` 1, `UNKNOWN` 2.
 
-**So the deploy runs in a worktree cut at `origin/master`, not in the checkout it was pointed at.**
-`--repo-path` is now the repository the worktree is cut FROM. The script fetches, resolves
-`origin/master`, adds a detached worktree under a `mktemp` directory, runs the deploy with that as
-its working directory, and removes both on every exit path through an `EXIT` trap that preserves
-the script's own exit code. The shared checkout is never pulled, checked out or stashed: adding and
-removing a worktree writes nothing into its working tree, which is why this is a worktree rather
-than a pull.
+**A journal MENTIONING an id is not that lane.** The first version searched journals for the id
+anywhere and reported the id as running off the lander's journal, which had merely printed the
+worktree path while surveying. Only the `"label":"<phase>:<id>"` entries name a lane's own work.
 
-**Cut at `origin/master`, not at local `master`, and a failed fetch is now fatal.** "On the right
-branch" and "current" are different properties, and that difference is the whole defect. A fetch
-that fails leaves a stale `origin/master` to cut from, which is the same bug wearing the fix's
-clothes - it has already produced one by-hand safety check that compared against a ref several
-commits old and concluded all clear. The script now refuses rather than deploy from a ref it could
-not confirm.
-
-`--expect` still decides the outcome, so a caller that passes the merge sha gets exactly the
-comparison it got before. Only the directory the deploy runs in has changed.
+**`UNKNOWN` is never rendered as dead.** It is what the command says when no task directory
+exists for the workspace, or when a task in flight cannot be attributed - the caller is told
+which tasks those are, and that one of them may be the lane. `kill-lane.sh` refuses on
+`RUNNING` and on `UNKNOWN` and takes `--force` once a person has confirmed; `slot.sh --gc`
+keeps any slot it cannot prove idle, and its existing guards remain as extra reasons to keep,
+never as a reason to free.
 
 **Nothing enforced the documented slot reservation, and a sixth collision found it.** The lane a
 run used was chosen by whoever dispatched and passed in as an argument, while reserving it was a
