@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.9
+
+**Confirm a defect against the running thing, not the source** - wherever the answer depends on
+the cascade, on runtime state, or on how pieces compose. Reading the source tells you what a
+rule says; it does not tell you what wins.
+
+A ticket reported a credit at 1.05:1, white on a near-white surface, and the stylesheet agreed.
+The rendered page did not: a class selector beat the rule the ticket had read, and the measured
+contrast was 18.17:1. Reading the code would have confirmed a bug that does not exist.
+
+**And check the remedy the same way**, because a ticket can be wrong twice. That same ticket
+proposed a token which, on those routes, resolves to its light value - 2.98:1, a real failure.
+The suggested fix would have introduced the defect the ticket was written to remove. A premise
+you have disproved does not make the remedy safe; it makes it unexamined.
+
+
 ## 0.1.8
 
 **Escalate on consequence, not on ambiguity.** A ticket the owner had asked for by name sat
