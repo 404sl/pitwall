@@ -1,4 +1,4 @@
-import type { Snapshot, StalenessVerdict } from "@404sl/pitwall-schema";
+import type { CollectionError, Snapshot, StalenessVerdict } from "@404sl/pitwall-schema";
 import {
   LANE_CHIP_LIMIT,
   buildBoard,
@@ -12,19 +12,30 @@ import {
   type RunningState,
   type RunningTotal,
 } from "./board.js";
-import { elapsed, priorityLabel } from "./format.js";
+import { elapsed, fill, priorityLabel } from "./format.js";
 
 export const READY_PER_PROJECT = 3;
+export const STALE_AFTER_MS = 5 * 60_000;
+
+const QUALIFY_AFTER_MS = 60_000;
 
 export type StatusArgs = { from?: string } | { error: string };
 
 export interface StatusOptions {
   color?: boolean;
   width?: number;
+  now?: number;
 }
 
 const NO_PROJECTS = "No projects to report.";
 const NO_PROJECT_REASON = "Nothing in this snapshot names a workspace root, and nothing recorded why.";
+const NO_SNAPSHOT = "No snapshot to show yet - {source} could not be read: {message}";
+
+const AGE = {
+  header: "{age} ago",
+  stale: "{age} old · run pitwall snapshot to refresh",
+  asOf: " · as of {age} ago",
+};
 
 const EMPTY = {
   needsYou: "Nothing needs you.",
@@ -245,17 +256,54 @@ function problemLines(rows: ProblemRow[], paint: Paint): string[] {
   );
 }
 
-function header(board: Board, paint: Paint, width: number | undefined): string {
+function ageOf(generatedAt: string, now: number): number | undefined {
+  const at = Date.parse(generatedAt);
+  return Number.isNaN(at) ? undefined : Math.max(0, now - at);
+}
+
+function header(board: Board, ageMs: number | undefined, paint: Paint, width: number | undefined): string {
   const noun = board.projectCount === 1 ? "project" : "projects";
-  const prefix = `${paint("pitwall", "1")} · ${board.projectCount} ${noun} · `;
-  return fit(prefix, paint(board.generatedAt, "2"), width);
+  const age = ageMs === undefined ? "" : `${paint(fill(AGE.header, { age: elapsed(ageMs) }), "2")} · `;
+  const prefix = `${paint("pitwall", "1")} · ${board.projectCount} ${noun} · ${age}`;
+  const stamped = paint(board.generatedAt, "2");
+  if (width !== undefined && plainWidth(prefix) + plainWidth(stamped) > width) {
+    return prefix.slice(0, -3);
+  }
+  return `${prefix}${stamped}`;
+}
+
+function staleLine(ageMs: number, paint: Paint, width: number | undefined): string {
+  return fit(`${paint("STALE", "1;33")} `, fill(AGE.stale, { age: elapsed(ageMs) }), width);
+}
+
+function runningCount(board: Board, ageMs: number | undefined, width: number | undefined): string | undefined {
+  if (board.running.length === 0) {
+    return undefined;
+  }
+  const counts = runningSummary(board.runningTotals);
+  if (ageMs === undefined || ageMs < QUALIFY_AFTER_MS) {
+    return counts;
+  }
+  const qualified = `${counts}${fill(AGE.asOf, { age: elapsed(ageMs) })}`;
+  if (width !== undefined && "RUNNING ".length + qualified.length > width) {
+    return counts;
+  }
+  return qualified;
+}
+
+export function missingSnapshotMessage(error: CollectionError): string {
+  return fill(NO_SNAPSHOT, { source: error.source, message: error.message });
 }
 
 export function renderStatus(snapshot: Snapshot, options: StatusOptions = {}): string {
   const paint = painter(options.color ?? false);
   const width = usableWidth(options.width);
   const board = buildBoard(snapshot);
-  const lines = [header(board, paint, width)];
+  const ageMs = ageOf(board.generatedAt, options.now ?? Date.now());
+  const lines = [header(board, ageMs, paint, width)];
+  if (ageMs !== undefined && ageMs >= STALE_AFTER_MS) {
+    lines.push(staleLine(ageMs, paint, width));
+  }
   if (board.projectCount === 0) {
     lines.push("", NO_PROJECTS);
     lines.push(
@@ -266,10 +314,11 @@ export function renderStatus(snapshot: Snapshot, options: StatusOptions = {}): s
     return `${lines.join("\n")}\n`;
   }
   const needsCount = board.needsYouCount === 0 ? undefined : String(board.needsYouCount);
-  const runningCount = board.running.length === 0 ? undefined : runningSummary(board.runningTotals);
   const readyCount = board.readyCount === 0 ? undefined : String(board.readyCount);
   lines.push(...section(paint, "Needs you", needsCount, needsYouLines(board.needsYou, paint, width)));
-  lines.push(...section(paint, "Running", runningCount, runningLines(board.running, paint, width)));
+  lines.push(
+    ...section(paint, "Running", runningCount(board, ageMs, width), runningLines(board.running, paint, width)),
+  );
   lines.push(...section(paint, "Ready", readyCount, readyLines(snapshot, paint, width)));
   lines.push(...section(paint, "Parked", undefined, parkedLines(board.parked, paint)));
   lines.push(...section(paint, "Problems", undefined, problemLines(board.problems, paint)));
