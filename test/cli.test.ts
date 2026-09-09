@@ -1,5 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { run } from "../src/cli.ts";
 import { DEFAULT_PORT } from "../src/serve.ts";
 import { VERSION } from "../src/version.ts";
@@ -98,4 +103,41 @@ test("an argument after doctor exits non-zero and shows usage", () => {
 
 test("usage names the doctor command", () => {
   assert.match(run(["--help"]).out, /pitwall doctor/);
+});
+
+const CLI = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
+const TSX = fileURLToPath(new URL("../node_modules/tsx/dist/cli.mjs", import.meta.url));
+
+function snapshotFile(): string {
+  const path = join(mkdtempSync(join(tmpdir(), "pitwall-cli-")), "snapshot.json");
+  writeFileSync(
+    path,
+    JSON.stringify({
+      schemaVersion: SCHEMA_VERSION,
+      generatedAt: "2026-09-08T14:11:00Z",
+      agent: { version: VERSION, executor: "local" },
+      projects: [{ id: "p", name: "p", root: "/p", authority: { kind: "beads" }, metrics: {} }],
+      errors: [],
+    }),
+  );
+  return path;
+}
+
+function readerThatLeaves(argv: string[]): Promise<{ code: number | null; stderr: string }> {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [TSX, CLI, ...argv], { stdio: ["ignore", "pipe", "pipe"] });
+    child.stdout.destroy();
+    let stderr = "";
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk: string) => {
+      stderr += chunk;
+    });
+    child.on("close", (code) => resolve({ code, stderr }));
+  });
+}
+
+test("a reader that closes the pipe first leaves quietly rather than reporting EPIPE", async () => {
+  const { code, stderr } = await readerThatLeaves(["status", "--from", snapshotFile()]);
+  assert.doesNotMatch(stderr, /EPIPE/, stderr);
+  assert.equal(code, 0);
 });
