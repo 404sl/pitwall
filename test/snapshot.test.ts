@@ -392,3 +392,22 @@ test("a history store that cannot be opened costs the metrics, not the snapshot"
   assert.equal(result.snapshot.projects[0]?.metrics.medianTimeToLandMinutes, undefined);
   assert.equal(readSnapshot({ env: place.env, home: place.home }).error, undefined);
 });
+
+test("a staleness probe that could not be run reaches the project as one error", async () => {
+  const place = workspace([TRACKER]);
+  const snapshot = await collectSnapshot({
+    ...options(place, new Date("2026-09-08T09:00:00Z")),
+    env: { ...place.env, PATH: pathWithoutGh(), BD_LIST_FIXTURE: "stale" },
+  });
+  const project = snapshot.projects[0];
+  const recorded = (project?.errors ?? []).filter((error) => error.source === "npm whoami");
+  assert.equal(recorded.length, 1);
+  assert.match(recorded[0]?.message ?? "", /ENOENT/);
+  const byId = new Map((project?.issues ?? []).map((issue) => [issue.id, issue]));
+  assert.ok(
+    byId
+      .get("mw-21")
+      ?.staleness.evidence.some((line) => line.includes("could not be run from here")),
+    "the issue that names the precondition still says it was not run",
+  );
+});

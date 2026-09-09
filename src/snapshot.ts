@@ -3,6 +3,7 @@ import {
   SCHEMA_VERSION,
   isYours,
   parseSnapshot,
+  type CollectionError,
   type Issue,
   type Metrics,
   type Snapshot,
@@ -69,6 +70,7 @@ function stalenessContext(
   collected: { issues: readonly Issue[]; closed: readonly ClosedIssue[] },
   options: SnapshotOptions,
   day: Date,
+  errors: CollectionError[],
 ): StalenessContext {
   const repos = new Map(project.repos.map((repo) => [repo.name, repo.path]));
   return {
@@ -79,8 +81,10 @@ function stalenessContext(
       options.pullState ??
       (repos.size === 0
         ? undefined
-        : pullLookup({ repos, env: options.env, timeoutMs: options.timeoutMs })),
-    probe: options.probe ?? preconditionProbe({ env: options.env, timeoutMs: options.timeoutMs }),
+        : pullLookup({ repos, env: options.env, timeoutMs: options.timeoutMs, errors })),
+    probe:
+      options.probe ??
+      preconditionProbe({ env: options.env, timeoutMs: options.timeoutMs, errors }),
     now: day,
   };
 }
@@ -126,7 +130,8 @@ async function gather(project: Project, options: SnapshotOptions, day: Date): Pr
     errors: project.errors,
     timeoutMs: options.timeoutMs,
   });
-  const context = stalenessContext(project, collected, options, day);
+  const unchecked: CollectionError[] = [];
+  const context = stalenessContext(project, collected, options, day, unchecked);
   const structure: ClassifyContext = {
     issues: [...collected.issues, ...collected.closed],
     lanes: project.lanes,
@@ -147,7 +152,7 @@ async function gather(project: Project, options: SnapshotOptions, day: Date): Pr
       issues,
       pipeline: pipeline.pipeline,
       metrics: metricsOf(issues, collected.closed, day),
-      errors: [...project.errors, ...collected.errors, ...pipeline.errors],
+      errors: [...project.errors, ...collected.errors, ...pipeline.errors, ...unchecked],
     }),
     unreadable: project.errors.length > 0 || collected.errors.length > 0,
   };
