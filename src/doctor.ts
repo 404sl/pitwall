@@ -199,6 +199,25 @@ function repoCheck(id: string, dir: string, name: string, value: unknown): Check
   return { severity: "ok", name: label, tried, result: `${slug} · ${branch}` };
 }
 
+function rootCheck(id: string, dir: string, file: string, declared: unknown): Check {
+  const name = `${id} root`;
+  if (typeof declared !== "string") {
+    return {
+      severity: "fail",
+      name,
+      tried: `read root from ${file}`,
+      result: `root is ${JSON.stringify(declared)}, not a path`,
+    };
+  }
+  const points = resolve(declared);
+  return {
+    severity: points === dir ? "ok" : "fail",
+    name,
+    tried: `compare root in ${file} with ${dir}`,
+    result: points === dir ? "root names this directory" : `root names ${points}, not this directory`,
+  };
+}
+
 function lanesCheck(
   id: string,
   file: string,
@@ -306,14 +325,8 @@ async function workspaceChecks(root: string, options: DoctorOptions): Promise<Wo
       : `${repos.length} repo${repos.length === 1 ? "" : "s"} · idPrefix ${workspace["idPrefix"] ?? "unset"}`,
   });
   const declared = workspace["root"];
-  if (typeof declared === "string") {
-    const points = resolve(declared);
-    checks.push({
-      severity: points === dir ? "ok" : "fail",
-      name: `${id} root`,
-      tried: `compare root in ${found.name} with ${dir}`,
-      result: points === dir ? "root names this directory" : `root names ${points}, not this directory`,
-    });
+  if (declared !== undefined) {
+    checks.push(rootCheck(id, dir, found.name, declared));
   }
   const beadsDir = join(dir, BEADS_DIR);
   checks.push({
