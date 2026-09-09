@@ -269,6 +269,13 @@ kill-lane.sh --slot 2 --id app-4m7h            # --dry-run first if unsure
 is the override once you have confirmed by hand. `slot.sh --gc` asks it too and keeps any slot it
 cannot prove idle.
 
+It attributes a workflow by the script it was dispatched from, because the scripts do not label
+alike: a `task.js` journal whose labels are not this id belongs to another issue, `land.js` and
+`land-train.js` are never any issue's lane, and anything else is `UNKNOWN`. A rework lane that
+was already in flight before this shipped labels its phases by pull request number and so reads
+`UNKNOWN` - confirm it by hand rather than forcing past it, because its worktree holds the
+conflict resolution it is writing.
+
 A lane holds four things and a hand cleanup reliably gets three. On 2026-08-30 app-4m7h was
 cleaned up by hand - worktree removed, branch deleted, slot freed - and the lane lock was left
 behind. The re-dispatch then refused to start, correctly: from inside a lane a stale lock and a

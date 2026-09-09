@@ -240,7 +240,7 @@ from git after committing and check it yourself.
 REPORT: status, the branch name, the old head, the new head, and the files you resolved. If the
 merge turns out to be clean already because something else landed in the meantime, that is
 status "already_clean" - say so rather than inventing a change.`,
-  { schema: RESOLVE, phase: 'Resolve', label: `resolve:#${PR}` },
+  { schema: RESOLVE, phase: 'Resolve', label: ID ? `resolve:${ID}#${PR}` : `resolve:#${PR}` },
 )
 
 if (!resolved || resolved.status === 'blocked') {
@@ -328,7 +328,7 @@ and say what was kept from each side. Append it, never replace: the notes field 
 an overwrite is simply gone.
 
 Report the CI conclusion and whether the label is on.`,
-  { schema: HANDOFF, phase: 'Handoff', label: `handoff:#${PR}` },
+  { schema: HANDOFF, phase: 'Handoff', label: ID ? `handoff:${ID}#${PR}` : `handoff:#${PR}` },
 )
 
 return {

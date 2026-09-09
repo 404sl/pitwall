@@ -23,6 +23,7 @@ interface Dispatch {
   journal?: readonly string[];
   result?: string;
   runs?: readonly string[];
+  script?: string | null;
 }
 
 interface Workspace {
@@ -42,6 +43,7 @@ function workspace(dispatches: readonly Dispatch[]): Workspace {
   for (const dispatch of dispatches) {
     writeFileSync(join(tasks, `${dispatch.task}.output`), dispatch.result ?? "");
     for (const run of dispatch.runs ?? (dispatch.run === undefined ? [] : [dispatch.run])) {
+      const script = dispatch.script === undefined ? "task.js" : dispatch.script;
       transcript.push(
         JSON.stringify({
           type: "user",
@@ -52,6 +54,7 @@ function workspace(dispatches: readonly Dispatch[]): Workspace {
             workflowName: "devloop-task",
             runId: run,
             summary: "Carry one tracker issue from open to landable",
+            ...(script === null ? {} : { scriptPath: `/w/.autofix-run/${script}` }),
           },
         }),
       );
@@ -109,11 +112,12 @@ test("a written result is a finished run, not a live lane", () => {
   assert.match(out, /1 finished run/);
 });
 
-test("a journal that only MENTIONS the id is another lane, not this one", () => {
+test("a lander that only MENTIONS the id is not this issue's lane", () => {
   const space = workspace([
     {
       task: "w111",
       run: "wf_land",
+      script: "land.js",
       labels: ["land:site#61"],
       journal: ["merged devloop/pitwall-90b at dc75584"],
     },
@@ -121,7 +125,43 @@ test("a journal that only MENTIONS the id is another lane, not this one", () => 
   const { status, out } = ask(space, "pitwall-90b");
   assert.equal(status, 1, out);
   assert.match(out, /^NOT-RUNNING/);
-  assert.match(out, /1 lane\(s\) in flight belong to other issues/);
+  assert.match(out, /1 lander\(s\) in flight/);
+});
+
+test("a rework lane labelled only by its pull request is UNKNOWN, never NOT-RUNNING", () => {
+  const space = workspace([
+    { task: "w111", run: "wf_rw", script: "rework.js", labels: ["resolve:#739"] },
+  ]);
+  const { status, out } = ask(space, "pitwall-90b");
+  assert.notEqual(status, 1, out);
+  assert.equal(status, 2, out);
+  assert.match(out, /^UNKNOWN/);
+  assert.match(out, /w111/);
+});
+
+test("a rework lane labelled with the id and its pull request is RUNNING", () => {
+  const space = workspace([
+    { task: "w111", run: "wf_rw", script: "rework.js", labels: ["resolve:pitwall-90b#739"] },
+  ]);
+  const { status, out } = ask(space, "pitwall-90b");
+  assert.equal(status, 0, out);
+  assert.match(out, /^RUNNING/);
+});
+
+test("a retried phase numbered after the id is still this lane", () => {
+  const space = workspace([{ task: "w111", run: "wf_aaa", labels: ["fix:pitwall-90b#2"] }]);
+  const { status, out } = ask(space, "pitwall-90b");
+  assert.equal(status, 0, out);
+  assert.match(out, /^RUNNING/);
+});
+
+test("a dispatch that does not say which script it ran is UNKNOWN", () => {
+  const space = workspace([
+    { task: "w111", run: "wf_aaa", script: null, labels: ["fix:pitwall-other"] },
+  ]);
+  const { status, out } = ask(space, "pitwall-90b");
+  assert.equal(status, 2, out);
+  assert.match(out, /^UNKNOWN/);
 });
 
 test("a running child does not make its parent id running", () => {

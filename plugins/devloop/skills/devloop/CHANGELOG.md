@@ -25,12 +25,37 @@ every in-flight task to a lane. `RUNNING` exits 0, `NOT-RUNNING` 1, `UNKNOWN` 2.
 anywhere and reported the id as running off the lander's journal, which had merely printed the
 worktree path while surveying. Only the `"label":"<phase>:<id>"` entries name a lane's own work.
 
+**And a journal with labels that are not this id is not automatically another issue's lane.**
+The scripts do not label alike. `task.js` labels every phase with the issue id, but `rework.js`
+labelled its phases `resolve:#<pr>` and `handoff:#<pr>` - the pull request number, never the id
+- so a LIVE rework lane read as `NOT-RUNNING`, and `kill-lane.sh` would then have removed the
+`<id>-rework` worktree holding the conflict resolution it was writing. A false "dead" is the
+one answer this command must never give.
+
+Attribution is therefore keyed on the script the transcript records beside the task id, not on
+labels alone: a `task.js` journal whose labels are not this id belongs to another issue;
+`land.js` and `land-train.js` carry no issue id at all and are never any issue's lane; anything
+else in flight is `UNKNOWN`. Landers are counted separately in the `NOT-RUNNING` line, because
+attributing them positively is what lets `slot.sh --gc` free a slot at all - two landers are in
+flight most of the day, and treating them as unattributable would have made every verdict
+`UNKNOWN`.
+
+`rework.js` now labels `resolve:<id>#<pr>`, so its lanes are positively attributable, and the
+label match accepts the `#<n>` a retried `fix:` or `review:` phase appends. A rework lane
+already in flight when this ships still carries the old label and will read `UNKNOWN`: that is
+the safe answer, and cleaning up after it needs `--force` once a person has confirmed it by hand.
+
 **`UNKNOWN` is never rendered as dead.** It is what the command says when no task directory
 exists for the workspace, or when a task in flight cannot be attributed - the caller is told
 which tasks those are, and that one of them may be the lane. `kill-lane.sh` refuses on
 `RUNNING` and on `UNKNOWN` and takes `--force` once a person has confirmed; `slot.sh --gc`
 keeps any slot it cannot prove idle, and its existing guards remain as extra reasons to keep,
-never as a reason to free.
+never as a reason to free. Bad arguments exit 6 rather than sharing `UNKNOWN`'s exit 2, so a
+permanently unfreeable slot cannot be a typo nobody can see.
+
+The per-tick lane reminder in `triage-scan.sh` pointed the supervisor at `TaskList` for what is
+still running. It names `lane-running.sh <id>` now - that reminder is the path by which the
+false signal reached the supervisor that tore the healthy lane down.
 
 **Nothing enforced the documented slot reservation, and a sixth collision found it.** The lane a
 run used was chosen by whoever dispatched and passed in as an argument, while reserving it was a

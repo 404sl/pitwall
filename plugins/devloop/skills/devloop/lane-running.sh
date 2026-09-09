@@ -13,10 +13,17 @@ say so: the harness creates a task output file empty at dispatch and writes it w
 the run ends, and the session transcript ties that task to the workflow whose
 journal labels its phases with the issue id.
 
+A workflow is attributed by the SCRIPT it was dispatched from, which the transcript
+records beside the task id, because the scripts do not label alike. task.js labels
+every phase with the issue id, so a task.js journal carrying labels that are not
+this id belongs to another issue. land.js and land-train.js carry no issue id at
+all and are never any issue's lane. Everything else is UNKNOWN rather than guessed.
+
   RUNNING       a task for this issue is in flight - exit 0
   NOT-RUNNING   nothing in flight is this issue's - exit 1
   UNKNOWN       the scan could not establish it - exit 2, never read as dead
                 exit 3 means the workspace itself could not be resolved
+                exit 6 means the arguments were wrong, which answers nothing
 
 A slot claim, a lane lock, a worktree and TaskList do not answer this question.
 TaskList has never listed a workflow at all, so its empty result says nothing.
@@ -29,13 +36,13 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --quiet) QUIET=1; shift ;;
     -h|--help) usage; exit 0 ;;
-    -*) echo "unknown argument: $1" >&2; usage >&2; exit 2 ;;
+    -*) echo "unknown argument: $1" >&2; usage >&2; exit 6 ;;
     *)
-      [ -n "$ID" ] && { echo "one issue id at a time, got: $ID $1" >&2; exit 2; }
+      [ -n "$ID" ] && { echo "one issue id at a time, got: $ID $1" >&2; exit 6; }
       ID="$1"; shift ;;
   esac
 done
-[ -n "$ID" ] || { usage >&2; exit 2; }
+[ -n "$ID" ] || { usage >&2; exit 6; }
 
 ROOT="${DEVLOOP_ROOT:-$(bash "$HERE/config.sh" root 2>/dev/null)}"
 if [ -z "$ROOT" ]; then
@@ -49,7 +56,7 @@ WF="${DEVLOOP_WF:-$HOME/.claude/projects/$SLUG}"
 
 IDRE="$(printf '%s' "$ID" | sed 's/[][\\.*^$(){}?+|/]/\\&/g')"
 MENTIONS="(^|[^A-Za-z0-9._-])${IDRE}([^A-Za-z0-9._-]|\$)"
-LABELLED="\"label\":\"([^\"]*:)?${IDRE}\""
+LABELLED="\"label\":\"([^\"]*:)?${IDRE}(#[0-9]+)?\""
 
 task_dirs() {
   if [ -n "${DEVLOOP_TASKS:-}" ]; then
@@ -88,39 +95,51 @@ for dir in $(task_dirs); do
       continue
     fi
     task="$(basename "$f" .output)"
-    case "$task" in w*) inflight="$inflight $task" ;; esac
+    case "$task" in w*) ;; *) continue ;; esac
+    case " $inflight " in *" $task "*) continue ;; esac
+    inflight="$inflight $task"
   done
 done
 
-pairs=""
+records=""
 if [ -n "$inflight" ]; then
   alt="$(printf '%s' "${inflight# }" | sed 's/ /|/g')"
-  linking="\"taskId\":\"(${alt})\"[^}]*\"runId\":\"[^\"]+\"|\"runId\":\"[^\"]+\"[^}]*\"taskId\":\"(${alt})\""
-  pairs="$(grep -rlE "\"taskId\":\"(${alt})\"" "$WF" 2>/dev/null |
-           while IFS= read -r file; do
-             [ -f "$file" ] && grep -hoE "$linking" "$file" 2>/dev/null
-           done |
-           sed -nE 's/.*"taskId":"([^"]+)".*"runId":"([^"]+)".*/\1 \2/p
-                    s/.*"runId":"([^"]+)".*"taskId":"([^"]+)".*/\2 \1/p' | sort -u)"
+  records="$(grep -rlE "\"taskId\":\"(${alt})\"" "$WF" 2>/dev/null |
+             while IFS= read -r file; do
+               [ -f "$file" ] && grep -hoE '\{"status":"async_launched"[^{}]*\}' "$file" 2>/dev/null
+             done |
+             grep -E "\"taskId\":\"(${alt})\"" |
+             awk '{
+               task = ""; run = ""; script = "-"
+               if (match($0, /"taskId":"[^"]+"/)) task = substr($0, RSTART + 10, RLENGTH - 11)
+               if (match($0, /"runId":"[^"]+"/)) run = substr($0, RSTART + 9, RLENGTH - 10)
+               if (match($0, /"scriptPath":"[^"]+"/)) {
+                 script = substr($0, RSTART + 14, RLENGTH - 15)
+                 sub(/.*\//, "", script)
+               }
+               if (task != "" && run != "") print task, run, script
+             }' | sort -u)"
 fi
 
 running=""
 unaccounted=""
 elsewhere=0
+landers=0
 
 for task in $inflight; do
-  runs="$(printf '%s\n' "$pairs" | awk -v t="$task" '$1 == t { print $2 }' | sort -u)"
+  runs="$(printf '%s\n' "$records" | awk -v t="$task" '$1 == t { print $2 }' | sort -u)"
   if [ "$(printf '%s\n' "$runs" | grep -c .)" != "1" ]; then
     unaccounted="$unaccounted $task"
     continue
   fi
-  if ! journal="$(journal_for "$runs")"; then
-    unaccounted="$unaccounted $task"
-    continue
-  fi
-  if grep -Eq "$LABELLED" "$journal" 2>/dev/null; then
+  script="$(printf '%s\n' "$records" | awk -v t="$task" '$1 == t { print $3 }' | sort -u | head -1)"
+  journal="$(journal_for "$runs")" || journal=""
+
+  if [ -n "$journal" ] && grep -Eq "$LABELLED" "$journal" 2>/dev/null; then
     running="$running ${task}:${runs}"
-  elif grep -q '"label":"' "$journal" 2>/dev/null; then
+  elif [ "$script" = "land.js" ] || [ "$script" = "land-train.js" ]; then
+    landers=$((landers + 1))
+  elif [ "$script" = "task.js" ] && [ -n "$journal" ] && grep -q '"label":"' "$journal" 2>/dev/null; then
     elsewhere=$((elsewhere + 1))
   else
     unaccounted="$unaccounted $task"
@@ -152,5 +171,5 @@ if [ -n "$unaccounted" ]; then
 fi
 
 if [ "$QUIET" = 1 ]; then echo "NOT-RUNNING"; exit 1; fi
-echo "NOT-RUNNING  ${ID} - ${finished} finished run(s) name it, ${elsewhere} lane(s) in flight belong to other issues."
+echo "NOT-RUNNING  ${ID} - ${finished} finished run(s) name it, ${elsewhere} lane(s) in flight belong to other issues, ${landers} lander(s) in flight."
 exit 1

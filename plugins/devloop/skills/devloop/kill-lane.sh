@@ -63,7 +63,10 @@ if [ ! -d "$DIR/.git" ]; then
   echo "kill-lane.sh: --repo takes a key from .autofix.json (have: $(bash "$HERE/config.sh" repos 2>/dev/null | python3 -c "import json,sys; print(', '.join(json.load(sys.stdin)))" 2>/dev/null))." >&2
   exit 6
 fi
-VERDICT="$(bash "$HERE/lane-running.sh" "$ID" 2>/dev/null)"; LIVE=$?
+VERDICT=""; LIVE=1
+if [ -z "$FORCE" ]; then
+  VERDICT="$(bash "$HERE/lane-running.sh" "$ID" 2>/dev/null)"; LIVE=$?
+fi
 if [ -z "$DRY" ] && [ -z "$FORCE" ]; then
   case "$LIVE" in
     1) ;;
