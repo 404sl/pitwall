@@ -2,6 +2,24 @@
 
 ## 0.1.12
 
+**Before parking a ticket for a person, ask whether the answer would differ from any competent
+engineer's.** If not, it is not theirs - decide it, record what you chose and why, and carry on.
+
+Ten tickets sat in one owner's queue on 2026-09-10 and none of them needed the owner. Eight
+were engineering calls: which of three shapes, whether an old review still binds, where to
+dedupe, how a report formats a collision. One was a dependency wearing a park label. One was a
+park whose condition had been met hours earlier. The owner found them by browsing, one at a
+time, and asked each time why it was theirs.
+
+Also: **a dependency is not a decision.** "After that other ticket lands" is `bd dep add`, not a
+park - the tracker holds ordering natively, and a label puts a sequencing fact in a person's
+queue where it stops work and waits for an answer nobody owes.
+
+This carries WRITING-TICKETS.md from 0.1.11's tree, which had no bump of its own.
+
+
+## 0.1.12
+
 **`lane-handoff.sh` reported a tracker note as written when it was not, and exit 0 said so.**
 Reported as https://github.com/404sl/pitwall/issues/44 by the lane it happened to: the note was
 absent afterwards, the lane found it by reading the field back itself, and appended it by hand.
