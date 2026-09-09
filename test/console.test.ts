@@ -1,12 +1,41 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { register } from "node:module";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { Classification, SCHEMA_VERSION, isYours, parseSnapshot } from "@404sl/pitwall-schema";
-import { blockedSummary, buildBoard, buildIssueView, parkedReasons, parkedSummary } from "../ui/model.ts";
+import {
+  SNAPSHOT_STALE_AFTER_MS,
+  blockedSummary,
+  buildBoard,
+  buildIssueView,
+  parkedReasons,
+  parkedSummary,
+  snapshotAge,
+} from "../ui/model.ts";
 import type { IssuePayload } from "../ui/model.ts";
 import { issueHref, routeOf } from "../ui/routes.ts";
 import { VERSION } from "../src/version.ts";
 
+register("./support/svg-stub.mjs", import.meta.url);
+const { Header } = await import("../ui/components/Header.tsx");
+
 const GENERATED_AT = "2026-09-08T14:11:00Z";
+const HEADER_NOW = Date.parse("2026-09-08T14:49:00Z");
+
+function headerMarkup(projectCount: number, generatedAt: string): string {
+  const realNow = Date.now;
+  Date.now = () => HEADER_NOW;
+  try {
+    return renderToStaticMarkup(createElement(Header, { projectCount, generatedAt }));
+  } finally {
+    Date.now = realNow;
+  }
+}
+
+function headerAged(ms: number, projectCount = 3): string {
+  return headerMarkup(projectCount, new Date(HEADER_NOW - ms).toISOString());
+}
 
 function issue(id: string, classification: string, extra: Record<string, unknown> = {}): Record<string, unknown> {
   return { id, title: `title for ${id}`, status: "open", priority: 1, classification, ...extra };
@@ -449,4 +478,66 @@ test("an issue link survives a round trip, ids and project names included", () =
   assert.equal(routeOf("#/issue/session-replay"), undefined);
   assert.equal(routeOf("#/issue//sr-1"), undefined);
   assert.equal(routeOf("#/issue/session-replay/sr-1/extra"), undefined);
+});
+
+test("the header reads the snapshot as an age, not as a clock time", () => {
+  const now = Date.parse("2026-09-08T14:49:00Z");
+  const at = (minutes: number) => new Date(now - minutes * 60_000).toISOString();
+  assert.equal(snapshotAge(at(0), now).label, "<1m");
+  assert.equal(snapshotAge(at(9), now).label, "9m");
+  assert.equal(snapshotAge(at(38), now).label, "38m");
+  assert.equal(snapshotAge(at(125), now).label, "2h5m");
+});
+
+test("a snapshot goes loud only once it is stale enough to act on by mistake", () => {
+  const now = Date.parse("2026-09-08T14:49:00Z");
+  const olderBy = (ms: number) => snapshotAge(new Date(now - ms).toISOString(), now);
+  assert.equal(SNAPSHOT_STALE_AFTER_MS, 600_000);
+  assert.equal(olderBy(SNAPSHOT_STALE_AFTER_MS - 1_000).stale, false, "9m59s must stay grey");
+  assert.equal(olderBy(SNAPSHOT_STALE_AFTER_MS).stale, true, "the threshold itself is stale");
+  assert.equal(olderBy(38 * 60_000).stale, true);
+  assert.equal(olderBy(38 * 60_000).label, "38m");
+});
+
+test("an age that cannot be read never claims the snapshot is stale", () => {
+  const now = Date.parse("2026-09-08T14:49:00Z");
+  const unreadable = snapshotAge("not-a-date", now);
+  assert.equal(unreadable.valid, false);
+  assert.equal(unreadable.stale, false);
+  assert.equal(unreadable.label, "not-a-date");
+
+  const skewed = snapshotAge(new Date(now + 5 * 60_000).toISOString(), now);
+  assert.equal(skewed.valid, true);
+  assert.equal(skewed.stale, false);
+  assert.equal(skewed.label, "<1m");
+});
+
+test("the rendered header reads the snapshot as an age and keeps the exact instant reachable", () => {
+  const generatedAt = new Date(HEADER_NOW - 4 * 60_000).toISOString();
+  const markup = headerMarkup(3, generatedAt);
+  assert.match(markup, /<span class="pw-header__age">4m old<\/span>/);
+  assert.match(markup, /3 projects · /);
+  assert.match(markup, /<p class="pw-header__meta" title="[^"]+"/);
+  assert.match(markup, new RegExp(`<time class="pw-sr" dateTime="${generatedAt}">`));
+});
+
+test("the rendered header stays grey below the staleness threshold and goes loud at it", () => {
+  const fresh = headerAged(SNAPSHOT_STALE_AFTER_MS - 1_000);
+  assert.match(fresh, /<header class="pw-header">/);
+  assert.doesNotMatch(fresh, /pw-header--stale/);
+  assert.match(fresh, /<span class="pw-header__flag" role="status"><\/span>/);
+  assert.doesNotMatch(fresh, /stale/);
+
+  const stale = headerAged(SNAPSHOT_STALE_AFTER_MS);
+  assert.match(stale, /<header class="pw-header pw-header--stale">/);
+  assert.match(stale, /<span aria-hidden="true"> · stale<\/span>/);
+  assert.match(stale, /<span class="pw-sr">Snapshot is stale\. It may no longer be true\.<\/span>/);
+});
+
+test("a header rendered from a stamp it cannot read shows the stamp and claims nothing about it", () => {
+  const markup = headerMarkup(1, "not-a-date");
+  assert.match(markup, /1 project · /);
+  assert.match(markup, /<span class="pw-header__age">not-a-date<\/span>/);
+  assert.doesNotMatch(markup, /pw-header--stale/);
+  assert.doesNotMatch(markup, /<time/);
 });

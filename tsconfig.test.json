@@ -2,8 +2,9 @@
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "rootDir": ".",
+    "jsx": "react-jsx",
     "noEmit": true,
     "allowImportingTsExtensions": true
   },
-  "include": ["test"]
+  "include": ["test", "ui/vite-env.d.ts"]
 }

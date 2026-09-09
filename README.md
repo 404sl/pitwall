@@ -53,7 +53,10 @@ pitwall serve        serve the console on http://127.0.0.1:7373/
 
 `snapshot` discovers projects, reads their trackers, classifies every issue and reports
 lane state. `status` renders that document as one terminal screen, reading the snapshot
-the server reads or another file given with `--from`. `doctor` prints one line per source
+the server reads or another file given with `--from`; both it and the console lead with the
+snapshot's age rather than the time it was taken, and both call a snapshot stale once it is
+ten minutes old, because a screen that reads as current when it is not is worse than no
+screen. `doctor` prints one line per source
 — the roots, each workspace file, the tracker, `bd`, `gh`, every repository and every lane
 registry — with what was tried and what came back, and exits non-zero when a hard
 requirement fails. `serve` serves that document over HTTP. **The console itself is still

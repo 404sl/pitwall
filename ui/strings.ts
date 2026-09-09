@@ -3,6 +3,10 @@ export const strings = {
   header: {
     project: "project",
     projects: "projects",
+    age: "{age} old",
+    takenAt: "Snapshot taken {at}.",
+    staleFlag: "stale",
+    staleNotice: "Snapshot is stale. It may no longer be true.",
   },
   band: {
     needsYou: "Needs you",
