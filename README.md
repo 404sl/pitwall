@@ -68,6 +68,30 @@ still read, so a workspace that has not been renamed keeps working; where a dire
 both, `.pitwall.json` is the one in use. Run it from a directory whose children are
 project workspaces, or configure the roots explicitly.
 
+Every `snapshot` run is appended to a local SQLite log at `~/.local/state/pitwall/history.db`
+(`XDG_STATE_HOME` is honoured). A tracker holds current state and no time series, so the
+metrics that need more than one reading — what landed today, the median minutes from claim
+to close, how often claimed work goes back to open — are derived from that log rather than
+stored in it. Each of them needs at least two runs before it says anything; until then the
+median and the bounce rate are absent rather than zero.
+
+The log keeps the newest 500 snapshots and 30 days of them, and both bounds also bound the
+answers, because the metrics can only be derived from runs the log still holds. The window
+is 14 days or as far back as the log reaches, whichever is shorter: at hourly runs 500
+snapshots is the full fortnight, and at the ten-minute cadence the status screen's staleness
+line invites it is under four days. `history.maxSnapshots` and `history.maxAgeDays` in
+`~/.config/pitwall/config.json` move both bounds — a fortnight at ten minutes needs about
+2000 snapshots and, at a couple of hundred kilobytes each, roughly half a gigabyte. The
+default is sized to be safe on an unattended laptop, not to reach the longest window.
+
+`landedToday` counts work the log saw claimed and then gone, so it can only count what two
+runs bracket: an issue claimed and closed between one run and the next is never observed.
+
+A log that cannot be written costs those metrics and nothing else: the snapshot still
+arrives, and the failure is recorded in `errors`. `node:sqlite` arrived in Node 22.13, and
+on an older Node there is no log at all — the metrics are simply absent, and nothing is
+reported as an error, because a module a runtime never shipped is not a failed read.
+
 ## How it is put together
 
 ```

@@ -3,12 +3,18 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { cpSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { SCHEMA_VERSION, isYours, parseSnapshot } from "@404sl/pitwall-schema";
 import { collectSnapshot, emitSnapshot } from "../src/snapshot.ts";
+import { historyPath } from "../src/history.ts";
 import { readSnapshot, snapshotPath } from "../src/state.ts";
 import { VERSION } from "../src/version.ts";
+
+const hasSqlite = await import("node:sqlite").then(
+  () => true,
+  () => false,
+);
 
 const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), "fixtures");
 const TRACKER = join(FIXTURES, "bd", "tracker");
@@ -299,4 +305,34 @@ test("the snapshot reports whether the reason an issue stopped is still true", a
   );
   assert.ok(asked.length > 0);
   assert.ok(asked.every((command) => command.join(" ") === "npm whoami"));
+});
+
+test("emitting a snapshot appends it to the history store", { skip: !hasSqlite }, async () => {
+  const place = workspace([TRACKER]);
+  const state = { env: place.env, home: place.home };
+  await emitSnapshot(options(place, new Date("2026-09-08T09:00:00Z")));
+  const result = await emitSnapshot(options(place, new Date("2026-09-08T10:00:00Z")));
+  const rows = readFileSync(historyPath(state));
+  assert.ok(rows.length > 0);
+  assert.equal(result.snapshot.projects[0]?.metrics.landedToday, 0);
+  assert.doesNotThrow(() => parseSnapshot(result.snapshot));
+});
+
+test("the snapshot carries no run-level error on any supported Node", async () => {
+  const place = workspace([TRACKER]);
+  const result = await emitSnapshot(options(place, new Date("2026-09-08T09:00:00Z")));
+  assert.deepEqual(result.snapshot.errors, []);
+});
+
+test("a history store that cannot be opened costs the metrics, not the snapshot", { skip: !hasSqlite }, async () => {
+  const place = workspace([TRACKER]);
+  const path = historyPath({ env: place.env, home: place.home });
+  mkdirSync(path, { recursive: true });
+  const result = await emitSnapshot(options(place, new Date("2026-09-08T09:00:00Z")));
+  assert.equal(result.code, 0);
+  assert.equal(result.snapshot.projects[0]?.issues.length, 15);
+  assert.equal(result.snapshot.errors.length, 1);
+  assert.equal(result.snapshot.errors[0]?.source, path);
+  assert.equal(result.snapshot.projects[0]?.metrics.medianTimeToLandMinutes, undefined);
+  assert.equal(readSnapshot({ env: place.env, home: place.home }).error, undefined);
 });

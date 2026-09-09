@@ -9,7 +9,8 @@ import {
 } from "@404sl/pitwall-schema";
 import { readIssues, type ClosedIssue, type IssueText } from "./beads.js";
 import { hasLiveStructuralBlocker, type ClassifyContext } from "./classify.js";
-import { collectProjects, type RootsOptions } from "./config.js";
+import { collectProjects, historyLimits, type RootsOptions } from "./config.js";
+import { recordSnapshot, type HistoryMetrics } from "./history.js";
 import { readPipeline } from "./pipeline.js";
 import { preconditionProbe, pullLookup } from "./probes.js";
 import { writeSnapshot } from "./state.js";
@@ -169,7 +170,34 @@ export async function collectSnapshot(options: SnapshotOptions = {}): Promise<Sn
   return (await assemble(options)).snapshot;
 }
 
+function withHistory(project: Project, derived: HistoryMetrics | undefined): Project {
+  if (derived === undefined) {
+    return project;
+  }
+  const metrics: Metrics = { ...project.metrics, landedToday: derived.landedToday };
+  if (derived.medianTimeToLandMinutes !== undefined) {
+    metrics.medianTimeToLandMinutes = derived.medianTimeToLandMinutes;
+  }
+  if (derived.bounceRate !== undefined) {
+    metrics.bounceRate = derived.bounceRate;
+  }
+  return { ...project, metrics };
+}
+
 export async function emitSnapshot(options: SnapshotOptions = {}): Promise<SnapshotResult> {
   const { snapshot, code } = await assemble(options);
-  return { snapshot, path: writeSnapshot(snapshot, options), code };
+  const history = await recordSnapshot(snapshot, {
+    env: options.env,
+    home: options.home,
+    limits: historyLimits(options),
+    now: new Date(snapshot.generatedAt),
+  });
+  const recorded = parseSnapshot({
+    ...snapshot,
+    projects: snapshot.projects.map((project) =>
+      withHistory(project, history.metrics.get(project.id)),
+    ),
+    errors: history.error === undefined ? snapshot.errors : [...snapshot.errors, history.error],
+  });
+  return { snapshot: recorded, path: writeSnapshot(recorded, options), code };
 }
