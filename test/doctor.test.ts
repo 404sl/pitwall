@@ -226,6 +226,36 @@ test("a workspace file that is not JSON fails with what the parser said", async 
   assert.equal(diagnosis.code, 1);
 });
 
+test("a workspace whose repos is not an object fails without abandoning the rest of the report", async () => {
+  for (const repos of [[], null]) {
+    const broken = root();
+    tracker(broken);
+    writeFileSync(join(broken, WORKSPACE_FILE), JSON.stringify({ root: broken, repos }));
+    const well = healthy("own");
+    const diagnosis = await diagnose(options([broken, well]));
+    const check = named(diagnosis, basename(broken));
+    assert.equal(check.severity, "fail");
+    assert.ok(check.result.includes("repos is not an object"));
+    assert.ok(check.tried.includes(broken));
+    assert.equal(named(diagnosis, `${basename(well)} tracker`).severity, "ok");
+    assert.equal(named(diagnosis, `${basename(well)} repo site`).severity, "ok");
+    assert.equal(diagnosis.code, 1);
+  }
+});
+
+test("the same root listed twice is checked once and is not a shared lockPrefix", async () => {
+  const dir = healthy();
+  const twice = await diagnose(options([dir, dir]));
+  assert.equal(twice.checks.filter((check) => check.name === basename(dir)).length, 1);
+  assert.equal(named(twice, "lockPrefix").severity, "ok");
+  assert.equal(twice.code, 0);
+  const once = await diagnose(options([dir]));
+  assert.deepEqual(
+    twice.checks.map((check) => check.name),
+    once.checks.map((check) => check.name),
+  );
+});
+
 test("the report prints one line per check, plus a header and a count", () => {
   const checks: Check[] = [
     { severity: "ok", name: "roots", tried: "read /config", result: "1 workspace root" },

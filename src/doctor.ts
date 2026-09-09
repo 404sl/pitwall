@@ -262,8 +262,10 @@ async function workspaceChecks(root: string, options: DoctorOptions): Promise<Wo
     };
   }
   let workspace: Record<string, unknown>;
+  let repos: [string, unknown][];
   try {
     workspace = asRecord(JSON.parse(readFileSync(found.path, "utf8")), found.name);
+    repos = repoEntries(workspace);
   } catch (cause) {
     return {
       checks: [
@@ -272,7 +274,6 @@ async function workspaceChecks(root: string, options: DoctorOptions): Promise<Wo
     };
   }
   const both = WORKSPACE_FILES.every((name) => existsSync(join(dir, name)));
-  const repos = repoEntries(workspace);
   checks.push({
     severity: both ? "warn" : "ok",
     name: id,
@@ -313,7 +314,7 @@ export async function diagnose(options: DoctorOptions = {}): Promise<Diagnosis> 
   const roots = resolveRoots(options);
   const checks: Check[] = [rootsCheck(roots), await ghCheck(env, timeoutMs)];
   const claims = new Map<string, string[]>();
-  for (const root of roots.roots) {
+  for (const root of new Set(roots.roots)) {
     const reading = await workspaceChecks(root, options);
     checks.push(...reading.checks);
     if (reading.lockPrefix !== undefined) {
