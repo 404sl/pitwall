@@ -1,7 +1,22 @@
 import type { StalenessVerdict } from "@404sl/pitwall-schema";
+import { fill } from "../src/format.js";
 import { strings } from "./strings.js";
 
 export * from "../src/format.js";
+
+export function ofTotal(shown: number, total: number): string {
+  return fill(strings.filters.countOf, { shown: String(shown), total: String(total) });
+}
+
+export function ofParts(shown: number, total: number): [string, string] {
+  const lead = String(shown);
+  const whole = ofTotal(shown, total);
+  return [lead, whole.slice(whole.indexOf(lead) + lead.length)];
+}
+
+export function countLabel(shown: number, total: number, filtered: boolean): string {
+  return filtered ? ofTotal(shown, total) : String(shown);
+}
 
 export const VERDICT_WORD: Record<StalenessVerdict, string> = {
   unchecked: strings.stale.unchecked,

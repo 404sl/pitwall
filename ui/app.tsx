@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Snapshot } from "@404sl/pitwall-schema";
-import { buildBoard, previewIssue, type Board, type ProblemRow } from "./model.js";
+import { buildBoard, previewIssue, type FilterState, type ProblemRow } from "./model.js";
 import { Band } from "./components/Band.js";
 import { Failure } from "./components/Failure.js";
+import { Filters, filterSentence } from "./components/Filters.js";
 import { Header } from "./components/Header.js";
 import { NeedsYou } from "./components/NeedsYou.js";
 import { Parked } from "./components/Parked.js";
@@ -10,7 +11,8 @@ import { Problems } from "./components/Problems.js";
 import { Ready } from "./components/Ready.js";
 import { Running, runningSummary } from "./components/Running.js";
 import { IssuePage } from "./components/IssuePage.js";
-import { routeOf, type IssueRoute } from "./routes.js";
+import { countLabel } from "./format.js";
+import { filterOf, routeOf } from "./routes.js";
 import { strings } from "./strings.js";
 
 const SNAPSHOT_URL = "/api/snapshot";
@@ -88,26 +90,27 @@ function consoleProblem(cause: unknown): ProblemRow {
   };
 }
 
-function useIssueRoute(): IssueRoute | undefined {
+function useHash(): string {
   const [hash, setHash] = useState(() => window.location.hash);
   useEffect(() => {
     const onHash = () => setHash(window.location.hash);
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
-  return useMemo(() => routeOf(hash), [hash]);
+  return hash;
 }
 
 export function App() {
-  const route = useIssueRoute();
-  const [board, setBoard] = useState<Board | undefined>(undefined);
+  const hash = useHash();
+  const route = useMemo(() => routeOf(hash), [hash]);
+  const filter = useMemo<FilterState>(() => filterOf(hash), [hash]);
   const [taken, setTaken] = useState<Snapshot | undefined>(undefined);
   const [failure, setFailure] = useState<string | undefined>(undefined);
   const [refetchFailure, setRefetchFailure] = useState<ProblemRow | undefined>(undefined);
   const [loading, setLoading] = useState(true);
   const [version, setVersion] = useState("");
   const [update, setUpdate] = useState<string | undefined>(undefined);
-  const held = useRef<Board | undefined>(undefined);
+  const held = useRef<Snapshot | undefined>(undefined);
 
   const load = useCallback(async (signal: AbortSignal) => {
     try {
@@ -119,9 +122,7 @@ export function App() {
         setVersion(running.running);
         setUpdate(running.update);
       }
-      const next = buildBoard(snapshot);
-      held.current = next;
-      setBoard(next);
+      held.current = snapshot;
       setTaken(snapshot);
       setFailure(undefined);
       setRefetchFailure(undefined);
@@ -160,6 +161,8 @@ export function App() {
     };
   }, [load]);
 
+  const board = useMemo(() => (taken === undefined ? undefined : buildBoard(taken, filter)), [taken, filter]);
+
   if (route !== undefined) {
     return (
       <>
@@ -174,6 +177,7 @@ export function App() {
         <main className="pw-console">
           <IssuePage
             route={route}
+            filter={filter}
             preview={taken === undefined ? undefined : previewIssue(taken, route.project, route.id)}
           />
         </main>
@@ -190,6 +194,8 @@ export function App() {
   }
 
   const problems = refetchFailure === undefined ? board.problems : [...board.problems, refetchFailure];
+  const emptied = board.filtered ? filterSentence(filter, board.options) : undefined;
+  const emptyOf = (total: number) => (total > 0 ? emptied : undefined);
 
   return (
     <>
@@ -200,19 +206,50 @@ export function App() {
         update={update}
       />
       <main className="pw-console">
-        <Band id="needs" label={strings.band.needsYou} count={board.needsYouCount} alert={board.needsYouCount > 0}>
-          <NeedsYou groups={board.needsYou} />
+        <Filters filter={filter} options={board.options} shown={board.issueCount} total={board.totals.issues} />
+        <Band
+          id="needs"
+          label={strings.band.needsYou}
+          count={countLabel(board.needsYouCount, board.totals.needsYou, board.filtered)}
+          alert={board.totals.needsYou > 0}
+        >
+          <NeedsYou groups={board.needsYou} filter={filter} filteredEmpty={emptyOf(board.totals.needsYou)} />
         </Band>
-        <Band id="running" label={strings.band.running} count={runningSummary(board.runningTotals)}>
-          <Running rows={board.running} />
+        <Band
+          id="running"
+          label={strings.band.running}
+          count={runningSummary(
+            board.runningTotals,
+            board.filtered ? board.totals.runningStates : undefined,
+          )}
+        >
+          <Running rows={board.running} filter={filter} filteredEmpty={emptyOf(board.totals.running)} />
         </Band>
-        <Band id="ready" label={strings.band.ready} count={board.readyCount}>
-          <Ready rows={board.ready} total={board.readyCount} />
+        <Band
+          id="ready"
+          label={strings.band.ready}
+          count={countLabel(board.readyCount, board.totals.ready, board.filtered)}
+        >
+          <Ready
+            rows={board.ready}
+            total={board.readyCount}
+            filter={filter}
+            filteredEmpty={emptyOf(board.totals.ready)}
+          />
         </Band>
         <Band id="parked" label={strings.band.parked}>
-          <Parked entries={board.parked} />
+          <Parked
+            entries={board.parked}
+            totals={board.filtered ? board.totals.parked : undefined}
+            filteredEmpty={emptyOf(board.totals.parked.length)}
+          />
         </Band>
-        <Band id="problems" label={strings.band.problems} alert={problems.length > 0}>
+        <Band
+          id="problems"
+          label={strings.band.problems}
+          count={board.filtered ? strings.filters.notFiltered : undefined}
+          alert={problems.length > 0}
+        >
           <Problems rows={problems} />
         </Band>
       </main>

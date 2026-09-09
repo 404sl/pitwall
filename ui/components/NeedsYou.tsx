@@ -1,4 +1,4 @@
-import type { NeedsYouGroup, NeedsYouRow } from "../model.js";
+import type { FilterState, NeedsYouGroup, NeedsYouRow } from "../model.js";
 import { VERDICT_CLASS, VERDICT_WORD, clock, priorityLabel } from "../format.js";
 import { issueHref } from "../routes.js";
 import { strings } from "../strings.js";
@@ -12,9 +12,15 @@ function Staleness({ row }: { row: NeedsYouRow }) {
   );
 }
 
-export function NeedsYou({ groups }: { groups: NeedsYouGroup[] }) {
+interface NeedsYouProps {
+  groups: NeedsYouGroup[];
+  filter?: FilterState;
+  filteredEmpty?: string;
+}
+
+export function NeedsYou({ groups, filter, filteredEmpty }: NeedsYouProps) {
   if (groups.length === 0) {
-    return <p className="pw-empty">{strings.empty.needsYou}</p>;
+    return <p className="pw-empty">{filteredEmpty ?? strings.empty.needsYou}</p>;
   }
   return (
     <table className="pw-table pw-table--needs">
@@ -43,7 +49,7 @@ export function NeedsYou({ groups }: { groups: NeedsYouGroup[] }) {
               </td>
               <td className="pw-cell pw-cell--kind">{strings.kind[row.kind]}</td>
               <td className="pw-cell pw-cell--title">
-                <a className="pw-link" href={issueHref(group.projectId, row.id)}>
+                <a className="pw-link" href={issueHref(group.projectId, row.id, filter)}>
                   {row.title}
                 </a>
               </td>

@@ -12,7 +12,8 @@ import {
   type Staleness,
   type StalenessVerdict,
 } from "@404sl/pitwall-schema";
-import type { ClassificationReason } from "./classify.js";
+import { parentIdOf, type ClassificationReason } from "./classify.js";
+import { priorityLabel } from "./format.js";
 import { stalenessSource, unresolvedCount } from "./staleness.js";
 
 export type NeedsYouKind = "decision" | "access";
@@ -47,6 +48,7 @@ export interface RunningRow {
   projectId: string;
   state: RunningState;
   count: number;
+  total?: number;
   chips: LaneChip[];
 }
 
@@ -72,12 +74,42 @@ export interface ParkedEntry {
   count: number;
 }
 
+export interface ParkedCount {
+  reason: string;
+  count: number;
+  total?: number;
+}
+
 export interface ProblemRow {
   scope: ProblemScope;
   name: string;
   source: string;
   message: string;
   at: string;
+}
+
+export const FILTER_NONE = "none";
+
+export const FILTER_KEYS = ["project", "type", "priority", "epic"] as const;
+
+export type FilterKey = (typeof FILTER_KEYS)[number];
+
+export type FilterState = Partial<Record<FilterKey, string>>;
+
+export interface FilterOption {
+  value: string;
+  label: string;
+}
+
+export type FilterOptions = Record<FilterKey, FilterOption[]>;
+
+export interface BoardTotals {
+  needsYou: number;
+  running: number;
+  runningStates: RunningTotal[];
+  ready: number;
+  parked: ParkedEntry[];
+  issues: number;
 }
 
 export interface Board {
@@ -87,11 +119,17 @@ export interface Board {
   needsYouCount: number;
   running: RunningRow[];
   runningTotals: RunningTotal[];
+  runningCount: number;
   ready: ReadyRow[];
   readyCount: number;
   readyShown: number;
   parked: ParkedEntry[];
   problems: ProblemRow[];
+  filter: FilterState;
+  filtered: boolean;
+  options: FilterOptions;
+  issueCount: number;
+  totals: BoardTotals;
 }
 
 export const READY_LIMIT = 8;
@@ -227,6 +265,15 @@ function runningRows(projects: Project[], generatedAt: string): RunningRow[] {
     .flatMap((group) => group.rows);
 }
 
+function runningKey(row: { projectId: string; state: RunningState }): string {
+  return `${row.projectId}\u0000${row.state}`;
+}
+
+function withRunningTotals(rows: RunningRow[], unfiltered: RunningRow[]): RunningRow[] {
+  const totals = new Map(unfiltered.map((row) => [runningKey(row), row.count]));
+  return rows.map((row) => ({ ...row, total: totals.get(runningKey(row)) ?? row.count }));
+}
+
 function runningTotals(rows: RunningRow[]): RunningTotal[] {
   return RUNNING_ORDER.map((state) => ({
     state,
@@ -289,16 +336,28 @@ function parkedEntries(projects: Project[]): ParkedEntry[] {
     .filter((entry) => entry.count > 0);
 }
 
-export function parkedSummary(entries: ParkedEntry[]): string {
-  return entries
-    .filter((entry) => entry.reason !== "blocked")
-    .map((entry) => `${entry.reason} ${entry.count}`)
+export function parkedCounts(entries: ParkedEntry[], totals?: ParkedEntry[]): ParkedCount[] {
+  if (totals === undefined) {
+    return entries.map((entry) => ({ reason: entry.reason, count: entry.count }));
+  }
+  const shown = new Map(entries.map((entry) => [entry.reason, entry.count]));
+  return totals.map((entry) => ({ reason: entry.reason, count: shown.get(entry.reason) ?? 0, total: entry.count }));
+}
+
+export function countOf(part: ParkedCount): string {
+  return part.total === undefined ? String(part.count) : `${part.count} of ${part.total}`;
+}
+
+export function parkedSummary(entries: ParkedEntry[], totals?: ParkedEntry[]): string {
+  return parkedCounts(entries, totals)
+    .filter((part) => part.reason !== "blocked")
+    .map((part) => `${part.reason} ${countOf(part)}`)
     .join(" \u00b7 ");
 }
 
-export function blockedSummary(entries: ParkedEntry[]): string {
-  const blocked = entries.find((entry) => entry.reason === "blocked");
-  return blocked === undefined ? "" : `blocked ${blocked.count}`;
+export function blockedSummary(entries: ParkedEntry[], totals?: ParkedEntry[]): string {
+  const blocked = parkedCounts(entries, totals).find((part) => part.reason === "blocked");
+  return blocked === undefined ? "" : `blocked ${countOf(blocked)}`;
 }
 
 function problemRows(snapshot: Snapshot): ProblemRow[] {
@@ -321,12 +380,104 @@ function problemRows(snapshot: Snapshot): ProblemRow[] {
   return [...run, ...projects];
 }
 
-export function buildBoard(snapshot: Snapshot): Board {
+export const ISSUE_TYPES = ["bug", "feature", "task", "chore", "epic", "decision"];
+
+export const PRIORITIES = [0, 1, 2, 3, 4];
+
+export const epicOf = parentIdOf;
+
+export function isFiltered(filter: FilterState): boolean {
+  return FILTER_KEYS.some((key) => filter[key] !== undefined);
+}
+
+interface Filterable {
+  id: string;
+  issueType?: string;
+  priority?: number;
+}
+
+function matchesValue(value: string | undefined, actual: string | undefined): boolean {
+  if (value === undefined) {
+    return true;
+  }
+  return value === FILTER_NONE ? actual === undefined : value === actual;
+}
+
+function issueMatches(projectId: string, issue: Filterable, filter: FilterState): boolean {
+  if (filter.project !== undefined && filter.project !== projectId) {
+    return false;
+  }
+  if (!matchesValue(filter.type, issue.issueType)) {
+    return false;
+  }
+  if (!matchesValue(filter.priority, issue.priority === undefined ? undefined : String(issue.priority))) {
+    return false;
+  }
+  if (filter.epic === undefined) {
+    return true;
+  }
+  return filter.epic === FILTER_NONE
+    ? epicOf(issue.id) === undefined
+    : issue.id.startsWith(`${filter.epic}.`);
+}
+
+const UNRESOLVED_LANE: Filterable = { id: "" };
+
+function laneMatches(project: Project, lane: Lane, filter: FilterState): boolean {
+  const issue = lane.issueId === undefined ? undefined : issuesOf(project).find((entry) => entry.id === lane.issueId);
+  return issueMatches(project.id, issue ?? UNRESOLVED_LANE, filter);
+}
+
+function filteredProjects(projects: Project[], filter: FilterState): Project[] {
+  if (!isFiltered(filter)) {
+    return projects;
+  }
+  return projects.map((project) => ({
+    ...project,
+    issues: issuesOf(project).filter((issue) => issueMatches(project.id, issue, filter)),
+    lanes: lanesOf(project).filter((lane) => laneMatches(project, lane, filter)),
+  }));
+}
+
+function filterOptions(projects: Project[]): FilterOptions {
+  const issues = projects.flatMap(issuesOf);
+  const extraTypes = [
+    ...new Set(
+      issues
+        .map((issue) => issue.issueType)
+        .filter((type): type is string => type !== undefined && !ISSUE_TYPES.includes(type)),
+    ),
+  ].sort();
+  const epics = [...new Set(issues.map((issue) => epicOf(issue.id)).filter((id): id is string => id !== undefined))].sort();
+  return {
+    project: projects.map((project) => ({ value: project.id, label: project.name })),
+    type: [...ISSUE_TYPES, ...extraTypes].map((type) => ({ value: type, label: type })),
+    priority: PRIORITIES.map((priority) => ({ value: String(priority), label: priorityLabel(priority) })),
+    epic: epics.map((id) => ({ value: id, label: id })),
+  };
+}
+
+function boardTotals(projects: Project[], generatedAt: string, running: RunningRow[]): BoardTotals {
+  return {
+    needsYou: needsYouGroups(projects).reduce((sum, group) => sum + group.rows.length, 0),
+    running: running.reduce((sum, row) => sum + row.count, 0),
+    runningStates: runningTotals(running),
+    ready: readyRows(projects).length,
+    parked: parkedEntries(projects),
+    issues: projects.reduce((sum, project) => sum + issuesOf(project).length, 0),
+  };
+}
+
+export function buildBoard(snapshot: Snapshot, filter: FilterState = {}): Board {
   const projects = snapshot.projects ?? [];
   const generatedAt = snapshot.generatedAt;
-  const needsYou = needsYouGroups(projects);
-  const running = runningRows(projects, generatedAt);
-  const ready = readyRows(projects);
+  const shown = filteredProjects(projects, filter);
+  const filtered = isFiltered(filter);
+  const needsYou = needsYouGroups(shown);
+  const everyRunning = runningRows(projects, generatedAt);
+  const running = filtered ? withRunningTotals(runningRows(shown, generatedAt), everyRunning) : everyRunning;
+  const ready = readyRows(shown);
+  const parked = parkedEntries(shown);
   return {
     generatedAt,
     projectCount: projects.length,
@@ -334,11 +485,17 @@ export function buildBoard(snapshot: Snapshot): Board {
     needsYouCount: needsYou.reduce((sum, group) => sum + group.rows.length, 0),
     running,
     runningTotals: runningTotals(running),
+    runningCount: running.reduce((sum, row) => sum + row.count, 0),
     ready: ready.slice(0, READY_LIMIT),
     readyCount: ready.length,
     readyShown: Math.min(ready.length, READY_LIMIT),
-    parked: parkedEntries(projects),
+    parked,
     problems: problemRows(snapshot),
+    filter,
+    filtered,
+    options: filterOptions(projects),
+    issueCount: shown.reduce((sum, project) => sum + issuesOf(project).length, 0),
+    totals: boardTotals(projects, generatedAt, everyRunning),
   };
 }
 

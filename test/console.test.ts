@@ -14,9 +14,10 @@ import {
   previewIssue,
   snapshotAge,
 } from "../ui/model.ts";
-import type { IssuePayload, IssuePreview } from "../ui/model.ts";
+import type { Board, FilterState, IssuePayload, IssuePreview } from "../ui/model.ts";
 import { strings } from "../ui/strings.ts";
-import { issueHref, routeOf } from "../ui/routes.ts";
+import { countLabel } from "../ui/format.ts";
+import { boardHref, filterOf, filterQuery, issueHref, routeOf } from "../ui/routes.ts";
 import { VERSION } from "../src/version.ts";
 
 register("./support/svg-stub.mjs", import.meta.url);
@@ -728,4 +729,347 @@ test("the count of references a check could not make is the count the failure re
   assert.equal(view.staleness.unresolved, 3);
   assert.deepEqual(view.staleness.evidence, ["site#1128 is closed, not merged"]);
   assert.equal(buildIssueView(payload()).staleness.unresolved, 0);
+});
+
+const { Band } = await import("../ui/components/Band.tsx");
+const { Filters, filterSentence } = await import("../ui/components/Filters.tsx");
+const { NeedsYou } = await import("../ui/components/NeedsYou.tsx");
+const { Problems } = await import("../ui/components/Problems.tsx");
+
+const MIXED_PROJECTS = [
+  project("pitwall", {
+    issues: [
+      issue("pitwall-4b5", "yours:decision", { issueType: "epic" }),
+      issue("pitwall-4b5.1", "yours:decision", { issueType: "bug" }),
+      issue("pitwall-4b5.2", "ready", { issueType: "task", priority: 2 }),
+      issue("pitwall-7qq", "ready", { issueType: undefined, priority: undefined }),
+    ],
+    lanes: [
+      { slot: 1, state: "working", issueId: "pitwall-4b5.2" },
+      { slot: 2, state: "stranded" },
+    ],
+  }),
+  project("session-replay", {
+    issues: [issue("sr-1aa", "ready", { issueType: "chore", priority: 3 })],
+    errors: [{ source: "bd list --json", message: "tracker read timed out after 10s", at: "2026-09-08T14:10:00Z" }],
+  }),
+];
+
+const MIXED = snapshotOf(MIXED_PROJECTS);
+
+const FILTER_MATRIX: FilterState[] = [
+  {},
+  { project: "pitwall" },
+  { type: "bug" },
+  { type: "none" },
+  { priority: "1" },
+  { priority: "none" },
+  { epic: "pitwall-4b5" },
+  { epic: "none" },
+  { project: "session-replay", type: "zzz", priority: "4", epic: "nothing" },
+];
+
+function shownIds(board: Board): string[] {
+  return [
+    ...board.needsYou.flatMap((group) => group.rows.map((row) => row.id)),
+    ...board.ready.map((row) => row.id),
+  ].sort();
+}
+
+test("problems render whole under every filter, because a hidden collection failure reads as health", () => {
+  const unfiltered = buildBoard(MIXED).problems;
+  assert.equal(unfiltered.length, 1);
+  for (const filter of FILTER_MATRIX) {
+    const board = buildBoard(MIXED, filter);
+    assert.deepEqual(board.problems, unfiltered, `problems changed under ${JSON.stringify(filter)}`);
+  }
+  const markup = renderToStaticMarkup(
+    createElement(Band, {
+      id: "problems",
+      label: strings.band.problems,
+      count: strings.filters.notFiltered,
+      children: createElement(Problems, { rows: buildBoard(MIXED, { type: "bug" }).problems }),
+    }),
+  );
+  assert.ok(markup.includes("bd list --json"), "the source that could not be read must survive filtering");
+  assert.ok(markup.includes(strings.filters.notFiltered), "a filtered board must say problems are not filtered");
+});
+
+test("a count under a filter says what it is counting, and an unfiltered one stays a plain number", () => {
+  const crowded = snapshotOf([
+    project("pitwall", { issues: Array.from({ length: 5 }, (_, i) => issue(`pitwall-${i}`, "yours:decision")) }),
+    project("session-replay", { issues: Array.from({ length: 60 }, (_, i) => issue(`sr-${i}`, "yours:decision")) }),
+  ]);
+  const board = buildBoard(crowded, { project: "pitwall" });
+  assert.equal(board.needsYouCount, 5);
+  assert.equal(board.totals.needsYou, 65);
+  const filtered = renderToStaticMarkup(
+    createElement(Band, {
+      id: "needs",
+      label: strings.band.needsYou,
+      count: countLabel(board.needsYouCount, board.totals.needsYou, board.filtered),
+      children: createElement(NeedsYou, { groups: board.needsYou }),
+    }),
+  );
+  assert.ok(filtered.includes("5 of 65"), "a filtered count must state the total it was taken from");
+  const plain = buildBoard(crowded);
+  const unfiltered = renderToStaticMarkup(
+    createElement(Band, {
+      id: "needs",
+      label: strings.band.needsYou,
+      count: countLabel(plain.needsYouCount, plain.totals.needsYou, plain.filtered),
+      children: createElement(NeedsYou, { groups: plain.needsYou }),
+    }),
+  );
+  assert.ok(unfiltered.includes(">65<"));
+  assert.equal(unfiltered.includes(" of "), false, "an unfiltered count must not read as a subset");
+});
+
+test("every band count under a filter reads as a subset of the figure it came from", () => {
+  const board = buildBoard(MIXED, { project: "pitwall" });
+  assert.equal(countLabel(board.needsYouCount, board.totals.needsYou, board.filtered), "2 of 2");
+  assert.equal(countLabel(board.readyCount, board.totals.ready, board.filtered), "2 of 3");
+  assert.equal(countLabel(board.runningCount, board.totals.running, board.filtered), "2 of 2");
+  assert.equal(countLabel(board.issueCount, board.totals.issues, board.filtered), "4 of 5");
+});
+
+test("an issue with no type, no priority or no epic stays reachable rather than dropped", () => {
+  assert.deepEqual(shownIds(buildBoard(MIXED, { type: "none" })), ["pitwall-7qq"]);
+  assert.deepEqual(shownIds(buildBoard(MIXED, { priority: "none" })), ["pitwall-7qq"]);
+  assert.deepEqual(shownIds(buildBoard(MIXED, { epic: "none" })), ["pitwall-4b5", "pitwall-7qq", "sr-1aa"]);
+  assert.deepEqual(shownIds(buildBoard(MIXED, { epic: "pitwall-4b5" })), ["pitwall-4b5.1", "pitwall-4b5.2"]);
+});
+
+test("a lane is filtered by the issue it claims, and an unclaimed lane counts as none of them", () => {
+  assert.equal(buildBoard(MIXED, { type: "task" }).runningCount, 1);
+  assert.equal(buildBoard(MIXED, { type: "bug" }).runningCount, 0);
+  assert.equal(buildBoard(MIXED, { type: "none" }).runningCount, 1);
+  assert.equal(buildBoard(MIXED).runningCount, 2);
+});
+
+test("an empty result names the filters that emptied it", () => {
+  const filter: FilterState = { project: "pitwall", type: "bug", priority: "4", epic: "pitwall-4b5" };
+  const board = buildBoard(MIXED, filter);
+  assert.deepEqual(board.needsYou, []);
+  const sentence = filterSentence(filter, board.options);
+  const markup = renderToStaticMarkup(
+    createElement(NeedsYou, { groups: board.needsYou, filteredEmpty: sentence }),
+  );
+  for (const part of ["project pitwall", "type bug", "P4", "epic pitwall-4b5"]) {
+    assert.ok(markup.includes(part), `the empty sentence must name ${part}`);
+  }
+  assert.equal(
+    markup.includes(strings.empty.needsYou),
+    false,
+    "a filtered empty band must not claim the whole band is empty",
+  );
+  const genuinely = buildBoard(snapshotOf([project("pitwall")]));
+  assert.ok(
+    renderToStaticMarkup(createElement(NeedsYou, { groups: genuinely.needsYou })).includes(strings.empty.needsYou),
+  );
+});
+
+test("a filter survives the URL it is sent in, unknown values included", () => {
+  const cases: FilterState[] = [
+    {},
+    { project: "pitwall" },
+    { project: "a project", type: "bug", priority: "1", epic: "pitwall-4b5" },
+    { type: "zzz" },
+    { epic: "none" },
+  ];
+  for (const filter of cases) {
+    assert.deepEqual(filterOf(filterQuery(filter)), filter);
+  }
+  assert.equal(boardHref({}), "#/");
+  assert.equal(boardHref({ project: "pitwall" }), "#/?project=pitwall");
+  assert.equal(issueHref("pitwall", "pitwall-4b5.1", { type: "bug" }), "#/issue/pitwall/pitwall-4b5.1?type=bug");
+  assert.deepEqual(routeOf("#/issue/pitwall/pitwall-4b5.1?project=pitwall"), {
+    project: "pitwall",
+    id: "pitwall-4b5.1",
+  });
+  assert.deepEqual(filterOf("#/issue/pitwall/pitwall-4b5.1?project=pitwall"), { project: "pitwall" });
+  assert.deepEqual(filterOf("#/?type=bug&type=task"), { type: "bug" });
+  const unknown = buildBoard(MIXED, { type: "zzz" });
+  assert.equal(unknown.filtered, true, "an unknown value is a live filter, not a dropped one");
+  assert.equal(unknown.issueCount, 0);
+});
+
+test("the filters on screen state themselves without anything being opened", () => {
+  const board = buildBoard(MIXED, { project: "pitwall", type: "zzz" });
+  const markup = renderToStaticMarkup(
+    createElement(Filters, {
+      filter: board.filter,
+      options: board.options,
+      shown: board.issueCount,
+      total: board.totals.issues,
+    }),
+  );
+  assert.ok(markup.includes('id="filter-project"'));
+  assert.ok(markup.includes('id="filter-epic"'));
+  assert.ok(/<option value="zzz"[^>]*selected/.test(markup), "an unknown value must stay selected and visible");
+  assert.ok(markup.includes(strings.filters.active));
+  assert.ok(markup.includes("0 of 5 issues"));
+  assert.ok(markup.includes(strings.filters.clear));
+  const plain = buildBoard(MIXED);
+  const bare = renderToStaticMarkup(
+    createElement(Filters, {
+      filter: plain.filter,
+      options: plain.options,
+      shown: plain.issueCount,
+      total: plain.totals.issues,
+    }),
+  );
+  assert.equal(bare.includes(strings.filters.active), false);
+  assert.equal(bare.includes(strings.filters.clear), false);
+});
+
+test("filtering is a view over the snapshot and never a change to it", () => {
+  const read = snapshotOf(MIXED_PROJECTS);
+  const pristine = snapshotOf(MIXED_PROJECTS);
+  for (const filter of FILTER_MATRIX) {
+    buildBoard(read, filter);
+  }
+  assert.deepEqual(read, pristine, "a filter must not touch the document the console was given");
+  assert.equal(buildBoard(read, { project: "pitwall" }).projectCount, 2, "the header counts the snapshot, not the view");
+});
+
+const { Parked } = await import("../ui/components/Parked.tsx");
+const { Running, runningSummary } = await import("../ui/components/Running.tsx");
+
+function parkedIssues(reason: string, count: number, bugs: number): Array<Record<string, unknown>> {
+  return Array.from({ length: count }, (_, index) =>
+    issue(`pw-${reason.replace(":", "-")}-${index}`, reason, { issueType: index < bugs ? "bug" : "task" }),
+  );
+}
+
+const PARKED_MIX = snapshotOf([
+  project("pitwall", {
+    issues: [
+      ...parkedIssues("parked:tooling", 3, 1),
+      ...parkedIssues("parked:watch", 2, 1),
+      ...parkedIssues("parked:umbrella", 4, 0),
+      ...parkedIssues("parked:roadmap", 6, 2),
+      ...parkedIssues("blocked", 5, 0),
+    ],
+  }),
+]);
+
+function textOf(markup: string): string {
+  return markup.replace(/<[^>]*>/g, "");
+}
+
+function parkedMarkup(board: Board): string {
+  return renderToStaticMarkup(
+    createElement(Band, {
+      id: "parked",
+      label: strings.band.parked,
+      children: createElement(Parked, {
+        entries: board.parked,
+        totals: board.filtered ? board.totals.parked : undefined,
+        filteredEmpty: board.filtered ? filterSentence(board.filter, board.options) : undefined,
+      }),
+    }),
+  );
+}
+
+test("a parked reason under a filter counts itself, and the reasons are still never summed", () => {
+  const plain = buildBoard(PARKED_MIX);
+  assert.equal(parkedSummary(plain.parked), "tooling 3 · watch 2 · umbrella 4 · roadmap 6");
+  assert.equal(blockedSummary(plain.parked), "blocked 5");
+
+  const board = buildBoard(PARKED_MIX, { type: "bug" });
+  assert.equal(
+    parkedSummary(board.parked, board.totals.parked),
+    "tooling 1 of 3 · watch 1 of 2 · umbrella 0 of 4 · roadmap 2 of 6",
+    "a reason that filters away must still say what it filtered out",
+  );
+  assert.equal(blockedSummary(board.parked, board.totals.parked), "blocked 0 of 5");
+  assert.equal(
+    parkedSummary(board.parked, board.totals.parked).includes("blocked"),
+    false,
+    "blocked must not be joined into the parked reasons under a filter either",
+  );
+
+  const markup = parkedMarkup(board);
+  const read = textOf(markup);
+  assert.equal(markup.includes("pw-band__count"), false, "parked must carry no head count, filtered or not");
+  assert.equal(read.includes("20"), false, "a summed parked figure must never be rendered");
+  assert.ok(read.includes("tooling 1 of 3 · watch 1 of 2 · umbrella 0 of 4 · roadmap 2 of 6"));
+  assert.ok(read.includes("blocked 0 of 5"), "a reason with nothing left must render as none of its total");
+  assert.ok(markup.includes("pw-of"), "the total a count came from must read as the quieter half");
+
+  const bare = parkedMarkup(plain);
+  assert.equal(bare.includes("pw-of"), false);
+  assert.equal(bare.includes(" of "), false, "an unfiltered parked band must read exactly as it always has");
+  assert.ok(bare.includes("tooling 3"));
+  assert.ok(bare.includes("blocked 5"));
+});
+
+test("a parked band emptied by a filter says which filter emptied it", () => {
+  const board = buildBoard(PARKED_MIX, { type: "zzz" });
+  assert.deepEqual(board.parked, []);
+  const markup = parkedMarkup(board);
+  assert.ok(markup.includes("type zzz"), "the sentence must name the filter that emptied the band");
+  assert.equal(markup.includes(strings.empty.parked), false, "a filtered band must not claim nothing is parked");
+  assert.equal(markup.includes(" of "), false);
+});
+
+const RUNNING_MIX = snapshotOf([
+  project("maas", {
+    issues: [
+      issue("maas-1", "in-flight", { issueType: "bug" }),
+      issue("maas-2", "in-flight", { issueType: "bug" }),
+      issue("maas-3", "in-flight", { issueType: "task" }),
+      issue("maas-4", "landing", { issueType: "task" }),
+    ],
+  }),
+]);
+
+test("a running state a filter emptied still reports the work it left outside the view", () => {
+  const plain = buildBoard(RUNNING_MIX);
+  assert.equal(runningSummary(plain.runningTotals), "3 working · 1 awaiting lander");
+
+  const board = buildBoard(RUNNING_MIX, { type: "bug" });
+  assert.equal(
+    runningSummary(board.runningTotals, board.totals.runningStates),
+    "2 of 3 working · 0 of 1 awaiting lander",
+    "a state with unfiltered work must stay on the head even when the filter empties it",
+  );
+
+  const markup = renderToStaticMarkup(createElement(Running, { rows: board.running }));
+  assert.ok(textOf(markup).includes("2 of 3 working"), "a running row under a filter must say what it is counting");
+  assert.ok(markup.includes("pw-of"));
+  const bare = renderToStaticMarkup(createElement(Running, { rows: plain.running }));
+  assert.equal(bare.includes(" of "), false, "an unfiltered running row stays a plain count");
+});
+
+test("no filter control is ever disabled, because a control that cannot be used cannot explain itself", () => {
+  const board = buildBoard(snapshotOf([project("pitwall", { issues: [issue("pitwall-1", "ready")] })]));
+  const markup = renderToStaticMarkup(
+    createElement(Filters, {
+      filter: board.filter,
+      options: board.options,
+      shown: board.issueCount,
+      total: board.totals.issues,
+    }),
+  );
+  assert.equal(markup.includes("disabled"), false);
+  assert.equal((markup.match(/<select/g) ?? []).length, 4);
+});
+
+test("a filter value the snapshot never knew says so where it is chosen and where it is stated", () => {
+  const board = buildBoard(MIXED, { type: "zzz" });
+  const markup = renderToStaticMarkup(
+    createElement(Filters, {
+      filter: board.filter,
+      options: board.options,
+      shown: board.issueCount,
+      total: board.totals.issues,
+    }),
+  );
+  const named = "zzz — not in this snapshot";
+  assert.ok(/<option value="zzz"[^>]*selected/.test(markup), "an unknown value must stay selected");
+  assert.ok(textOf(markup).includes(named), "an unknown value must name itself where it is chosen");
+  assert.ok(textOf(markup).includes(`type ${named}`), "the stated filter must name it as one the snapshot has not");
+  assert.ok(markup.includes("0 of 5 issues"));
 });

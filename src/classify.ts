@@ -63,7 +63,7 @@ export function isUmbrella(issue: UnclassifiedIssue, issues: readonly Unclassifi
   return umbrellaReason(issue, issues) !== undefined;
 }
 
-function parentIdOf(id: string): string | undefined {
+export function parentIdOf(id: string): string | undefined {
   const cut = id.lastIndexOf(".");
   return cut === -1 ? undefined : id.slice(0, cut);
 }
