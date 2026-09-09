@@ -193,6 +193,48 @@ test("a Node without node:sqlite loses the metrics and reports nothing", { skip:
   assert.deepEqual(JSON.parse(run.stdout.trim()), { error: null, metrics: 0 });
 });
 
+test("the window is read a snapshot at a time rather than held whole", { skip: withoutSqlite }, () => {
+  const { home, env } = place();
+  const source = fileURLToPath(new URL("../src/history.ts", import.meta.url));
+  const stamps = Array.from({ length: 120 }, (_, index) => at(300 - index * 2));
+  const probe = [
+    `const { DatabaseSync } = await import("node:sqlite");`,
+    `const { mkdirSync } = await import("node:fs");`,
+    `const { dirname } = await import("node:path");`,
+    `const { recordSnapshot, historyPath } = await import(${JSON.stringify(source)});`,
+    `const env = ${JSON.stringify(env)};`,
+    `const home = ${JSON.stringify(home)};`,
+    `const path = historyPath({ env, home });`,
+    `mkdirSync(dirname(path), { recursive: true });`,
+    `const db = new DatabaseSync(path);`,
+    `db.exec("CREATE TABLE snapshots (id INTEGER PRIMARY KEY AUTOINCREMENT, schema_version TEXT NOT NULL, generated_at TEXT NOT NULL, document TEXT NOT NULL)");`,
+    `const insert = db.prepare("INSERT INTO snapshots (schema_version, generated_at, document) VALUES (?, ?, ?)");`,
+    `const bulk = "x".repeat(500_000);`,
+    `for (const stamp of ${JSON.stringify(stamps)}) {`,
+    `  const held = { schemaVersion: ${JSON.stringify(SCHEMA_VERSION)}, generatedAt: stamp, projects: [{ id: "mw", issues: [{ id: "mw-1", title: bulk, status: "in_progress" }], errors: [] }], errors: [] };`,
+    `  insert.run(${JSON.stringify(SCHEMA_VERSION)}, stamp, JSON.stringify(held));`,
+    `}`,
+    `db.close();`,
+    `const result = await recordSnapshot(${JSON.stringify(document(at(0), []))}, { env, home, now: new Date(${JSON.stringify(NOW.toISOString())}) });`,
+    `console.log(JSON.stringify({ error: result.error ?? null, metrics: result.metrics.get("mw") }));`,
+  ].join("\n");
+  const run = spawnSync(
+    process.execPath,
+    ["--max-old-space-size=48", "--import", "tsx", "--input-type=module", "-e", probe],
+    { encoding: "utf8" },
+  );
+  assert.equal(run.status, 0, `a 60MB window did not derive inside a 48MB heap: ${run.stderr}`);
+  assert.deepEqual(JSON.parse(run.stdout.trim()), {
+    error: null,
+    metrics: {
+      landedToday: 1,
+      closedToday: 1,
+      medianTimeToLandMinutes: 300,
+      bounceRate: 0,
+    },
+  });
+});
+
 test("a snapshot that could not read a project is not read as everything closing", { skip: withoutSqlite }, async () => {
   const { home, env } = place();
   await record(

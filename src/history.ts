@@ -64,6 +64,11 @@ interface StoredDocument {
   projects?: StoredProject[];
 }
 
+interface StoredRow {
+  generated_at: string;
+  document: string;
+}
+
 interface Frame {
   at: Date;
   statuses: Map<string, Status>;
@@ -103,7 +108,7 @@ function frameOf(project: StoredProject, at: Date): Frame | undefined {
   return { at, statuses };
 }
 
-function framesByProject(rows: readonly { generated_at: string; document: string }[]): Map<string, Frame[]> {
+function framesByProject(rows: Iterable<StoredRow>): Map<string, Frame[]> {
   const frames = new Map<string, Frame[]>();
   for (const row of rows) {
     const document = JSON.parse(row.document) as StoredDocument;
@@ -203,10 +208,7 @@ function prune(db: DatabaseSync, limits: HistoryLimits, now: Date): void {
 
 function derive(db: DatabaseSync, windowDays: number, now: Date): Map<string, HistoryMetrics> {
   const since = new Date(now.getTime() - windowDays * DAY_MS).toISOString();
-  const rows = db.prepare(SELECT_WINDOW).all(since) as unknown as {
-    generated_at: string;
-    document: string;
-  }[];
+  const rows = db.prepare(SELECT_WINDOW).iterate(since) as unknown as Iterable<StoredRow>;
   const derived = new Map<string, HistoryMetrics>();
   for (const [id, frames] of framesByProject(rows)) {
     derived.set(id, metricsOf(frames, now));
