@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.1.7
+
+Adds `issues-watch.sh`: new issues on the workspace's repositories, reported once each, silent
+otherwise. Meant for a monitor, like `watch.sh`.
+
+It reports and does not decide. Whether an issue becomes work, and whether that work may run
+unattended, is a judgement that belongs to a session which can read the thing - a shell script
+that triaged would be a shell script guessing.
+
+Two deliberate choices:
+
+- **The high-water mark is the issue number, not a timestamp.** A date filter can be subtly
+  wrong and silently report nothing: `created:>` and `created:>=` differ by a day's issues and
+  the wrong one returns an empty list that looks exactly like quiet. An issue number only
+  increases, so "greater than the last seen" is either right or it fails to fetch.
+- **Every issue is labelled with who filed it**, against a configured `trustedIssueAuthors`
+  allowlist. Anything not on it is reported as somebody else's report, to be parked for a
+  person. An allowlist rather than GitHub's `author_association`, because MEMBER admits anyone
+  in the organisation - a wider trust surface than intended.
+
+A fetch that fails says so rather than reporting no new issues.
+
+
 ## 0.1.6
 
 **0.1.5 could not be dispatched.** Rule 12 was written with backticks around 'gh pr' and
