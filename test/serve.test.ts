@@ -17,6 +17,7 @@ import {
   listen,
   parseServeArgs,
   sendIssueFailure,
+  type Collection,
 } from "../src/serve.ts";
 import { REFRESH_SOURCE } from "../src/board.ts";
 import { snapshotPath, stateHome } from "../src/state.ts";
@@ -548,21 +549,24 @@ function settle(): Promise<void> {
   return new Promise((done) => setImmediate(done));
 }
 
-function deferred(): { promise: Promise<number>; resolve: (code: number) => void } {
-  let resolve!: (code: number) => void;
-  const promise = new Promise<number>((done) => {
+const READ: Collection = { read: true, errors: [] };
+const READ_NOTHING: Collection = { read: false, errors: [] };
+
+function deferred(): { promise: Promise<Collection>; resolve: (answer: Collection) => void } {
+  let resolve!: (answer: Collection) => void;
+  const promise = new Promise<Collection>((done) => {
     resolve = done;
   });
   return { promise, resolve };
 }
 
-function collector(answers: Array<() => Promise<number>>): {
-  collect: () => Promise<number>;
-  calls: Array<Promise<number>>;
+function collector(answers: Array<() => Promise<Collection>>): {
+  collect: () => Promise<Collection>;
+  calls: Array<Promise<Collection>>;
 } {
-  const calls: Array<Promise<number>> = [];
+  const calls: Array<Promise<Collection>> = [];
   const collect = () => {
-    const answer = answers[Math.min(calls.length, answers.length - 1)] as () => Promise<number>;
+    const answer = answers[Math.min(calls.length, answers.length - 1)] as () => Promise<Collection>;
     const running = answer();
     calls.push(running);
     return running;
@@ -592,13 +596,13 @@ test("a snapshot older than the floor is served at once and re-collected behind 
   assert.deepEqual(await second.json(), parseSnapshot(SNAPSHOT));
   assert.equal(calls.length, 1);
 
-  stalled.resolve(0);
+  stalled.resolve(READ);
   await settle();
 });
 
 test("a snapshot inside the floor is served without collecting anything", async (t) => {
   const { env } = stateWith(JSON.stringify({ ...SNAPSHOT, generatedAt: new Date().toISOString() }));
-  const { collect, calls } = collector([() => Promise.resolve(0)]);
+  const { collect, calls } = collector([() => Promise.resolve(READ)]);
   const server = createConsoleServer({ env, uiDir: builtConsole(), collect });
   t.after(() => server.close());
   const { origin } = await started(server);
@@ -616,7 +620,7 @@ test("a re-collection that fails keeps the stored snapshot and says the refresh 
   const { origin } = await started(server);
 
   await fetch(`${origin}/api/snapshot`);
-  await (calls[0] as Promise<number>).catch(() => undefined);
+  await (calls[0] as Promise<Collection>).catch(() => undefined);
   await settle();
 
   const response = await fetch(`${origin}/api/snapshot`);
@@ -633,13 +637,13 @@ test("a re-collection that fails keeps the stored snapshot and says the refresh 
 
 test("a re-collection that reads no project is a failed refresh, not a fresh board", async (t) => {
   const { env } = stateWith(JSON.stringify(SNAPSHOT));
-  const { collect, calls } = collector([() => Promise.resolve(1)]);
+  const { collect, calls } = collector([() => Promise.resolve(READ_NOTHING)]);
   const server = createConsoleServer({ env, uiDir: builtConsole(), collect });
   t.after(() => server.close());
   const { origin } = await started(server);
 
   await fetch(`${origin}/api/snapshot`);
-  await (calls[0] as Promise<number>);
+  await (calls[0] as Promise<Collection>);
   await settle();
 
   const errors = errorsOf(await (await fetch(`${origin}/api/snapshot`)).json());
@@ -647,29 +651,70 @@ test("a re-collection that reads no project is a failed refresh, not a fresh boa
   assert.equal(errors[0]?.message, NOTHING_READ);
 });
 
+test("a re-collection that read nothing names the source that could not be read", async (t) => {
+  const { env } = stateWith(JSON.stringify(SNAPSHOT));
+  const { collect, calls } = collector([
+    () =>
+      Promise.resolve({
+        read: false,
+        errors: [{ source: "bd list", message: "bd: command not found", at: SNAPSHOT.generatedAt }],
+      }),
+  ]);
+  const server = createConsoleServer({ env, uiDir: builtConsole(), collect });
+  t.after(() => server.close());
+  const { origin } = await started(server);
+
+  await fetch(`${origin}/api/snapshot`);
+  await (calls[0] as Promise<Collection>);
+  await settle();
+
+  const errors = errorsOf(await (await fetch(`${origin}/api/snapshot`)).json());
+  assert.equal(errors[0]?.message, `${NOTHING_READ} bd list: bd: command not found`);
+});
+
+test("a collector that throws where it stands leaves the console able to try again", async (t) => {
+  const { env } = stateWith(JSON.stringify(SNAPSHOT));
+  let calls = 0;
+  const collect = () => {
+    calls += 1;
+    throw new Error("spawn EAGAIN");
+  };
+  const server = createConsoleServer({ env, uiDir: builtConsole(), collect, refreshFloorMs: 0 });
+  t.after(() => server.close());
+  const { origin } = await started(server);
+
+  await fetch(`${origin}/api/snapshot`);
+  await settle();
+  const errors = errorsOf(await (await fetch(`${origin}/api/snapshot`)).json());
+  assert.equal(errors[0]?.source, REFRESH_SOURCE);
+  assert.match(errors[0]?.message ?? "", /spawn EAGAIN/);
+  await settle();
+  assert.equal(calls, 2);
+});
+
 test("a re-collection that succeeds clears the failure the last one left", async (t) => {
   const { env } = stateWith(JSON.stringify(SNAPSHOT));
   const { collect, calls } = collector([
     () => Promise.reject(new Error("bd is not on PATH")),
-    () => Promise.resolve(0),
+    () => Promise.resolve(READ),
   ]);
   const server = createConsoleServer({ env, uiDir: builtConsole(), collect, refreshFloorMs: 0 });
   t.after(() => server.close());
   const { origin } = await started(server);
 
   await fetch(`${origin}/api/snapshot`);
-  await (calls[0] as Promise<number>).catch(() => undefined);
+  await (calls[0] as Promise<Collection>).catch(() => undefined);
   await settle();
   assert.equal(errorsOf(await (await fetch(`${origin}/api/snapshot`)).json()).length, 1);
 
-  await (calls[1] as Promise<number>);
+  await (calls[1] as Promise<Collection>);
   await settle();
   assert.deepEqual(await (await fetch(`${origin}/api/snapshot`)).json(), parseSnapshot(SNAPSHOT));
 });
 
 test("nothing stored is still a 503, and still starts the collection that would fix it", async (t) => {
   const { env } = stateWith();
-  const { collect, calls } = collector([() => Promise.resolve(0)]);
+  const { collect, calls } = collector([() => Promise.resolve(READ)]);
   const server = createConsoleServer({ env, uiDir: builtConsole(), collect });
   t.after(() => server.close());
   const { origin } = await started(server);
@@ -686,4 +731,22 @@ test("a console with no collector never re-collects, whatever the age of what it
   const { origin } = await started(server);
 
   assert.deepEqual(await (await fetch(`${origin}/api/snapshot`)).json(), parseSnapshot(SNAPSHOT));
+});
+
+test("a 503 with a failed collection behind it says why the collection failed too", async (t) => {
+  const { env } = stateWith();
+  const { collect, calls } = collector([() => Promise.reject(new Error("bd is not on PATH"))]);
+  const server = createConsoleServer({ env, uiDir: builtConsole(), collect });
+  t.after(() => server.close());
+  const { origin } = await started(server);
+
+  await fetch(`${origin}/api/snapshot`);
+  await (calls[0] as Promise<Collection>).catch(() => undefined);
+  await settle();
+
+  const response = await fetch(`${origin}/api/snapshot`);
+  assert.equal(response.status, 503);
+  const { message } = (await response.json()) as { message: string };
+  assert.match(message, /No snapshot to show yet/);
+  assert.match(message, /The last collection failed too: bd is not on PATH/);
 });

@@ -9,6 +9,7 @@ import { REFRESH_SOURCE, stalenessErrors } from "./board.js";
 import { readIssue } from "./beads.js";
 import { collectionError } from "./errors.js";
 import { createUpdateCheck, type UpdateCheck } from "./registry.js";
+import { emitSnapshot, type SnapshotOptions } from "./snapshot.js";
 import { readSnapshot, type StateOptions, type StoredSnapshot } from "./state.js";
 import { VERSION } from "./version.js";
 
@@ -19,16 +20,33 @@ export const UI_DIR = fileURLToPath(new URL("../dist/ui", import.meta.url));
 export const ISSUE_PREFIX = "/api/issue/";
 export const VERSION_ROUTE = "/api/version";
 export const REFRESH_FLOOR_MS = 60_000;
-export const NOTHING_READ = "no project could be read, so the board still shows the last snapshot that was";
+export const NOTHING_READ = "No project could be read. The board still shows the last snapshot collected.";
+
+export interface Collection {
+  read: boolean;
+  errors: readonly CollectionError[];
+}
+
+export type Collector = () => Promise<Collection>;
 
 export interface ServeOptions extends StateOptions {
   uiDir?: string;
   lockRoot?: string;
   timeoutMs?: number;
   updates?: UpdateCheck;
-  collect?: () => Promise<number>;
+  collect?: Collector;
   refreshFloorMs?: number;
   now?: () => number;
+}
+
+export function consoleCollector(options: SnapshotOptions = {}): Collector {
+  return async () => {
+    const { snapshot, read } = await emitSnapshot(options);
+    return {
+      read,
+      errors: [...snapshot.errors, ...snapshot.projects.flatMap((project) => project.errors)],
+    };
+  };
 }
 
 export type ServeArgs = { port: number } | { error: string };
@@ -80,6 +98,19 @@ interface Refresher {
   failure: () => CollectionError | undefined;
 }
 
+function nothingRead(errors: readonly CollectionError[]): string {
+  const first = errors[0];
+  return first === undefined ? NOTHING_READ : `${NOTHING_READ} ${first.source}: ${first.message}`;
+}
+
+function started(collect: Collector): Promise<Collection> {
+  try {
+    return collect();
+  } catch (cause) {
+    return Promise.reject(cause);
+  }
+}
+
 function ageOf(stored: StoredSnapshot, nowMs: number): number {
   if (stored.snapshot === undefined) {
     return Number.POSITIVE_INFINITY;
@@ -110,10 +141,12 @@ export function createRefresher(options: ServeOptions): Refresher {
       }
       attemptedAt = at;
       running = true;
-      void collect()
+      void started(collect)
         .then(
-          (code) => {
-            failure = code === 0 ? undefined : collectionError(REFRESH_SOURCE, NOTHING_READ);
+          (collection) => {
+            failure = collection.read
+              ? undefined
+              : collectionError(REFRESH_SOURCE, nothingRead(collection.errors));
           },
           (cause: unknown) => {
             failure = collectionError(REFRESH_SOURCE, cause);
@@ -141,8 +174,10 @@ function serveSnapshot(res: ServerResponse, options: ServeOptions, refresher: Re
     return;
   }
   const { error } = stored;
+  const failure = refresher.failure();
+  const read = `No snapshot to show yet - ${error.source} could not be read: ${error.message}`;
   sendJson(res, 503, {
-    message: `No snapshot to show yet - ${error.source} could not be read: ${error.message}`,
+    message: failure === undefined ? read : `${read} The last collection failed too: ${failure.message}`,
     source: error.source,
     at: error.at,
   });

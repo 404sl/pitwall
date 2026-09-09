@@ -32,8 +32,9 @@ export interface SnapshotOptions extends RootsOptions {
 
 export interface SnapshotResult {
   snapshot: Snapshot;
-  path: string;
+  path: string | undefined;
   code: number;
+  read: boolean;
   delivered: Delivered[];
 }
 
@@ -182,8 +183,12 @@ async function gather(project: Project, options: SnapshotOptions, day: Date): Pr
   };
 }
 
+function readSomething(gathered: readonly Gathered[]): boolean {
+  return gathered.some((entry) => !entry.unreadable);
+}
+
 function everyProjectFailed(gathered: readonly Gathered[]): boolean {
-  return gathered.length > 0 && gathered.every((entry) => entry.unreadable);
+  return gathered.length > 0 && !readSomething(gathered);
 }
 
 interface Assembled {
@@ -258,6 +263,9 @@ function withHistory(project: Project, derived: HistoryMetrics | undefined): Pro
 export async function emitSnapshot(options: SnapshotOptions = {}): Promise<SnapshotResult> {
   const previous = readSnapshot(options).snapshot;
   const { snapshot, code, gathered } = await assemble(options);
+  if (!readSomething(gathered)) {
+    return { snapshot, path: undefined, code, read: false, delivered: [] };
+  }
   const history = await recordSnapshot(snapshot, {
     env: options.env,
     home: options.home,
@@ -272,5 +280,11 @@ export async function emitSnapshot(options: SnapshotOptions = {}): Promise<Snaps
     errors: history.error === undefined ? snapshot.errors : [...snapshot.errors, history.error],
   });
   const path = writeSnapshot(recorded, options);
-  return { snapshot: recorded, path, code, delivered: await announce(gathered, previous, options) };
+  return {
+    snapshot: recorded,
+    path,
+    code,
+    read: true,
+    delivered: await announce(gathered, previous, options),
+  };
 }
