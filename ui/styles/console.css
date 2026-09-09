@@ -85,6 +85,11 @@ body {
   font-weight: 500;
 }
 
+.pw-header__flag {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
 .pw-console {
   display: flex;
   flex-direction: column;

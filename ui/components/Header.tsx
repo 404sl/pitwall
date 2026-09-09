@@ -40,10 +40,15 @@ export function Header({ projectCount, generatedAt }: HeaderProps) {
             {fill(strings.header.takenAt, { at: stamp(generatedAt) })}
           </time>
         ) : null}
+        <span className="pw-header__flag" role="status">
+          {age.stale ? (
+            <>
+              <span aria-hidden="true">{` · ${strings.header.staleFlag}`}</span>
+              <span className="pw-sr">{strings.header.staleNotice}</span>
+            </>
+          ) : null}
+        </span>
       </p>
-      <span className="pw-sr" role="status">
-        {age.stale ? strings.header.staleNotice : ""}
-      </span>
     </header>
   );
 }
