@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -193,8 +193,9 @@ test("a Node without node:sqlite loses the metrics and reports nothing", { skip:
   assert.deepEqual(JSON.parse(run.stdout.trim()), { error: null, metrics: 0 });
 });
 
-test("the window is read a snapshot at a time rather than held whole", { skip: withoutSqlite }, () => {
+test("the window is read a snapshot at a time rather than held whole", { skip: withoutSqlite }, (t) => {
   const { home, env } = place();
+  t.after(() => rmSync(home, { recursive: true, force: true }));
   const source = fileURLToPath(new URL("../src/history.ts", import.meta.url));
   const stamps = Array.from({ length: 120 }, (_, index) => at(300 - index * 2));
   const probe = [
