@@ -136,7 +136,7 @@ if (isEntry) {
   } else if (serve === undefined) {
     process.exit(code);
   } else {
-    listen(createConsoleServer(), serve.port).then(
+    listen(createConsoleServer({ collect: async () => (await emitSnapshot()).code }), serve.port).then(
       () => process.stdout.write(`pitwall console on http://${HOST}:${serve.port}/\n`),
       (cause: NodeJS.ErrnoException) => {
         const why = cause.code === "EADDRINUSE" ? `port ${serve.port} is already in use` : cause.message;

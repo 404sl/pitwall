@@ -172,6 +172,7 @@ export function App() {
             generatedAt={board.generatedAt}
             version={version}
             update={update}
+            refreshFailed={board.refreshFailure !== undefined}
           />
         )}
         <main className="pw-console">
@@ -204,6 +205,7 @@ export function App() {
         generatedAt={board.generatedAt}
         version={version}
         update={update}
+        refreshFailed={board.refreshFailure !== undefined}
       />
       <main className="pw-console">
         <Filters filter={filter} options={board.options} shown={board.issueCount} total={board.totals.issues} />
