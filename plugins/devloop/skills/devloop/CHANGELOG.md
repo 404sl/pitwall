@@ -2,85 +2,93 @@
 
 ## 0.1.13
 
-**The lander asked its release step to substitute a token, and the release step said it had not
-been given one.** The lock survived a run that merged, deployed, closed its issue and reported
-success. Nothing landed for 25 minutes behind it, with two pull requests queued, one of which
-deploys on merge.
+**The lander leaked the merge lock on the path that runs every time: the one where nothing went
+wrong.** Four leaks in one day, and the fourth was a run that landed two pull requests, deployed
+both, reported `completed` with a full result and `masterBroken: false` - and kept the lock. The
+next lander came back `lockedOutBy` that same token, 59 minutes later, and landed nothing. The
+other three paths were a session limit killing a run mid-deploy, a throw on the slug guard between
+acquire and release, and an earlier completed run that cost 25 minutes.
 
-`land.js` already released inside a `finally`, and the journal shows that `finally` ran. The
-failure was one step further in, in the prompt. The release step was told to *substitute the
-token the lock step reported*, and the token was interpolated into the command directly below
-that sentence. The agent read the instruction as a job to do, looked for a token it had been
-handed separately, found none, and declined to touch a lock it believed it could not prove it
-owned:
+**`land.js` already released in a `finally`, and the journal proves the `finally` ran.** The
+failure was one step further in, in the prompt. The release step was told to *substitute the token
+the lock step reported*, while the token was already interpolated into the command directly below
+that sentence. It read the instruction as a job to do, looked for a token it had been handed
+separately, found none, and declined to touch a lock it believed it could not prove it owned:
 
     "I cannot safely remove it because I was not provided with a token to verify
      ownership against."
 
 That is correct behaviour on the text it was reading. The step had no schema, so the refusal came
 back as prose and was recorded as a completed step; the run returned success with the lock still
-held.
+held. Both release prompts now say the token is already in the command, and both name this failure
+so it is not reworded back. `THE-TOKEN-WAS-NOT-CARRIED` is gone: a sentinel that guarantees the
+ownership guard fails is a guaranteed leak in the shape of a safety check.
 
-Both release prompts now say the token is already in the command and to run it exactly as it
-stands, and both name this failure so it is not reworded back. `THE-TOKEN-WAS-NOT-CARRIED` is
-gone: a sentinel that guarantees the ownership guard fails is a guaranteed leak in the shape of a
-safety check.
+**You cannot verify a release by re-reading the lock afterwards.** This is the sentence three
+review rounds were spent discovering, and it is why the release is now one script rather than a
+command and a confirmation. Release used to be two agent commands with a full agent turn between
+them - remove the lock, then look to see whether it is gone. But `lockPrompt` has a queued lander
+spinning on `mkdir` every 0.2s precisely so a handoff is not lost, so in that window the waiter
+legitimately takes the lock: the second look sees a live foreign lock, reports `STILL_HELD`, and
+names a token that is no longer in the holder file. Another lander taking the lock between our
+removal and our check is the system working, not a fault - so no check placed after the removal
+can tell that apart from a removal that failed, and every mapping built over that gap produces a
+confident wrong instruction in one case or another. The worst of them told a person to clear by
+hand a lock the next lander was using.
 
-**A token that cannot be proved is decided in the script, not in the prompt.** Dropping the
-sentinel for a bare empty string would have been worse than the sentinel: that guard matches a
-holder file that is missing or empty, and a lock directory exists with no holder file for the
-window between another lander's `mkdir` and its `printf`, so the command would have deleted a live
-foreign lock - the outcome the prompt itself calls unrecoverable. So `land.js` now branches before
-it asks for anything: a run whose lock step reported no token emits no release command at all, logs
-the leak and carries it back in its result. A lock left standing is recoverable; one deleted out
-from under another live lander is not. Putting that condition in the prompt instead would have
-reintroduced this entry's own bug - conditional prose sitting under an instruction to run the
-command exactly as it stands.
+**So `release-lock.sh` does the whole operation in one process.** It takes `--lock` and `--token`,
+reads the holder file, removes the lock only if that file holds the token, and prints what it did:
+`RELEASED`, `NOT_MINE`, `ALREADY_GONE` or `STILL_HELD`. There is no inter-turn gap to race because
+there is no inter-turn. Each lander now emits one command and reports its first word; the prompts
+say not to look at the lock again, and a test asserts neither prompt contains a `[ -d`, an `ls -d`,
+a `cat` of the holder file or an `rm` of its own.
 
-**A positive instruction beats a negative one here, for the same reason the 0.1.10 filter failed.**
-The bug was never a missing value - the lock step reported the token correctly. It was a sentence
-that gave the agent a task it could not complete. Removing the task removes the failure.
+**A script, not an inline conditional, and that distinction is the whole reason this shape is
+allowed.** An earlier round rejected putting the ownership test inside a compound command the agent
+is told to run verbatim: a visible `[ -n "$TOKEN" ] && ...` invites the agent to tidy away a test
+that looks obviously true, and it leaves the safety condition in text somebody has to read rather
+than in code. A script invocation has nothing to tidy - the logic is behind a name, and a lane that
+wants to improve `bash release-lock.sh --token X` has nowhere to go.
 
-**`land-train.js` had no trap at all.** It took the lock near the top and released it at the
-bottom of the straight-line path, so any throw in between - a build agent dying, the bisect
-recursion, a guard tripping after acquisition - left the lock behind. Its body is now wrapped in
-`try`/`finally` with the release inside, as `land.js` does it. An exception still propagates; it
-no longer takes the lock with it. It branches on a missing token the same way `land.js` does,
-rather than interpolating an empty `EXPECTED` and leaving the outcome to be argued out between
-two paragraphs of prose in the prompt.
+**Ownership that cannot be proved leaks visibly rather than being resolved by guessing.** A run
+whose lock step reported no token emits no removal command at all; so does one whose token does not
+match `^[A-Za-z0-9._-]+$`, because that token is interpolated into a single-quoted shell argument
+and a quote in it would end the quoting. Dropping the old sentinel for a bare empty string would
+have been worse than the sentinel itself: an empty token matches a holder file that is missing or
+empty, and a lock directory exists with no holder file for the window between another lander's
+`mkdir` and its `printf`. The script refuses both cases itself as well. A lock left standing is
+recoverable; one deleted out from under another live lander is not.
+
+**Nothing maps automatically to "clear it by hand" any more.** That instruction asks a person to
+perform the one unrecoverable action, so no rule that cannot tell the outcomes apart is allowed to
+produce it. `not_mine` and `already_gone` are reported as what they are - outcomes, not failures to
+clean up - and the leaked case names the token a person should confirm in the holder file before
+touching anything. Both landers carry the result in `lock` rather than only in a log line, because
+the reported incident was a lander returning success while still holding the lock and the
+supervisor reads the object, not the journal.
+
+**`land-train.js` had no trap at all.** It took the lock near the top and released it at the bottom
+of the straight-line path, so any throw in between - a build agent dying, the bisect recursion, a
+guard tripping after acquisition - left the lock behind. Its body is now wrapped in `try`/`finally`
+with the release inside, as `land.js` does it, and it uses the same script and the same four
+outcomes; it used to fold every answer into `released` or `LEAKED - clear it by hand`. An exception
+still propagates, it just no longer takes the lock with it. Its `rm -f holder; rmdir` is gone with
+the rest of the inline shell, and so is the holder-less window that pair opened.
 
 **Why a `finally` and not the shell trap the report asked for.** The lock is taken by a subagent
 whose shell exits as soon as the command returns, so a trap there would fire immediately and
 release a lock the run is still using. The workflow script's `finally` is the process-lifetime
 equivalent. Neither covers a killed runner, and nothing in the script can - that case stays
-`lock-check.sh`'s.
-
-**A refusal is now reported rather than swallowed, and a stand-down is not reported as a leak.**
-`land.js`'s release step had no schema, so its answer went nowhere. It returns `released`,
-`not_mine` or `still_held`, and the run's own result now carries `lock` - because the incident was
-a lander reporting success while holding the lock, and a journal line a person reads afterwards is
-not what the supervisor consumes.
-
-Those three answers are three different instructions to whoever reads the result, so the field
-keeps them apart. `not_mine` means the holder file was somebody else's and nothing was removed:
-the prompt calls that a correct outcome, and the result says `not_mine - another run holds it,
-leave it alone`. Only `still_held`, a missing status or no answer at all become `LEAKED - clear it
-by hand`. Folding `not_mine` into the leak told a supervisor to delete a lock that may be live and
-foreign, which is the outcome the rest of this entry exists to prevent. The journal line follows
-the same split: on `not_mine` the run cannot name the holder and does not pretend to.
-
-For that distinction to be worth anything the guard has to produce exactly one of the two, so it
-is now `if ... then rm -rf ... else echo NOT_MINE; fi` rather than `[ ... ] && rm -rf ... || echo
-NOT_MINE`. The `&&`/`||` form also printed NOT_MINE when the guard PASSED and the removal failed -
-a leak of this run's own lock, reported as a polite stand-down. And the confirmation that follows
-runs only on the removal path: a mismatch used to print NOT_MINE and then STILL_HELD from the
-confirmation, so both reporting rules applied at once and the agent picked one.
+`lock-check.sh`'s, and `lock-check.sh` has its own blind spot worth knowing about: a finished run's
+directory keeps being written for a while after it reports, so for the first ten minutes a leaked
+lock and a live quiet one are indistinguishable by idle time. That is one more argument for making
+the lock's lifetime the process's lifetime rather than something a watcher infers afterwards.
 
 **The token is still minted by the lock agent, deliberately.** Minting it in the script looks
 tidier and is wrong twice over: `Date.now()` and `Math.random()` throw in the workflow runner
-because they would break resume, so the script would die on its first line with lint, tests and
-CI all green - and a random token would not survive a `resumeFromRunId` even if it ran. A test
-now asserts no lander reaches for either global.
+because they would break resume, so the script would die on its first line with lint, tests and CI
+all green - and a random token would not survive a `resumeFromRunId` even if it ran. A test now
+asserts no lander reaches for either global.
 
 ## 0.1.12
 

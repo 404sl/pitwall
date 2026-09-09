@@ -1,5 +1,7 @@
 import { strict as assert } from "node:assert";
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -19,6 +21,20 @@ function runScript(file: string, args: unknown, reply: (call: Call, n: number) =
   };
   const noop = () => {};
   return { calls, done: body(args, agent, noop, noop, noop) };
+}
+
+const RELEASE_LOCK = join(SKILL, "release-lock.sh");
+
+function releaseLock(lock: string, token: string) {
+  const run = spawnSync("bash", [RELEASE_LOCK, "--lock", lock, "--token", token], { encoding: "utf8" });
+  return { code: run.status, outcome: (run.stdout || "").split("\n")[0], err: run.stderr || "" };
+}
+
+function heldLock(token: string | null) {
+  const dir = join(mkdtempSync(join(tmpdir(), "lander-lock-")), "merge.lock");
+  mkdirSync(dir);
+  if (token !== null) writeFileSync(join(dir, "holder"), `${token}\n`);
+  return dir;
 }
 
 const LAND_ARGS = {
@@ -140,11 +156,11 @@ test("land.js emits no removal command when the lock step reported no token", as
       "printf - and the lock it then deletes belongs to somebody else.",
   );
 
-  const removals = calls.filter((c) => c.prompt.includes("rm -rf"));
+  const removals = calls.filter((c) => c.prompt.includes("release-lock.sh"));
   assert.deepEqual(
     removals.map((c) => c.label),
     [],
-    "an rm was handed to an agent with no token to check it against",
+    "a removal was handed to an agent with no token to check it against",
   );
 
   assert.match(
@@ -201,25 +217,145 @@ test("land.js reports a lock it could not give back as leaked", async () => {
   }
 });
 
-test("land.js settles NOT_MINE before it asks for a confirmation", async () => {
-  const { calls, done } = runScript("land.js", LAND_ARGS, (call, n) => {
-    if (n === 1) return { status: "taken", token: "lander-1788964650-29574" };
-    if (call.label && call.label.startsWith("survey")) return { prs: [] };
-    return { status: "released" };
-  });
-  await done;
+test("neither lander asks a second question after the removal", async () => {
+  for (const file of ["land.js", "land-train.js"]) {
+    const { calls, done } = runScript(file, LAND_ARGS, (call, n) => {
+      if (n === 1) return { status: "taken", token: "lander-1788964650-29574" };
+      if (call.label && call.label.startsWith("survey")) return { prs: [] };
+      if (call.label === "release") return { status: "released" };
+      return { status: "error", notes: "nothing to build" };
+    });
+    await done;
 
-  const prompt = releasePromptOf(calls);
-  const confirmAt = prompt.indexOf("[ -d /tmp/devloop-merge.lock ]");
-  const stopAt = prompt.search(/do not run the confirm/i);
+    const prompt = releasePromptOf(calls);
+    assert.match(
+      prompt,
+      /bash \/skill\/release-lock\.sh --lock \S+ --token 'lander-1788964650-29574'/,
+      `${file} no longer hands the release to one script invocation`,
+    );
 
-  assert.notEqual(confirmAt, -1, "the release prompt no longer confirms the lock is gone");
-  assert.ok(
-    stopAt !== -1 && stopAt < confirmAt,
-    "a holder mismatch prints NOT_MINE and then the confirmation prints STILL_HELD, so both " +
-      "reporting rules apply at once and the agent picks one. The prompt has to settle " +
-      "NOT_MINE before it asks for a confirmation, or the two statuses mean nothing.",
+    for (const reread of [/\[ -d /, /ls -d /, /cat \S*holder/, /rm -rf /, /rmdir /]) {
+      assert.doesNotMatch(
+        prompt,
+        reread,
+        `${file}'s release step looks at the lock itself again (${reread}). You cannot verify a ` +
+          "release by re-reading the lock afterwards: a queued lander polls mkdir every 0.2s, so " +
+          "between our removal and our second look it can already hold the lock - and a reread " +
+          "cannot tell that from a removal that failed. It reported STILL_HELD against a live " +
+          "foreign lock and named a token no longer in the holder file. The removal and the " +
+          "report belong in one process.",
+      );
+    }
+  }
+});
+
+test("release-lock.sh removes a lock only when the holder file holds the token", () => {
+  const mine = heldLock("lander-1788964650-29574");
+  const released = releaseLock(mine, "lander-1788964650-29574");
+  assert.equal(released.outcome, "RELEASED", `stdout was ${JSON.stringify(released)}`);
+  assert.equal(released.code, 0);
+  assert.equal(existsSync(mine), false, "RELEASED was printed over a lock that is still there");
+
+  const theirs = heldLock("lander-1788985671-65481");
+  const foreign = releaseLock(theirs, "lander-1788964650-29574");
+  assert.equal(foreign.outcome, "NOT_MINE", `stdout was ${JSON.stringify(foreign)}`);
+  assert.equal(
+    existsSync(theirs),
+    true,
+    "another lander's lock was removed. A token that does not match the holder file proves " +
+      "nothing about ownership, and deleting a live foreign lock puts two landers on one " +
+      "repository - the one unrecoverable outcome here.",
   );
+
+  const unstamped = heldLock(null);
+  const raced = releaseLock(unstamped, "lander-1788964650-29574");
+  assert.equal(raced.outcome, "NOT_MINE", `stdout was ${JSON.stringify(raced)}`);
+  assert.equal(
+    existsSync(unstamped),
+    true,
+    "a lock directory with no holder file was removed. That is how another lander's lock looks " +
+      "between its mkdir and its printf, so this window belongs to somebody else.",
+  );
+
+  const gone = join(mkdtempSync(join(tmpdir(), "lander-lock-")), "merge.lock");
+  const absent = releaseLock(gone, "lander-1788964650-29574");
+  assert.equal(absent.outcome, "ALREADY_GONE", `stdout was ${JSON.stringify(absent)}`);
+  assert.equal(absent.code, 0, "nothing to release is not a failure");
+
+  for (const dir of [theirs, unstamped]) rmSync(dir, { recursive: true, force: true });
+});
+
+test("release-lock.sh removes nothing for a token no lander could have minted", () => {
+  for (const token of ["", "lander-1 '; touch /tmp/lander-lock-injection-marker; echo '", "lander-1\nlander-2"]) {
+    const lock = heldLock("lander-1788964650-29574");
+    const run = releaseLock(lock, token);
+    assert.notEqual(run.code, 0, `${JSON.stringify(token)} was accepted as a token`);
+    assert.match(
+      run.err,
+      /REFUSED/,
+      `release-lock.sh said nothing about refusing ${JSON.stringify(token)}: ${run.err || run.outcome}`,
+    );
+    assert.equal(
+      existsSync(lock),
+      true,
+      `a lock was removed for token ${JSON.stringify(token)}. An empty token matches a missing ` +
+        "or empty holder file, and a token carrying a quote or a newline is not a string any " +
+        "lock step wrote - neither proves ownership of anything.",
+    );
+    rmSync(lock, { recursive: true, force: true });
+  }
+});
+
+test("neither lander emits a release command for a token it cannot quote back", async () => {
+  for (const file of ["land.js", "land-train.js"]) {
+    const { calls, done } = runScript(file, LAND_ARGS, (call, n) => {
+      if (n === 1) return { status: "taken", token: "lander-1'; touch /tmp/lander-lock-injection-marker #" };
+      if (call.label && call.label.startsWith("survey")) return { prs: [] };
+      return { status: "error", notes: "nothing to build" };
+    });
+    const result = (await done) as { lock?: string };
+
+    assert.equal(
+      calls.some((c) => c.label === "release"),
+      false,
+      `${file} interpolated an agent-reported token straight into a shell command. The token is ` +
+        "quoted with single quotes, so one in the token closes the quoting and the rest of it " +
+        "becomes command of its own - against the lock that serialises every merge and deploy.",
+    );
+    assert.match(
+      result.lock || "",
+      /LEAKED/,
+      `${file} returned without saying it was still holding the lock`,
+    );
+  }
+});
+
+test("land-train.js tells a stand-down apart from a leak in its own result", async () => {
+  const outcomes: Record<string, RegExp> = {
+    released: /^released$/,
+    not_mine: /not_mine/,
+    already_gone: /already_gone/,
+    still_held: /LEAKED/,
+  };
+  for (const [status, expected] of Object.entries(outcomes)) {
+    const { done } = runScript("land-train.js", LAND_ARGS, (call, n) => {
+      if (n === 1) return { status: "taken", token: "land-train-1788964650-29574" };
+      if (call.label === "release") return { status };
+      return { status: "error", notes: "nothing to build" };
+    });
+    const result = (await done) as { lock?: string };
+
+    assert.match(result.lock || "", expected, `a release that reported ${status} came back as ${result.lock}`);
+    if (status !== "still_held") {
+      assert.doesNotMatch(
+        result.lock || "",
+        /LEAKED|clear it by hand/i,
+        `${status} came back as a leak to clear by hand. The train folded every release answer ` +
+          "into released-or-LEAKED, so a lock another train legitimately holds read as one for a " +
+          "person to delete - and that deletion is the unrecoverable one.",
+      );
+    }
+  }
 });
 
 test("land-train.js emits no removal command when the lock step reported no token", async () => {
@@ -238,7 +374,7 @@ test("land-train.js emits no removal command when the lock step reported no toke
       "somebody else's.",
   );
 
-  const removals = calls.filter((c) => /rm -f |rmdir /.test(c.prompt));
+  const removals = calls.filter((c) => c.prompt.includes("release-lock.sh"));
   assert.deepEqual(
     removals.map((c) => c.label),
     [],
