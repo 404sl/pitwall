@@ -20,6 +20,8 @@ export type NeedsYouKind = "decision" | "access";
 export type RunningState = "working" | "awaiting-lander" | "stranded";
 export type ProblemScope = "run" | "console" | "project";
 
+export const REFRESH_SOURCE = "pitwall serve: re-collection";
+
 export interface NeedsYouRow {
   id: string;
   priority?: number;
@@ -130,6 +132,7 @@ export interface Board {
   options: FilterOptions;
   issueCount: number;
   totals: BoardTotals;
+  refreshFailure?: CollectionError;
 }
 
 export const READY_LIMIT = 8;
@@ -380,6 +383,10 @@ function problemRows(snapshot: Snapshot): ProblemRow[] {
   return [...run, ...projects];
 }
 
+export function refreshFailure(snapshot: Snapshot): CollectionError | undefined {
+  return errorsOf(snapshot).find((error) => error.source === REFRESH_SOURCE);
+}
+
 export const ISSUE_TYPES = ["bug", "feature", "task", "chore", "epic", "decision"];
 
 export const PRIORITIES = [0, 1, 2, 3, 4];
@@ -496,6 +503,7 @@ export function buildBoard(snapshot: Snapshot, filter: FilterState = {}): Board 
     options: filterOptions(projects),
     issueCount: shown.reduce((sum, project) => sum + issuesOf(project).length, 0),
     totals: boardTotals(projects, generatedAt, everyRunning),
+    refreshFailure: refreshFailure(snapshot),
   };
 }
 

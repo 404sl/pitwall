@@ -5,6 +5,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { Classification, SCHEMA_VERSION, isYours, parseSnapshot } from "@404sl/pitwall-schema";
 import {
+  REFRESH_SOURCE,
   SNAPSHOT_STALE_AFTER_MS,
   blockedSummary,
   buildBoard,
@@ -28,11 +29,18 @@ const GENERATED_AT = "2026-09-08T14:11:00Z";
 const HEADER_NOW = Date.parse("2026-09-08T14:49:00Z");
 const RUNNING_VERSION = VERSION.replace(/\./g, "\\.");
 
-function headerMarkup(projectCount: number, generatedAt: string, update?: string): string {
+function headerMarkup(
+  projectCount: number,
+  generatedAt: string,
+  update?: string,
+  refreshFailed?: boolean,
+): string {
   const realNow = Date.now;
   Date.now = () => HEADER_NOW;
   try {
-    return renderToStaticMarkup(createElement(Header, { projectCount, generatedAt, version: VERSION, update }));
+    return renderToStaticMarkup(
+      createElement(Header, { projectCount, generatedAt, version: VERSION, update, refreshFailed }),
+    );
   } finally {
     Date.now = realNow;
   }
@@ -537,6 +545,33 @@ test("the rendered header stays grey below the staleness threshold and goes loud
   assert.match(stale, /<header class="pw-header pw-header--stale">/);
   assert.match(stale, /<span aria-hidden="true"> · stale<\/span>/);
   assert.match(stale, /<span class="pw-sr">Snapshot is stale\. It may no longer be true\.<\/span>/);
+});
+
+test("a refresh that has just failed reads differently from a snapshot that is merely stale", () => {
+  const failed = headerMarkup(3, new Date(HEADER_NOW - 2 * 60_000).toISOString(), undefined, true);
+  assert.match(failed, /<header class="pw-header pw-header--stale">/);
+  assert.match(failed, /<span class="pw-header__age">2m old<\/span>/);
+  assert.match(failed, /<span aria-hidden="true"> · refresh failed<\/span>/);
+  assert.match(
+    failed,
+    /<span class="pw-sr">The last refresh failed\. This board is 2m old and is not being updated\.<\/span>/,
+  );
+  assert.doesNotMatch(failed, / · stale</);
+
+  const stale = headerAged(SNAPSHOT_STALE_AFTER_MS);
+  assert.doesNotMatch(stale, /refresh failed/);
+  assert.match(stale, /<span aria-hidden="true"> · stale<\/span>/);
+});
+
+test("a board carrying a re-collection failure flags it and lists it under problems", () => {
+  const failing = snapshotOf(
+    [project("pitwall")],
+    [{ source: REFRESH_SOURCE, message: "bd is not on PATH", at: GENERATED_AT }],
+  );
+  const board = buildBoard(failing);
+  assert.equal(board.refreshFailure?.message, "bd is not on PATH");
+  assert.ok(board.problems.some((row) => row.scope === "run" && row.source === REFRESH_SOURCE));
+  assert.equal(buildBoard(snapshotOf([project("pitwall")])).refreshFailure, undefined);
 });
 
 test("the header names the version it is serving, and says nothing about an update it has not confirmed", () => {

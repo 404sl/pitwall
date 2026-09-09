@@ -3,12 +3,14 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { extname, resolve, sep } from "node:path";
 import { pipeline } from "node:stream";
 import { fileURLToPath } from "node:url";
-import type { Issue, Project, Snapshot } from "@404sl/pitwall-schema";
+import type { CollectionError, Issue, Project, Snapshot } from "@404sl/pitwall-schema";
 import { readWorkspace } from "./autofix.js";
-import { stalenessErrors } from "./board.js";
+import { REFRESH_SOURCE, stalenessErrors } from "./board.js";
 import { readIssue } from "./beads.js";
+import { collectionError } from "./errors.js";
 import { createUpdateCheck, type UpdateCheck } from "./registry.js";
-import { readSnapshot, type StateOptions } from "./state.js";
+import { emitSnapshot, type SnapshotOptions } from "./snapshot.js";
+import { readSnapshot, type StateOptions, type StoredSnapshot } from "./state.js";
 import { VERSION } from "./version.js";
 
 export const DEFAULT_PORT = 7373;
@@ -17,12 +19,36 @@ export const LOCAL_HOSTNAMES = ["127.0.0.1", "localhost", "[::1]"];
 export const UI_DIR = fileURLToPath(new URL("../dist/ui", import.meta.url));
 export const ISSUE_PREFIX = "/api/issue/";
 export const VERSION_ROUTE = "/api/version";
+export const REFRESH_FLOOR_MS = 60_000;
+export const NOTHING_READ = "No project could be read. The board still shows the last snapshot collected.";
+const NOTHING_READ_YET = "The last collection could read no project either";
+const REFRESH_FAILED_TOO = "The last collection failed too";
+
+export interface Collection {
+  read: boolean;
+  errors: readonly CollectionError[];
+}
+
+export type Collector = () => Promise<Collection>;
 
 export interface ServeOptions extends StateOptions {
   uiDir?: string;
   lockRoot?: string;
   timeoutMs?: number;
   updates?: UpdateCheck;
+  collect?: Collector;
+  refreshFloorMs?: number;
+  now?: () => number;
+}
+
+export function consoleCollector(options: SnapshotOptions = {}): Collector {
+  return async () => {
+    const { snapshot, read } = await emitSnapshot(options);
+    return {
+      read,
+      errors: [...snapshot.errors, ...snapshot.projects.flatMap((project) => project.errors)],
+    };
+  };
 }
 
 export type ServeArgs = { port: number } | { error: string };
@@ -69,15 +95,117 @@ function sendJson(res: ServerResponse, code: number, body: unknown): void {
   send(res, code, "application/json; charset=utf-8", JSON.stringify(body));
 }
 
-function serveSnapshot(res: ServerResponse, options: ServeOptions): void {
+interface RefreshFailure {
+  cause: string;
+  nothingRead: boolean;
+  at: string;
+}
+
+interface Refresher {
+  consider: (stored: StoredSnapshot) => void;
+  failure: () => RefreshFailure | undefined;
+}
+
+function causeOf(errors: readonly CollectionError[]): string {
+  const first = errors[0];
+  return first === undefined ? "" : `${first.source}: ${first.message}`;
+}
+
+function refreshFailure(cause: unknown, nothingRead: boolean): RefreshFailure {
+  const { message, at } = collectionError(REFRESH_SOURCE, cause);
+  return { cause: message, nothingRead, at };
+}
+
+function messageWithBoard(failure: RefreshFailure): string {
+  if (!failure.nothingRead) {
+    return failure.cause;
+  }
+  return failure.cause === "" ? NOTHING_READ : `${NOTHING_READ} ${failure.cause}`;
+}
+
+function messageWithoutBoard(failure: RefreshFailure): string {
+  const lead = failure.nothingRead ? NOTHING_READ_YET : REFRESH_FAILED_TOO;
+  return failure.cause === "" ? `${lead}.` : `${lead}: ${failure.cause}`;
+}
+
+function started(collect: Collector): Promise<Collection> {
+  try {
+    return collect();
+  } catch (cause) {
+    return Promise.reject(cause);
+  }
+}
+
+function ageOf(stored: StoredSnapshot, nowMs: number): number {
+  if (stored.snapshot === undefined) {
+    return Number.POSITIVE_INFINITY;
+  }
+  const at = new Date(stored.snapshot.generatedAt).getTime();
+  return Number.isNaN(at) ? Number.POSITIVE_INFINITY : Math.max(0, nowMs - at);
+}
+
+export function createRefresher(options: ServeOptions): Refresher {
+  const { collect } = options;
+  const floor = options.refreshFloorMs ?? REFRESH_FLOOR_MS;
+  const clock = options.now ?? Date.now;
+  let attemptedAt: number | undefined;
+  let running = false;
+  let failure: RefreshFailure | undefined;
+  return {
+    failure: () => failure,
+    consider: (stored: StoredSnapshot) => {
+      if (collect === undefined || running) {
+        return;
+      }
+      const at = clock();
+      if (attemptedAt !== undefined && at - attemptedAt < floor) {
+        return;
+      }
+      if (ageOf(stored, at) < floor) {
+        return;
+      }
+      attemptedAt = at;
+      running = true;
+      void started(collect)
+        .then(
+          (collection) => {
+            failure = collection.read ? undefined : refreshFailure(causeOf(collection.errors), true);
+          },
+          (cause: unknown) => {
+            failure = refreshFailure(cause, false);
+          },
+        )
+        .finally(() => {
+          running = false;
+        });
+    },
+  };
+}
+
+function withRefreshFailure(snapshot: Snapshot, failure: RefreshFailure | undefined): Snapshot {
+  if (failure === undefined) {
+    return snapshot;
+  }
+  const error: CollectionError = {
+    source: REFRESH_SOURCE,
+    message: messageWithBoard(failure),
+    at: failure.at,
+  };
+  return { ...snapshot, errors: [...(snapshot.errors ?? []), error] };
+}
+
+function serveSnapshot(res: ServerResponse, options: ServeOptions, refresher: Refresher): void {
   const stored = readSnapshot(options);
+  refresher.consider(stored);
   if (stored.snapshot !== undefined) {
-    sendJson(res, 200, stored.snapshot);
+    sendJson(res, 200, withRefreshFailure(stored.snapshot, refresher.failure()));
     return;
   }
   const { error } = stored;
+  const failure = refresher.failure();
+  const read = `No snapshot to show yet - ${error.source} could not be read: ${error.message}`;
   sendJson(res, 503, {
-    message: `No snapshot to show yet - ${error.source} could not be read: ${error.message}`,
+    message: failure === undefined ? read : `${read} ${messageWithoutBoard(failure)}`,
     source: error.source,
     at: error.at,
   });
@@ -253,6 +381,7 @@ function serveConsole(res: ServerResponse, uiDir: string, pathname: string): voi
 export function createConsoleServer(options: ServeOptions = {}): Server {
   const uiDir = resolve(options.uiDir ?? UI_DIR);
   const updates = options.updates ?? createUpdateCheck();
+  const refresher = createRefresher(options);
   return createServer((req: IncomingMessage, res: ServerResponse) => {
     if (!isLocalHost(req.headers.host)) {
       send(res, 403, "text/plain; charset=utf-8", "The console answers requests addressed to localhost only.\n");
@@ -260,7 +389,7 @@ export function createConsoleServer(options: ServeOptions = {}): Server {
     }
     const { pathname } = new URL(req.url ?? "/", `http://${HOST}`);
     if (pathname === "/api/snapshot") {
-      serveSnapshot(res, options);
+      serveSnapshot(res, options, refresher);
       return;
     }
     if (pathname === VERSION_ROUTE) {

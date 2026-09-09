@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import mark from "../brand/logo/pitwall-mark.svg";
 import { fill, stamp } from "../format.js";
-import { snapshotAge } from "../model.js";
+import { snapshotAge, type SnapshotAge } from "../model.js";
 import { strings } from "../strings.js";
 
 const TICK_MS = 30_000;
@@ -11,6 +11,22 @@ interface HeaderProps {
   generatedAt: string;
   version: string;
   update?: string;
+  refreshFailed?: boolean;
+}
+
+interface Flag {
+  word: string;
+  notice: string;
+}
+
+function flagOf(age: SnapshotAge, refreshFailed: boolean): Flag | undefined {
+  if (refreshFailed) {
+    return {
+      word: strings.header.refreshFlag,
+      notice: fill(strings.header.refreshNotice, { age: age.label }),
+    };
+  }
+  return age.stale ? { word: strings.header.staleFlag, notice: strings.header.staleNotice } : undefined;
 }
 
 function useNow(): number {
@@ -22,12 +38,13 @@ function useNow(): number {
   return now;
 }
 
-export function Header({ projectCount, generatedAt, version, update }: HeaderProps) {
+export function Header({ projectCount, generatedAt, version, update, refreshFailed }: HeaderProps) {
   const noun = projectCount === 1 ? strings.header.project : strings.header.projects;
   const now = useNow();
   const age = snapshotAge(generatedAt, now);
+  const flag = flagOf(age, refreshFailed === true);
   return (
-    <header className={age.stale ? "pw-header pw-header--stale" : "pw-header"}>
+    <header className={flag === undefined ? "pw-header" : "pw-header pw-header--stale"}>
       <div className="pw-header__brand">
         <img className="pw-header__mark" src={mark} width="24" height="24" alt="" />
         <div className="pw-header__title">
@@ -57,12 +74,12 @@ export function Header({ projectCount, generatedAt, version, update }: HeaderPro
           </time>
         ) : null}
         <span className="pw-header__flag" role="status">
-          {age.stale ? (
+          {flag === undefined ? null : (
             <>
-              <span aria-hidden="true">{` · ${strings.header.staleFlag}`}</span>
-              <span className="pw-sr">{strings.header.staleNotice}</span>
+              <span aria-hidden="true">{` · ${flag.word}`}</span>
+              <span className="pw-sr">{flag.notice}</span>
             </>
-          ) : null}
+          )}
         </span>
       </p>
     </header>

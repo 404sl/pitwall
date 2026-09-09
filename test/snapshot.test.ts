@@ -5,8 +5,11 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import type { AddressInfo } from "node:net";
 import { SCHEMA_VERSION, isYours, parseSnapshot } from "@404sl/pitwall-schema";
 import type { Notice } from "../src/notify.ts";
+import { REFRESH_SOURCE } from "../src/board.ts";
+import { consoleCollector, createConsoleServer, listen } from "../src/serve.ts";
 import { collectSnapshot, emitSnapshot } from "../src/snapshot.ts";
 import { historyPath } from "../src/history.ts";
 import { readSnapshot, snapshotPath } from "../src/state.ts";
@@ -491,4 +494,71 @@ test("a project whose references could not be looked up is not an unreadable pro
     "the run recorded at least one reference it could not check",
   );
   assert.equal(result.code, 0);
+});
+
+test("a collection that reads nothing leaves the board that is stored where it is", async () => {
+  const place = workspace([TRACKER]);
+  const state = { env: place.env, home: place.home };
+  const good = await emitSnapshot(options(place));
+  assert.equal(good.read, true);
+  const path = snapshotPath(state);
+  assert.equal(good.path, path);
+  const before = readFileSync(path, "utf8");
+
+  writeFileSync(place.configPath, JSON.stringify({ roots: [NO_TRACKER] }));
+  const failed = await emitSnapshot(options(place));
+  assert.equal(failed.read, false);
+  assert.equal(failed.path, undefined);
+  assert.equal(failed.code, 1);
+  assert.equal(readFileSync(path, "utf8"), before);
+
+  writeFileSync(place.configPath, JSON.stringify({ roots: [] }));
+  const none = await emitSnapshot(options(place));
+  assert.equal(none.read, false);
+  assert.equal(none.path, undefined);
+  assert.equal(none.code, 0);
+  assert.equal(readFileSync(path, "utf8"), before);
+});
+
+test("the console's own collector keeps the last board when it can read nothing", async (t) => {
+  const place = workspace([TRACKER]);
+  const state = { env: place.env, home: place.home };
+  const good = await emitSnapshot(options(place, new Date("2026-09-08T10:00:00Z")));
+  assert.equal(good.read, true);
+  writeFileSync(place.configPath, JSON.stringify({ roots: [NO_TRACKER] }));
+
+  const running: Array<Promise<unknown>> = [];
+  const collect = consoleCollector(options(place));
+  const server = createConsoleServer({
+    ...state,
+    collect: () => {
+      const attempt = collect();
+      running.push(attempt);
+      return attempt;
+    },
+  });
+  t.after(() => server.close());
+  await listen(server, 0);
+  const { port } = server.address() as AddressInfo;
+  const origin = `http://127.0.0.1:${port}`;
+
+  await fetch(`${origin}/api/snapshot`);
+  assert.equal(running.length, 1);
+  await running[0];
+  await new Promise((done) => setImmediate(done));
+
+  const body = (await (await fetch(`${origin}/api/snapshot`)).json()) as {
+    generatedAt: string;
+    projects: unknown[];
+    errors: Array<{ source: string; message: string }>;
+  };
+  assert.equal(body.generatedAt, good.snapshot.generatedAt);
+  assert.deepEqual(body.projects, JSON.parse(JSON.stringify(good.snapshot.projects)));
+  const refresh = body.errors.find((error) => error.source === REFRESH_SOURCE);
+  assert.ok(refresh, "the served board carries the failed refresh");
+  assert.match(refresh.message, /^No project could be read\./);
+  assert.equal(
+    readFileSync(snapshotPath(state), "utf8"),
+    JSON.stringify(good.snapshot, null, 2) + "\n",
+  );
 });
