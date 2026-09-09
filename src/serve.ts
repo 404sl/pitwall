@@ -4,9 +4,8 @@ import { extname, resolve, sep } from "node:path";
 import { pipeline } from "node:stream";
 import { fileURLToPath } from "node:url";
 import type { CollectionError, Issue, Project, Snapshot } from "@404sl/pitwall-schema";
-import { readWorkspace } from "./autofix.js";
 import { REFRESH_SOURCE, stalenessErrors } from "./board.js";
-import { readIssue } from "./beads.js";
+import { collectionFailed, readIssue } from "./beads.js";
 import { collectionError } from "./errors.js";
 import { createUpdateCheck, type UpdateCheck } from "./registry.js";
 import { emitSnapshot, type SnapshotOptions } from "./snapshot.js";
@@ -33,7 +32,6 @@ export type Collector = () => Promise<Collection>;
 
 export interface ServeOptions extends StateOptions {
   uiDir?: string;
-  lockRoot?: string;
   timeoutMs?: number;
   updates?: UpdateCheck;
   collect?: Collector;
@@ -262,11 +260,11 @@ async function serveIssue(
     });
     return;
   }
-  const project = readWorkspace(indexed.root, { lockRoot: options.lockRoot });
   const reading = await readIssue(indexed.root, route.id, {
     env: options.env,
-    lanes: project.lanes,
-    errors: project.errors,
+    lanes: indexed.lanes,
+    issues: indexed.issues,
+    collectionComplete: !collectionFailed(indexed.root, indexed.errors),
     timeoutMs: options.timeoutMs,
   });
   if (reading.kind === "unreadable") {
@@ -291,7 +289,7 @@ async function serveIssue(
       ...reading.issue,
       project: indexed.id,
       projectName: indexed.name,
-      authority: project.authority,
+      authority: indexed.authority,
       staleness: snapshotStatus?.staleness ?? { verdict: "unchecked", evidence: [] },
     },
     readAt: new Date().toISOString(),

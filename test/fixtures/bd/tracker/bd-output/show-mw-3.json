@@ -1,0 +1,20 @@
+[
+  {
+    "id": "mw-3",
+    "title": "Honour the paid checkout?",
+    "description": "A customer paid twice for the same seat. Refund the second charge or credit the account?",
+    "status": "open",
+    "priority": 1,
+    "issue_type": "decision",
+    "notes": null,
+    "created_at": "2026-09-07T09:02:11Z",
+    "updated_at": "2026-09-08T08:14:00Z",
+    "metadata": {},
+    "labels": ["needs-decision"],
+    "dependencies": null,
+    "dependents": null,
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "comment_count": 2
+  }
+]

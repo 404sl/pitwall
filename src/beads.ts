@@ -12,6 +12,7 @@ import {
 import { collectionError, failureOf } from "./errors.js";
 import {
   classify,
+  parentIdOf,
   type ClassificationReason,
   type ClassifyContext,
   type StoredClassification,
@@ -35,6 +36,7 @@ const BLOCKED_ARGS = ["blocked", "--json"];
 const LIST_COMMAND = ["bd", ...LIST_ARGS].join(" ");
 
 const BLOCKS = "blocks";
+const PARENT_CHILD = "parent-child";
 
 export function showArgs(id: string): string[] {
   return ["show", "--id", id, "--json", "--include-dependents"];
@@ -69,6 +71,14 @@ export interface ReadIssuesOptions {
   env?: Record<string, string | undefined>;
   lanes?: readonly Lane[];
   errors: readonly CollectionError[];
+  timeoutMs?: number;
+}
+
+export interface ReadIssueOptions {
+  env?: Record<string, string | undefined>;
+  lanes?: readonly Lane[];
+  issues: readonly UnclassifiedIssue[];
+  collectionComplete: boolean;
   timeoutMs?: number;
 }
 
@@ -124,7 +134,7 @@ interface Reader {
   tried: string[];
 }
 
-function readerFor(root: string, options: ReadIssuesOptions): Reader {
+function readerFor(root: string, options: Pick<ReadIssuesOptions, "env" | "timeoutMs">): Reader {
   return {
     beadsDir: join(resolve(root), BEADS_DIR),
     env: options.env ?? process.env,
@@ -149,7 +159,7 @@ async function bd<T>(
       timeout: reader.timeoutMs,
     }));
   } catch (cause) {
-    throw new Error(`${command}: ${failureOf(cause, reader.timeoutMs)}`);
+    throw new Error(`${command}: ${failureOf(cause, reader.timeoutMs)}`, { cause });
   }
   try {
     return shape(JSON.parse(stdout));
@@ -198,19 +208,24 @@ interface Mapping {
   parked: Classification | undefined;
 }
 
-function mappingOf(stored: string, id: string, categories: ReadonlyMap<string, string>): Mapping {
+function mappingOf(
+  stored: string,
+  id: string,
+  categories: ReadonlyMap<string, string>,
+  command: string = LIST_COMMAND,
+): Mapping {
   const known = STORED_STATUS.get(stored);
   if (known !== undefined) {
     return { status: known, parked: STORED_CLASSIFICATION.get(stored) };
   }
   const category = categories.get(stored);
   if (category === undefined) {
-    throw new Error(`${LIST_COMMAND}: ${id} has the unknown stored status ${stored}`);
+    throw new Error(`${command}: ${id} has the unknown stored status ${stored}`);
   }
   const byCategory = CATEGORY_STATUS.get(category);
   if (byCategory === undefined) {
     throw new Error(
-      `${LIST_COMMAND}: ${id} has the stored status ${stored} in the unknown category ${category}`,
+      `${command}: ${id} has the stored status ${stored} in the unknown category ${category}`,
     );
   }
   return { status: byCategory, parked: CATEGORY_CLASSIFICATION.get(category) };
@@ -398,31 +413,150 @@ function linksOf(value: unknown, categories: ReadonlyMap<string, string>): Depen
   });
 }
 
+export function collectionFailed(root: string, errors: readonly CollectionError[]): boolean {
+  const beadsDir = join(resolve(root), BEADS_DIR);
+  return errors.some((error) => error.source === beadsDir);
+}
+
+const NO_ISSUE_REPORTED = /no issues? found/i;
+
+function reportsNoIssue(cause: unknown): boolean {
+  const reported = (cause as { cause?: { stdout?: unknown } } | null)?.cause?.stdout;
+  if (typeof reported !== "string") {
+    return false;
+  }
+  try {
+    const parsed: unknown = JSON.parse(reported);
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      return false;
+    }
+    const error = (parsed as Record<string, unknown>)["error"];
+    return typeof error === "string" && NO_ISSUE_REPORTED.test(error);
+  } catch {
+    return false;
+  }
+}
+
+function statusesIn(row: Record<string, unknown>): unknown[] {
+  const linked = [row["dependencies"], row["dependents"]].flatMap((value) =>
+    Array.isArray(value) ? value : [],
+  );
+  return [
+    row["status"],
+    ...linked.map((entry) =>
+      typeof entry === "object" && entry !== null
+        ? (entry as Record<string, unknown>)["status"]
+        : undefined,
+    ),
+  ];
+}
+
+function allMapped(statuses: readonly unknown[]): boolean {
+  return statuses.every(
+    (status) => typeof status !== "string" || status === "" || STORED_STATUS.has(status),
+  );
+}
+
+function parentChildStatuses(
+  value: unknown,
+  categories: ReadonlyMap<string, string>,
+  wanted: (id: string) => boolean,
+): Map<string, string> {
+  const reported = new Map<string, string>();
+  if (!Array.isArray(value)) {
+    return reported;
+  }
+  for (const entry of value) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const row = entry as Record<string, unknown>;
+    const id = row["id"];
+    if (typeof id !== "string" || row["dependency_type"] !== PARENT_CHILD || !wanted(id)) continue;
+    const status = statusWordOf(row["status"], categories);
+    if (status !== "") reported.set(id, status);
+  }
+  return reported;
+}
+
+function statusOfEach(links: readonly DependencyLink[]): Map<string, string> {
+  const reported = new Map<string, string>();
+  for (const link of links) {
+    if (link.status !== "") {
+      reported.set(link.id, link.status);
+    }
+  }
+  return reported;
+}
+
 export async function readIssue(
   root: string,
   id: string,
-  options: ReadIssuesOptions,
+  options: ReadIssueOptions,
 ): Promise<IssueReading> {
   const reader = readerFor(root, options);
   try {
-    const collection = await collect(reader);
-    const listed = collection.all.find((issue) => issue.id === id);
-    if (listed === undefined) {
-      return { kind: "missing", tried: reader.tried };
-    }
     const args = showArgs(id);
-    const shown = await bd(reader, args, asRows);
+    const command = ["bd", ...args].join(" ");
+    let shown: Record<string, unknown>[];
+    try {
+      shown = await bd(reader, args, asRows);
+    } catch (cause) {
+      if (reportsNoIssue(cause)) {
+        return { kind: "missing", tried: reader.tried };
+      }
+      throw cause;
+    }
     const row = shown[0];
     if (row === undefined) {
-      throw new Error(`${["bd", ...args].join(" ")}: no issue in the output`);
+      return { kind: "missing", tried: reader.tried };
     }
-    const byId = new Map(collection.all.map((issue) => [issue.id, issue]));
-    const { classification, reason } = classify(listed, contextFor(collection, options));
+    const categories = allMapped(statusesIn(row))
+      ? new Map<string, string>()
+      : categoriesOf(await bd(reader, STATUSES_ARGS, asRecord));
+    const stored = row["status"];
+    if (typeof stored !== "string") {
+      throw new Error(`${command}: ${id} has no stored status`);
+    }
+    const mapping = mappingOf(stored, id, categories, command);
+    const blockedBy = linksOf(row["dependencies"], categories);
+    const listed: UnclassifiedIssue = {
+      id,
+      title: typeof row["title"] === "string" ? row["title"] : id,
+      status: mapping.status,
+      issueType: textOf(row["issue_type"]),
+      priority: typeof row["priority"] === "number" ? row["priority"] : undefined,
+      labels: labelsOf(row["labels"]),
+      createdAt: textOf(row["created_at"]),
+      updatedAt: textOf(row["updated_at"]),
+      blockedBy: blockedBy.map((link) => link.id),
+      origin: originOf(row["metadata"]),
+    };
+    const parentId = parentIdOf(id);
+    const { classification, reason } = classify(listed, {
+      issues: options.issues,
+      lanes: options.lanes ?? [],
+      collectionComplete: options.collectionComplete,
+      blockerStatus: statusOfEach(blockedBy),
+      parentStatus:
+        parentId === undefined
+          ? undefined
+          : parentChildStatuses(
+              row["dependencies"],
+              categories,
+              (other) => other === parentId,
+            ).get(parentId),
+      childStatus: parentChildStatuses(row["dependents"], categories, (other) =>
+        other.startsWith(id + "."),
+      ),
+      stored:
+        mapping.parked === undefined
+          ? undefined
+          : new Map([[id, { classification: mapping.parked, status: stored }]]),
+    });
     return {
       kind: "found",
       tried: reader.tried,
       issue: {
-        id: listed.id,
+        id,
         title: listed.title,
         status: listed.status,
         issueType: listed.issueType,
@@ -432,11 +566,11 @@ export async function readIssue(
         updatedAt: listed.updatedAt,
         description: textOf(row["description"]),
         notes: textOf(row["notes"]),
-        origin: resolveOrigin(listed, byId),
+        origin: resolveOrigin(listed, new Map(options.issues.map((issue) => [issue.id, issue]))),
         classification,
         reason,
-        blockedBy: linksOf(row["dependencies"], collection.categories),
-        blocks: linksOf(row["dependents"], collection.categories),
+        blockedBy,
+        blocks: linksOf(row["dependents"], categories),
       },
     };
   } catch (cause) {

@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { Issue, type CollectionError, type Lane } from "@404sl/pitwall-schema";
 import { appendNotesArgs, noteAppender, readIssue, readIssues, showArgs } from "../src/beads.ts";
+import type { UnclassifiedIssue } from "../src/classify.ts";
 
 const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "bd");
 const TRACKER = join(FIXTURES, "tracker");
@@ -287,8 +288,17 @@ test("the collected issues carry no body, however much body the tracker reports"
   assert.ok(carried.has("title"));
 });
 
+async function indexedIssues(fixture?: string): Promise<Issue[]> {
+  const listing = fixture === undefined ? env("ok") : { ...env("ok"), BD_LIST_FIXTURE: fixture };
+  return (await readIssues(TRACKER, { env: listing, errors: [] })).issues;
+}
+
 test("one issue is read with its body, and with the rule that classified it", async () => {
-  const reading = await readIssue(TRACKER, "mw-1", { env: env("ok"), errors: [] });
+  const reading = await readIssue(TRACKER, "mw-1", {
+    env: env("ok"),
+    issues: await indexedIssues(),
+    collectionComplete: true,
+  });
   assert.equal(reading.kind, "found");
   if (reading.kind !== "found") return;
   assert.match(reading.issue.description ?? "", /The screen this product exists to show/);
@@ -299,7 +309,11 @@ test("one issue is read with its body, and with the rule that classified it", as
 });
 
 test("a dependency row is a blocking edge, never a merely related one", async () => {
-  const reading = await readIssue(TRACKER, "mw-1", { env: env("ok"), errors: [] });
+  const reading = await readIssue(TRACKER, "mw-1", {
+    env: env("ok"),
+    issues: await indexedIssues(),
+    collectionComplete: true,
+  });
   assert.equal(reading.kind, "found");
   if (reading.kind !== "found") return;
   assert.deepEqual(
@@ -313,7 +327,11 @@ test("a dependency row is a blocking edge, never a merely related one", async ()
 });
 
 test("a closed issue is read with its body and no active classification", async () => {
-  const reading = await readIssue(TRACKER, "mw-9", { env: env("ok"), errors: [] });
+  const reading = await readIssue(TRACKER, "mw-9", {
+    env: env("ok"),
+    issues: await indexedIssues(),
+    collectionComplete: true,
+  });
   assert.equal(reading.kind, "found");
   if (reading.kind !== "found") return;
   assert.equal(reading.issue.status, "closed");
@@ -328,7 +346,11 @@ test("a closed issue is read with its body and no active classification", async 
 });
 
 test("a closed umbrella is not parked either - a closed issue is parked by nothing", async () => {
-  const reading = await readIssue(TRACKER, "mw-4", { env: env("ok"), errors: [] });
+  const reading = await readIssue(TRACKER, "mw-4", {
+    env: env("ok"),
+    issues: await indexedIssues(),
+    collectionComplete: true,
+  });
   assert.equal(reading.kind, "found");
   if (reading.kind !== "found") return;
   assert.equal(reading.issue.classification, undefined);
@@ -336,24 +358,201 @@ test("a closed umbrella is not parked either - a closed issue is parked by nothi
 });
 
 test("an issue the tracker does not hold is missing, not a failure to read", async () => {
-  const reading = await readIssue(TRACKER, "mw-nope", { env: env("ok"), errors: [] });
+  const reading = await readIssue(TRACKER, "mw-nope", {
+    env: env("ok"),
+    issues: await indexedIssues(),
+    collectionComplete: true,
+  });
   assert.equal(reading.kind, "missing");
   assert.ok(reading.tried.length > 0);
 });
 
 test("an authority that cannot be read says what it ran, and does not read as absence", async () => {
-  const reading = await readIssue(TRACKER, "mw-1", { env: env("failing"), errors: [] });
+  const reading = await readIssue(TRACKER, "mw-1", {
+    env: env("failing"),
+    issues: await indexedIssues(),
+    collectionComplete: true,
+  });
   assert.equal(reading.kind, "unreadable");
   if (reading.kind !== "unreadable") return;
-  assert.deepEqual(reading.tried, ["bd statuses --json"]);
-  assert.match(reading.error.message, /bd statuses --json/);
+  assert.deepEqual(reading.tried, ["bd show --id mw-1 --json --include-dependents"]);
+  assert.match(reading.error.message, /bd show --id mw-1 --json --include-dependents/);
   assert.match(reading.error.source, /\.beads$/);
 });
 
+test("the rule one issue reports is the rule the board already recorded", async () => {
+  const issues = await indexedIssues();
+  const recorded = new Map(issues.map((issue) => [issue.id, issue.classification]));
+  for (const id of ["mw-1", "mw-3", "mw-10", "mw-15"]) {
+    const reading = await readIssue(TRACKER, id, { env: env("ok"), issues, collectionComplete: true });
+    assert.equal(reading.kind, "found", `${id} could not be read`);
+    if (reading.kind !== "found") continue;
+    assert.equal(
+      reading.issue.classification,
+      recorded.get(id),
+      `${id} reads differently on its own page than on the board`,
+    );
+  }
+});
+
+function listedAs(id: string, status: UnclassifiedIssue["status"]): UnclassifiedIssue {
+  return { id, title: id, status, labels: [], blockedBy: [] };
+}
+
+test("a blocker's state comes from the tracker, not from the board, in both directions", async () => {
+  const open = await readIssue(TRACKER, "mw-6", {
+    env: env("ok"),
+    issues: await indexedIssues(),
+    collectionComplete: true,
+  });
+  assert.equal(open.kind, "found");
+  if (open.kind !== "found") return;
+  assert.deepEqual(
+    open.issue.blockedBy.map((link) => [link.id, link.status]),
+    [["mw-9", "open"]],
+    "the tracker reports mw-9 open, and the board does not list it at all",
+  );
+  assert.equal(open.issue.classification, "blocked");
+  assert.deepEqual(open.issue.reason, { rule: "blocked-open", ids: ["mw-9"] });
+
+  const closed = await readIssue(TRACKER, "mw-1", {
+    env: env("ok"),
+    issues: [listedAs("mw-1", "open"), listedAs("mw-9", "open")],
+    collectionComplete: true,
+  });
+  assert.equal(closed.kind, "found");
+  if (closed.kind !== "found") return;
+  assert.deepEqual(
+    closed.issue.blockedBy.map((link) => [link.id, link.status]),
+    [["mw-9", "closed"]],
+    "the tracker reports mw-9 closed, and the board still carries it as open",
+  );
+  assert.equal(closed.issue.classification, "ready");
+  assert.deepEqual(closed.issue.reason, { rule: "default" });
+});
+
+test("an umbrella's children come from the tracker, not from the board, in both directions", async () => {
+  const created = await readIssue(TRACKER, "mw-5", {
+    env: env("ok"),
+    issues: [listedAs("mw-5", "open")],
+    collectionComplete: true,
+  });
+  assert.equal(created.kind, "found");
+  if (created.kind !== "found") return;
+  assert.equal(
+    created.issue.classification,
+    "parked:umbrella",
+    "the tracker reports mw-5.1 open, and the board does not list it at all",
+  );
+  assert.deepEqual(created.issue.reason, { rule: "umbrella-open-child", childId: "mw-5.1" });
+
+  const finished = await readIssue(TRACKER, "mw-13", {
+    env: env("ok"),
+    issues: [listedAs("mw-13", "open"), listedAs("mw-13.1", "open")],
+    collectionComplete: true,
+  });
+  assert.equal(finished.kind, "found");
+  if (finished.kind !== "found") return;
+  assert.equal(
+    finished.issue.classification,
+    "ready",
+    "the tracker reports mw-13.1 closed while the board still carries it as open, and mw-77 is a parent-child edge outside mw-13's id, so it is not a child",
+  );
+  assert.deepEqual(finished.issue.reason, { rule: "default" });
+});
+
+test("a parent's state comes from the tracker, not from the board, in both directions", async () => {
+  const started = await readIssue(TRACKER, "mw-4.2", {
+    env: env("ok"),
+    issues: [listedAs("mw-4", "closed"), listedAs("mw-4.2", "open")],
+    collectionComplete: true,
+  });
+  assert.equal(started.kind, "found");
+  if (started.kind !== "found") return;
+  assert.equal(
+    started.issue.classification,
+    "blocked",
+    "the tracker reports mw-4 in progress, and the board still carries it as closed",
+  );
+  assert.deepEqual(started.issue.reason, { rule: "blocked-parent-in-progress", parentId: "mw-4" });
+
+  const done = await readIssue(TRACKER, "mw-2.1", {
+    env: env("ok"),
+    issues: [listedAs("mw-2", "in_progress"), listedAs("mw-2.1", "open")],
+    collectionComplete: true,
+  });
+  assert.equal(done.kind, "found");
+  if (done.kind !== "found") return;
+  assert.equal(
+    done.issue.classification,
+    "ready",
+    "the tracker reports mw-2 closed, and the board still carries it as in progress",
+  );
+  assert.deepEqual(done.issue.reason, { rule: "default" });
+});
+
+test("a board that could not be collected does not overrule what the tracker said", async () => {
+  const closed = await readIssue(TRACKER, "mw-1", {
+    env: env("ok"),
+    issues: [],
+    collectionComplete: false,
+  });
+  assert.equal(closed.kind, "found");
+  if (closed.kind !== "found") return;
+  assert.equal(
+    closed.issue.classification,
+    "ready",
+    "show named mw-9 closed, so an unreadable board has nothing left to say about it",
+  );
+  assert.deepEqual(closed.issue.reason, { rule: "default" });
+
+  const open = await readIssue(TRACKER, "mw-6", {
+    env: env("ok"),
+    issues: [],
+    collectionComplete: false,
+  });
+  assert.equal(open.kind, "found");
+  if (open.kind !== "found") return;
+  assert.equal(open.issue.classification, "blocked");
+  assert.deepEqual(
+    open.issue.reason,
+    { rule: "blocked-open", ids: ["mw-9"] },
+    "an open blocker is blocked-open, never blocked-unreadable, once show has named its status",
+  );
+});
+
+test("a stored status the built-in set does not name costs one extra call, and no more", async () => {
+  const issues = await indexedIssues();
+  const custom = await readIssue(TRACKER, "mw-15", { env: env("ok"), issues, collectionComplete: true });
+  assert.equal(custom.kind, "found");
+  if (custom.kind !== "found") return;
+  assert.equal(custom.issue.classification, "parked:roadmap");
+  assert.deepEqual(custom.issue.reason, { rule: "stored-status", status: "icebox" });
+  assert.deepEqual(
+    custom.issue.blocks.map((link) => [link.id, link.status]),
+    [["mw-14", "in_progress"]],
+  );
+  assert.deepEqual(
+    custom.tried.map((command) => command.split(" ")[1]),
+    ["show", "statuses"],
+  );
+
+  const builtIn = await readIssue(TRACKER, "mw-10", { env: env("ok"), issues, collectionComplete: true });
+  assert.deepEqual(
+    builtIn.tried.map((command) => command.split(" ")[1]),
+    ["show"],
+    "a status the built-in set names must not send anyone back to the tracker",
+  );
+});
+
 test("reading one issue runs nothing that could write to the tracker", async () => {
-  const reading = await readIssue(TRACKER, "mw-1", { env: env("ok"), errors: [] });
+  const reading = await readIssue(TRACKER, "mw-1", {
+    env: env("ok"),
+    issues: await indexedIssues(),
+    collectionComplete: true,
+  });
   const ran = reading.tried.map((command) => command.split(" ")[1]);
-  assert.deepEqual(ran, ["statuses", "list", "blocked", "show"]);
+  assert.deepEqual(ran, ["show"]);
   assert.deepEqual(showArgs("mw-1"), ["show", "--id", "mw-1", "--json", "--include-dependents"]);
 });
 

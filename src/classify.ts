@@ -12,6 +12,9 @@ export interface ClassifyContext {
   lanes: readonly Lane[];
   collectionComplete: boolean;
   stored?: ReadonlyMap<string, StoredClassification>;
+  blockerStatus?: ReadonlyMap<string, string>;
+  parentStatus?: string;
+  childStatus?: ReadonlyMap<string, string>;
 }
 
 export type ClassificationReason =
@@ -46,21 +49,32 @@ function workingLane(issue: UnclassifiedIssue, lanes: readonly Lane[]): Lane | u
   return lanes.find((lane) => lane.state === "working" && lane.issueId === issue.id);
 }
 
+function childStatusOf(issue: UnclassifiedIssue, context: ClassifyContext): Map<string, string> {
+  const prefix = issue.id + ".";
+  const children = new Map<string, string>();
+  for (const other of context.issues) {
+    if (other.id.startsWith(prefix)) children.set(other.id, other.status);
+  }
+  for (const [id, status] of context.childStatus ?? []) {
+    if (id.startsWith(prefix)) children.set(id, status);
+  }
+  return children;
+}
+
 function umbrellaReason(
   issue: UnclassifiedIssue,
-  issues: readonly UnclassifiedIssue[],
+  context: ClassifyContext,
 ): ClassificationReason | undefined {
   if (issue.issueType === "epic") return { rule: "umbrella-type", issueType: issue.issueType };
   if (issue.title.includes(EPIC_TITLE_MARKER)) return { rule: "umbrella-title-marker" };
-  const child = issues.find(
-    (other) =>
-      other.id !== issue.id && other.id.startsWith(issue.id + ".") && other.status !== "closed",
-  );
-  return child === undefined ? undefined : { rule: "umbrella-open-child", childId: child.id };
+  for (const [childId, status] of childStatusOf(issue, context)) {
+    if (status !== "closed") return { rule: "umbrella-open-child", childId };
+  }
+  return undefined;
 }
 
-export function isUmbrella(issue: UnclassifiedIssue, issues: readonly UnclassifiedIssue[]): boolean {
-  return umbrellaReason(issue, issues) !== undefined;
+export function isUmbrella(issue: UnclassifiedIssue, context: ClassifyContext): boolean {
+  return umbrellaReason(issue, context) !== undefined;
 }
 
 export function parentIdOf(id: string): string | undefined {
@@ -76,20 +90,19 @@ function blockedReason(
   const open: string[] = [];
   const unreadable: string[] = [];
   for (const id of issue.blockedBy) {
-    const blocker = byId.get(id);
-    if (blocker === undefined) {
+    const status = context.blockerStatus?.get(id) ?? byId.get(id)?.status;
+    if (status === undefined) {
       if (!context.collectionComplete) unreadable.push(id);
-    } else if (blocker.status !== "closed") {
+    } else if (status !== "closed") {
       open.push(id);
     }
   }
   if (open.length > 0) return { rule: "blocked-open", ids: open };
   if (unreadable.length > 0) return { rule: "blocked-unreadable", ids: unreadable };
   const parentId = parentIdOf(issue.id);
-  if (parentId !== undefined && byId.get(parentId)?.status === "in_progress") {
-    return { rule: "blocked-parent-in-progress", parentId };
-  }
-  return undefined;
+  if (parentId === undefined) return undefined;
+  const parentStatus = context.parentStatus ?? byId.get(parentId)?.status;
+  return parentStatus === "in_progress" ? { rule: "blocked-parent-in-progress", parentId } : undefined;
 }
 
 export function isBlocked(issue: UnclassifiedIssue, context: ClassifyContext): boolean {
@@ -100,7 +113,7 @@ export function hasLiveStructuralBlocker(
   issue: UnclassifiedIssue,
   context: ClassifyContext,
 ): boolean {
-  return isUmbrella(issue, context.issues) || isBlocked(issue, context);
+  return isUmbrella(issue, context) || isBlocked(issue, context);
 }
 
 export function classify(issue: UnclassifiedIssue, context: ClassifyContext): Classified {
@@ -124,7 +137,7 @@ export function classify(issue: UnclassifiedIssue, context: ClassifyContext): Cl
       return { classification: parked, reason: { rule: "label", label } };
     }
   }
-  const umbrella = umbrellaReason(issue, context.issues);
+  const umbrella = umbrellaReason(issue, context);
   if (umbrella !== undefined) {
     return { classification: "parked:umbrella", reason: umbrella };
   }
