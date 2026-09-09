@@ -1,7 +1,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Classification, SCHEMA_VERSION, isYours, parseSnapshot } from "@404sl/pitwall-schema";
-import { blockedSummary, buildBoard, buildIssueView, parkedReasons, parkedSummary } from "../ui/model.ts";
+import {
+  SNAPSHOT_STALE_AFTER_MS,
+  blockedSummary,
+  buildBoard,
+  buildIssueView,
+  parkedReasons,
+  parkedSummary,
+  snapshotAge,
+} from "../ui/model.ts";
 import type { IssuePayload } from "../ui/model.ts";
 import { issueHref, routeOf } from "../ui/routes.ts";
 import { VERSION } from "../src/version.ts";
@@ -449,4 +457,36 @@ test("an issue link survives a round trip, ids and project names included", () =
   assert.equal(routeOf("#/issue/session-replay"), undefined);
   assert.equal(routeOf("#/issue//sr-1"), undefined);
   assert.equal(routeOf("#/issue/session-replay/sr-1/extra"), undefined);
+});
+
+test("the header reads the snapshot as an age, not as a clock time", () => {
+  const now = Date.parse("2026-09-08T14:49:00Z");
+  const at = (minutes: number) => new Date(now - minutes * 60_000).toISOString();
+  assert.equal(snapshotAge(at(0), now).label, "<1m");
+  assert.equal(snapshotAge(at(9), now).label, "9m");
+  assert.equal(snapshotAge(at(38), now).label, "38m");
+  assert.equal(snapshotAge(at(125), now).label, "2h5m");
+});
+
+test("a snapshot goes loud only once it is stale enough to act on by mistake", () => {
+  const now = Date.parse("2026-09-08T14:49:00Z");
+  const olderBy = (ms: number) => snapshotAge(new Date(now - ms).toISOString(), now);
+  assert.equal(SNAPSHOT_STALE_AFTER_MS, 600_000);
+  assert.equal(olderBy(SNAPSHOT_STALE_AFTER_MS - 1_000).stale, false, "9m59s must stay grey");
+  assert.equal(olderBy(SNAPSHOT_STALE_AFTER_MS).stale, true, "the threshold itself is stale");
+  assert.equal(olderBy(38 * 60_000).stale, true);
+  assert.equal(olderBy(38 * 60_000).label, "38m");
+});
+
+test("an age that cannot be read never claims the snapshot is stale", () => {
+  const now = Date.parse("2026-09-08T14:49:00Z");
+  const unreadable = snapshotAge("not-a-date", now);
+  assert.equal(unreadable.valid, false);
+  assert.equal(unreadable.stale, false);
+  assert.equal(unreadable.label, "not-a-date");
+
+  const skewed = snapshotAge(new Date(now + 5 * 60_000).toISOString(), now);
+  assert.equal(skewed.valid, true);
+  assert.equal(skewed.stale, false);
+  assert.equal(skewed.label, "<1m");
 });

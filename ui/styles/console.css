@@ -74,6 +74,15 @@ body {
   line-height: 1.6;
   letter-spacing: 0.02em;
   color: var(--pw-muted);
+  border-inline-start: var(--pw-rail) solid transparent;
+  padding-inline-start: 8px;
+  margin-inline-start: calc(-1 * (var(--pw-rail) + 8px));
+}
+
+.pw-header--stale .pw-header__meta {
+  border-inline-start-color: var(--pw-alert);
+  color: var(--pw-alert);
+  font-weight: 500;
 }
 
 .pw-console {
