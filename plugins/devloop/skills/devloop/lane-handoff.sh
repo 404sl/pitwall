@@ -23,9 +23,13 @@
 #   0  handed off    compliant, labelled, cleaned up, note recorded and read back
 #   2  non-compliant nothing was labelled. The offending lines are printed. Fix, then re-run.
 #   4  not-green     the PR is not in a state to label (empty rollup, a failing check)
+#   5  note-unconfirmed  labelled and cleaned up, but the tracker note could not be confirmed.
+#                    Do not re-run - repair the note only.
 #   6  usage
 
 set -u
+
+SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 LABEL=lane-verified
 REPO_PATH=""; SLUG=""; PR=""; BRANCH=""; ISSUE=""; NOTE_FILE=""; WT=""; LOCK=""; CHECK_ONLY=0
@@ -49,6 +53,20 @@ for req in REPO_PATH SLUG PR BRANCH; do
   eval "v=\$$req"; [ -n "$v" ] || { echo "missing --$(echo "$req" | tr 'A-Z_' 'a-z-')" >&2; exit 6; }
 done
 case "$PR" in ''|*[!0-9]*) echo "--pr must be a number, got: $PR" >&2; exit 6 ;; esac
+
+if [ -n "$NOTE_FILE" ]; then
+  [ -n "$ISSUE" ] || {
+    echo "lane-handoff.sh: --note-file was given without --issue, so the note has nowhere to go." >&2
+    echo "                 Pass both or neither. Nothing was labelled." >&2
+    exit 6; }
+  note_dir=$(cd "$(dirname "$NOTE_FILE")" 2>/dev/null && pwd)
+  [ -n "$note_dir" ] && NOTE_FILE="$note_dir/$(basename "$NOTE_FILE")"
+  [ -f "$NOTE_FILE" ] || {
+    echo "lane-handoff.sh: --note-file ${NOTE_FILE} does not exist, so the note could not be" >&2
+    echo "                 recorded. Nothing was labelled. Write the file, then run this again." >&2
+    exit 6; }
+fi
+
 cd "$REPO_PATH" 2>/dev/null || { echo "not a directory: $REPO_PATH" >&2; exit 6; }
 
 git fetch origin --quiet 2>/dev/null
@@ -242,12 +260,8 @@ fi
 
 # 5. Record it. --append-notes, never --notes: the field has no history and an overwrite is
 #    simply gone. Text comes from a file so nothing expands.
-if [ -n "$ISSUE" ] && [ -n "$NOTE_FILE" ] && [ ! -f "$NOTE_FILE" ]; then
-  echo "handed off WITH A WARNING: --note-file ${NOTE_FILE} does not exist, so NOTHING was"
-  echo "  appended to ${ISSUE}. Append it yourself with bd update --append-notes."
-fi
-
-if [ -n "$ISSUE" ] && [ -n "$NOTE_FILE" ] && [ -f "$NOTE_FILE" ]; then
+NOTE_VERDICT=""
+if [ -n "$ISSUE" ] && [ -n "$NOTE_FILE" ]; then
   # RUN bd FROM THE WORKSPACE ROOT, NOT FROM INSIDE A REPOSITORY. This script cd's into the repo
   # at the top, and bd was inheriting that. The project's own notes say to run bd from the root;
   # setting BEADS_DIR is not the same thing, because bd also resolves against the working
@@ -283,7 +297,7 @@ if [ -n "$ISSUE" ] && [ -n "$NOTE_FILE" ] && [ -f "$NOTE_FILE" ]; then
   # bd-note.sh takes a lock, then verifies and retries. Through it the same eight-way race loses
   # none. The read-back below stays regardless - it is what caught this in the first place.
   bd_err=$( (cd "$ROOT_DIR" && BEADS_DIR="${BEADS_DIR:-$ROOT_DIR/.beads}" \
-    bash "$(dirname "${BASH_SOURCE[0]}")/bd-note.sh" "$ISSUE" --note-file "$NOTE_FILE" >/dev/null) 2>&1 )
+    bash "$SKILL_DIR/bd-note.sh" "$ISSUE" --note-file "$NOTE_FILE" >/dev/null) 2>&1 )
   bd_code=$?
   if [ "$bd_code" != "0" ]; then
     echo "bd update exited ${bd_code} for ${ISSUE}: ${bd_err:-no message}"
@@ -293,29 +307,39 @@ if [ -n "$ISSUE" ] && [ -n "$NOTE_FILE" ] && [ -f "$NOTE_FILE" ]; then
   # compares against anything is not evidence. Check the text is actually in the field.
   got=$(cd "$ROOT_DIR" && BEADS_DIR="${BEADS_DIR:-$ROOT_DIR/.beads}" bd show "$ISSUE" --json 2>/dev/null \
     | python3 -c "
-import json,sys,io
+import json,sys,io,re
 d=json.load(sys.stdin); d=d[0] if isinstance(d,list) else d
 notes=d.get('notes') or ''
-want=io.open(sys.argv[1],encoding='utf-8',errors='replace').read().strip()
-# Probe with the LONGEST line, and fall back to the whole text when every line is short. The old
-# form kept only lines over 25 characters and reported MISSING when none qualified - so a short
-# note always failed verification even though bd had appended it correctly. That false alarm is
-# what app-6qmy was reporting: not an intermittent bd failure, a check that cannot pass on short
-# input. Reproduced deliberately on 2026-08-29 with a five-character note.
-lines=[l.strip() for l in want.split(chr(10)) if l.strip()]
-probe = max(lines, key=len) if lines else want
-ok = bool(probe) and probe in notes
+want=io.open(sys.argv[1],encoding='utf-8',errors='replace').read()
+flat=lambda t: re.sub(r'[^A-Za-z0-9]', '', t)
+probe=flat(want)
+ok = bool(probe) and probe in flat(notes)
 print('%s|%d|%s' % (d.get('status'), len(notes), 'APPENDED' if ok else 'MISSING'))" "$NOTE_FILE" 2>/dev/null)
   case "$got" in
-    *MISSING*) echo "handed off WITH A WARNING: the note was NOT appended to ${ISSUE} (${got})."
-               echo "  bd accepted the command or failed silently. Append it yourself and check." ;;
-    *)         echo "tracker: ${ISSUE} ${got:-unreadable}" ;;
+    *APPENDED*) echo "tracker: ${ISSUE} ${got}" ;;
+    *MISSING*)  NOTE_VERDICT=MISSING ;;
+    *)          NOTE_VERDICT=UNREADABLE ;;
   esac
 fi
 
 # 6. Give the lane back last, so a crash before this leaves the slot held rather than handing it
 #    to a dispatch that lands on top of a run still finishing.
 [ -n "$LOCK" ] && rmdir "$LOCK" 2>/dev/null
+
+if [ -n "$NOTE_VERDICT" ]; then
+  echo "note-unconfirmed: ${SLUG}#${PR} at ${head_sha} IS labelled ${LABEL}, the worktree is gone"
+  echo "  and the lane lock is dropped. Everything but the tracker note is done, so do NOT re-run"
+  echo "  this script."
+  if [ "$NOTE_VERDICT" = "MISSING" ]; then
+    echo "  ${ISSUE} was read back and the note is NOT in it (${got}). Append it and read it back:"
+    echo "    bash ${SKILL_DIR}/bd-note.sh ${ISSUE} --note-file ${NOTE_FILE}"
+  else
+    echo "  ${ISSUE} could not be read back at all, which is NOT evidence the note was lost."
+    echo "  Read the field first - bd show ${ISSUE} --json - and append only if it is absent."
+  fi
+  echo "labels now: ${labels}"
+  exit 5
+fi
 
 echo "handed off: ${SLUG}#${PR} at ${head_sha}, labelled ${LABEL}"
 echo "labels now: ${labels}"

@@ -306,8 +306,9 @@ than adjusting the test. Report status "red" with what failed; do not label it.
 WHEN IT IS GREEN, hand off with the script rather than by hand:
 
   bash ${SKILL_DIR}/lane-handoff.sh --repo-path ${REPO_PATH} --slug ${SLUG} \\
-    --pr ${PR} --branch ${resolved.branch || '<the branch>'} ${ID ? `--issue ${ID}` : ''} \\
-    --note-file <a file holding your tracker note> --worktree ${WT_PATH} \\
+    --pr ${PR} --branch ${resolved.branch || '<the branch>'} \\
+    ${ID ? `--issue ${ID} --note-file <a file holding your tracker note>` : ''} \\
+    --worktree ${WT_PATH} \\
     --lane-lock /tmp/${LOCK_PREFIX}-lane-${LANE}.lock
 
 It reads the title, body and commit messages back from GitHub and git, runs the compliance check
@@ -318,6 +319,9 @@ the lane lock last.
 Exit 2 means non-compliant and NOTHING was labelled: it prints the offending lines, you judge
 them, you fix the text, you re-run. A product or vendor name that is the subject of the change is
 fine and the script cannot tell the difference - that judgement is yours.
+
+Exit 5 means the label IS on and the worktree is gone, but the tracker note could not be
+confirmed. Do not re-run it - repair only the note, the way its message says.
 
 THE TRACKER NOTE must say the branch was brought up to master, name the files that were resolved,
 and say what was kept from each side. Append it, never replace: the notes field has no history and

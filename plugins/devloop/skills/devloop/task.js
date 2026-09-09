@@ -1150,13 +1150,22 @@ PR: ${work.prUrl || work.prNumber}
    whole handoff by hand instead - which works, but skips the compliance refusal that is the
    reason this script exists.
 
+   --note-file AND --issue TRAVEL TOGETHER. Either both or neither: a note with no issue to write
+   it to is refused as a bad argument, before anything is labelled, rather than skipped in
+   silence the way it used to be.
+
    It reads the title and body back from GitHub and the commit messages back from git, runs the
    compliance grep over both, checks the rollup is non-empty and describes the head that is
    actually on the branch, labels, reads the label back, removes YOUR worktree, appends your
    note with --append-notes and reads it back, and drops your lane lock last.
 
    Exit codes: 0 handed off, 2 non-compliant (NOTHING was labelled - it prints the offending
-   lines, you judge them, you fix, you re-run), 4 not in a state to label, 6 bad arguments.
+   lines, you judge them, you fix, you re-run), 4 not in a state to label, 5 labelled and cleaned
+   up but the tracker note could not be confirmed, 6 bad arguments.
+
+   EXIT 5 IS NOT A REASON TO RE-RUN IT. The label is on and the worktree is gone; only the note is
+   outstanding, and the message says which repair it wants. Re-running the whole handoff cannot
+   help and appending blindly is how a note gets written twice.
 
    ITS REFUSAL TO LABEL IS THE POINT. A label is an assertion that the PR is ready. Labelling
    first and fixing after is how the wrong text reaches master. If it reports hits, read them:
