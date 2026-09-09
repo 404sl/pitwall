@@ -1,9 +1,9 @@
 #!/bin/sh
-out="${GH_OUTPUT:?GH_OUTPUT is not set}"
 if [ -n "$GH_LOG" ]; then
   echo "$*" >> "$GH_LOG"
 fi
 case "$1 $2" in
-  "pr list") cat "$out/list.json" ;;
+  "auth status") echo "Logged in to github.com account nobody" ;;
+  "pr list") cat "${GH_OUTPUT:?GH_OUTPUT is not set}/list.json" ;;
   *) echo "unknown command: gh $*" >&2; exit 1 ;;
 esac

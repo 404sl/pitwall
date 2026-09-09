@@ -153,7 +153,7 @@ export function parseStatusArgs(argv: string[]): StatusArgs {
   return from === undefined ? {} : { from };
 }
 
-function painter(color: boolean): Paint {
+export function painter(color: boolean): Paint {
   return (text, code) => (color ? `\u001b[${code}m${text}\u001b[0m` : text);
 }
 

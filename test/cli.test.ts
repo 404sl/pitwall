@@ -80,3 +80,22 @@ test("a --from without a path exits non-zero and shows usage", () => {
 test("usage names the status command", () => {
   assert.match(run(["--help"]).out, /pitwall status/);
 });
+
+test("doctor is a command of its own and takes no arguments", () => {
+  const { code, out, doctor } = run(["doctor"]);
+  assert.equal(code, 0);
+  assert.equal(out, "");
+  assert.equal(doctor, true);
+});
+
+test("an argument after doctor exits non-zero and shows usage", () => {
+  const { code, out, doctor } = run(["doctor", "--nope"]);
+  assert.equal(code, 2);
+  assert.equal(doctor, undefined);
+  assert.match(out, /unknown argument --nope/);
+  assert.match(out, /pitwall --help/);
+});
+
+test("usage names the doctor command", () => {
+  assert.match(run(["--help"]).out, /pitwall doctor/);
+});

@@ -47,14 +47,17 @@ Early, and honest about it. Working today:
 ```
 pitwall snapshot     collect every project and print the snapshot as JSON
 pitwall status       print the latest snapshot as one screen
+pitwall doctor       check every source a snapshot reads and say what is wrong
 pitwall serve        serve the console on http://127.0.0.1:7373/
 ```
 
 `snapshot` discovers projects, reads their trackers, classifies every issue and reports
 lane state. `status` renders that document as one terminal screen, reading the snapshot
-the server reads or another file given with `--from`. `serve` serves that document over
-HTTP. **The console itself is still being
-built** — until it lands, `serve` gives you the API and a placeholder page.
+the server reads or another file given with `--from`. `doctor` prints one line per source
+— the roots, each workspace file, the tracker, `bd`, `gh`, every repository and every lane
+registry — with what was tried and what came back, and exits non-zero when a hard
+requirement fails. `serve` serves that document over HTTP. **The console itself is still
+being built** — until it lands, `serve` gives you the API and a placeholder page.
 
 ## Try it
 
