@@ -65,8 +65,19 @@ export function run(argv: string[]): CommandResult {
   return { code: 2, out: `pitwall: unknown argument ${arg}\n\n${USAGE}` };
 }
 
+function quitQuietlyOnBrokenPipe(stream: NodeJS.WriteStream): void {
+  stream.on("error", (cause: NodeJS.ErrnoException) => {
+    if (cause.code !== "EPIPE") {
+      throw cause;
+    }
+    process.exit(0);
+  });
+}
+
 const isEntry = process.argv[1] && import.meta.url.endsWith(process.argv[1].split("/").pop()!);
 if (isEntry) {
+  quitQuietlyOnBrokenPipe(process.stdout);
+  quitQuietlyOnBrokenPipe(process.stderr);
   const { code, doctor, out, serve, snapshot, status } = run(process.argv.slice(2));
   process.stdout.write(out);
   if (doctor !== undefined) {
