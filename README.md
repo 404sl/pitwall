@@ -68,6 +68,15 @@ still read, so a workspace that has not been renamed keeps working; where a dire
 both, `.pitwall.json` is the one in use. Run it from a directory whose children are
 project workspaces, or configure the roots explicitly.
 
+Every `snapshot` run is appended to a local SQLite log at `~/.local/state/pitwall/history.db`
+(`XDG_STATE_HOME` is honoured). A tracker holds current state and no time series, so the
+metrics that need more than one reading — what landed today, the median minutes from claim
+to close, how often claimed work goes back to open — are derived from that log rather than
+stored in it. It keeps the newest 500 snapshots and 30 days of them; `history.maxSnapshots`
+and `history.maxAgeDays` in `~/.config/pitwall/config.json` move those bounds. A log that
+cannot be written costs those three metrics and nothing else: the snapshot still arrives,
+and the failure is recorded in `errors`.
+
 ## How it is put together
 
 ```

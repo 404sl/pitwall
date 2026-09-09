@@ -4,6 +4,7 @@ import { dirname, join, resolve } from "node:path";
 import type { CollectionError, Project } from "@404sl/pitwall-schema";
 import { readWorkspace, workspaceFile } from "./autofix.js";
 import { collectionError } from "./errors.js";
+import { DEFAULT_LIMITS, type HistoryLimits } from "./history.js";
 
 export const CONFIG_VAR = "PITWALL_CONFIG";
 
@@ -39,6 +40,26 @@ function readRoots(path: string): string[] {
     throw new TypeError("roots is not an array of paths");
   }
   return (roots as string[]).map((root) => resolve(root));
+}
+
+function bound(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+export function historyLimits(options: RootsOptions = {}): HistoryLimits {
+  let configured: { maxSnapshots?: unknown; maxAgeDays?: unknown } = {};
+  try {
+    const parsed = JSON.parse(readFileSync(configPath(options), "utf8")) as {
+      history?: { maxSnapshots?: unknown; maxAgeDays?: unknown } | null;
+    } | null;
+    configured = parsed?.history ?? {};
+  } catch {
+    configured = {};
+  }
+  return {
+    maxSnapshots: bound(configured.maxSnapshots, DEFAULT_LIMITS.maxSnapshots),
+    maxAgeDays: bound(configured.maxAgeDays, DEFAULT_LIMITS.maxAgeDays),
+  };
 }
 
 function scanForWorkspaces(parent: string, errors: CollectionError[]): string[] {
