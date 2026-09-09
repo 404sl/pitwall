@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { execFileSync } from "node:child_process";
-import { readFileSync, symlinkSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, symlinkSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
@@ -27,8 +27,13 @@ test("the version constant matches package.json", () => {
 test("the binary runs when invoked under the name npm installs it as", () => {
   const link = join(tmpdir(), `pitwall-entrypoint-${process.pid}`);
   try {
+    const built = join(ROOT, "dist", "cli.js");
+    assert.ok(
+      existsSync(built),
+      "dist/cli.js is missing - this test exercises the COMPILED binary, so the build has to run first",
+    );
     rmSync(link, { force: true });
-    symlinkSync(join(ROOT, "dist", "cli.js"), link);
+    symlinkSync(built, link);
     const out = execFileSync(process.execPath, [link, "--version"], { encoding: "utf8" });
     assert.match(out, /^pitwall \d+\.\d+\.\d+/, `invoked as "${link}" it printed nothing`);
   } finally {
