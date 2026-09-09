@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.1.3
+
+**`lock-check.sh` could measure the wrong run and report a dead lock as alive.** It found the
+holder by searching journals for the lock token and taking the first match. A run BLOCKED BY
+the lock also names that token, as `lockedOutBy` - and a blocked run is, by definition,
+writing right now. So it measured a victim and reported the corpse as alive.
+
+The mistake has a feedback loop, which is what makes it expensive rather than merely wrong:
+every retry against a leaked lock creates another run whose journal names the token and which
+is writing. The more a supervisor retries, the more alive the dead lock looks. Responding to
+"nothing is landing" by trying again is both the obvious move and the worst one.
+
+Now it considers only journals where the token appears outside a `lockedOutBy` record, takes
+every match rather than the first, and **refuses to answer when two runs claim to hold the
+same lock** rather than measuring one of them.
+
+Reported from a live incident where it named a locked-out lander as the holder of a lock the
+finished lander had leaked.
+
+
 ## 0.1.2
 
 Adds `lock-check.sh`, which answers whether the merge lock is held by something still alive.

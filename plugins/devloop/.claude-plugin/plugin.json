@@ -1,7 +1,7 @@
 {
   "name": "devloop",
   "description": "Work a project backlog unattended: pick eligible issues by priority, fix each in its own git worktree, review adversarially, and land the green pull request.",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "author": {
     "name": "404 Software Labs"
   }
