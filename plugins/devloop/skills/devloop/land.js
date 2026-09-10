@@ -1604,11 +1604,17 @@ try {
     let servingText = ''
     let refuted = false
     let readDisagreed = false
+    let ownConfirmed = false
+    let ownMismatched = false
+    let ownContradicted = false
 
     if (reportedStatus === 'deployed') {
       const own = readHosts(landed, { status: 'read', hosts: (d && d.hosts) || [] })
       deployed = own.status
-      refuted = own.mismatched.length > 0 || own.contradicted.length > 0
+      ownConfirmed = own.confirmed.length > 0
+      ownMismatched = own.mismatched.length > 0
+      ownContradicted = own.contradicted.length > 0
+      refuted = ownMismatched || ownContradicted
       servingText = servingLine(own.confirmed)
       if (deployed !== 'deployed') {
         log(`the deploy step reported deployed, and the revisions it says the hosts are serving do not confirm it - deploy is ${deployed}`)
@@ -1619,8 +1625,12 @@ try {
     const unsettled = reportedStatus !== 'deployed'
       ? 'the deploy step reported nothing'
       : refuted
-        ? 'the deploy step reported deployed and named a revision that is not what merged'
-        : 'the deploy step reported deployed and named no revision that could be compared against what merged'
+        ? ownMismatched
+          ? 'the deploy step reported deployed and named a revision that is not what merged'
+          : 'the deploy step reported deployed and named one host twice with two different revisions'
+        : ownConfirmed
+          ? 'the deploy step reported deployed and named a revision for only some of what deploys'
+          : 'the deploy step reported deployed and named no revision that could be compared against what merged'
 
     if (deployed === 'unknown' && !landed.some((l) => DEPLOYS.has(l.repo))) {
       deployed = 'not_needed'
