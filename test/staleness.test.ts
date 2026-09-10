@@ -92,6 +92,22 @@ function matches(evidence: readonly string[], pattern: RegExp): boolean {
   return evidence.some((line) => pattern.test(line));
 }
 
+test("a stamped note is quoted by what it says, not by its stamp", async () => {
+  const { staleness } = await assess(
+    aRecord({
+      classification: "yours:access",
+      labels: ["needs-access"],
+      labelledAt: "2026-09-01T10:00:00Z",
+      notedAt: "2026-09-05T14:00:00Z",
+      notes:
+        "2026-09-05T14:00:00Z lane-mw-1\nThe owner granted the token and the upload went through.",
+    }),
+    aContext(),
+  );
+  assert.equal(staleness.verdict, "likely-stale");
+  assert.ok(matches(staleness.evidence, /"The owner granted the token/));
+});
+
 test("a note written after the parking label reads as an answer", async () => {
   const { staleness } = await assess(
     aRecord({
@@ -208,6 +224,74 @@ test("a name the tracker has never heard of is not read as a closed issue", asyn
   );
   assert.equal(staleness.verdict, "unchecked");
   assert.deepEqual(staleness.evidence, []);
+});
+
+test("an id inside a note's stamp is not an issue the note names", async () => {
+  const chasing = (): Partial<ParkedRecord> => ({
+    id: "pitwall-100",
+    title: "pitwall-100",
+    classification: "parked:watch",
+    labels: ["parked:watch"],
+    labelledAt: "2026-09-05T10:00:00Z",
+    notedAt: "2026-09-02T10:00:00Z",
+    notes:
+      "2026-09-09T08:00:00Z lane-devloop/pitwall-777\nChased the vendor again, still nothing back.",
+  });
+  const closed = await assess(
+    aRecord(chasing()),
+    aContext({ idPrefix: "pitwall", ...tracker({ "pitwall-777": "closed" }) }),
+  );
+  assert.equal(closed.staleness.verdict, "still-blocking");
+  assert.ok(
+    !matches(closed.staleness.evidence, /every issue it names/),
+    "the lane that wrote the note is not an issue the note is waiting on",
+  );
+  const open = await assess(
+    aRecord(chasing()),
+    aContext({ idPrefix: "pitwall", ...tracker({ "pitwall-777": "open" }) }),
+  );
+  assert.ok(
+    !matches(open.staleness.evidence, /it names pitwall-777/),
+    "an issue nothing checked is not reported as checked",
+  );
+});
+
+test("a log line that opens with an instant still names the issue it is waiting on", async () => {
+  const log = "2026-09-09T08:14:02Z gate refused: waiting on pitwall-333 to land the contract field";
+  const above = [
+    "2026-09-09T08:00:00Z lane-devloop/pitwall-326",
+    "Rolled back. The duplicate pitwall-222 was closed first, which is why this one stayed.",
+    "Run log pasted below:",
+  ];
+  const below = ["so nothing here can proceed until that one is in."];
+  const shapes: Record<string, string> = {
+    "inside a block": [...above, log, ...below].join("\n"),
+    "opening a block of its own": [...above, "", log, ...below].join("\n"),
+  };
+  for (const [shape, notes] of Object.entries(shapes)) {
+    const { staleness } = await assess(
+      aRecord({
+        id: "pitwall-100",
+        title: "pitwall-100",
+        classification: "parked:watch",
+        labels: ["parked:watch"],
+        notes,
+      }),
+      aContext({
+        idPrefix: "pitwall",
+        ...tracker({ "pitwall-222": "closed", "pitwall-333": "open" }),
+      }),
+    );
+    assert.equal(staleness.verdict, "still-blocking", `a log line ${shape} was read as a stamp`);
+    assert.ok(
+      matches(staleness.evidence, /it names pitwall-333, still open/),
+      `the open issue named by a log line ${shape} was dropped with the line naming it`,
+    );
+    assert.ok(
+      !matches(staleness.evidence, /every issue it names/),
+      `a record waiting on an open issue was reported as resolved from a log line ${shape}`,
+    );
+  }
 });
 
 test("a referenced pull request that has merged is reported as merged", async () => {

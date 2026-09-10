@@ -109,8 +109,18 @@ export function isAssessable(classification: Classification): boolean {
   return scopeOf(classification) !== undefined;
 }
 
+const STAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z \S+$/;
+
+function withoutStampLines(text: string): string {
+  return text
+    .split("\n")
+    .filter((line) => !STAMP.test(line.trim()))
+    .join("\n")
+    .trim();
+}
+
 function reasonOf(record: ParkedRecord): string {
-  return [record.title, record.description ?? "", record.notes ?? ""].join("\n");
+  return [record.title, record.description ?? "", withoutStampLines(record.notes ?? "")].join("\n");
 }
 
 function parkingLabel(record: ParkedRecord): string {
@@ -130,9 +140,14 @@ export function noteBlocks(notes: string): string[] {
     .filter((paragraph) => paragraph !== "");
 }
 
+function withoutStamps(block: string): string {
+  const said = withoutStampLines(block);
+  return said === "" ? block : said;
+}
+
 function lastNote(notes: string): string {
   const paragraphs = noteBlocks(notes);
-  return paragraphs[paragraphs.length - 1] ?? notes.trim();
+  return withoutStamps(paragraphs[paragraphs.length - 1] ?? notes.trim());
 }
 
 export function quote(text: string): string {
