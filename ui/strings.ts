@@ -128,7 +128,10 @@ export const strings = {
         stale: "Run this, or say it is already done — the check below found the reason may have expired.",
       },
       inFlight: "Nothing for you — a lane is working it.",
-      landing: "Nothing for you — it is waiting to be landed.",
+      landing: {
+        standing: "Nothing for you — it is waiting to be landed.",
+        stale: "Its pull request merged. Close it, or record what is still open.",
+      },
       ready: "Nothing for you — it is waiting for a lane to pick it up.",
       parked: "Nothing for you — it is parked: {reason}.",
       blocked: "Nothing for you — something else has to close first.",
