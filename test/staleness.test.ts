@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { classify, hasLiveStructuralBlocker } from "../src/classify.ts";
 import type { ClassifyContext, UnclassifiedIssue } from "../src/classify.ts";
 import { preconditionProbe } from "../src/probes.ts";
-import { assess, isAssessable, noteBlocks, unresolvedCount } from "../src/staleness.ts";
+import { assess, isAssessable, lastNoteAt, noteBlocks, unresolvedCount } from "../src/staleness.ts";
 import type { ParkedRecord, PullState, StalenessContext } from "../src/staleness.ts";
 
 const CHECKED_AT = new Date("2026-09-08T09:00:00Z");
@@ -91,6 +91,10 @@ function answers(passed: boolean | undefined): {
 function matches(evidence: readonly string[], pattern: RegExp): boolean {
   return evidence.some((line) => pattern.test(line));
 }
+
+const UNPLACEABLE_NOTE =
+  "nothing records when an issue stopped or when the newest note was written, " +
+  "so a note written since cannot be recognised";
 
 test("a stamped note is quoted by what it says, not by its stamp", async () => {
   const { staleness } = await assess(
@@ -197,6 +201,69 @@ test("a tracker that does not record when a label went on leaves the check unrun
   );
   assert.equal(staleness.verdict, "unchecked");
   assert.deepEqual(staleness.evidence, [], "a limitation of the method is not a finding about the issue");
+});
+
+test("a timestamp the tracker does not record is recorded once, against the run and not against the issue", async () => {
+  const { staleness, errors } = await assess(
+    aRecord({
+      id: "mw-4",
+      classification: "yours:access",
+      labels: ["needs-access"],
+      notes: "2026-09-05T14:00:00Z lane-mw-4\nThe owner granted the token.",
+      notedAt: "2026-09-05T14:00:00Z",
+    }),
+    aContext({ idPrefix: "mw", probe: async () => true, pullFacts: async () => undefined }),
+  );
+  assert.equal(staleness.verdict, "unchecked");
+  assert.deepEqual(staleness.evidence, [], "a limitation of the method is not a finding about the issue");
+  assert.deepEqual(errors, [
+    {
+      source: "staleness",
+      message: "nothing records when an issue stopped, so a note written since cannot be recognised",
+      at: CHECKED_AT.toISOString(),
+    },
+  ]);
+});
+
+test("a failure about the tracker names no label, because a structurally blocked issue carries none", async () => {
+  const { errors } = await assess(
+    aRecord({
+      id: "mw-4",
+      classification: "blocked",
+      labels: [],
+      structurallyBlocked: true,
+      blockedBy: ["mw-9"],
+      notes: "Waiting on the contract.",
+    }),
+    aContext({ idPrefix: "mw", probe: async () => true, pullFacts: async () => undefined }),
+  );
+  assert.deepEqual(
+    errors.map((error) => error.message),
+    [UNPLACEABLE_NOTE],
+    "no label went on this issue, so no label may be named",
+  );
+});
+
+test("an issue nobody has written on records no timestamp failure", async () => {
+  const { errors } = await assess(
+    aRecord({ id: "mw-4", classification: "yours:access", labels: ["needs-access"] }),
+    aContext({ idPrefix: "mw", probe: async () => true, pullFacts: async () => undefined }),
+  );
+  assert.deepEqual(errors, [], "with nothing said, a missing timestamp has nothing to place");
+});
+
+test("the note time is the stamp of the block the check quotes, and an unstamped newest note is not known", () => {
+  assert.equal(lastNoteAt(undefined), undefined);
+  assert.equal(lastNoteAt(""), undefined);
+  assert.equal(
+    lastNoteAt("Asked the owner for a seat.\n\n2026-09-05T14:00:00Z lane-mw-4\nThe seat was granted."),
+    "2026-09-05T14:00:00Z",
+  );
+  assert.equal(
+    lastNoteAt("2026-09-04T11:00:00Z lane-mw-4\nBoth wordings stand.\n\nThe shorter one reads better."),
+    undefined,
+    "a newest note below the newest stamp reads as not known, not as never noted",
+  );
 });
 
 test("an issue whose every named issue has closed is no longer waiting on the ordering", async () => {
@@ -640,6 +707,11 @@ test("a reference that could not be looked up is a collection failure, not a fin
   assert.ok(!matches(staleness.evidence, /could not resolve/));
   assert.deepEqual(errors, [
     {
+      source: "staleness",
+      message: UNPLACEABLE_NOTE,
+      at: CHECKED_AT.toISOString(),
+    },
+    {
       source: "staleness mw-4",
       message: "3 references could not be checked: ext#144, ext#148, ext#150",
       at: CHECKED_AT.toISOString(),
@@ -664,6 +736,7 @@ test("a reference that resolved is still evidence beside the ones that did not",
   );
   assert.deepEqual(staleness.evidence, ["site#1128 is closed, not merged"]);
   assert.deepEqual(errors.map((error) => error.message), [
+    UNPLACEABLE_NOTE,
     "1 reference could not be checked: ext#150",
   ]);
 });
@@ -700,6 +773,7 @@ test("what the run itself was not configured to do names no issue, so it can be 
   assert.deepEqual(
     first.errors.map((error) => [error.source, error.message]),
     [
+      ["staleness", UNPLACEABLE_NOTE],
       ["staleness", "the project records no issue id prefix, so referenced issues cannot be recognised"],
       ["staleness", "no pull request host is configured, so pull requests could not be looked up"],
     ],
@@ -711,7 +785,10 @@ test("the count a reader is shown is the count the failure recorded", async () =
     aRecord({ id: "mw-4", classification: "parked:tooling", notes: "Waiting on #141, #142 and #144." }),
     aContext({ idPrefix: "mw", probe: async () => true, pullFacts: async () => undefined }),
   );
-  assert.equal(errors.length, 1);
-  assert.equal(unresolvedCount(errors[0]?.message ?? ""), 3);
+  assert.equal(
+    errors.reduce((sum, error) => sum + unresolvedCount(error.message), 0),
+    3,
+    "a timestamp that could not be established adds nothing to the references a reader is shown",
+  );
   assert.equal(unresolvedCount("no pull request host is configured, so pull requests could not be looked up"), 0);
 });

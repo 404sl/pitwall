@@ -421,6 +421,40 @@ test("the snapshot reports whether the reason an issue stopped is still true", a
   assert.ok(asked.every((command) => command.join(" ") === "npm whoami"));
 });
 
+test("the snapshot reads the note time from the tracker, and says once which timestamp it could not establish", async () => {
+  const place = workspace([TRACKER]);
+  const snapshot = await collectSnapshot({
+    ...options(place, new Date("2026-09-08T09:00:00Z")),
+    env: { ...place.env, BD_LIST_FIXTURE: "noted" },
+    probe: async () => true,
+    pullFacts: async () => undefined,
+  });
+  const project = snapshot.projects[0];
+  const errors = project?.errors ?? [];
+  assert.deepEqual(
+    errors
+      .filter((error) => error.message.startsWith("nothing records when"))
+      .map((error) => [error.source, error.message]),
+    [
+      ["staleness", "nothing records when an issue stopped, so a note written since cannot be recognised"],
+      [
+        "staleness",
+        "nothing records when an issue stopped or when the newest note was written," +
+          " so a note written since cannot be recognised",
+      ],
+    ],
+    "the stamp read off the newest note decides which timestamp the run reports, and each is reported once",
+  );
+  assert.deepEqual(
+    errors.filter((error) => error.source.startsWith("staleness ")),
+    [],
+    "a limitation of the tracker names no issue, so no issue carries a line nobody can clear",
+  );
+  const byId = new Map((project?.issues ?? []).map((issue) => [issue.id, issue]));
+  assert.equal(byId.get("mw-30")?.staleness.verdict, "unchecked");
+  assert.deepEqual(byId.get("mw-30")?.staleness.evidence, []);
+});
+
 test("emitting a snapshot appends it to the history store", { skip: !hasSqlite }, async () => {
   const place = workspace([TRACKER]);
   const state = { env: place.env, home: place.home };

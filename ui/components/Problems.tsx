@@ -1,4 +1,4 @@
-import type { ProblemRow } from "../model.js";
+import { problemKey, type ProblemRow } from "../model.js";
 import { clock, stamp } from "../format.js";
 import { strings } from "../strings.js";
 
@@ -30,7 +30,7 @@ export function Problems({ rows }: { rows: ProblemRow[] }) {
       <tbody>
         {rows.map((row) => (
           <tr
-            key={`${row.scope}-${row.name}-${row.source}-${row.at}`}
+            key={problemKey(row)}
             className="pw-row"
             role={row.scope === "console" ? "status" : undefined}
           >

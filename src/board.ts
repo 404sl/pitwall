@@ -92,6 +92,10 @@ export interface ProblemRow {
   at: string;
 }
 
+export function problemKey(row: ProblemRow): string {
+  return [row.scope, row.name, row.source, row.at, row.message].join("\u0000");
+}
+
 export const FILTER_NONE = "none";
 
 export const FILTER_KEYS = ["project", "type", "priority", "epic"] as const;

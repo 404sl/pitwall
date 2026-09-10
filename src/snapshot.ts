@@ -18,7 +18,7 @@ import { deliver, noticesFor, type Delivered, type Noter, type Sender } from "./
 import { issueMatcher, readPipeline } from "./pipeline.js";
 import { preconditionProbe, pullLookup } from "./probes.js";
 import { readSnapshot, writeSnapshot } from "./state.js";
-import { assess, isAssessable, type StalenessContext } from "./staleness.js";
+import { assess, isAssessable, lastNoteAt, type StalenessContext } from "./staleness.js";
 import { VERSION } from "./version.js";
 
 export interface SnapshotOptions extends RootsOptions {
@@ -136,6 +136,7 @@ async function assessed(
       structurallyBlocked: hasLiveStructuralBlocker(issue, structure),
       description: text?.description,
       notes: text?.notes,
+      notedAt: lastNoteAt(text?.notes),
     },
     context,
   );
