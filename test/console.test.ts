@@ -15,6 +15,7 @@ import {
   parkedReasons,
   parkedSummary,
   previewIssue,
+  problemKey,
   snapshotAge,
 } from "../ui/model.ts";
 import type { Board, FilterState, IssuePayload, IssuePreview } from "../ui/model.ts";
@@ -1055,6 +1056,34 @@ function shownIds(board: Board): string[] {
     ...board.ready.map((row) => row.id),
   ].sort();
 }
+
+test("two failures the run recorded at one instant are still two rows a reader can tell apart", () => {
+  const at = "2026-09-08T14:09:00Z";
+  const board = buildBoard(
+    snapshotOf([
+      project("maas", {
+        issues: [],
+        errors: [
+          {
+            source: "staleness",
+            message: "nothing records when an issue stopped, so a note written since cannot be recognised",
+            at,
+          },
+          {
+            source: "staleness",
+            message: "no pull request host is configured, so pull requests could not be looked up",
+            at,
+          },
+        ],
+      }),
+    ]),
+  );
+  const keys = board.problems.map((row) => problemKey(row));
+  assert.equal(new Set(keys).size, board.problems.length, "a row a React list drops is a failure nobody reads");
+  const markup = renderToStaticMarkup(createElement(Problems, { rows: board.problems }));
+  assert.equal(markup.match(/nothing records when an issue stopped/g)?.length, 1);
+  assert.equal(markup.match(/no pull request host is configured/g)?.length, 1);
+});
 
 test("problems render whole under every filter, because a hidden collection failure reads as health", () => {
   const unfiltered = buildBoard(MIXED).problems;

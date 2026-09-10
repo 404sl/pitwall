@@ -149,9 +149,17 @@ export function noteSaid(block: string): { said: string; at?: string } {
   return at === undefined ? { said } : { said, at };
 }
 
-function lastNote(notes: string): string {
+function newestBlock(notes: string): string {
   const paragraphs = noteBlocks(notes);
-  return noteSaid(paragraphs[paragraphs.length - 1] ?? notes.trim()).said;
+  return paragraphs[paragraphs.length - 1] ?? notes.trim();
+}
+
+function lastNote(notes: string): string {
+  return noteSaid(newestBlock(notes)).said;
+}
+
+export function lastNoteAt(notes: string | undefined): string | undefined {
+  return notes === undefined ? undefined : noteSaid(newestBlock(notes)).at;
 }
 
 export function quote(text: string): string {
@@ -164,12 +172,37 @@ function defersRatherThanAnswers(note: string): boolean {
   return DEFERRALS.some((marker) => lowered.includes(marker));
 }
 
+function couldNotPlace(
+  record: ParkedRecord,
+  labelled: number | undefined,
+  noted: number | undefined,
+): Failure[] {
+  if ((record.notes ?? "").trim() === "") {
+    return [];
+  }
+  const unknown = [
+    ...(labelled === undefined ? ["when an issue stopped"] : []),
+    ...(noted === undefined ? ["when the newest note was written"] : []),
+  ];
+  return [
+    {
+      scope: "run",
+      message: `nothing records ${unknown.join(" or ")}, so a note written since cannot be recognised`,
+    },
+  ];
+}
+
 function noteAfterLabel(record: ParkedRecord): Check {
   const label = parkingLabel(record);
   const labelled = instantOf(record.labelledAt);
   const noted = instantOf(record.notedAt);
   if (labelled === undefined || noted === undefined) {
-    return { ran: false, fired: false, evidence: [] };
+    return {
+      ran: false,
+      fired: false,
+      evidence: [],
+      failures: couldNotPlace(record, labelled, noted),
+    };
   }
   if (noted <= labelled) {
     return {
