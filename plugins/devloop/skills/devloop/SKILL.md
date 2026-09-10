@@ -235,7 +235,26 @@ workflows must never carry the same one, which is what reserving it is for. Othe
 
 ## When a lane dies
 
-`lanes.sh` names the suspect and says whether its workflow transcript is still moving - a
+**Ask `lane-running.sh <id>` before you believe it.** It is the only thing that answers "is a
+lane for this id running right now": the harness creates a task output file empty at dispatch
+and writes it when the run ends, and the session transcript ties that task to the workflow
+whose journal labels its phases with the issue id. It answers `RUNNING`, `NOT-RUNNING` or
+`UNKNOWN`, and **`UNKNOWN` is not dead** - nothing may act on it as though it were.
+
+Nothing else answers the question, and each of the four signals that look like they do is
+silently wrong rather than merely narrow:
+
+| signal | what it actually answers |
+|---|---|
+| slot claim | a lane **started**, ever - written at dispatch, outlives the lane |
+| lane lock | a lane reached the locking phase **and still holds it** |
+| `TaskList` | **nothing about lanes, ever.** It lists `TaskCreate` to-do items and has never listed a workflow. `TaskGet` on a live workflow's own id answers "Task not found". An empty result is not evidence. |
+| worktree | a directory exists - a dead lane leaves one, and a live lane can be missing one |
+
+A supervisor tore down a healthy lane 42 minutes into its run on the strength of an empty
+`TaskList`. It survived only because it rebuilt its worktree and carried on.
+
+`lanes.sh` then names the suspect and says whether its workflow transcript is still moving - a
 transcript silent for longer than the staleness window means nothing is running, whatever the
 worktree looks like. A lane goes quiet whenever it is reading rather than writing, so worktree
 age alone cannot tell a slow lane from a dead one.
@@ -245,6 +264,41 @@ Stop the workflow with `TaskStop`, then clean up with **one command**, not by ha
 ```bash
 kill-lane.sh --slot 2 --id app-4m7h            # --dry-run first if unsure
 ```
+
+`kill-lane.sh` asks `lane-running.sh` first and refuses on `RUNNING` and on `UNKNOWN`; `--force`
+is the override once you have confirmed by hand. `slot.sh --gc` asks it too and keeps any slot it
+cannot prove idle.
+
+It attributes a workflow by the script it was dispatched from, because the scripts do not label
+alike: a `task.js` journal whose labels are not this id belongs to another issue, so does a
+`rework.js` journal whose every label carries an id and none of them is this one, `land.js` and
+`land-train.js` are no issue's lane, and anything else is `UNKNOWN`. A rework lane that was
+already in flight before this shipped labels its phases by pull request number alone, which
+names no issue - so while it runs EVERY id reads `UNKNOWN`, `slot.sh --gc` frees nothing and
+`kill-lane.sh` refuses for all of them. Confirm it by hand rather than forcing past it, because
+its worktree holds the conflict resolution it is writing.
+
+`kill-lane.sh` also exits 7 when the worktree it is about to remove is mid-rebase or mid-merge,
+whatever the verdict said. A lander is no issue's lane, but `land.js` tells it to reuse a
+worktree that already holds the branch, so a lane's worktree can be somebody's live rebase while
+the id itself is genuinely `NOT-RUNNING`.
+
+**Before starting a train, ask `lane-running.sh --any`.** It answers the same question about the
+whole workspace - is ANY lane in flight - and `queue-watch.sh` gates its READY TO LAND event on
+it: `RUNNING` keeps the gate shut, and `UNKNOWN` announces that it cannot tell rather than
+announcing that nothing is running. A `RUNNING` whose workflow directory has not been written to
+for longer than `--stale-minutes` (default 20, the window `lanes.sh` uses) is announced as well,
+naming the task, the workflow and how long it has been silent. It stays `RUNNING` and the gate
+stays shut - a lane waiting on CI writes nothing for half an hour - but a task orphaned at
+dispatch reads `RUNNING` for as long as its empty output file exists, and that used to hold the
+event shut in silence. The gate used to count `lanes.sh` rows through a pattern fixed to one
+project's id prefix, so it read zero in every other workspace and said "ready to land, no lanes
+running" three times in one day with three lanes live. A train started over a live lane moves
+master underneath every running branch.
+
+`lanes.sh` reads the registry this workspace's `lockPrefix` names and refuses rather than falling
+back to the default, which had it reporting "no lanes have ever been claimed" while three slots
+were claimed under the prefix the config names.
 
 A lane holds four things and a hand cleanup reliably gets three. On 2026-08-30 app-4m7h was
 cleaned up by hand - worktree removed, branch deleted, slot freed - and the lane lock was left

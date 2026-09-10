@@ -1,7 +1,7 @@
 #!/bin/bash
 # Everything that has to be undone when a lane dies, in one command.
 #
-#   kill-lane.sh --slot 2 --id app-4m7h [--repo site] [--dry-run]
+#   kill-lane.sh --slot 2 --id app-4m7h [--repo site] [--dry-run] [--force]
 #
 # Stopping the workflow is NOT this script's job - only the caller has the task id, and TaskStop
 # is a tool rather than a command. Stop it first, then run this.
@@ -16,7 +16,8 @@
 # The lock is the one that gets forgotten, because it is the only one whose name is not the issue
 # id: slot N takes lane N+1. That off-by-one is exactly why it gets missed by hand.
 #
-# Exit: 0 cleaned, 6 bad arguments.
+# Exit: 0 cleaned, 6 bad arguments, 7 refused because a lane may still be running or a
+# rebase is in progress in the worktree.
 
 set -u
 
@@ -34,7 +35,7 @@ elif ! ROOT="$(bash "$HERE/config.sh" root 2>/dev/null)" || [ -z "$ROOT" ]; then
 fi
 LOCK_PREFIX="${LOCK_PREFIX:-$(bash "$HERE/config.sh" lockPrefix 2>/dev/null || echo devloop)}"
 PFX="${LOCK_PREFIX}"
-SLOT=""; ID=""; REPO="site"; DRY=""
+SLOT=""; ID=""; REPO="site"; DRY=""; FORCE=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -42,11 +43,12 @@ while [ $# -gt 0 ]; do
     --id) ID="${2:-}"; shift 2 ;;
     --repo) REPO="${2:-site}"; shift 2 ;;
     --dry-run) DRY=1; shift ;;
+    --force) FORCE=1; shift ;;
     *) echo "unknown argument: $1" >&2; exit 6 ;;
   esac
 done
 
-[ -n "$SLOT" ] && [ -n "$ID" ] || { echo "usage: kill-lane.sh --slot N --id app-xxxx [--repo site] [--dry-run]" >&2; exit 6; }
+[ -n "$SLOT" ] && [ -n "$ID" ] || { echo "usage: kill-lane.sh --slot N --id app-xxxx [--repo site] [--dry-run] [--force]" >&2; exit 6; }
 
 LANE=$((SLOT + 1))
 
@@ -62,9 +64,61 @@ if [ ! -d "$DIR/.git" ]; then
   echo "kill-lane.sh: --repo takes a key from .autofix.json (have: $(bash "$HERE/config.sh" repos 2>/dev/null | python3 -c "import json,sys; print(', '.join(json.load(sys.stdin)))" 2>/dev/null))." >&2
   exit 6
 fi
+VERDICT=""; LIVE=1
+if [ -z "$FORCE" ]; then
+  VERDICT="$(bash "$HERE/lane-running.sh" "$ID" 2>/dev/null)"; LIVE=$?
+fi
+if [ -z "$DRY" ] && [ -z "$FORCE" ]; then
+  case "$LIVE" in
+    1) ;;
+    0)
+      echo "REFUSING to clean up ${ID}: its lane is still running." >&2
+      echo "$VERDICT" >&2
+      echo "  Then run this again, or --force once you have confirmed it by hand." >&2
+      exit 7 ;;
+    *)
+      echo "REFUSING to clean up ${ID}: cannot establish whether a lane is running." >&2
+      echo "$VERDICT" >&2
+      echo "  UNKNOWN is not dead. Confirm by hand, then re-run with --force." >&2
+      exit 7 ;;
+  esac
+fi
+
+busy_worktree() {
+  local wt="$1" p g
+  for p in rebase-merge rebase-apply MERGE_HEAD; do
+    g="$(git -C "$wt" rev-parse --git-path "$p" 2>/dev/null)" || return 1
+    case "$g" in /*) ;; *) g="$wt/$g" ;; esac
+    [ -e "$g" ] && { printf '%s' "$p"; return 0; }
+  done
+  return 1
+}
+
+if [ -z "$FORCE" ]; then
+  seen_probe=""
+  for raw in "/tmp/${PFX}-worktrees/${ID}" "/private/tmp/${PFX}-worktrees/${ID}" \
+             "/tmp/${PFX}-worktrees/${ID}-rework" "/private/tmp/${PFX}-worktrees/${ID}-rework"; do
+    [ -d "$raw" ] || continue
+    probe="$(cd "$raw" 2>/dev/null && pwd -P)" || continue
+    case " $seen_probe " in *" $probe "*) continue ;; esac
+    seen_probe="$seen_probe $probe"
+    state="$(busy_worktree "$probe")" || continue
+    if [ -n "$DRY" ]; then
+      echo "  would REFUSE: ${probe} is mid-${state}."
+      continue
+    fi
+    echo "REFUSING to clean up ${ID}: ${probe} is mid-${state}." >&2
+    echo "  The lander uses a lane's own worktree when it finds one holding the branch, so this" >&2
+    echo "  may be a merge somebody else is in the middle of. Removing it now loses that work." >&2
+    echo "  Wait for it, or --force once you have confirmed by hand." >&2
+    exit 7
+  done
+fi
+
 run() { if [ -n "$DRY" ]; then echo "  would: $*"; else eval "$@"; fi; }
 
 echo "Cleaning up lane: slot ${SLOT} (lane ${LANE}), issue ${ID}, repo ${REPO}"
+[ "$LIVE" = 0 ] && echo "  WARNING: lane-running.sh says a task for ${ID} is still in flight."
 [ -n "$DRY" ] && echo "(dry run - nothing will be changed)"
 
 # 1. The worktree, under either name a lane can check out to.

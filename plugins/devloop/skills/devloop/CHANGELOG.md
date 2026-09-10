@@ -1,5 +1,126 @@
 # Changelog
 
+## 0.1.15
+
+**Nothing answered "is a lane for this id running right now", and four signals answered it
+wrongly.** A supervisor tore down a healthy lane 42 minutes into its run on the strength of an
+empty `TaskList`; it survived only because it rebuilt its worktree and carried on to a labelled
+pull request. A second lane torn down in the same pass was genuinely dead, and neither outcome
+was down to the judgement being right.
+
+A slot claim proves a lane STARTED, ever. A lane lock proves it reached the locking phase and
+still holds it. A worktree proves a directory exists - a dead lane leaves one behind and a live
+lane can be missing one, having had it deleted mid-run. `TaskList` is worse than narrow: it is
+unrelated. It lists `TaskCreate` to-do items and has never listed a workflow, so "No tasks
+found" is a correct answer to a question nobody asked, and `TaskGet` on a live workflow's own
+id answers "Task not found".
+
+`lane-running.sh <issue-id>` answers the actual question and is now what the callers ask. The
+harness creates a task output file empty at dispatch and writes it when the run ends, so an
+empty one is a run still going; the session transcript carries `taskId` beside `runId`, and
+that workflow's journal labels its phases with the issue id. Following that chain attributes
+every in-flight task to a lane. `RUNNING` exits 0, `NOT-RUNNING` 1, `UNKNOWN` 2.
+
+**A journal MENTIONING an id is not that lane.** The first version searched journals for the id
+anywhere and reported the id as running off the lander's journal, which had merely printed the
+worktree path while surveying. Only the `"label":"<phase>:<id>"` entries name a lane's own work.
+
+**And a journal with labels that are not this id is not automatically another issue's lane.**
+The scripts do not label alike. `task.js` labels every phase with the issue id, but `rework.js`
+labelled its phases `resolve:#<pr>` and `handoff:#<pr>` - the pull request number, never the id
+- so a LIVE rework lane read as `NOT-RUNNING`, and `kill-lane.sh` would then have removed the
+`<id>-rework` worktree holding the conflict resolution it was writing. A false "dead" is the
+one answer this command must never give.
+
+Attribution is therefore keyed on the script the transcript records beside the task id, not on
+labels alone: a `task.js` journal whose labels are not this id belongs to another issue; so does
+a `rework.js` journal whose every label carries an id and none of them is this one; `land.js` and
+`land-train.js` carry no issue id at all and are no issue's lane; anything else in flight is
+`UNKNOWN`. Landers are counted separately in the `NOT-RUNNING` line, because attributing them
+positively is what lets `slot.sh --gc` free a slot at all - two landers are in flight most of the
+day, and treating them as unattributable would have made every verdict `UNKNOWN`.
+
+`rework.js` now labels `resolve:<id>#<pr>` and `handoff:<id>#<pr>`, so its lanes are attributable
+in BOTH directions - as this lane when the id matches, and as another issue's lane when it does
+not - and the label match accepts the `#<n>` a retried `fix:` or `review:` phase appends.
+Attributing only the first direction would have reproduced the fault this release exists to fix,
+one step over: a rework runs on the stranded list after every train, so one is in flight
+routinely, and calling it unattributable would have made every OTHER id `UNKNOWN` for its whole
+duration - `slot.sh --gc` freeing nothing and `kill-lane.sh` refusing every id, with `--force`
+the only way past. A guard the operator is taught to force past is not a guard.
+
+One case is left, and it is the transitional one: a rework lane dispatched before this shipped
+carries the old id-less `resolve:#<pr>`, which names no issue, so while it is in flight every id
+reads `UNKNOWN` - `slot.sh --gc` frees nothing and `kill-lane.sh` refuses for all of them. That
+is the safe direction, it ends when that lane ends, and getting past it needs `--force` once a
+person has confirmed by hand.
+
+**A lander not being a lane does not make a lane's worktree free.** `land.js` tells the lander to
+reuse a worktree that already holds the branch rather than making a second one, so `NOT-RUNNING`
+for an id can be true at the same moment as a rebase running inside
+`/tmp/<prefix>-worktrees/<id>` - which `kill-lane.sh` then removes with `--force`. Same harm as
+the reported bug, reached by a different route. `kill-lane.sh` now reads the worktree itself for
+`rebase-merge`, `rebase-apply` or `MERGE_HEAD` before touching it and refuses with exit 7
+whatever the verdict said, so the attribution claim is never load-bearing for the removal.
+
+**`UNKNOWN` is never rendered as dead.** It is what the command says when no task directory
+exists for the workspace, or when a task in flight cannot be attributed - the caller is told
+which tasks those are, and that one of them may be the lane. `kill-lane.sh` refuses on
+`RUNNING` and on `UNKNOWN` and takes `--force` once a person has confirmed; `slot.sh --gc`
+keeps any slot it cannot prove idle, and its existing guards remain as extra reasons to keep,
+never as a reason to free. Bad arguments exit 6 rather than sharing `UNKNOWN`'s exit 2, so a
+permanently unfreeable slot cannot be a typo nobody can see.
+
+The per-tick lane reminder in `triage-scan.sh` pointed the supervisor at `TaskList` for what is
+still running. It names `lane-running.sh <id>` now - that reminder is the path by which the
+false signal reached the supervisor that tore the healthy lane down.
+
+**The supervisor's own land gate could not see a lane either, and it was the last caller still
+reading one of the four signals.** `queue-watch.sh` counted `lanes.sh` rows through a pattern
+fixed to one project's id prefix - `^[0-9]+ sr-` - which can never match an id this workspace
+mints, so the count was zero whatever was running. It announced "ready to land, no lanes
+running" three times in one day with three lanes live. That event exists so a train is not
+started mid-run, and a train started over a live lane moves master underneath every running
+branch - which is how a pull request was left red-after-rebase earlier.
+
+`lane-running.sh --any` answers the same question about the whole workspace - is ANY lane in
+flight - and the gate asks that instead. It reads the same scan and never the registry, because
+a claim is one of the signals that cannot answer: it is missed at both ends, and a lane
+dispatched by hand never reaches it at all. Any in-flight workflow whose journal labels a phase
+is a lane, whichever issue it belongs to; a lander is not. When a task in flight cannot be
+attributed the answer is `UNKNOWN`, and the gate announces that it cannot tell rather than going
+quiet - silence on this line means idle, and it has to keep meaning that.
+
+**A `RUNNING` verdict held that same gate shut and printed nothing, which is the same blindness
+one step over.** A task output file is created empty at dispatch and written when the run ends, so
+a run that never writes one reads `RUNNING` for as long as the file sits there. Of 20 land runs on
+one machine 2 did exactly that, still "in flight" by this scan four hours after recording a
+terminal result. Nothing consulted an age, so such a task shuts the READY TO LAND event
+permanently and silently, and `triage-scan.sh`'s own LANDER IDLE finding is dropped
+unconditionally, so there is no second path by which the supervisor would hear about it.
+
+The verdict does not soften, and that is deliberate: a lane waiting on a CI run writes nothing for
+the forty minutes `slot.sh --gc` already allows for, so reading silence as "no lanes running"
+would restore the false dead this release exists to remove. Only the silence goes.
+`lane-running.sh` now says how long the newest write in the running workflow's own directory has
+been silent - its journal and its agent transcripts together, because the journal only moves at
+phase boundaries and a healthy fix phase would otherwise read as silent - whenever that is past
+`--stale-minutes`, default 20, which is the window `lanes.sh` uses under the same name.
+`queue-watch.sh` announces it in the shape of the cannot-tell event above, deduplicated per ready
+set and held behind the merge lock, naming the task, the workflow and the silence. The gate stays
+shut in every case; what changes is that it no longer stays shut without saying so.
+
+A task whose output file is EMPTY in one scanned directory also no longer counts as in flight when
+another scanned directory holds a WRITTEN copy of the same id. Emptiness was judged per file and
+the first copy seen won, so a written copy could lose to an empty one.
+
+**`lanes.sh` was answering about whichever workspace the default prefix names.** It built the
+registry path from `LOCK_PREFIX` falling back to `devloop` instead of this workspace's
+`lockPrefix`, and reported "no slot registry at /tmp/devloop-slots - no lanes have ever been
+claimed" while three slots were claimed under the prefix the config names. It resolves the
+prefix from the config now and refuses with exit 6 rather than defaulting, the rule `slot.sh`
+and `lock-check.sh` already follow: an answer about another project's lanes is worse than none.
+
 ## 0.1.14
 
 **A deploy shipped the right code with whatever configuration a shared checkout happened to be

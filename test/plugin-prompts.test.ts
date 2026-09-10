@@ -40,7 +40,7 @@ test("the rules a run is given carry no backticks", () => {
 });
 
 test("every workflow script is present in the plugin", () => {
-  for (const file of ["task.js", "land.js", "rework.js", "land-train.js", "config.sh", "lock-check.sh"]) {
+  for (const file of ["task.js", "land.js", "rework.js", "land-train.js", "config.sh", "lock-check.sh", "lane-running.sh"]) {
     const path = join(SKILL, file);
     assert.doesNotThrow(() => readFileSync(path), `${file} is missing from the published plugin`);
   }

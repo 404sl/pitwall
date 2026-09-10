@@ -24,7 +24,16 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-SLOTS="/tmp/${LOCK_PREFIX:-devloop}-slots"
+PFX="${LOCK_PREFIX:-$(bash "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/config.sh" lockPrefix 2>/dev/null)}"
+case "$PFX" in
+  ''|*[!a-zA-Z0-9_-]*)
+    echo "$(basename "${BASH_SOURCE[0]}"): could not resolve lockPrefix from the workspace config - refusing to guess." >&2
+    echo "          The default names another project's registry, so 'no lanes have ever been claimed'" >&2
+    echo "          would be a confident answer about the wrong workspace. Run from the workspace root." >&2
+    exit 6 ;;
+esac
+
+SLOTS="/tmp/${PFX}-slots"
 
 [ -d "$SLOTS" ] || { echo "no slot registry at $SLOTS - no lanes have ever been claimed"; exit 0; }
 
@@ -57,8 +66,8 @@ freshest_for() {
   # A rework lane checks out to "<id>-rework" so it cannot collide with a build lane holding the
   # same id. Probing only the bare path reported a running rework as having no worktree at all,
   # which reads as "finished, release the slot" once it crosses the staleness threshold.
-  for wt in /tmp/${LOCK_PREFIX:-devloop}-worktrees/"$id" /private/tmp/${LOCK_PREFIX:-devloop}-worktrees/"$id" \
-            /tmp/${LOCK_PREFIX:-devloop}-worktrees/"$id"-rework /private/tmp/${LOCK_PREFIX:-devloop}-worktrees/"$id"-rework; do
+  for wt in /tmp/${PFX}-worktrees/"$id" /private/tmp/${PFX}-worktrees/"$id" \
+            /tmp/${PFX}-worktrees/"$id"-rework /private/tmp/${PFX}-worktrees/"$id"-rework; do
     [ -d "$wt" ] || continue
 
     # A linked worktree's .git is a file holding "gitdir: <path>" - that directory is where the
@@ -161,7 +170,8 @@ if [ -n "$suspect" ]; then
     exit 0
   fi
 
-  echo "DEAD - stop the workflow, then: kill-lane.sh --slot N --id <id>"
+  echo "DEAD BY TRANSCRIPT AGE - confirm with lane-running.sh <id>, which reads the task"
+  echo "output the harness writes when a run ends, then: kill-lane.sh --slot N --id <id>"
   printf "$dead"
   echo
   echo "Check each against its pull request before releasing - a lane between phases writes"

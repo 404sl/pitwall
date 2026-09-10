@@ -64,7 +64,18 @@ verified_prs() {
 }
 
 lanes_busy() {
-  bash "$skill/lanes.sh" 2>/dev/null | grep -cE '^[0-9]+[[:space:]]+sr-'
+  local verdict
+  verdict="$(bash "$skill/lane-running.sh" --any --quiet 2>/dev/null)"
+  case "$?" in
+    1) echo 0 ;;
+    0) echo "${verdict:-RUNNING}" ;;
+    *) echo "${verdict:-UNKNOWN}" ;;
+  esac
+}
+
+silent_lanes() {
+  bash "$skill/lane-running.sh" --any 2>/dev/null |
+    sed -n 's/^RUNNING  \(.*journal silent [0-9]*m\)\./  \1/p'
 }
 
 # A lander already running holds the merge lock. Announcing "ready to land" then is not just
@@ -114,8 +125,39 @@ env_drift() {
   echo "staging=${s:0:8} production=${p:0:8}"
 }
 
+land_gate() {
+  local ready="$1" busy="$2" silent
+  if [ -z "${ready// /}" ]; then prev_ready=""; prev_blind=""; prev_silent=""; return; fi
+  lander_running && return
+  if [ "$busy" = "0" ]; then
+    [ "$ready" = "$prev_ready" ] && return
+    echo "QUEUE: ready to land, no lanes running - $ready"
+    prev_ready=$ready
+    return
+  fi
+  if [ "$busy" = "UNKNOWN" ]; then
+    [ "$ready" = "$prev_blind" ] && return
+    echo "QUEUE: ready to land, and whether a lane is running cannot be established - $ready"
+    echo "  lane-running.sh --any answered UNKNOWN, which is not 'no lanes running'. Read it"
+    echo "  before starting a train - a train over a live lane moves master underneath it."
+    prev_blind=$ready
+    return
+  fi
+  [ "$ready" = "$prev_silent" ] && return
+  silent="$(silent_lanes)"
+  [ -n "$silent" ] || return
+  echo "QUEUE: ready to land, and the lane holding the gate has gone silent - $ready"
+  printf '%s\n' "$silent"
+  echo "  Still RUNNING, and the gate stays shut - a lane waiting on a CI run writes nothing for"
+  echo "  half an hour at a time. But a task orphaned at dispatch reads the same way forever, so"
+  echo "  read the lane before the next train: kill-lane.sh --slot N --id <id> if it is dead."
+  prev_silent=$ready
+}
+
 seen=""          # ids already announced, so a queue that stays full is not re-announced
 prev_ready=""
+prev_blind=""
+prev_silent=""
 prev_stuck=""
 prev_drift=""
 
@@ -135,11 +177,7 @@ while true; do
   # otherwise it fires mid-run and invites a train that leaves half the batch behind.
   ready=$(verified_prs | tr -s ' ')
   busy=$(lanes_busy)
-  if [ -n "${ready// /}" ] && [ "$busy" = "0" ] && ! lander_running && [ "$ready" != "$prev_ready" ]; then
-    echo "QUEUE: ready to land, no lanes running - $ready"
-    prev_ready=$ready
-  fi
-  [ -z "${ready// /}" ] && prev_ready=""
+  land_gate "$ready" "$busy"
 
   # Never while a train is mid-deploy: it holds the lock and staging is legitimately ahead.
   if ! lander_running; then

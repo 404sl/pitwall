@@ -939,8 +939,8 @@ if [ "$_free" -gt 0 ]; then
   echo "  blocked-tooling roadmap) and ids that already carry a labelled PR, then"
   echo "  slot.sh <id> and launch task.js at the highest-priority remainder."
   echo "  Widening the search is the job; 'nothing that does not collide' is not"
-  echo "  a terminal state. TaskList shows what is actually still running - a"
-  echo "  scheduled tick cannot run /workflows."
+  echo "  a terminal state. lane-running.sh <id> says whether a lane is still"
+  echo "  running - TaskList has never listed a workflow, so it never has."
 fi
 
 exit 0
