@@ -351,16 +351,25 @@ refused, and every train leaked its lock and needed clearing by hand. Mint a tok
   printf '%s\\n' "$TOKEN" > /tmp/devloop-merge.lock/holder
   cat /tmp/devloop-merge.lock/holder
 
-Report status "taken" and the token EXACTLY as cat printed it back, not as you intended to write
-it. The release step is handed what you report and can compare against nothing else, so a token
-you omit or retype is a lock this run cannot give back.`,
-  { schema: { type: 'object', required: ['status'], properties: {
-      status: { type: 'string', enum: ['taken', 'held'] }, token: { type: 'string' } } },
+Report status "taken", the token you wrote as 'token', and what cat printed back as 'holder',
+verbatim and untidied. Report both even when they are identical, and do not correct either one to
+match the other: the train compares them and stands down when they differ, because the file is
+the fact and the value you report is a claim about it. The release step is handed what you report
+and can compare against nothing else, so a token you omit or retype is a lock this run cannot
+give back.`,
+  { schema: { type: 'object', required: ['status', 'holder'], properties: {
+      status: { type: 'string', enum: ['taken', 'held'] }, token: { type: 'string' },
+      holder: { type: 'string' } } },
     model: 'haiku', effort: 'low', phase: 'Lock' },
 )
 
 if (!lock || lock.status !== 'taken') {
   return { status: 'held', notes: 'Another lander holds /tmp/devloop-merge.lock. Nothing was done.' }
+}
+
+if (!lock.token || !TOKEN_SHAPE.test(lock.token) || lock.holder !== lock.token) {
+  const unproven = `LEAKED - the lock step reported taken, but /tmp/devloop-merge.lock/holder reads [${lock.holder || ''}] against a token of [${lock.token || ''}], so this train cannot prove the lock is its own. Nothing was built and nothing was removed. Read /tmp/devloop-merge.lock/holder: if it names a run that has finished, clear it; if it names another lander, it is theirs and they give it back themselves.`
+  return { status: 'held', notes: unproven, lock: unproven }
 }
 
 const landed = []

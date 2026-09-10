@@ -1,5 +1,46 @@
 # Changelog
 
+## 0.1.19
+
+**Two lander runs half an hour apart reported the same merge-lock token, and nothing noticed.**
+The token carries the epoch second it was minted, so the pair is self-refuting: a run that
+started at 19:44 reported `lander-1788974078-40586`, minted at 19:14 by a run that started
+eleven seconds before it. The later run cannot have executed `date +%s` and been given 19:14,
+which rules out a same-second, same-pid collision by thirty minutes. Reported as issue #60.
+
+**Why a duplicate token is worse than a duplicate name.** Release-by-token is the ownership
+guard everywhere: the removal deletes the lock when the holder file holds the token it was
+handed. Two runs carrying one token both pass that check, so the first to finish deletes the
+other's lock while it is mid-merge or mid-deploy - and `held_by_other`, which tells a foreign
+lander apart by "a token that is not the one you wrote", cannot see the difference either.
+
+**Both landers now decide ownership from the holder file rather than from the answer about it.**
+The lock step reports two values - the token it wrote, and what `cat` printed back out of the
+holder file, verbatim and untidied - and the run itself requires them to be equal before it
+lands anything. They used to be one value, with the step asked to judge the comparison and
+report the verdict; the step is now asked only for what it saw, and `holder` is required of it
+whichever outcome it reports. A mismatch is treated as somebody else holding the lock: the run
+surveys nothing, merges nothing, asks for no removal, and says in its result which two values
+disagreed so whoever reads it knows which run to leave alone.
+
+**This is the fix shape the report asked for, and it is deliberately not the other one.** The
+issue offered an alternative - mint the token from something unique to the run, in the script -
+and that remains impossible here for the reasons recorded under 0.1.13: `Date.now()` and
+`Math.random()` throw in the workflow runner, a script has no filesystem access to read the
+holder file itself, and no per-run identity is exposed to a script. So the decision that the
+token is minted by the lock step stands; what changed is that the run no longer takes the step's
+word for what the lock says.
+
+**What this does not fix, stated plainly, because the report's cause is inferred.** The leading
+theory is that an identical `(prompt, opts)` replays a cached result - which is how `resume` is
+specified to work, and a lander is resumed by hand after `stopped=merge_refused`. Under a replay
+the lock step does not run, so every value it reports is stale together and agrees with itself:
+this guard cannot see that, and nothing inside a script can. It closes the causes that leave a
+trace in the file - a retyped or carried-over token, a holder file written by somebody else
+between the `mkdir` and the `printf` - and it is sound whether or not the caching theory holds.
+Distinguishing a replayed acquisition needs per-run entropy reaching the script through `args`,
+which is a change to every launch path and is filed as pitwall-lr0.
+
 ## 0.1.18
 
 **Updating the plugin did not update what runs, because what runs is a copy and nothing rewrote
@@ -44,6 +85,7 @@ printed `.../rework.js`; both now name the staging step instead.
 staged file now matches this install byte for byte and that the printed `scriptPath` is the path
 just written. A second test asserts no file in the skill spells out a `scriptPath` of its own: a
 path written by hand is the one way left to dispatch something other than what was just staged.
+
 
 ## 0.1.17
 
@@ -120,6 +162,7 @@ the reference scan has no such fallback.** The two are deliberately different. A
 something rather than an empty quote; the reference scan must never be handed a writer token to read
 as an issue id, which is how the false `resolved` above was produced. In that fallback no
 attribution is printed either - the same instant is not shown twice.
+
 
 ## 0.1.16
 

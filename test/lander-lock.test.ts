@@ -59,7 +59,7 @@ function lockPromptOf(calls: Call[]): string {
 
 test("land-train.js releases the merge lock when a step throws", async () => {
   const { calls, done } = runScript("land-train.js", LAND_ARGS, (call, n) => {
-    if (n === 1) return { status: "taken", token: "land-train-1-aaaaaa" };
+    if (n === 1) return { status: "taken", token: "land-train-1-aaaaaa", holder: "land-train-1-aaaaaa" };
     throw new Error("the build agent died mid-run");
   });
 
@@ -73,7 +73,7 @@ test("land-train.js releases the merge lock when a step throws", async () => {
 
 test("land.js puts the reported token into the release command itself", async () => {
   const { calls, done } = runScript("land.js", LAND_ARGS, (call, n) => {
-    if (n === 1) return { status: "taken", token: "lander-1788964650-29574" };
+    if (n === 1) return { status: "taken", token: "lander-1788964650-29574", holder: "lander-1788964650-29574" };
     if (call.label && call.label.startsWith("survey")) return { prs: [] };
     return { status: "released" };
   });
@@ -87,7 +87,7 @@ test("land.js puts the reported token into the release command itself", async ()
 
 test("land-train.js puts the reported token into the release command itself", async () => {
   const { calls, done } = runScript("land-train.js", LAND_ARGS, (call, n) => {
-    if (n === 1) return { status: "taken", token: "land-train-1788964650-29574" };
+    if (n === 1) return { status: "taken", token: "land-train-1788964650-29574", holder: "land-train-1788964650-29574" };
     return { status: "error", notes: "nothing to build" };
   });
   await done;
@@ -101,7 +101,7 @@ test("land-train.js puts the reported token into the release command itself", as
 test("each release prompt says the token is already in the command", async () => {
   for (const file of ["land.js", "land-train.js"]) {
     const { calls, done } = runScript(file, LAND_ARGS, (call, n) => {
-      if (n === 1) return { status: "taken", token: "held-by-this-run" };
+      if (n === 1) return { status: "taken", token: "held-by-this-run", holder: "held-by-this-run" };
       if (call.label && call.label.startsWith("survey")) return { prs: [] };
       return { status: "error", notes: "nothing to build" };
     });
@@ -174,7 +174,7 @@ test("land.js emits no removal command when the lock step reported no token", as
 
 test("land.js does not tell a supervisor to clear a lock another run holds", async () => {
   const { done } = runScript("land.js", LAND_ARGS, (call, n) => {
-    if (n === 1) return { status: "taken", token: "lander-1788964650-29574" };
+    if (n === 1) return { status: "taken", token: "lander-1788964650-29574", holder: "lander-1788964650-29574" };
     if (call.label && call.label.startsWith("survey")) return { prs: [] };
     if (call.label === "release") return { status: "not_mine" };
     return {};
@@ -200,7 +200,7 @@ test("land.js does not tell a supervisor to clear a lock another run holds", asy
 test("land.js reports a lock it could not give back as leaked", async () => {
   for (const reply of [{ status: "still_held" }, {}, undefined]) {
     const { done } = runScript("land.js", LAND_ARGS, (call, n) => {
-      if (n === 1) return { status: "taken", token: "lander-1788964650-29574" };
+      if (n === 1) return { status: "taken", token: "lander-1788964650-29574", holder: "lander-1788964650-29574" };
       if (call.label && call.label.startsWith("survey")) return { prs: [] };
       if (call.label === "release") return reply;
       return {};
@@ -220,7 +220,7 @@ test("land.js reports a lock it could not give back as leaked", async () => {
 test("neither lander asks a second question after the removal", async () => {
   for (const file of ["land.js", "land-train.js"]) {
     const { calls, done } = runScript(file, LAND_ARGS, (call, n) => {
-      if (n === 1) return { status: "taken", token: "lander-1788964650-29574" };
+      if (n === 1) return { status: "taken", token: "lander-1788964650-29574", holder: "lander-1788964650-29574" };
       if (call.label && call.label.startsWith("survey")) return { prs: [] };
       if (call.label === "release") return { status: "released" };
       return { status: "error", notes: "nothing to build" };
@@ -339,7 +339,7 @@ test("land-train.js tells a stand-down apart from a leak in its own result", asy
   };
   for (const [status, expected] of Object.entries(outcomes)) {
     const { done } = runScript("land-train.js", LAND_ARGS, (call, n) => {
-      if (n === 1) return { status: "taken", token: "land-train-1788964650-29574" };
+      if (n === 1) return { status: "taken", token: "land-train-1788964650-29574", holder: "land-train-1788964650-29574" };
       if (call.label === "release") return { status };
       return { status: "error", notes: "nothing to build" };
     });
@@ -386,4 +386,41 @@ test("land-train.js emits no removal command when the lock step reported no toke
     /LEAKED/,
     "the train returned without saying it was still holding the lock",
   );
+});
+
+test("neither lander works under a token the holder file does not hold", async () => {
+  const mine = "lander-1788974078-40586";
+  const theirs = "lander-1788975899-51221";
+  for (const file of ["land.js", "land-train.js"]) {
+    const { calls, done } = runScript(file, LAND_ARGS, (call, n) => {
+      if (n === 1) return { status: "taken", token: mine, holder: theirs };
+      if (call.label && call.label.startsWith("survey")) return { prs: [] };
+      return { status: "error", notes: "nothing to build" };
+    });
+    const result = (await done) as { lock?: string };
+
+    assert.equal(
+      calls.length,
+      1,
+      `${file} carried on past a lock step whose holder file read back another run's token. ` +
+        `Steps seen: ${calls.map((c) => c.label || "?").join(", ")}. Two runs half an hour apart ` +
+        "reported the same token, so a reported token is a claim and the holder file is the fact. " +
+        "A run that cannot match the two is not holding the lock and must land nothing.",
+    );
+
+    assert.deepEqual(
+      calls.filter((c) => c.prompt.includes("release-lock.sh")).map((c) => c.label),
+      [],
+      `${file} offered a removal for a lock whose holder file names a different token. ` +
+        "Release-by-token is the ownership guard everywhere, so handing this token to the " +
+        "removal deletes the lock of whichever run actually minted it, mid-merge.",
+    );
+
+    assert.match(result.lock || "", /LEAKED/, `${file} returned without saying the lock was left standing`);
+    assert.ok(
+      (result.lock || "").includes(theirs) && (result.lock || "").includes(mine),
+      `${file} quoted neither the holder file nor the token it wrote, so nobody reading the ` +
+        `result can tell which run to leave alone: ${result.lock}`,
+    );
+  }
 });

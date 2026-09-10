@@ -234,11 +234,11 @@ const DEPLOYED = {
 
 const LOCK = {
   type: 'object',
-  required: ['status'],
+  required: ['status', 'holder'],
   properties: {
     status: { enum: ['taken', 'held_by_other'] },
-    token: { type: 'string', description: 'the token read back out of the holder file, verbatim - the release step is handed what you report and can compare against nothing else' },
-    holder: { type: 'string', description: 'what the holder file said, when somebody else has it' },
+    token: { type: 'string', description: 'the token you wrote into the holder file' },
+    holder: { type: 'string', description: 'what cat printed back out of the holder file, verbatim and untidied - this run compares it against the token and stands down when the two differ' },
     notes: { type: 'string' }
   }
 }
@@ -264,9 +264,12 @@ function lockPrompt() {
   cat ${MERGE_LOCK}/holder
   echo GOT_MERGE_LOCK
 
-REPORT THAT TOKEN VERBATIM as 'token' in your result, exactly as cat printed it back. The release
-step is handed what you report and can compare against nothing else, so a token you omit or
-retype is a lock this run cannot give back.
+REPORT TWO VALUES, NOT ONE. 'token' is the string you wrote; 'holder' is what cat printed back,
+verbatim, whatever it says. Report both even when they are identical, and do not correct either
+one to match the other - the run compares them and stands down when they differ, so a value
+tidied here hides the one thing this step exists to show. The release step is handed what you
+report and can compare against nothing else, so a token you omit or retype is a lock this run
+cannot give back.
 
 It used to be the bare word 'lander', which could not tell two concurrent landers apart: both
 wrote the same string, so each would read its own name in the other's lock and delete it. That
@@ -288,7 +291,10 @@ costs two runs their work; a lock left standing costs only time. That instructio
 "remove it after 15 minutes", and that is precisely what caused a lane to steal a live lock
 from another lane mid-merge.
 
-Return 'taken' only once the holder file reads back the token you wrote.
+Return 'taken' once mkdir succeeded and you have written the holder file, and report what cat
+printed as 'holder' whether or not it matches the token. You are not asked to judge ownership:
+the run compares the two values itself and stands down on a mismatch, because the file is the
+fact and the value you report is a claim about it.
 ${LAW}`
 }
 
@@ -919,6 +925,13 @@ const lock = await agent(lockPrompt(), { label: 'lock', phase: 'Survey', schema:
 if (!lock || lock.status !== 'taken') {
   log(`merge lock held by ${(lock && lock.holder) || 'somebody'} - not landing anything this run`)
   return { landed: [], stopped: [], skipped: [], deployed: 'not_needed', lockedOutBy: lock && lock.holder }
+}
+
+const mintedHere = !!lock.token && TOKEN_SHAPE.test(lock.token) && lock.holder === lock.token
+if (!mintedHere) {
+  const unproven = `LEAKED - the lock step reported taken, but ${MERGE_LOCK}/holder reads [${lock.holder || ''}] against a token of [${lock.token || ''}], so this run cannot prove the lock is its own. Nothing was landed and nothing was removed. Read ${MERGE_LOCK}/holder: if it names a run that has finished, clear it; if it names another lander, it is theirs and they give it back themselves.`
+  log(unproven)
+  return { landed: [], stopped: [], skipped: [], deployed: 'not_needed', lock: unproven, lockedOutBy: lock.holder }
 }
 
 const landed = []
