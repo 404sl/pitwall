@@ -75,38 +75,28 @@ The per-tick lane reminder in `triage-scan.sh` pointed the supervisor at `TaskLi
 still running. It names `lane-running.sh <id>` now - that reminder is the path by which the
 false signal reached the supervisor that tore the healthy lane down.
 
-**Nothing enforced the documented slot reservation, and a sixth collision found it.** The lane a
-run used was chosen by whoever dispatched and passed in as an argument, while reserving it was a
-separate step the caller was trusted to remember. Those two can disagree and nothing asks. A
-cleanup emptied the registry, every lane dispatched for the following hour ran without a
-reservation - two Rails lanes among them completed and merged - and nobody noticed. What
-prevented a collision was the lane lock, exactly as `slot.sh`'s own header says: *"THIS FILE IS
-BOOKKEEPING, NOT SAFETY."* The pipeline ran on the safety net with the bookkeeping gone, and it
-surfaced only because one lane checked its brief against the registry, found its slot empty, and
-refused to start rather than falling back to a number that looked free.
+**The supervisor's own land gate could not see a lane either, and it was the last caller still
+reading one of the four signals.** `queue-watch.sh` counted `lanes.sh` rows through a pattern
+fixed to one project's id prefix - `^[0-9]+ sr-` - which can never match an id this workspace
+mints, so the count was zero whatever was running. It announced "ready to land, no lanes
+running" three times in one day with three lanes live. That event exists so a train is not
+started mid-run, and a train started over a live lane moves master underneath every running
+branch - which is how a pull request was left red-after-rebase earlier.
 
-**Documentation was not the lever, and the file said so itself.** The rule is in `SKILL.md` in
-bold, three lines above the command that would have prevented it, and the same passage already
-recorded five earlier collisions from picking numbers by hand - one of them 153k tokens spent
-discovering a fact `slot.sh --list` prints instantly. A sixth happened anyway.
+`lane-running.sh --any` answers the same question about the whole workspace - is ANY lane in
+flight - and the gate asks that instead. It reads the same scan and never the registry, because
+a claim is one of the signals that cannot answer: it is missed at both ends, and a lane
+dispatched by hand never reaches it at all. Any in-flight workflow whose journal labels a phase
+is a lane, whichever issue it belongs to; a lander is not. When a task in flight cannot be
+attributed the answer is `UNKNOWN`, and the gate announces that it cannot tell rather than going
+quiet - silence on this line means idle, and it has to keep meaning that.
 
-**So `config.sh --args` allocates the lane instead of accepting one.** It takes `<issue-id>`,
-calls `slot.sh <id>` - which records the reservation and consults the lane lock in one step, and
-hands back the same number if the id already holds one - and emits what it got. There is no
-number left to choose. Where a lane cannot be reserved, `--args` prints nothing and exits
-non-zero: a full pool, a locked lane, a parked issue or a config it cannot resolve stops the
-dispatch, which is what a full pool should always have meant.
-
-**A trailing number is still accepted, and is now CHECKED rather than used.** `queue.sh` writes
-its registry entry before it prints `<id> <slot>`, so `slot.sh` hands that same number back and
-the two-argument form keeps working unchanged. A number that disagrees is refused with both
-values named, and the reservation is left standing - releasing it would also drop the lane lock,
-which may belong to a run that is still live.
-
-The CLI suite drives `--args` against a throwaway registry: it asserts the reported lane is the
-one recorded, that a second dispatch of the same issue gets that lane rather than another, that a
-locked lane is never handed out, and that a disagreeing number and a full pool both stop with
-nothing on stdout.
+**`lanes.sh` was answering about whichever workspace the default prefix names.** It built the
+registry path from `LOCK_PREFIX` falling back to `devloop` instead of this workspace's
+`lockPrefix`, and reported "no slot registry at /tmp/devloop-slots - no lanes have ever been
+claimed" while three slots were claimed under the prefix the config names. It resolves the
+prefix from the config now and refuses with exit 6 rather than defaulting, the rule `slot.sh`
+and `lock-check.sh` already follow: an answer about another project's lanes is worse than none.
 
 ## 0.1.13
 

@@ -283,6 +283,18 @@ whatever the verdict said. A lander is no issue's lane, but `land.js` tells it t
 worktree that already holds the branch, so a lane's worktree can be somebody's live rebase while
 the id itself is genuinely `NOT-RUNNING`.
 
+**Before starting a train, ask `lane-running.sh --any`.** It answers the same question about the
+whole workspace - is ANY lane in flight - and `queue-watch.sh` gates its READY TO LAND event on
+it: `RUNNING` stays quiet, and `UNKNOWN` announces that it cannot tell rather than announcing
+that nothing is running. The gate used to count `lanes.sh` rows through a pattern fixed to one
+project's id prefix, so it read zero in every other workspace and said "ready to land, no lanes
+running" three times in one day with three lanes live. A train started over a live lane moves
+master underneath every running branch.
+
+`lanes.sh` reads the registry this workspace's `lockPrefix` names and refuses rather than falling
+back to the default, which had it reporting "no lanes have ever been claimed" while three slots
+were claimed under the prefix the config names.
+
 A lane holds four things and a hand cleanup reliably gets three. On 2026-08-30 app-4m7h was
 cleaned up by hand - worktree removed, branch deleted, slot freed - and the lane lock was left
 behind. The re-dispatch then refused to start, correctly: from inside a lane a stale lock and a

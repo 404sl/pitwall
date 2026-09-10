@@ -64,7 +64,13 @@ verified_prs() {
 }
 
 lanes_busy() {
-  bash "$skill/lanes.sh" 2>/dev/null | grep -cE '^[0-9]+[[:space:]]+sr-'
+  local verdict
+  verdict="$(bash "$skill/lane-running.sh" --any --quiet 2>/dev/null)"
+  case "$?" in
+    1) echo 0 ;;
+    0) echo "${verdict:-RUNNING}" ;;
+    *) echo "${verdict:-UNKNOWN}" ;;
+  esac
 }
 
 # A lander already running holds the merge lock. Announcing "ready to land" then is not just
@@ -116,6 +122,7 @@ env_drift() {
 
 seen=""          # ids already announced, so a queue that stays full is not re-announced
 prev_ready=""
+prev_blind=""
 prev_stuck=""
 prev_drift=""
 
@@ -138,8 +145,13 @@ while true; do
   if [ -n "${ready// /}" ] && [ "$busy" = "0" ] && ! lander_running && [ "$ready" != "$prev_ready" ]; then
     echo "QUEUE: ready to land, no lanes running - $ready"
     prev_ready=$ready
+  elif [ -n "${ready// /}" ] && [ "$busy" = "UNKNOWN" ] && [ "$ready" != "$prev_blind" ]; then
+    echo "QUEUE: ready to land, and whether a lane is running cannot be established - $ready"
+    echo "  lane-running.sh --any answered UNKNOWN, which is not 'no lanes running'. Read it"
+    echo "  before starting a train - a train over a live lane moves master underneath it."
+    prev_blind=$ready
   fi
-  [ -z "${ready// /}" ] && prev_ready=""
+  if [ -z "${ready// /}" ]; then prev_ready=""; prev_blind=""; fi
 
   # Never while a train is mid-deploy: it holds the lock and staging is legitimately ahead.
   if ! lander_running; then

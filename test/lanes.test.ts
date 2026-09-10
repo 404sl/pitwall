@@ -517,3 +517,48 @@ test("a claim naming a path outside the worktree root is refused rather than wal
   assert.equal(errors[0]?.source, join(slotsPath(PREFIX, root), "1"));
   assert.match(errors[0]?.message ?? "", /\.\.\/outside/);
 });
+
+const LANES_SH = join(
+  dirname(fileURLToPath(import.meta.url)),
+  "..",
+  "plugins",
+  "devloop",
+  "skills",
+  "devloop",
+  "lanes.sh",
+);
+
+function runLanesScript(cwd: string): { status: number; out: string; err: string } {
+  const env: Record<string, string | undefined> = {
+    ...process.env,
+    DEVLOOP_ROOT: cwd,
+    PITWALL_CONFIG: undefined,
+    DEVLOOP_CONFIG: undefined,
+    LOCK_PREFIX: undefined,
+  };
+  const ran = spawnSync("bash", [LANES_SH], { encoding: "utf8", cwd, env });
+  return { status: ran.status ?? -1, out: ran.stdout ?? "", err: ran.stderr ?? "" };
+}
+
+test("lanes.sh reads the registry the workspace config names, not the default one", () => {
+  const root = mkdtempSync(join(tmpdir(), "pitwall-lanes-config-"));
+  writeFileSync(
+    join(root, ".autofix.json"),
+    `${JSON.stringify({ root, idPrefix: "fixture", lockPrefix: "fixturepfx", repos: {} })}\n`,
+  );
+
+  const { status, out } = runLanesScript(root);
+
+  assert.equal(status, 0, out);
+  assert.match(out, /no slot registry at \/tmp\/fixturepfx-slots/);
+});
+
+test("lanes.sh refuses rather than reporting another workspace's registry as this one's", () => {
+  const root = mkdtempSync(join(tmpdir(), "pitwall-lanes-noconfig-"));
+
+  const { status, out, err } = runLanesScript(root);
+
+  assert.equal(status, 6, `${out}${err}`);
+  assert.match(err, /refusing to guess/);
+  assert.doesNotMatch(out, /no slot registry/);
+});

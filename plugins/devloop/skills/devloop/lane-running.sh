@@ -7,6 +7,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 usage() {
   cat <<'EOF'
 lane-running.sh <issue-id> [--quiet]
+lane-running.sh --any [--quiet]
 
 Is a lane for this issue running RIGHT NOW? Answered from the only signal that can
 say so: the harness creates a task output file empty at dispatch and writes it when
@@ -24,6 +25,12 @@ about the worktree: a lander rebases inside a lane's worktree when it finds one,
 so kill-lane.sh checks that worktree for a rebase in progress separately from this
 verdict. Everything else is UNKNOWN rather than guessed.
 
+--any asks the same question of the whole workspace - is ANY lane still running -
+which is what a supervisor needs before it starts a train. It reads the same scan
+and never the slot registry: a claim proves a lane started, is missed at both ends,
+and a lane dispatched by hand never reaches it at all. Any in-flight workflow whose
+journal labels a phase is a lane, whichever issue it belongs to; a lander is not.
+
   RUNNING       a task for this issue is in flight - exit 0
   NOT-RUNNING   nothing in flight is this issue's - exit 1
   UNKNOWN       the scan could not establish it - exit 2, never read as dead
@@ -37,9 +44,11 @@ EOF
 
 ID=""
 QUIET=0
+ANY=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --quiet) QUIET=1; shift ;;
+    --any) ANY=1; shift ;;
     -h|--help) usage; exit 0 ;;
     -*) echo "unknown argument: $1" >&2; usage >&2; exit 6 ;;
     *)
@@ -47,7 +56,13 @@ while [ $# -gt 0 ]; do
       ID="$1"; shift ;;
   esac
 done
-[ -n "$ID" ] || { usage >&2; exit 6; }
+if [ "$ANY" = 1 ]; then
+  [ -z "$ID" ] || { echo "--any asks about every lane, so it takes no issue id, got: $ID" >&2; exit 6; }
+  WHO="any lane"
+else
+  [ -n "$ID" ] || { usage >&2; exit 6; }
+  WHO="$ID"
+fi
 
 ROOT="${DEVLOOP_ROOT:-$(bash "$HERE/config.sh" root 2>/dev/null)}"
 if [ -z "$ROOT" ]; then
@@ -59,9 +74,14 @@ fi
 SLUG="$(printf '%s' "$ROOT" | sed 's|/|-|g')"
 WF="${DEVLOOP_WF:-$HOME/.claude/projects/$SLUG}"
 
-IDRE="$(printf '%s' "$ID" | sed 's/[][\\.*^$(){}?+|/]/\\&/g')"
-MENTIONS="(^|[^A-Za-z0-9._-])${IDRE}([^A-Za-z0-9._-]|\$)"
-LABELLED="\"label\":\"([^\"]*:)?${IDRE}(#[0-9]+)?\""
+IDRE=""
+MENTIONS=""
+LABELLED=""
+if [ "$ANY" = 0 ]; then
+  IDRE="$(printf '%s' "$ID" | sed 's/[][\\.*^$(){}?+|/]/\\&/g')"
+  MENTIONS="(^|[^A-Za-z0-9._-])${IDRE}([^A-Za-z0-9._-]|\$)"
+  LABELLED="\"label\":\"([^\"]*:)?${IDRE}(#[0-9]+)?\""
+fi
 
 task_dirs() {
   if [ -n "${DEVLOOP_TASKS:-}" ]; then
@@ -90,6 +110,17 @@ rework_labels_another_issue() {
   return 0
 }
 
+lane_ids() {
+  local ids=""
+  if [ -n "$1" ]; then
+    ids="$(grep -oE '"label":"[^"]*"' "$1" 2>/dev/null |
+           sed 's/^"label":"//; s/"$//; s/^[^:]*://; s/#[0-9]*$//' |
+           grep -E '^[A-Za-z0-9]+-[A-Za-z0-9._-]+$' | sort -u | tr '\n' ' ')"
+    ids="${ids% }"
+  fi
+  printf '%s' "${ids:-no id in its labels}"
+}
+
 journal_for() {
   local run="$1" j
   for j in "$WF"/*/subagents/workflows/"$run"/journal.jsonl "$WF"/"$run"/journal.jsonl; do
@@ -108,7 +139,9 @@ for dir in $(task_dirs); do
   for f in "$dir"/*.output; do
     [ -e "$f" ] || continue
     if [ -s "$f" ]; then
-      grep -Eq "$MENTIONS" "$f" 2>/dev/null && finished=$((finished + 1))
+      if [ "$ANY" = 0 ] && grep -Eq "$MENTIONS" "$f" 2>/dev/null; then
+        finished=$((finished + 1))
+      fi
       continue
     fi
     task="$(basename "$f" .output)"
@@ -152,6 +185,17 @@ for task in $inflight; do
   script="$(printf '%s\n' "$records" | awk -v t="$task" '$1 == t { print $3 }' | sort -u | head -1)"
   journal="$(journal_for "$runs")" || journal=""
 
+  if [ "$ANY" = 1 ]; then
+    if [ "$script" = "land.js" ] || [ "$script" = "land-train.js" ]; then
+      landers=$((landers + 1))
+    elif [ -n "$journal" ] && grep -q '"label":"' "$journal" 2>/dev/null; then
+      running="$running ${task}:${runs}"
+    else
+      unaccounted="$unaccounted $task"
+    fi
+    continue
+  fi
+
   if [ -n "$journal" ] && grep -Eq "$LABELLED" "$journal" 2>/dev/null; then
     running="$running ${task}:${runs}"
   elif [ "$script" = "land.js" ] || [ "$script" = "land-train.js" ]; then
@@ -168,15 +212,24 @@ done
 if [ -n "$running" ]; then
   if [ "$QUIET" = 1 ]; then echo "RUNNING"; exit 0; fi
   for pair in $running; do
-    echo "RUNNING  ${ID} - task ${pair%%:*}, workflow ${pair#*:}, result not written."
+    if [ "$ANY" = 1 ]; then
+      journal="$(journal_for "${pair#*:}")" || journal=""
+      echo "RUNNING  $(lane_ids "$journal") - task ${pair%%:*}, workflow ${pair#*:}, result not written."
+    else
+      echo "RUNNING  ${ID} - task ${pair%%:*}, workflow ${pair#*:}, result not written."
+    fi
   done
-  echo "  Stop it with TaskStop before cleaning up after it."
+  if [ "$ANY" = 1 ]; then
+    echo "  A lane still writing is a passenger a train started now would leave behind."
+  else
+    echo "  Stop it with TaskStop before cleaning up after it."
+  fi
   exit 0
 fi
 
 if [ "$scanned" = "0" ]; then
   if [ "$QUIET" = 1 ]; then echo "UNKNOWN"; exit 2; fi
-  echo "UNKNOWN  ${ID} - no task directory for this workspace, so nothing to read."
+  echo "UNKNOWN  ${WHO} - no task directory for this workspace, so nothing to read."
   echo "  Not evidence the lane is dead. Check its pull request and its worktree before acting."
   exit 2
 fi
@@ -184,11 +237,19 @@ fi
 if [ -n "$unaccounted" ]; then
   set -- $unaccounted
   if [ "$QUIET" = 1 ]; then echo "UNKNOWN"; exit 2; fi
-  echo "UNKNOWN  ${ID} - $# task(s) in flight cannot be attributed:$unaccounted"
-  echo "  One of them may be this lane. Not evidence it is dead."
+  echo "UNKNOWN  ${WHO} - $# task(s) in flight cannot be attributed:$unaccounted"
+  if [ "$ANY" = 1 ]; then
+    echo "  One of them may be a lane. Not evidence it is dead, and not 'no lanes running'."
+  else
+    echo "  One of them may be this lane. Not evidence it is dead."
+  fi
   exit 2
 fi
 
 if [ "$QUIET" = 1 ]; then echo "NOT-RUNNING"; exit 1; fi
+if [ "$ANY" = 1 ]; then
+  echo "NOT-RUNNING  no lane is in flight - ${landers} lander(s) in flight, ${scanned} task directory(ies) read."
+  exit 1
+fi
 echo "NOT-RUNNING  ${ID} - ${finished} finished run(s) name it, ${elsewhere} lane(s) in flight belong to other issues, ${landers} lander(s) in flight."
 exit 1

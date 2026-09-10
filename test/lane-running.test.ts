@@ -95,6 +95,24 @@ function ask(
   return { status: ran.status ?? -1, out: `${ran.stdout}${ran.stderr}` };
 }
 
+function askAny(
+  space: Workspace,
+  args: readonly string[] = [],
+  tasks?: string,
+): { status: number; out: string } {
+  const ran = spawnSync("bash", [SCRIPT, "--any", ...args], {
+    encoding: "utf8",
+    cwd: space.root,
+    env: {
+      ...process.env,
+      DEVLOOP_ROOT: space.root,
+      DEVLOOP_WF: space.wf,
+      DEVLOOP_TASKS: tasks ?? space.tasks,
+    },
+  });
+  return { status: ran.status ?? -1, out: `${ran.stdout}${ran.stderr}` };
+}
+
 test("a task whose result is not written yet is RUNNING for the issue its journal labels", () => {
   const space = workspace([{ task: "w111", run: "wf_aaa", labels: ["triage:pitwall-90b", "fix:pitwall-90b"] }]);
   const { status, out } = ask(space, "pitwall-90b");
@@ -231,4 +249,79 @@ test("an unresolvable workspace exits 3 rather than answering", () => {
   });
   assert.equal(ran.status, 3, `${ran.stdout}${ran.stderr}`);
   assert.match(ran.stderr, /refusing to guess/);
+});
+
+test("--any is RUNNING while a lane for any other issue is in flight", () => {
+  const space = workspace([{ task: "w111", run: "wf_aaa", labels: ["fix:pitwall-AAA"] }]);
+  const { status, out } = askAny(space);
+  assert.equal(status, 0, out);
+  assert.match(out, /^RUNNING/);
+  assert.match(out, /pitwall-AAA/);
+  assert.match(out, /w111/);
+});
+
+test("--any counts a rework lane labelled only by its pull request as a lane", () => {
+  const space = workspace([
+    { task: "w111", run: "wf_rw", script: "rework.js", labels: ["resolve:#739"] },
+  ]);
+  const { status, out } = askAny(space);
+  assert.equal(status, 0, out);
+  assert.match(out, /^RUNNING/);
+  assert.match(out, /no id in its labels/);
+});
+
+test("--any is NOT-RUNNING when only a lander is in flight", () => {
+  const space = workspace([
+    {
+      task: "w111",
+      run: "wf_land",
+      script: "land.js",
+      labels: ["land:site#61"],
+      journal: ["merged devloop/pitwall-90b at dc75584"],
+    },
+  ]);
+  const { status, out } = askAny(space);
+  assert.equal(status, 1, out);
+  assert.match(out, /^NOT-RUNNING/);
+  assert.match(out, /1 lander\(s\) in flight/);
+});
+
+test("--any is NOT-RUNNING when every run has written its result", () => {
+  const space = workspace([
+    { task: "w111", run: "wf_aaa", labels: ["fix:pitwall-90b"], result: "pitwall-90b landed\n" },
+  ]);
+  const { status, out } = askAny(space);
+  assert.equal(status, 1, out);
+  assert.match(out, /^NOT-RUNNING/);
+});
+
+test("--any is UNKNOWN while a task in flight cannot be attributed", () => {
+  const space = workspace([{ task: "w111" }]);
+  const { status, out } = askAny(space);
+  assert.equal(status, 2, out);
+  assert.match(out, /^UNKNOWN/);
+  assert.match(out, /w111/);
+  assert.match(out, /not 'no lanes running'/);
+});
+
+test("--any with no task directory is UNKNOWN, never NOT-RUNNING", () => {
+  const space = workspace([{ task: "w111", run: "wf_aaa", labels: ["fix:pitwall-90b"] }]);
+  const { status, out } = askAny(space, [], join(space.root, "no-such-session"));
+  assert.equal(status, 2, out);
+  assert.match(out, /^UNKNOWN/);
+  assert.match(out, /no task directory/);
+});
+
+test("--any answers about every lane, so an issue id with it is an error", () => {
+  const space = workspace([{ task: "w111", run: "wf_aaa", labels: ["fix:pitwall-90b"] }]);
+  const { status, out } = askAny(space, ["pitwall-90b"]);
+  assert.equal(status, 6, out);
+  assert.match(out, /takes no issue id/);
+});
+
+test("--any --quiet prints one machine-readable verdict", () => {
+  const running = askAny(workspace([{ task: "w111", run: "wf_aaa", labels: ["fix:pitwall-90b"] }]), ["--quiet"]);
+  assert.equal(running.out.trim(), "RUNNING");
+  const idle = askAny(workspace([{ task: "w111", result: "done\n" }]), ["--quiet"]);
+  assert.equal(idle.out.trim(), "NOT-RUNNING");
 });
