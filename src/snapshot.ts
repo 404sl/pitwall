@@ -291,6 +291,10 @@ function everyProjectFailed(gathered: readonly Gathered[]): boolean {
   return gathered.length > 0 && !readSomething(gathered);
 }
 
+function nobodySaidWhereToLook(gathered: readonly Gathered[], roots: ResolvedRoots): boolean {
+  return gathered.length === 0 && roots.source === "scan";
+}
+
 interface Assembled {
   snapshot: Snapshot;
   code: number;
@@ -310,7 +314,7 @@ async function assemble(options: SnapshotOptions): Promise<Assembled> {
       projects: gathered.map((entry) => entry.project),
       errors: roots.errors,
     }),
-    code: everyProjectFailed(gathered) ? 1 : 0,
+    code: everyProjectFailed(gathered) || nobodySaidWhereToLook(gathered, roots) ? 1 : 0,
     gathered,
     roots,
   };

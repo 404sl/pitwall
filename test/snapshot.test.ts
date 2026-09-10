@@ -254,6 +254,29 @@ test("a complete snapshot exits zero and one where every project failed does not
   assert.equal((await emitSnapshot(options(workspace([])))).code, 0);
 });
 
+test("a run that was never told where to look and found nothing exits non-zero", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pitwall-nothing-"));
+  const scanned = join(home, "work");
+  mkdirSync(join(scanned, "here"), { recursive: true });
+  const result = await emitSnapshot({
+    env: { PATH: PATH_WITH_BD, XDG_STATE_HOME: join(home, "state") },
+    home,
+    cwd: join(scanned, "here"),
+    lockRoot: mkdtempSync(join(tmpdir(), "pitwall-snapshot-lock-")),
+  });
+  assert.deepEqual(result.snapshot.projects, []);
+  assert.equal(result.read, false);
+  assert.equal(result.path, undefined);
+  assert.equal(result.code, 1);
+});
+
+test("a config that could not be read and a scan that found nothing exits non-zero", async () => {
+  const place = withConfig('{ "roots": [1, 2] ');
+  const result = await emitSnapshot(options(place));
+  assert.deepEqual(result.snapshot.projects, []);
+  assert.equal(result.code, 1);
+});
+
 function announcing(place: Workspace, sessionRef?: string) {
   const sent: Notice[] = [];
   return {
