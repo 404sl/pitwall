@@ -187,12 +187,45 @@ function versionVerdict(read) {
   return null
 }
 
+const SHELL_FIRST = `EVERY COMMAND THAT RUNS git OR bundle STARTS WITH THESE TWO EXPORTS, and so does every
+command that runs a script which does:
+
+  export GIT_CONFIG_GLOBAL=/dev/null BUNDLE_USER_CONFIG=/dev/null && <your command>
+
+Each command you run is its own shell, so exporting them once at the start reaches nothing after
+it - they go at the front of the command, the way TEST_ENV_NUMBER already does. Lead with
+'export ... &&' rather than writing them as a prefix assignment: a $(...) inside the command
+expands BEFORE a prefix assignment takes effect, so the identity reads below would still go
+through the home config.
+
+A HOME-DIRECTORY CONFIG THAT CANNOT BE READ PRESENTS AS ANYTHING BUT ITSELF. Every git command
+fails with 'unknown error occurred while reading the configuration files', and every
+bundler-fronted command HANGS with no output at all - 60s of wall clock against 0.067s of user
+time, so blocked on I/O rather than slow. A hang and a slow machine look identical, so a run pays
+its full timeout before suspecting anything: three runs diagnosed this from scratch in one
+evening, one of them after killing two suites on timeouts. Whether a synced folder has
+materialised a file is not something a run controls, so those files are not read at all. The two
+exports cost a readable config nothing and are not conditional.
+
+COMMIT IDENTITY IS THE ONE THING THAT DOES NOT SURVIVE THEM, and every command that WRITES a
+commit needs it - commit, rebase, merge, cherry-pick. Pass it on the command, taken from the
+branch being built on:
+
+  git -c user.name="$(git log -1 --format=%an origin/master)" -c user.email="$(git log -1 --format=%ae origin/master)" commit -F <message file>
+
+Without it git either refuses outright, 'unable to auto-detect email address', or writes the
+wrong author - and nothing downstream notices the second. Credential helpers normally live in the
+system config rather than the home one, so pushes keep working; if a push asks for a password,
+say so rather than putting the home config back.`
+
 function versionPrompt(trainBranch) {
   return `Read two version numbers and report them. Nothing merges here, nothing is edited, and
 the working tree of ${REPO_PATH} is not yours to move - a person works in that checkout.
 
 FETCH FIRST. What matters is the number origin/master holds RIGHT NOW, at the moment this train
 is about to merge, not the one it held when the train was built or when its checks started.
+
+${SHELL_FIRST}
 
   cd ${REPO_PATH} && git fetch origin --quiet && echo FETCHED
   cd ${REPO_PATH} && git ls-tree --name-only origin/master ${PLUGIN_MANIFEST}
@@ -238,6 +271,8 @@ function retirePrompt(built, included, what, comment) {
   return `The release train ${built.trainBranch}, pull request #${built.trainPr} on ${SLUG},
 ${what}. Retire it so it does not sit on the remote looking like open work:
 
+${SHELL_FIRST}
+
   cd ${REPO_PATH}
   gh pr close ${built.trainPr} --repo ${SLUG} --delete-branch --comment "<one line: ${comment}>"
   git fetch origin --prune --quiet
@@ -255,6 +290,8 @@ function buildPrompt(only, suffix) {
   const onlyArg = only ? ` --only "${only.join(' ')}"` : ''
   const suffixArg = suffix ? ` --suffix ${suffix}` : ''
   return `Build a release train and report what went on it. ONE command does the work:
+
+${SHELL_FIRST}
 
   bash ${SKILL_DIR}/land-train.sh --repo-path ${REPO_PATH} --slug ${SLUG} --max ${MAX}${onlyArg}${suffixArg}
 
@@ -278,6 +315,8 @@ different answer.`
 function verifyPrompt(trainPr, included) {
   return `The release train is pull request #${trainPr} on ${SLUG}, carrying ${included.length}
 change(s): ${included.join(', ')}. Find out whether it is green.
+
+${SHELL_FIRST}
 
   cd ${REPO_PATH} && gh pr checks ${trainPr} --repo ${SLUG} --watch --fail-fast
 
@@ -332,6 +371,8 @@ checks are green - a previous step verified that.
 
 FIRST show the evidence in your own transcript, then merge:
 
+${SHELL_FIRST}
+
   cd ${REPO_PATH} && gh pr view ${trainPr} --repo ${SLUG} --json labels,statusCheckRollup
   gh pr merge ${trainPr} --repo ${SLUG} --merge --delete-branch
 
@@ -357,6 +398,8 @@ the one outcome that must not be softened, because the next train will refuse to
 function deployPrompt(mergeSha, included) {
   return `Deploy master to staging AND production. Master is at ${mergeSha}, which carries
 ${included.length} change(s): ${included.join(', ')}.
+
+${SHELL_FIRST}
 
   cd ${REPO_PATH}
   git fetch origin --quiet && git log -1 --format='%H' origin/master

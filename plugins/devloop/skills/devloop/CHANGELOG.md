@@ -1,5 +1,57 @@
 # Changelog
 
+## 0.1.25
+
+**Every lane and every lander stalled on a home-directory config nobody could read.** On one
+machine ~/.gitconfig and ~/.bundle/config are symlinks into a synced folder whose files were not
+materialised, and the two failures look nothing alike: git answers "fatal: unknown error occurred
+while reading the configuration files", and every bundler-fronted command hangs with no output at
+all - 60s of wall clock against 0.067s of user time, so blocked on I/O rather than slow. A hang and
+a slow machine are indistinguishable, so a run raises its timeout and waits again. Three separate
+runs diagnosed this from scratch in one evening, two suites were killed on timeouts first, and the
+lander's version step was answering `version_unreadable` rather than merging blind - correctly, and
+with nothing able to merge while it did.
+
+Every brief that hands out a git or bundler command now leads with
+
+    export GIT_CONFIG_GLOBAL=/dev/null BUNDLE_USER_CONFIG=/dev/null && <command>
+
+That reaches the fix, review, handoff and split briefs, the rework's resolve and handoff, the
+lander's steps and the train's. The exports are unconditional rather than probed: whether a synced folder has
+materialised a file is not something a run controls, so the next eviction would bring the whole
+failure back. Gems resolve from the default path without the user config, and a credential helper
+normally sits in the system config rather than the home one, so pushes keep working - a run whose
+push asks for a password is told to say so rather than to put the home config back.
+
+- **Commit identity is passed on the command now, not read from a config.** It is the one thing
+  those exports take away, and nothing warns about it. Every brief that writes a commit carries
+  `git -c user.name="$(git log -1 --format=%an origin/master)" -c user.email="$(git log -1
+  --format=%ae origin/master)"` - the author master already carries, so there is no new
+  configuration to keep in step and the history gains no second name for the same work. The rebase
+  the lander is told to run carries it too: a rebase writes commits.
+- **`land-train.sh` and `land-one.sh` pass it themselves,** because they merge, commit and rebase in
+  their own shells rather than in a brief. Without it the train drops every candidate: the squash
+  merge is refused before the commit is even reached, which the script reports as a conflict, and a
+  commit that does get that far is reported as "commit refused" - either way the train comes out
+  empty, which reads as "nothing was ready". `land-one.sh` reported a rebase that failed for want of
+  an identity as a CONFLICT with master, a branch handed back to a person for a reason that was not
+  true.
+- **What git does with no identity depends on the machine, and the kinder answer is the dangerous
+  one.** Where it can build one from the account - a gecos name and a hostname with a domain - it
+  does not refuse: the commit lands, under a name that belongs to nobody. Where it cannot, the
+  command fails outright. The first machine this was measured on did the first and a Linux runner
+  did the second, from the same commit, so the tests pin `user.useConfigOnly` on and assert the
+  author rather than the exit code.
+
+Eight tests, all of which fail before this change. Four drive the workflow scripts as function
+bodies and read the briefs they hand out - the fix brief on the first attempt AND on a rework,
+which is the one the setup block does not reach, the review brief, the lander's version and merge
+briefs, and both rework briefs. Two run the shell scripts against a throwaway remote with no
+identity anywhere git can reach: the train must still commit, under master's own author, and the
+rebase must not be reported as a conflict. Two read the sources: the standing block must carry no
+backtick, which closes a brief's template literal early and blocks every dispatch, and no commit or
+rebase anywhere in the plugin may take its identity from configuration.
+
 ## 0.1.23
 
 **A rework gave its lane back only when it handed off.** `rework.js` takes the lane lock in its

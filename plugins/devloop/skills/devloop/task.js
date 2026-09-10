@@ -218,6 +218,37 @@ const LANE = {
   }
 }
 
+const SHELL_FIRST = `EVERY COMMAND THAT RUNS git OR bundle STARTS WITH THESE TWO EXPORTS, and so does every
+command that runs a script which does:
+
+  export GIT_CONFIG_GLOBAL=/dev/null BUNDLE_USER_CONFIG=/dev/null && <your command>
+
+Each command you run is its own shell, so exporting them once at the start reaches nothing after
+it - they go at the front of the command, the way TEST_ENV_NUMBER already does. Lead with
+'export ... &&' rather than writing them as a prefix assignment: a $(...) inside the command
+expands BEFORE a prefix assignment takes effect, so the identity reads below would still go
+through the home config.
+
+A HOME-DIRECTORY CONFIG THAT CANNOT BE READ PRESENTS AS ANYTHING BUT ITSELF. Every git command
+fails with 'unknown error occurred while reading the configuration files', and every
+bundler-fronted command HANGS with no output at all - 60s of wall clock against 0.067s of user
+time, so blocked on I/O rather than slow. A hang and a slow machine look identical, so a run pays
+its full timeout before suspecting anything: three runs diagnosed this from scratch in one
+evening, one of them after killing two suites on timeouts. Whether a synced folder has
+materialised a file is not something a run controls, so those files are not read at all. The two
+exports cost a readable config nothing and are not conditional.
+
+COMMIT IDENTITY IS THE ONE THING THAT DOES NOT SURVIVE THEM, and every command that WRITES a
+commit needs it - commit, rebase, merge, cherry-pick. Pass it on the command, taken from the
+branch being built on:
+
+  git -c user.name="$(git log -1 --format=%an origin/master)" -c user.email="$(git log -1 --format=%ae origin/master)" commit -F <message file>
+
+Without it git either refuses outright, 'unable to auto-detect email address', or writes the
+wrong author - and nothing downstream notices the second. Credential helpers normally live in the
+system config rather than the home one, so pushes keep working; if a push asks for a password,
+say so rather than putting the home config back.`
+
 const LAW = `
 NON-NEGOTIABLE RULES. They outrank speed, and they outrank finishing the task.
 
@@ -338,6 +369,8 @@ NON-NEGOTIABLE RULES. They outrank speed, and they outrank finishing the task.
    returns a real answer rather than an error. There is no failing case to catch it.
    The slug for this run is given above. If a command needs a number from another repository,
    name that repository explicitly too.
+
+${SHELL_FIRST}
 `
 
 // The config may place a repo anywhere under the workspace; falling back to the repo's own name
@@ -755,6 +788,7 @@ ${brief ? `\nA designer has already decided how this should look. Build exactly 
 re-decide appearance, and if you think it is wrong, stop and ask rather than improvising:\n---\n${brief}\n---\n` : ''}
 
 ${again ? '' : `Set up the worktree. THE BRANCH MAY ALREADY EXIST, so check before creating it:
+  export GIT_CONFIG_GLOBAL=/dev/null BUNDLE_USER_CONFIG=/dev/null
   cd ${repoPath(task.repo)}
   git fetch origin --quiet
   if git ls-remote --exit-code --heads origin ${branch} >/dev/null; then
@@ -1004,8 +1038,10 @@ Otherwise:
    ${task.id}. Do NOT merge it. This repository gained a remote and CI on 2026-08-19; the
    instruction that it had neither outlived the fact by a day and would have had you commit
    straight onto a real default branch.`
-   : `Commit, push, and open a PR with 'gh pr create' explaining what was wrong, why this fix,
-   and what the test covers. Reference ${task.id}. Do NOT merge it.`}
+   : `Commit with the identity on the command rather than from a config nobody read -
+   git -c user.name="$(git log -1 --format=%an origin/master)" -c user.email="$(git log -1 --format=%ae origin/master)" commit -F <message file> -
+   then push and open a PR with 'gh pr create' explaining what was wrong, why this fix, and
+   what the test covers. Reference ${task.id}. Do NOT merge it.`}
 
 ${LAW}
 
@@ -1024,6 +1060,8 @@ PR: ${work.prUrl || work.prNumber}
 Author's claim: ${work.summary}
 Test they added: ${work.testsAdded || 'none reported'}
 Round ${attempt} of ${MAX_ATTEMPTS}.
+
+${SHELL_FIRST}
 
 Read the issue with 'bd show ${task.id}' from ${ROOT}, then read the actual diff:
   cd ${work.worktree || `${WT}/${task.id}`} && rtk git diff origin/master...HEAD

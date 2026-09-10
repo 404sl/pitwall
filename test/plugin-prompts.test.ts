@@ -39,6 +39,55 @@ test("the rules a run is given carry no backticks", () => {
   );
 });
 
+function standingShellBlock(source: string, file: string): string {
+  const start = source.indexOf("const SHELL_FIRST = ");
+  assert.notEqual(
+    start,
+    -1,
+    `${file} hands a run git and bundler commands but no longer tells it to export past an ` +
+      "unreadable home-directory config. Every git command fails and every bundler-fronted " +
+      "command hangs when that file cannot be read, and the hang is silent.",
+  );
+  const body = start + "const SHELL_FIRST = `".length;
+  const end = source.indexOf("`\n", body);
+  assert.notEqual(end, -1, `the standing shell block in ${file} has no end`);
+  return source.slice(body, end);
+}
+
+test("the standing shell block carries no backticks in any script that hands it out", () => {
+  for (const file of ["task.js", "land.js", "rework.js", "land-train.js"]) {
+    const block = standingShellBlock(readFileSync(join(SKILL, file), "utf8"), file);
+    const found = block.split("\n").filter((line) => line.includes("`"));
+    assert.deepEqual(
+      found,
+      [],
+      `a backtick inside ${file} closes its template literal early. Use 'single quotes':\n${found.join("\n")}`,
+    );
+    assert.ok(
+      block.includes("export GIT_CONFIG_GLOBAL=/dev/null BUNDLE_USER_CONFIG=/dev/null"),
+      `${file} names the block but no longer carries both exports`,
+    );
+  }
+});
+
+test("nothing in the plugin commits or rebases on an identity it did not pass", () => {
+  for (const file of ["land-train.sh", "land-one.sh"]) {
+    const source = readFileSync(join(SKILL, file), "utf8");
+    const writes = source
+      .split("\n")
+      .map((line, i) => ({ line, at: i + 1 }))
+      .filter(({ line }) => /^\s*(if ! )?git (commit|rebase|cherry-pick|merge)(\s|$)/.test(line))
+      .filter(({ line }) => !/--(abort|continue|skip)\b/.test(line));
+    assert.deepEqual(
+      writes.map(({ line, at }) => `${file}:${at}${line}`),
+      [],
+      "a command that writes a commit takes its identity from config the run has told git not to " +
+        "read. git then refuses the commit, or invents a name from the machine account - and the " +
+        "caller reports that as 'commit refused' or, worse, as a conflict with master.",
+    );
+  }
+});
+
 test("every workflow script is present in the plugin", () => {
   for (const file of ["task.js", "land.js", "rework.js", "land-train.js", "config.sh", "lock-check.sh", "lane-running.sh"]) {
     const path = join(SKILL, file);
