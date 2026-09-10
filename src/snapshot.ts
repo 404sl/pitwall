@@ -9,6 +9,7 @@ import {
   type Snapshot,
 } from "@404sl/pitwall-schema";
 import { noteAppender, readIssues, type ClosedIssue, type IssueText } from "./beads.js";
+import { KEPT_SOURCE, PARTIAL_SOURCE } from "./board.js";
 import { recordOnce } from "./errors.js";
 import { hasLiveStructuralBlocker, type ClassifyContext } from "./classify.js";
 import { collectProjects, historyLimits, type RootsOptions } from "./config.js";
@@ -145,6 +146,7 @@ interface Gathered {
   project: Project;
   closed: readonly ClosedIssue[];
   unreadable: boolean;
+  issuesRead: boolean;
 }
 
 async function gather(project: Project, options: SnapshotOptions, day: Date): Promise<Gathered> {
@@ -193,7 +195,86 @@ async function gather(project: Project, options: SnapshotOptions, day: Date): Pr
       ],
     }),
     unreadable,
+    issuesRead: collected.errors.length === 0,
   };
+}
+
+function keptAt(held: Project, fallback: string): string {
+  return held.errors.find((error) => error.source === KEPT_SOURCE)?.at ?? fallback;
+}
+
+function keeping(project: Project, held: Project, at: string, day: Date): Project {
+  return Project.parse({
+    ...project,
+    issues: held.issues,
+    metrics: { ...project.metrics, ...metricsOf(held.issues, [], day, false) },
+    errors: [
+      ...project.errors,
+      {
+        source: KEPT_SOURCE,
+        message: `${held.issues.length} issues kept from the last collection that could read this project.`,
+        at,
+      },
+    ],
+  });
+}
+
+type Fate = "kept" | "missing";
+
+const FATES: Record<Fate, string> = {
+  kept: "issues kept from the last snapshot",
+  missing: "issues missing from this board",
+};
+
+interface Fated {
+  name: string;
+  fate: Fate;
+}
+
+function partialCollection(fated: readonly Fated[], total: number, at: string): CollectionError {
+  const named = fated.map((entry) => `${entry.name} (${FATES[entry.fate]})`).join(", ");
+  return {
+    source: PARTIAL_SOURCE,
+    message: `${fated.length} of ${total} projects could not be read: ${named}.`,
+    at,
+  };
+}
+
+function keptBoard(
+  snapshot: Snapshot,
+  previous: Snapshot | undefined,
+  gathered: readonly Gathered[],
+): Snapshot {
+  const unread = new Set(
+    gathered.filter((entry) => !entry.issuesRead).map((entry) => entry.project.id),
+  );
+  if (unread.size === 0) {
+    return snapshot;
+  }
+  const day = new Date(snapshot.generatedAt);
+  const held = new Map((previous?.projects ?? []).map((project) => [project.id, project]));
+  const fated: Fated[] = [];
+  const projects = snapshot.projects.map((project) => {
+    if (!unread.has(project.id)) {
+      return project;
+    }
+    const before = held.get(project.id);
+    if (before === undefined || before.issues.length === 0) {
+      fated.push({ name: project.name, fate: "missing" });
+      return project;
+    }
+    fated.push({ name: project.name, fate: "kept" });
+    const at = keptAt(before, previous?.generatedAt ?? snapshot.generatedAt);
+    return keeping(project, before, at, day);
+  });
+  return parseSnapshot({
+    ...snapshot,
+    projects,
+    errors: [
+      ...snapshot.errors,
+      partialCollection(fated, snapshot.projects.length, snapshot.generatedAt),
+    ],
+  });
 }
 
 function readSomething(gathered: readonly Gathered[]): boolean {
@@ -292,9 +373,10 @@ export async function emitSnapshot(options: SnapshotOptions = {}): Promise<Snaps
     ),
     errors: history.error === undefined ? snapshot.errors : [...snapshot.errors, history.error],
   });
-  const path = writeSnapshot(recorded, options);
+  const written = keptBoard(recorded, previous, gathered);
+  const path = writeSnapshot(written, options);
   return {
-    snapshot: recorded,
+    snapshot: written,
     path,
     code,
     read: true,

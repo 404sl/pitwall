@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
+import type { CollectionError } from "@404sl/pitwall-schema";
 import mark from "../brand/logo/pitwall-mark.svg";
 import { fill, stamp } from "../format.js";
-import { snapshotAge, type SnapshotAge } from "../model.js";
+import { PARTIAL_SOURCE, snapshotAge, type SnapshotAge } from "../model.js";
 import { strings } from "../strings.js";
 
 const TICK_MS = 30_000;
@@ -11,7 +12,7 @@ interface HeaderProps {
   generatedAt: string;
   version: string;
   update?: string;
-  refreshFailed?: boolean;
+  refreshFailure?: CollectionError;
 }
 
 interface Flag {
@@ -19,11 +20,14 @@ interface Flag {
   notice: string;
 }
 
-function flagOf(age: SnapshotAge, refreshFailed: boolean): Flag | undefined {
-  if (refreshFailed) {
+function flagOf(age: SnapshotAge, failure: CollectionError | undefined): Flag | undefined {
+  if (failure !== undefined) {
     return {
       word: strings.header.refreshFlag,
-      notice: fill(strings.header.refreshNotice, { age: age.label }),
+      notice:
+        failure.source === PARTIAL_SOURCE
+          ? failure.message
+          : fill(strings.header.refreshNotice, { age: age.label }),
     };
   }
   return age.stale ? { word: strings.header.staleFlag, notice: strings.header.staleNotice } : undefined;
@@ -38,11 +42,11 @@ function useNow(): number {
   return now;
 }
 
-export function Header({ projectCount, generatedAt, version, update, refreshFailed }: HeaderProps) {
+export function Header({ projectCount, generatedAt, version, update, refreshFailure }: HeaderProps) {
   const noun = projectCount === 1 ? strings.header.project : strings.header.projects;
   const now = useNow();
   const age = snapshotAge(generatedAt, now);
-  const flag = flagOf(age, refreshFailed === true);
+  const flag = flagOf(age, refreshFailure);
   return (
     <header className={flag === undefined ? "pw-header" : "pw-header pw-header--stale"}>
       <div className="pw-header__brand">

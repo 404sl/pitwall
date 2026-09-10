@@ -2,13 +2,13 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import type { AddressInfo } from "node:net";
 import { SCHEMA_VERSION, isYours, parseSnapshot } from "@404sl/pitwall-schema";
 import type { Notice } from "../src/notify.ts";
-import { REFRESH_SOURCE } from "../src/board.ts";
+import { KEPT_SOURCE, PARTIAL_SOURCE, REFRESH_SOURCE, buildBoard } from "../src/board.ts";
 import { consoleCollector, createConsoleServer, listen } from "../src/serve.ts";
 import { collectSnapshot, emitSnapshot } from "../src/snapshot.ts";
 import { historyPath } from "../src/history.ts";
@@ -614,5 +614,190 @@ test("the console's own collector keeps the last board when it can read nothing"
   assert.equal(
     readFileSync(snapshotPath(state), "utf8"),
     JSON.stringify(good.snapshot, null, 2) + "\n",
+  );
+});
+
+function readableRoot(): string {
+  const root = mkdtempSync(join(tmpdir(), "pitwall-kept-"));
+  cpSync(TRACKER, root, { recursive: true });
+  return root;
+}
+
+test("a project that could not be read keeps the issues the last snapshot held for it", async () => {
+  const root = readableRoot();
+  const id = basename(root);
+  const place = workspace([root, TRACKER]);
+  const state = { env: place.env, home: place.home };
+  const first = await emitSnapshot(options(place, new Date("2026-09-08T09:00:00Z")));
+  assert.equal(first.snapshot.projects.find((project) => project.id === id)?.issues.length, 15);
+
+  rmSync(join(root, "bd-output"), { recursive: true });
+  const second = await emitSnapshot(options(place, new Date("2026-09-08T09:30:00Z")));
+  assert.equal(second.read, true);
+  const stored = readSnapshot(state).snapshot;
+  assert.ok(stored);
+  const kept = stored.projects.find((project) => project.id === id);
+  assert.equal(kept?.issues.length, 15, "an unreadable project must not be emptied on disk");
+  assert.equal(kept?.metrics.readyCount, 2, "its figures must agree with the issues it carries");
+  assert.equal(kept?.metrics.landedToday, undefined);
+  assert.ok(
+    (kept?.errors ?? []).some((error) => error.source === join(root, ".beads")),
+    "the project still reports what it could not read",
+  );
+  assert.equal(
+    (kept?.errors ?? []).find((error) => error.source === KEPT_SOURCE)?.at,
+    "2026-09-08T09:00:00.000Z",
+    "the kept issues are dated when they were last read, not when the run happened",
+  );
+  const fresh = stored.projects.find((project) => project.id === "tracker");
+  assert.deepEqual(fresh?.errors, []);
+
+  const board = buildBoard(stored);
+  assert.equal(board.refreshFailure?.source, PARTIAL_SOURCE, "the board must not read as current");
+  assert.equal(
+    board.refreshFailure?.message,
+    `1 of 2 projects could not be read: ${id} (issues kept from the last snapshot).`,
+  );
+  assert.deepEqual(
+    board.running.filter((row) => row.projectId === id),
+    [],
+    "carried issues must not be counted as running now",
+  );
+  assert.ok(
+    board.running.some((row) => row.projectId === "tracker"),
+    "the project that was read keeps its running rows",
+  );
+  assert.ok(
+    board.ready.some((row) => row.projectId === id),
+    "the carried backlog is still on the board",
+  );
+
+  const third = await emitSnapshot(options(place, new Date("2026-09-08T10:00:00Z")));
+  const again = third.snapshot.projects.find((project) => project.id === id);
+  assert.equal(again?.issues.length, 15);
+  assert.equal(
+    (again?.errors ?? []).find((error) => error.source === KEPT_SOURCE)?.at,
+    "2026-09-08T09:00:00.000Z",
+    "a second failed run must not re-date issues it did not read either",
+  );
+});
+
+function lanedRoot(): string {
+  const root = mkdtempSync(join(tmpdir(), "pitwall-laned-"));
+  writeFileSync(
+    join(root, ".autofix.json"),
+    JSON.stringify({ idPrefix: "mw", lockPrefix: basename(root), lanes: 2 }),
+  );
+  cpSync(join(TRACKER, "bd-output"), join(root, "bd-output"), { recursive: true });
+  return root;
+}
+
+test("a project whose issues were read keeps them even though the rest of it failed", async () => {
+  const root = lanedRoot();
+  const id = basename(root);
+  const place = workspace([root, TRACKER]);
+  const state = { env: place.env, home: place.home };
+  const first = await emitSnapshot(options(place, new Date("2026-09-08T09:00:00Z")));
+  const before = first.snapshot.projects.find((project) => project.id === id);
+  assert.deepEqual(before?.errors, [], "the first run reads the project in full");
+  assert.equal(before?.issues.length, 15);
+
+  const file = join(place.home, "lock-root-is-a-file");
+  writeFileSync(file, "");
+  const second = await emitSnapshot({
+    ...options(place, new Date("2026-09-08T09:30:00Z")),
+    lockRoot: file,
+    env: { ...place.env, BD_LIST_FIXTURE: "partial" },
+  });
+  assert.equal(second.read, true);
+  const stored = readSnapshot(state).snapshot;
+  assert.ok(stored);
+  const project = stored.projects.find((entry) => entry.id === id);
+  assert.deepEqual(
+    (project?.issues ?? []).map((issue) => issue.id).sort(),
+    ["mw-5", "mw-6"],
+    "the issues the tracker answered with must survive the lane failure",
+  );
+  assert.equal(
+    (project?.errors ?? []).some((error) => error.source === KEPT_SOURCE),
+    false,
+    "a project that answered is not a project whose issues were kept",
+  );
+  assert.deepEqual(
+    (project?.errors ?? []).map((error) => error.source),
+    [join(file, `${id}-slots`)],
+    "the project reports the lane read it could not do",
+  );
+  const board = buildBoard(stored);
+  assert.equal(
+    board.refreshFailure,
+    undefined,
+    "a project whose tracker answered is current, and must not flag the board",
+  );
+  assert.equal(
+    stored.errors.some((error) => error.source === PARTIAL_SOURCE),
+    false,
+    "a lane that could not be read is not a collection that could not be read",
+  );
+  assert.deepEqual(
+    board.ready.filter((row) => row.projectId === id).map((row) => row.id),
+    ["mw-5"],
+    "the issues the tracker answered with are on the board as read now",
+  );
+});
+
+test("a tracker that answered with nothing is not a tracker that could not be read", async () => {
+  const root = lanedRoot();
+  const id = basename(root);
+  const other = readableRoot();
+  const place = workspace([root, other]);
+  const state = { env: place.env, home: place.home };
+  const first = await emitSnapshot(options(place, new Date("2026-09-08T09:00:00Z")));
+  assert.equal(first.snapshot.projects.find((project) => project.id === id)?.issues.length, 15);
+
+  writeFileSync(join(root, "bd-output", "closed.json"), "[]");
+  cpSync(join(other, "bd-output", "all.json"), join(other, "bd-output", "closed.json"));
+  const file = join(place.home, "lock-root-is-a-file");
+  writeFileSync(file, "");
+  await emitSnapshot({
+    ...options(place, new Date("2026-09-08T09:30:00Z")),
+    lockRoot: file,
+    env: { ...place.env, BD_LIST_FIXTURE: "closed" },
+  });
+  const stored = readSnapshot(state).snapshot;
+  assert.ok(stored);
+  const project = stored.projects.find((entry) => entry.id === id);
+  assert.deepEqual(project?.issues, [], "a project whose work has all closed stays empty");
+  assert.equal(
+    (project?.errors ?? []).some((error) => error.source === KEPT_SOURCE),
+    false,
+    "nothing is carried into a project whose tracker answered",
+  );
+  assert.equal(
+    buildBoard(stored).refreshFailure,
+    undefined,
+    "every tracker answered, so nothing on this board is stale",
+  );
+});
+
+test("the run-level problem describes what became of each project it names", async () => {
+  const root = readableRoot();
+  const id = basename(root);
+  const place = workspace([root, TRACKER, NO_TRACKER]);
+  const state = { env: place.env, home: place.home };
+  const first = await emitSnapshot(options(place, new Date("2026-09-08T09:00:00Z")));
+  assert.equal(
+    buildBoard(first.snapshot).refreshFailure?.message,
+    "1 of 3 projects could not be read: plain (issues missing from this board).",
+    "a project nobody has ever read has no issues to be stale",
+  );
+
+  rmSync(join(root, "bd-output"), { recursive: true });
+  await emitSnapshot(options(place, new Date("2026-09-08T09:30:00Z")));
+  const stored = readSnapshot(state).snapshot;
+  assert.ok(stored);
+  assert.equal(
+    buildBoard(stored).refreshFailure?.message,
+    `2 of 3 projects could not be read: ${id} (issues kept from the last snapshot), plain (issues missing from this board).`,
   );
 });
