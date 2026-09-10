@@ -1,5 +1,90 @@
 # Changelog
 
+## 0.1.22
+
+**A branch could walk the published plugin version backwards, and nothing between a green build and
+a merge looked at the number.** The guard now runs in the two landers, at the moment each merge is
+about to happen, and it reads `origin/master` fresh rather than trusting anything carried from
+earlier in the run.
+
+A check at push time cannot be correct here however carefully it is written. PR #80 was rebased to
+declare 0.1.16 with master at 0.1.15 and was green on node 20 and 22; #89 then landed and took
+0.1.16 for itself, so the number #80 had been checked against was stale again and nothing re-checked
+it before landing. Master moves after a push, and the only moment the comparison is true is the
+moment of the merge.
+
+- **The comparison is scoped to branches that change what the marketplace serves.** A branch whose
+  diff against master lists any path under `plugins/` or `.claude-plugin/` must declare a version
+  strictly greater than master's; a branch that touches none of them is not asked about a number it
+  never claimed. Scoping matters more than it looks: of the 26 changes merged before this one, 12
+  declared no bump at all and 8 of those touched no plugin file, so an unscoped rule would refuse
+  roughly half the queue - including every change confined to `src/`, `ui/` and `test/`. The three
+  that did ship plugin content without a bump are exactly what this refuses, and one of them is
+  recorded two releases below: WRITING-TICKETS.md reached the marketplace only on the next unrelated
+  release, because the release that added it never bumped.
+- **An unreadable master refuses, and so does a version that is not three numbers.** A failed fetch,
+  a manifest with no `version` field, and a string like `v0.1.22-rc` all stop the merge and say which
+  happened. The alternative - treating a number nobody could read as nothing to block on - is the one
+  outcome that makes the guard worse than absent, because it looks present and passes everything.
+  A repository that carries no `plugins/devloop/.claude-plugin/plugin.json` on master at all is a
+  different case and is reported rather than refused: it ships no plugin, so it has no published
+  number to walk backwards. That distinction is drawn from `git ls-tree` printing nothing, not from
+  `git show` erroring - told to infer it from an error, a careful reader reports "unreadable"
+  instead, and since an unreadable verdict is deliberately never un-queued, every repository
+  without the plugin would be refused on every run for ever.
+- **The agent reads, the script decides.** The step asks for two version strings, whether the diff
+  touches plugin files, and which of three states it was in; the comparison and the refusal are in
+  `land.js` and `land-train.js`, where a test can drive them. That is why a per-pull-request agent
+  call returns after one was removed at 0.1.18 for costing ~50k of context: this one is two
+  read-only git commands on haiku at low effort, and it cannot talk itself past the guard because it
+  is not the thing holding the verdict.
+- **A refusal un-queues the pull request; an unreadable number does not.** `version_not_ahead`
+  joins `conflict` and `red_after_rebase` in the retire step: the label comes off, the finding goes
+  onto the tracker issue and the issue goes back to open, because nothing in the pipeline bumps a
+  number on its own and a label left on buys the same refusal once per run forever.
+  `version_unreadable` is deliberately kept queued, alongside `master_red` and `agent_error` - that
+  is ignorance rather than a finding, and un-queueing on ignorance loses work silently.
+- **The queue state decides HOW a refusal is recorded, never WHETHER the numbers are compared.** The
+  version step also reads `labels`, `state` and `isDraft` back from the pull request it is about to
+  have merged. This is the one refusal in `land.js` that fires in front of `land-one.sh`, and the
+  survey it acts on is up to an hour old: a lane can pull its label back for rework in that window,
+  and a branch mid-rework is exactly the one whose number is behind. Un-queueing it would append
+  "attempted, not landed" to an issue that lane is holding `in_progress` and reopen it for a second
+  lane. So a pull request the step reports as no longer labelled or no longer open is DEFERRED - the
+  merge is not delegated, the label is not touched, the tracker is not touched, and it goes back for
+  a later round - rather than refused as `version_not_ahead`. What it must not do is fall through to
+  `land-one.sh`: that script is the authority on the LABEL and never reads a version, so handing a
+  behind number to it is not "let the shell decide this", it is "skip the version check and let the
+  shell decide something else". One misreported `labelled`, or a lane that re-labels between the read
+  and the shell's own check, would have merged the number this release exists to refuse. A step that
+  reports no queue state at all refuses on `version_unreadable` instead, which stops the merge
+  without un-queueing anything.
+- **Both landers log the versions they did not compare.** A misreported `touchesPlugin` - or a
+  misreported `no_manifest` - is what is left to get straight past the guard, now that a queue state
+  reported as gone defers the merge instead of skipping the comparison; the skip used to leave
+  nothing in the run log, and it now names both numbers and says the diff listed no path under
+  `plugins/` or `.claude-plugin/`.
+- **A train refused on its version is retired, not left standing.** The same retire step the red path
+  uses closes the release pull request and deletes its branch, so a refusal does not leave a branch
+  on the remote that reads like open work. The pull requests it carried keep their labels and go back
+  to the queue.
+- **Twenty-seven tests hold it**, stubbing the agent for both landers: equal, lower, string-ordered
+  (`0.1.9` against `0.1.21`), strictly greater, plugin-untouched, unreadable, unparseable, a step
+  that answers nothing, a repository with no manifest, two pull requests in one run where the second
+  is refused against the version the first just published, and which of the two refusals un-queues.
+  Seven more cover the queue state, and three of those exist because a stub proved a behind number
+  merging: a label pulled back, a closed pull request, and an uncomparable version with the label
+  gone, each with the merge stub answering `merged` - so what is asserted is that nothing landed,
+  which is the only form of that assertion a fall-through could not satisfy. One of the three also
+  reads the `DEFERRED` line for both numbers and the flag, because a deferral that names neither
+  leaves nobody anything to fix. The rest: a label pulled back and a closed pull request against a
+  shell that answers exit 7, a step that reported neither flag, and a step that could read neither
+  the manifest nor the pull request, which refuses rather than defers because `land-one.sh` checks
+  the label and the checks and never a version. Two read the run log, since a skipped comparison
+  that says nothing is indistinguishable from one that never happened, and two read the prompt
+  itself, because the difference between "no plugin here" and "could not read it" is the one thing a
+  stub cannot check.
+
 ## 0.1.21
 
 **A lane that ended any way other than by handing off kept its lane lock, and its slot with it.**

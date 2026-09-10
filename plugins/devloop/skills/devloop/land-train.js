@@ -23,6 +23,9 @@ export const meta = {
 const input = (typeof args === 'string' ? JSON.parse(args) : args) || {}
 const SKILL_DIR = input.skillDir
 const TOKEN_SHAPE = /^[A-Za-z0-9._-]+$/
+const PLUGIN_MANIFEST = 'plugins/devloop/.claude-plugin/plugin.json'
+const MARKETPLACE_MANIFEST = '.claude-plugin/marketplace.json'
+const SEMVER = /^(\d+)\.(\d+)\.(\d+)$/
 const trimmed = (v) => String(v || '').trim()
 
 // REFUSE RATHER THAN RENDER "undefined". This value is interpolated into shell commands
@@ -127,6 +130,125 @@ const MERGED = {
     masterGreen: { type: 'boolean' },
     notes: { type: 'string' },
   },
+}
+
+const VERSION = {
+  type: 'object',
+  required: ['status', 'masterVersion', 'branchVersion', 'touchesPlugin', 'notes'],
+  additionalProperties: false,
+  properties: {
+    status: { type: 'string', enum: ['read', 'no_manifest', 'unreadable'], description: "'read' only when both git show calls printed a manifest you could copy a version string out of" },
+    masterVersion: { type: 'string', description: `the "version" string in origin/master's ${PLUGIN_MANIFEST}, verbatim. An empty string when you could not read one.` },
+    branchVersion: { type: 'string', description: `the "version" string in the train branch's ${PLUGIN_MANIFEST}, verbatim. An empty string when you could not read one.` },
+    touchesPlugin: { type: 'boolean', description: 'true when the train changes any file under plugins/ or .claude-plugin/ - that is what the marketplace serves' },
+    notes: { type: 'string' },
+  },
+}
+
+function versionAhead(branch, master) {
+  const a = SEMVER.exec(branch)
+  const b = SEMVER.exec(master)
+  if (!a || !b) return null
+  for (let i = 1; i <= 3; i++) {
+    const x = Number(a[i])
+    const y = Number(b[i])
+    if (x !== y) return x > y
+  }
+  return false
+}
+
+function versionVerdict(read) {
+  if (!read) {
+    return { why: 'version_unreadable', detail: 'the version step answered nothing, and a number nobody read is not a number that is ahead' }
+  }
+  if (read.status === 'no_manifest') return null
+  if (read.status !== 'read') {
+    return {
+      why: 'version_unreadable',
+      detail: `origin/master's ${PLUGIN_MANIFEST} could not be read - ${trimmed(read.notes) || `the step reported only '${read.status}'`}`,
+    }
+  }
+  if (!read.touchesPlugin) return null
+  const branch = trimmed(read.branchVersion)
+  const master = trimmed(read.masterVersion)
+  const ahead = versionAhead(branch, master)
+  if (ahead === null) {
+    return {
+      why: 'version_unreadable',
+      detail: `the declared devloop plugin version cannot be compared - the train reported '${branch}' and origin/master reported '${master}', and a version that is not three numbers cannot be ordered against anything`,
+    }
+  }
+  if (!ahead) {
+    return {
+      why: 'version_not_ahead',
+      detail: `the train declares devloop plugin version ${branch} and origin/master holds ${master}, which is not strictly greater. One of the branches on it has to bump ${PLUGIN_MANIFEST} and ${MARKETPLACE_MANIFEST} above ${master}.`,
+    }
+  }
+  return null
+}
+
+function versionPrompt(trainBranch) {
+  return `Read two version numbers and report them. Nothing merges here, nothing is edited, and
+the working tree of ${REPO_PATH} is not yours to move - a person works in that checkout.
+
+FETCH FIRST. What matters is the number origin/master holds RIGHT NOW, at the moment this train
+is about to merge, not the one it held when the train was built or when its checks started.
+
+  cd ${REPO_PATH} && git fetch origin --quiet && echo FETCHED
+  cd ${REPO_PATH} && git ls-tree --name-only origin/master ${PLUGIN_MANIFEST}
+  cd ${REPO_PATH} && git show origin/master:${PLUGIN_MANIFEST}
+  cd ${REPO_PATH} && git show origin/${trainBranch}:${PLUGIN_MANIFEST}
+  cd ${REPO_PATH} && git diff --name-only origin/master...origin/${trainBranch}
+
+git show prints a file as it is at a ref and touches nothing. Do not check anything out, do not
+switch, do not reset, and do not stash.
+
+REPORT, DO NOT JUDGE. Whether this train may merge is decided from what you report, not by you:
+
+  status 'read'         FETCHED printed, ls-tree printed the path, and both git show calls printed
+                        a manifest. Copy the "version" string out of each into masterVersion and
+                        branchVersion, verbatim - do not normalise them, pad them, or correct one
+                        to look like the other.
+  status 'no_manifest'  ls-tree printed NOTHING. ${PLUGIN_MANIFEST} is not in master's tree, so
+                        this repository ships no plugin and has no published number to walk
+                        backwards. Skip the two git show calls - there is nothing there to read,
+                        and their error is the expected result rather than a problem.
+  status 'unreadable'   FETCHED did not print, or ls-tree printed the path and a git show then
+                        failed anyway, or the manifest it printed carries no "version" string.
+                        Say which in notes.
+
+AN UNREADABLE MASTER IS NOT A CLEAR ROAD. If the fetch did not work, or the manifest is in the
+tree and you still cannot get a number out of it, report 'unreadable' and say why. Guessing a
+number turns a guard into a green light, and the merge that follows is the thing the guard exists
+to stop.
+
+WHAT ls-tree PRINTS IS WHAT DECIDES BETWEEN THE OTHER TWO, and nothing else decides it. Empty
+output means 'no_manifest'. Do not reach for 'no_manifest' because some other command errored, and
+do not report 'unreadable' for a repository that simply has no plugin in it - most of them do not,
+and the whole train is refused either way on a verdict that was never about the version.
+
+touchesPlugin is true when that last command lists ANY path under plugins/ or .claude-plugin/.
+Those are the files the marketplace serves, so a train changing one of them ships under whatever
+number it declares. It is false when the diff lists none of them.
+
+Never use 2>&1 - it makes some commands fail outright. Use absolute paths, never relative ones.`
+}
+
+function retirePrompt(built, included, what, comment) {
+  return `The release train ${built.trainBranch}, pull request #${built.trainPr} on ${SLUG},
+${what}. Retire it so it does not sit on the remote looking like open work:
+
+  cd ${REPO_PATH}
+  gh pr close ${built.trainPr} --repo ${SLUG} --delete-branch --comment "<one line: ${comment}>"
+  git fetch origin --prune --quiet
+  git branch -r --list 'origin/${built.trainBranch}'
+
+The last command must print NOTHING. If the branch is still listed, say so - a leftover train
+branch is clutter that outlives the run and nobody else removes it.
+
+DO NOT touch the pull requests it carried (${included.join(', ')}). They keep their labels and
+go back in the queue; closing them would throw away work that is probably fine. Only the train
+branch and the train's own pull request are yours to remove.`
 }
 
 function buildPrompt(only, suffix) {
@@ -419,6 +541,23 @@ async function runTrain(only, suffix, depth) {
   if (verdict && verdict.failingSpecs && verdict.failingSpecs.length) flakes.push(...verdict.failingSpecs)
 
   if (verdict && verdict.status === 'green') {
+    const declared = await agent(versionPrompt(built.trainBranch), {
+      schema: VERSION, phase: 'Merge', label: `version:#${built.trainPr}`, model: 'haiku', effort: 'low',
+    })
+    const stale = versionVerdict(declared)
+    if (stale) {
+      log(`REFUSED #${built.trainPr} - ${stale.why}\n    ${stale.detail}`)
+      await agent(
+        retirePrompt(built, included, 'cannot merge and is being abandoned',
+          'the devloop plugin version it declares is not ahead of master, the changes it carried are going back to the queue'),
+        { model: 'haiku', effort: 'low', phase: 'Merge', label: `retire:#${built.trainPr}` },
+      )
+      return { stopped: stale.why, notes: stale.detail }
+    }
+    if (declared && declared.status === 'read' && !declared.touchesPlugin) {
+      log(`#${built.trainPr} declares devloop plugin version ${trimmed(declared.branchVersion) || '(none)'} against origin/master's ${trimmed(declared.masterVersion) || '(none)'}, and its diff lists no path under plugins/ or .claude-plugin/, so the versions are not compared`)
+    }
+
     const merged = await agent(mergePrompt(built.trainPr, built.trainBranch, included), {
       schema: MERGED, phase: 'Merge', label: `merge:#${built.trainPr}`,
     })
@@ -439,20 +578,8 @@ async function runTrain(only, suffix, depth) {
   // like an open change somebody might read. The pull request is closed rather than left open
   // because it proposes merging a set that has just been proven not to work.
   await agent(
-    `The release train ${built.trainBranch}, pull request #${built.trainPr} on ${SLUG}, failed its
-checks and is being abandoned. Retire it so it does not sit on the remote looking like open work:
-
-  cd ${REPO_PATH}
-  gh pr close ${built.trainPr} --repo ${SLUG} --delete-branch --comment "<one line: failed CI, the changes it carried are going back to the queue and will be tried again separately>"
-  git fetch origin --prune --quiet
-  git branch -r --list 'origin/${built.trainBranch}'
-
-The last command must print NOTHING. If the branch is still listed, say so - a leftover train
-branch is clutter that outlives the run and nobody else removes it.
-
-DO NOT touch the pull requests it carried (${included.join(', ')}). They keep their labels and
-go back in the queue; closing them would throw away work that is probably fine. Only the train
-branch and the train's own pull request are yours to remove.`,
+    retirePrompt(built, included, 'failed its checks and is being abandoned',
+      'failed CI, the changes it carried are going back to the queue and will be tried again separately'),
     { model: 'haiku', effort: 'low', phase: 'Verify', label: `retire:#${built.trainPr}` },
   )
 
