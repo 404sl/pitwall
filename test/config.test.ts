@@ -193,8 +193,17 @@ test("the scan finds a workspace under either name", () => {
 });
 
 test("the history bounds default until the config moves them", () => {
-  const { home } = withConfig(JSON.stringify({ roots: [], history: { maxSnapshots: 12, maxAgeDays: 3 } }));
-  assert.deepEqual(historyLimits({ env: {}, home }), { maxSnapshots: 12, maxAgeDays: 3 });
+  const { home } = withConfig(
+    JSON.stringify({
+      roots: [],
+      history: { maxSnapshots: 12, maxAgeDays: 3, minIntervalMinutes: 5 },
+    }),
+  );
+  assert.deepEqual(historyLimits({ env: {}, home }), {
+    maxSnapshots: 12,
+    maxAgeDays: 3,
+    minIntervalMinutes: 5,
+  });
   const bare = withConfig(JSON.stringify({ roots: [] }));
   assert.deepEqual(historyLimits({ env: {}, home: bare.home }), DEFAULT_LIMITS);
   assert.deepEqual(historyLimits({ env: {}, home: "/home/nobody" }), DEFAULT_LIMITS);
@@ -207,4 +216,9 @@ test("a bound that a store cannot hold is not passed on as it was written", () =
   assert.deepEqual(historyLimits({ env: {}, home: nonsense.home }), DEFAULT_LIMITS);
   const tiny = withConfig(JSON.stringify({ roots: [], history: { maxSnapshots: 0.5 } }));
   assert.equal(historyLimits({ env: {}, home: tiny.home }).maxSnapshots, 1);
+  const unthrottled = withConfig(JSON.stringify({ roots: [], history: { minIntervalMinutes: 0 } }));
+  assert.equal(
+    historyLimits({ env: {}, home: unthrottled.home }).minIntervalMinutes,
+    DEFAULT_LIMITS.minIntervalMinutes,
+  );
 });

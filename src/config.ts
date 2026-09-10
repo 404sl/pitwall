@@ -45,6 +45,12 @@ function readRoots(path: string): string[] {
   return (roots as string[]).map((root) => resolve(root));
 }
 
+interface HistoryConfig {
+  maxSnapshots?: unknown;
+  maxAgeDays?: unknown;
+  minIntervalMinutes?: unknown;
+}
+
 function bound(value: unknown, fallback: number, whole: boolean): number {
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
     return fallback;
@@ -53,10 +59,10 @@ function bound(value: unknown, fallback: number, whole: boolean): number {
 }
 
 export function historyLimits(options: RootsOptions = {}): HistoryLimits {
-  let configured: { maxSnapshots?: unknown; maxAgeDays?: unknown } = {};
+  let configured: HistoryConfig = {};
   try {
     const parsed = JSON.parse(readFileSync(configPath(options), "utf8")) as {
-      history?: { maxSnapshots?: unknown; maxAgeDays?: unknown } | null;
+      history?: HistoryConfig | null;
     } | null;
     configured = parsed?.history ?? {};
   } catch {
@@ -65,6 +71,11 @@ export function historyLimits(options: RootsOptions = {}): HistoryLimits {
   return {
     maxSnapshots: Math.max(bound(configured.maxSnapshots, DEFAULT_LIMITS.maxSnapshots, true), 1),
     maxAgeDays: bound(configured.maxAgeDays, DEFAULT_LIMITS.maxAgeDays, false),
+    minIntervalMinutes: bound(
+      configured.minIntervalMinutes,
+      DEFAULT_LIMITS.minIntervalMinutes,
+      false,
+    ),
   };
 }
 

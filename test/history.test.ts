@@ -343,7 +343,7 @@ test("a snapshot that could not read a project is not read as everything closing
 
 test("writing past the bound prunes the oldest rows rather than growing", { skip: withoutSqlite }, async () => {
   const { home, env } = place();
-  const limits = { maxSnapshots: 3, maxAgeDays: 30 };
+  const limits = { maxSnapshots: 3, maxAgeDays: 30, minIntervalMinutes: 10 };
   for (const minutes of [50, 40, 30, 20, 10, 0]) {
     await record(home, env, document(at(minutes), []), limits, new Date(at(minutes)));
   }
@@ -357,7 +357,7 @@ test("writing past the bound prunes the oldest rows rather than growing", { skip
 
 test("a bound the store cannot hold is floored rather than refused", { skip: withoutSqlite }, async () => {
   const { home, env } = place();
-  const limits = { maxSnapshots: 2.5, maxAgeDays: 30 };
+  const limits = { maxSnapshots: 2.5, maxAgeDays: 30, minIntervalMinutes: 10 };
   for (const minutes of [30, 20, 10, 0]) {
     await record(home, env, document(at(minutes), []), limits, new Date(at(minutes)));
   }
@@ -370,7 +370,7 @@ test("a bound the store cannot hold is floored rather than refused", { skip: wit
 
 test("a row older than the age bound does not survive the next write", { skip: withoutSqlite }, async () => {
   const { home, env } = place();
-  const limits = { maxSnapshots: DEFAULT_LIMITS.maxSnapshots, maxAgeDays: 30 };
+  const limits = { ...DEFAULT_LIMITS, maxAgeDays: 30 };
   const ancient = at(40 * 24 * 60);
   await record(home, env, document(ancient, []), limits, new Date(ancient));
   await record(home, env, document(at(0), []), limits, NOW);
@@ -378,6 +378,56 @@ test("a row older than the age bound does not survive the next write", { skip: w
   assert.deepEqual(
     rows.map((row) => row.generated_at),
     [at(0)],
+  );
+});
+
+test("watching the board does not outpace the window the metrics are derived from", { skip: withoutSqlite }, async () => {
+  const { home, env } = place();
+  for (const minutes of [120, 119, 118, 60]) {
+    await record(
+      home,
+      env,
+      document(at(minutes), [{ id: "mw-1", status: "in_progress" }]),
+      DEFAULT_LIMITS,
+      new Date(at(minutes)),
+    );
+  }
+  const rows = stored(historyPath({ env, home }));
+  assert.deepEqual(
+    rows.map((row) => row.generated_at),
+    [at(120), at(60)],
+  );
+});
+
+test("the interval runs from the last row written, and a write it skips is not a failure", { skip: withoutSqlite }, async () => {
+  const { home, env } = place();
+  await record(
+    home,
+    env,
+    document(at(120), [{ id: "mw-1", status: "in_progress" }]),
+    DEFAULT_LIMITS,
+    new Date(at(120)),
+  );
+  const skipped = await record(
+    home,
+    env,
+    document(at(90), [{ id: "mw-1", status: "in_progress" }]),
+    DEFAULT_LIMITS,
+    new Date(at(90)),
+  );
+  assert.equal(skipped.error, undefined);
+  assert.equal(skipped.metrics.get("mw")?.landedToday, 0);
+  await record(
+    home,
+    env,
+    document(at(59), [{ id: "mw-1", status: "in_progress" }]),
+    DEFAULT_LIMITS,
+    new Date(at(59)),
+  );
+  const rows = stored(historyPath({ env, home }));
+  assert.deepEqual(
+    rows.map((row) => row.generated_at),
+    [at(120), at(59)],
   );
 });
 
