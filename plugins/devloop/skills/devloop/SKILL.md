@@ -48,7 +48,10 @@ another lane merged during the wait - so they rebased and waited again. One bran
 three times and spent 4h26m shipping 43 minutes of work, and the cost grew with the number
 of lanes. The old merge lock serialised the merge but not the rebase-and-wait in front of it.
 
-**Never pick a slot from memory. Ask `slot.sh`.**
+**Never pick a slot from memory. Ask `slot.sh`.** A dispatch has no number left to pick:
+`config.sh --args <id>` calls `slot.sh` itself, carries the number it reserved into the args, and
+stops the dispatch when it cannot reserve one. Call `slot.sh` by hand to give a lane back, or to
+see who holds what.
 
 ```
 slot=$(bash ${CLAUDE_PLUGIN_ROOT}/skills/devloop/slot.sh <issue-id>)   # reserves it, prints the number
@@ -191,8 +194,8 @@ otherwise - and it is a different guarantee from this one. Do both.
 ## One issue
 
 ```
-# BUILD THE ARGS WITH config.sh. Do not hand-write them.
-args=$(bash ${CLAUDE_PLUGIN_ROOT}/skills/devloop/config.sh --args app-1056 1)
+# BUILD THE ARGS WITH config.sh. Do not hand-write them, and do not pass a slot.
+args=$(bash ${CLAUDE_PLUGIN_ROOT}/skills/devloop/config.sh --args app-1056)
 
 Workflow({ scriptPath: "${CLAUDE_PLUGIN_ROOT}/skills/devloop/task.js",
            args: <the object config.sh printed> })
@@ -205,9 +208,19 @@ no `root`, no `repos`, no `idPrefix`. The lane then has no test command, no repo
 paths and an id prefix that matches nothing, and it fails several minutes in, somewhere
 that reads as a broken ticket rather than a broken dispatch.
 
-`config.sh --args <id> <slot>` exists to build that object and is the only supported way
-to do it. This example used to show the short form, which was correct only for the one
-workspace whose values happen to be task.js's defaults.
+`config.sh --args <id>` exists to build that object and is the only supported way to do
+it. This example used to show the short form, which was correct only for the one workspace
+whose values happen to be task.js's defaults.
+
+**It also reserves the lane, which is why no slot is passed any more.** The number used to be
+the caller's to choose and the reservation a separate step the caller was trusted to remember -
+so the two could disagree, and nothing asked. `--args` now calls `slot.sh <id>`, which records
+the reservation and consults the lane lock in the same step, and passes on the number it got.
+When no lane can be reserved it prints nothing and exits non-zero: a full pool, a locked lane or
+a parked issue stops the dispatch rather than sending a run at a guessed database. A trailing
+number is still accepted for the sake of `queue.sh`, which reserves before it prints, and it is
+CHECKED against the reservation rather than used instead of it - one that disagrees is refused,
+naming both.
 
 **If the Workflow tool refuses `scriptPath` outside the working directory**, copy the
 scripts into the workspace and dispatch from there - `<workspace>/.devloop-run/`, gitignored,
@@ -215,9 +228,10 @@ re-copied at every dispatch so it cannot drift from the skill, and removed at se
 That is a copy of the kind this skill's comments argue against, so keep it mechanical: never
 edit the copy, and never let one survive a session.
 
-Absolute path - the tool does not resolve `~`. `slot` is 1..5 and only sets
-`TEST_ENV_NUMBER` so concurrent site runs do not share a test database; give each running
-workflow a different one. Other args: `maxAttempts` (3), `root`, `worktrees`.
+Absolute path - the tool does not resolve `~`. `slot` is the lane `--args` reserved, and it
+only sets `TEST_ENV_NUMBER` so concurrent site runs do not share a test database; two live
+workflows must never carry the same one, which is what reserving it is for. Other args:
+`maxAttempts` (3), `root`, `worktrees`.
 
 ## When a lane dies
 

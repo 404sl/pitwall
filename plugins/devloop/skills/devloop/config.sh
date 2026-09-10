@@ -12,7 +12,9 @@
 #   config.sh                       print the whole config as JSON
 #   config.sh root                  print one top-level field
 #   config.sh repos.site.test       print a nested field
-#   config.sh --args app-abc1 3      print the args object for a task.js dispatch
+#   config.sh --args app-abc1       reserve a lane through slot.sh and print the args object
+#                                   for a task.js dispatch. An optional third argument is
+#                                   checked against the reservation, never used instead of it.
 #   config.sh --land [repo#n ...]   print the args object for a land.js run, naming the
 #                                   pre-flighted PRs it is allowed to merge
 #   config.sh --check               validate the file and report what is missing
@@ -145,9 +147,23 @@ print(f"  config OK: {len(cfg.get('repos') or {})} repos, idPrefix '{cfg.get('id
 PY
     ;;
   --args)
-    # config.sh --args <issue-id> <slot>  ->  the args object for a task.js dispatch
-    [ $# -ge 3 ] || { echo "usage: config.sh --args <issue-id> <slot>" >&2; exit 2; }
-    python3 - "$CONFIG" "$2" "$3" "$SKILL_DIR" <<'PY'
+    # config.sh --args <issue-id> [slot]  ->  the args object for a task.js dispatch
+    [ $# -ge 2 ] || { echo "usage: config.sh --args <issue-id> [slot]" >&2; exit 2; }
+    SLOT="$(PITWALL_CONFIG="$CONFIG" bash "$SKILL_DIR/slot.sh" "$2")" || {
+      echo "config.sh --args: slot.sh would not reserve a lane for $2 - dispatch stops." >&2
+      exit 1
+    }
+    case "$SLOT" in
+      ''|*[!0-9]*)
+        echo "config.sh --args: slot.sh printed '$SLOT', which is not a lane number - dispatch stops." >&2
+        exit 1 ;;
+    esac
+    if [ $# -ge 3 ] && [ "$3" != "$SLOT" ]; then
+      echo "config.sh --args: $2 holds slot $SLOT, not $3. Re-run without a number; the" >&2
+      echo "                  reservation decides the lane and is not overridden from here." >&2
+      exit 1
+    fi
+    python3 - "$CONFIG" "$2" "$SLOT" "$SKILL_DIR" <<'PY'
 import json, sys
 cfg = json.load(open(sys.argv[1]))
 print(json.dumps({

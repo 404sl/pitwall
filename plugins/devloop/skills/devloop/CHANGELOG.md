@@ -37,6 +37,39 @@ not confirm.
 `--expect` still decides the outcome, so a caller that passes the merge sha gets exactly the
 comparison it got before. Only the directory the deploy runs in has changed.
 
+**Nothing enforced the documented slot reservation, and a sixth collision found it.** The lane a
+run used was chosen by whoever dispatched and passed in as an argument, while reserving it was a
+separate step the caller was trusted to remember. Those two can disagree and nothing asks. A
+cleanup emptied the registry, every lane dispatched for the following hour ran without a
+reservation - two Rails lanes among them completed and merged - and nobody noticed. What
+prevented a collision was the lane lock, exactly as `slot.sh`'s own header says: *"THIS FILE IS
+BOOKKEEPING, NOT SAFETY."* The pipeline ran on the safety net with the bookkeeping gone, and it
+surfaced only because one lane checked its brief against the registry, found its slot empty, and
+refused to start rather than falling back to a number that looked free.
+
+**Documentation was not the lever, and the file said so itself.** The rule is in `SKILL.md` in
+bold, three lines above the command that would have prevented it, and the same passage already
+recorded five earlier collisions from picking numbers by hand - one of them 153k tokens spent
+discovering a fact `slot.sh --list` prints instantly. A sixth happened anyway.
+
+**So `config.sh --args` allocates the lane instead of accepting one.** It takes `<issue-id>`,
+calls `slot.sh <id>` - which records the reservation and consults the lane lock in one step, and
+hands back the same number if the id already holds one - and emits what it got. There is no
+number left to choose. Where a lane cannot be reserved, `--args` prints nothing and exits
+non-zero: a full pool, a locked lane, a parked issue or a config it cannot resolve stops the
+dispatch, which is what a full pool should always have meant.
+
+**A trailing number is still accepted, and is now CHECKED rather than used.** `queue.sh` writes
+its registry entry before it prints `<id> <slot>`, so `slot.sh` hands that same number back and
+the two-argument form keeps working unchanged. A number that disagrees is refused with both
+values named, and the reservation is left standing - releasing it would also drop the lane lock,
+which may belong to a run that is still live.
+
+The CLI suite drives `--args` against a throwaway registry: it asserts the reported lane is the
+one recorded, that a second dispatch of the same issue gets that lane rather than another, that a
+locked lane is never handed out, and that a disagreeing number and a full pool both stop with
+nothing on stdout.
+
 ## 0.1.13
 
 **The lander leaked the merge lock on the path that runs every time: the one where nothing went
