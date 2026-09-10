@@ -842,7 +842,19 @@ test("a call is a sentence about what to do, one per classification and verdict"
   });
   assert.equal(callFor("parked:tooling", "unchecked", false).text, "Nothing for you — it is parked: tooling.");
   assert.equal(callFor("in-flight", "unchecked", false).text, strings.issue.call.inFlight);
-  assert.equal(callFor("landing", "unchecked", false).text, strings.issue.call.landing);
+  assert.equal(callFor("landing", "unchecked", false).text, strings.issue.call.landing.standing);
+  assert.deepEqual(callFor("landing", "still-blocking", false), {
+    text: strings.issue.call.landing.standing,
+    tone: "waiting",
+  });
+  assert.deepEqual(callFor("landing", "likely-stale", false), {
+    text: strings.issue.call.landing.stale,
+    tone: "yours",
+  });
+  assert.deepEqual(callFor("landing", "resolved", false), {
+    text: strings.issue.call.landing.stale,
+    tone: "yours",
+  });
   assert.equal(callFor("ready", "unchecked", false).text, strings.issue.call.ready);
   assert.equal(callFor("blocked", "unchecked", false).text, strings.issue.call.blocked);
   assert.equal(callFor(undefined, "unchecked", true).text, strings.issue.call.closed);
@@ -852,6 +864,25 @@ test("a call is a sentence about what to do, one per classification and verdict"
     assert.ok(call.text.length > 0, `${classification} has no call`);
     assert.equal(call.tone, isYours(classification) ? "yours" : "waiting", classification);
   }
+});
+
+test("a landing issue whose pull request merged asks the reader to close it", () => {
+  const markup = pageMarkup(
+    aPreview({
+      classification: "landing",
+      staleness: {
+        verdict: "likely-stale",
+        checked: true,
+        checkedAt: "2026-09-10T09:40:00Z",
+        evidence: ["the pull request it waits on has merged: #91"],
+        unresolved: 0,
+      },
+    }),
+  );
+  assert.match(markup, /class="pw-call pw-call--yours">Its pull request merged\./);
+  assert.doesNotMatch(markup, /Nothing for you/, "the call no longer disagrees with the staleness band");
+  assert.match(markup, /pw-reason__token">landing</, "the classification is unchanged");
+  assert.doesNotMatch(markup, /pw-call__ask/, "a landing issue still quotes no note");
 });
 
 test("a blocked sentence agrees in number with the blockers it names", () => {

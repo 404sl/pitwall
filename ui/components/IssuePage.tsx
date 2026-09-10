@@ -184,7 +184,10 @@ export function callFor(
     case "in-flight":
       return { text: strings.issue.call.inFlight, tone: "waiting" };
     case "landing":
-      return { text: strings.issue.call.landing, tone: "waiting" };
+      return {
+        text: expired ? strings.issue.call.landing.stale : strings.issue.call.landing.standing,
+        tone: expired ? "yours" : "waiting",
+      };
     case "ready":
       return { text: strings.issue.call.ready, tone: "waiting" };
     case "blocked":
