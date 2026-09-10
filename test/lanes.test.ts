@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Lane } from "@404sl/pitwall-schema";
-import { readWorkspace } from "../src/autofix.ts";
+import { readWorkspace, WORKSPACE_FILE } from "../src/autofix.ts";
 import {
   handoffArgs,
   readLanes,
@@ -255,6 +255,48 @@ test("a gh that cannot be asked reports working with an error naming the checkou
   assert.equal(errors.length, 1);
   assert.equal(errors[0]?.source, checkout);
   assert.match(errors[0]?.message ?? "", /not authenticated/);
+});
+
+test("the handoff read runs gh under the env it was given, not the one it inherited", () => {
+  const root = lockRoot();
+  claim(root, 1, "pw-narrowed");
+  const checkout = repo(root);
+  const nowhere = mkdtempSync(join(tmpdir(), "pitwall-nogh-"));
+
+  const { lanes, errors } = withStub("gh", ghListing({ headRefName: "autofix/pw-narrowed" }), () =>
+    readLanes(PREFIX, { lockRoot: root, repos: [checkout], env: { PATH: nowhere } }),
+  );
+
+  assert.equal(lanes[0]?.state, "working");
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0]?.source, checkout);
+  assert.match(errors[0]?.message ?? "", /ENOENT/);
+});
+
+test("a workspace passes its env down to the handoff read", () => {
+  const root = lockRoot();
+  claim(root, 1, "pw-narrowed");
+  const workspace = mkdtempSync(join(tmpdir(), "pitwall-workspace-"));
+  const checkout = repo(workspace);
+  writeFileSync(
+    join(workspace, WORKSPACE_FILE),
+    JSON.stringify({
+      idPrefix: "pw",
+      lockPrefix: PREFIX,
+      lanes: 1,
+      repos: { site: { path: "checkout" } },
+    }),
+  );
+  const nowhere = mkdtempSync(join(tmpdir(), "pitwall-nogh-"));
+
+  const project = withStub("gh", ghListing({ headRefName: "autofix/pw-narrowed" }), () =>
+    readWorkspace(workspace, { lockRoot: root, env: { PATH: nowhere } }),
+  );
+
+  assert.equal(project.lanes[0]?.state, "working");
+  assert.equal(project.errors.length, 1);
+  assert.equal(project.errors[0]?.source, checkout);
+  assert.match(project.errors[0]?.message ?? "", /ENOENT/);
 });
 
 test("handoff asks gh for open pull requests carrying lane-verified", () => {

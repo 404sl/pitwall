@@ -26,6 +26,7 @@ export function workspaceFile(dir: string): WorkspaceFile | undefined {
 
 export interface WorkspaceOptions {
   lockRoot?: string;
+  env?: Record<string, string | undefined>;
 }
 
 function asRecord(value: unknown, what: string): Record<string, unknown> {
@@ -105,6 +106,7 @@ export function readWorkspace(root: string, options: WorkspaceOptions = {}): Pro
         ? { lanes: [], errors: [] }
         : readLanes(lockPrefix, {
             lockRoot: options.lockRoot,
+            env: options.env,
             lanes: laneCountOf(workspace),
             repos: repos.map((repo) => repo.path),
           });

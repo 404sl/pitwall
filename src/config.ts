@@ -140,7 +140,9 @@ export function collectProjects(options: RootsOptions = {}): {
 } {
   const roots = resolveRoots(options);
   return {
-    projects: roots.roots.map((root) => readWorkspace(root, { lockRoot: options.lockRoot })),
+    projects: roots.roots.map((root) =>
+      readWorkspace(root, { lockRoot: options.lockRoot, env: options.env }),
+    ),
     roots,
   };
 }
