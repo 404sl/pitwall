@@ -42,13 +42,29 @@ front of it.
   of lanes after as many non-handoff endings as it has lanes. `slot.sh --gc` stays a suggestion
   rather than becoming automatic: it runs against slots whose runs may still be alive, and it freed
   two live ones that way on 2026-08-24.
-- **Every run's result says what happened to its lane and its slot**, as the landers report the merge
-  lock. `not_mine` and `already_gone` are outcomes rather than failures to clean up - a handoff that
-  dropped the lock itself reads `already_gone` - and only a missing answer or a lock still standing
-  is reported as a leak, naming the path to read before anything is removed by hand.
+- **Nothing drops a lane lock without taking its owner file with it, and the owner file goes first.**
+  That file is now the proof of ownership, so a lock dropped while a stale owner naming a finished run
+  stays beside it is worse than the leak this fixes: between the drop and the run's own release, a
+  second run can take the lane, and a release proving itself against the file left behind would remove
+  a live lane's lock. `lane-handoff.sh` dropped the lock and left the file, which was harmless while
+  nothing read it; `slot.sh --release` and `kill-lane.sh` did the same. With the file removed first the
+  same window reads an empty owner, which is `not_mine`, so nothing is removed. The removal is `rmdir`
+  rather than `rm -rf` and the path must be shaped like a lane lock: a lane lock is a bare directory,
+  so anything inside it is the fault the `STILL_HELD` branch reports, and a mis-derived path is the one
+  mistake here that costs more than a leak.
+- **A leak is named in the log whatever way the run ended, and a run past triage carries the lane and
+  the slot in its result**, as the landers report the merge lock. `not_mine` and `already_gone` are
+  outcomes rather than failures to clean up - a handoff that dropped the lock itself reads
+  `already_gone` - and only a missing answer or a lock still standing is reported, naming the path to
+  read before anything is removed by hand. The three triage bounces - a dead triage agent, a split, a
+  `needs_feedback` that never reached the work loop - build their result object before the `finally`
+  runs, and JavaScript evaluates a `return` expression before the `finally`, so the answer cannot be
+  attached to it afterwards. Those runs still release, and their leak is in the log; the result field
+  is for runs that reach the work loop. Tests pin both halves, because the shipped sentence claimed
+  both and only one held.
 
-`slot.sh --release` is unchanged and is now for the case it is actually safe for: a run that never
-reported at all. `rework.js` takes the same lock on the same terms and releases it only at its own
+`slot.sh --release` keeps its behaviour and is now for the case it is actually safe for: a run that
+never reported at all. It takes the owner file with the lock like everything else that drops one. `rework.js` takes the same lock on the same terms and releases it only at its own
 handoff; that is the same defect in a second script and is filed separately rather than folded in
 here.
 
@@ -57,7 +73,11 @@ owner is removed along with its owner file and its slot, a foreign owner and a m
 not, an absent lock reads `already_gone` and takes the owner file a handoff left behind with it, an
 empty or quote-carrying id removes nothing, and a regular file at the lock path is a fault - and
 `task.js` as a function body with a stubbed agent, where a `needs_feedback`, a split, a throw and a
-verified handoff must all reach the release step. All fourteen fail before this change.
+verified handoff must all reach the release step, a split's leak reaches the log, and no script that
+drops a lane lock leaves its owner file behind. All nineteen fail before this change: nine drive
+`release-lane.sh`, which does not exist before it, one reads every script that drops a lane lock and
+names the line, and nine drive `task.js` - eight because nothing there reaches a release step at all,
+and one because the briefs take the lock without recording who holds it.
 
 ## 0.1.20
 

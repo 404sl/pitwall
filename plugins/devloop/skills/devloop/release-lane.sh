@@ -18,6 +18,16 @@ if [ -z "$lane" ]; then
   exit 2
 fi
 
+case "$lane" in
+  *-lane-*.lock) ;;
+  *)
+    echo "REFUSED" >&2
+    echo "release-lane.sh: --lane is ${lane}, which is not a <prefix>-lane-<n>.lock path, so it is not a" >&2
+    echo "                 lane lock and nothing was removed. A mis-derived path is the one mistake here" >&2
+    echo "                 that costs more than a leak." >&2
+    exit 2 ;;
+esac
+
 if [ -z "$owner" ]; then
   echo "REFUSED" >&2
   echo "release-lane.sh: --owner is empty, so ownership of ${lane} cannot be proved and nothing was removed." >&2
@@ -53,12 +63,13 @@ elif [ "$held" != "$owner" ]; then
   echo "  ${ownerfile} records [${held}] and this run is [${owner}], so nothing was removed. An empty"
   echo "  reading means no owner file, which is how a lock looks between another lane's mkdir and the"
   echo "  line that records it. That is an outcome, not a failure: whatever holds it gives it back itself."
-elif rm -f "$ownerfile" && rm -rf "$lane"; then
+elif rm -f "$ownerfile" && rmdir "$lane"; then
   echo "lane: RELEASED"
   echo "  ${lane} recorded ${owner} and has been removed."
 else
   echo "lane: STILL_HELD"
-  echo "  ${lane} recorded ${owner} and could not be removed. It is still standing."
+  echo "  ${lane} recorded ${owner} and could not be removed - rmdir refuses a directory that is not"
+  echo "  empty, and a lane lock is meant to be bare. Read what is inside it before clearing it by hand."
   status=1
 fi
 

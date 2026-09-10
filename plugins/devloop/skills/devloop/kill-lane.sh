@@ -212,7 +212,7 @@ fi
 lock="/tmp/${PFX}-lane-${LANE}.lock"
 if [ -d "$lock" ]; then
   echo "lane lock: $lock (held since $(stat -f %Sm -t '%H:%M' "$lock" 2>/dev/null))"
-  run "rm -f '$lock'/* 2>/dev/null; rmdir '$lock'"
+  run "rm -f '${lock%.lock}.owner'; rm -f '$lock'/* 2>/dev/null; rmdir '$lock'"
   if [ -z "$DRY" ]; then
     [ -d "$lock" ] && echo "  STILL THERE - clear it by hand, it blocks every future run in this lane" || echo "  released"
   fi

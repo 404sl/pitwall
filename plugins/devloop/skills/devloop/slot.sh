@@ -100,7 +100,7 @@ case "$1" in
       if [ -f "$SLOTDIR/$n" ] && [ "$(cat "$SLOTDIR/$n")" = "$2" ]; then
         rm -f "$SLOTDIR/$n"
         lock="/tmp/${PFX}-lane-$((n + 1)).lock"
-        if [ -d "$lock" ] && rmdir "$lock" 2>/dev/null; then
+        if [ -d "$lock" ] && rm -f "${lock%.lock}.owner" && rmdir "$lock" 2>/dev/null; then
           echo "released slot $n and lane $((n + 1))"
         else
           echo "released slot $n"

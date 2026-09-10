@@ -120,6 +120,52 @@ test("a regular file at the lane lock path is reported as a fault, not as a lane
   assert.equal(readFileSync(box.lane, "utf8"), "review zz-aaa1 4821\n", "the file was removed");
 });
 
+test("a lane lock with anything inside it is a fault, not a lane to remove", () => {
+  const box = held("zz-aaa1");
+  writeFileSync(join(box.lane, "holder"), "review zz-aaa1 4821\n");
+
+  const ran = release(["--lane", box.lane, "--slot", box.slot, "--owner", "zz-aaa1"]);
+
+  assert.equal(ran.code, 1);
+  assert.equal(ran.lane, "STILL_HELD");
+  assert.equal(existsSync(box.lane), true, "a lock that is not a bare directory was removed anyway");
+  assert.equal(existsSync(join(box.lane, "holder")), true, "the contents of the lock were removed");
+});
+
+test("a path that is not shaped like a lane lock is refused before anything is removed", () => {
+  const box = held("zz-aaa1");
+  const notALock = box.lane.replace(/pw-lane-4\.lock$/, "pw-slots");
+
+  const ran = release(["--lane", notALock, "--slot", box.slot, "--owner", "zz-aaa1"]);
+
+  assert.equal(ran.code, 2);
+  assert.equal(ran.out, "", "a refusal reported an outcome on stdout");
+  assert.match(ran.err, /REFUSED/);
+  assert.equal(existsSync(notALock), true, "a path that is not a lane lock was removed");
+  assert.equal(existsSync(box.slot), true, "the slot was released on a refused path");
+});
+
+test("nothing that drops a lane lock leaves its owner file behind", () => {
+  for (const name of ["release-lane.sh", "lane-handoff.sh", "slot.sh", "kill-lane.sh"]) {
+    const lines = readFileSync(join(SKILL, name), "utf8").split("\n");
+    const drops = lines
+      .map((line, i) => ({ line, at: i + 1 }))
+      .filter(({ line }) => /\brmdir\b/.test(line))
+      .filter(({ line }) => !/^\s*(#|echo)/.test(line));
+    assert.ok(drops.length > 0, `${name} no longer drops a lane lock - take it off this list`);
+    for (const { line, at } of drops) {
+      assert.match(
+        lines.slice(Math.max(0, at - 3), at).join("\n"),
+        /rm -f [^\n]*(\.owner|ownerfile)/,
+        `${name}:${at} drops a lane lock without removing the owner file beside it first. That file ` +
+          "is the proof of ownership the release reads, so a second run can take the lane while a file " +
+          "naming the finished run still stands beside it - and a release proving itself against that " +
+          `file removes a live lane's lock:\n${line}`,
+      );
+    }
+  }
+});
+
 test("a lane cannot be released without being told which one", () => {
   const ran = release(["--owner", "zz-aaa1"]);
 
@@ -188,20 +234,20 @@ test("a slot that arrives as a string still names the lane the brief told the ru
   assert.match(prompt, /--slot \/tmp\/pw-slots\/3 /);
 });
 
+const TRIAGE_SPLIT = {
+  ...TRIAGE_OK,
+  eligible: false,
+  splittable: true,
+  reason: "two repositories",
+  splitPlan: [
+    { title: "the contract", repo: "integration", scope: "a field", autonomous: true },
+    { title: "the consumer", repo: "site", scope: "reads it", autonomous: true },
+  ],
+};
+
 test("a run that ends as a split gives its lane back, before the work loop ever starts", async () => {
   const { calls, done } = runScript("task.js", TASK_ARGS, (call, n) => {
-    if (n === 1) {
-      return {
-        ...TRIAGE_OK,
-        eligible: false,
-        splittable: true,
-        reason: "two repositories",
-        splitPlan: [
-          { title: "the contract", repo: "integration", scope: "a field", autonomous: true },
-          { title: "the consumer", repo: "site", scope: "reads it", autonomous: true },
-        ],
-      };
-    }
+    if (n === 1) return TRIAGE_SPLIT;
     if (n === 2) return "created zz-aaa1.1 and zz-aaa1.2";
     return { lane: "released", slot: "released" };
   });
@@ -209,6 +255,30 @@ test("a run that ends as a split gives its lane back, before the work loop ever 
   const result = await done;
   releaseCall(calls);
   assert.equal(result["outcome"], "split");
+  assert.equal(
+    result["lane"],
+    undefined,
+    "a split returns before the release step answers - JavaScript evaluates the return expression " +
+      "first - so the result cannot carry the outcome and the log is where the leak is reported. If " +
+      "this field now exists, say so in SKILL.md and the changelog, which claim only the log for a split",
+  );
+  assert.equal(result["slot"], undefined);
+});
+
+test("a split whose release answers nothing still reports the leak in the log", async () => {
+  const { logs, done } = runScript("task.js", TASK_ARGS, (call, n) => {
+    if (n === 1) return TRIAGE_SPLIT;
+    if (n === 2) return "created zz-aaa1.1 and zz-aaa1.2";
+    return null;
+  });
+
+  const result = await done;
+  assert.equal(result["outcome"], "split");
+  assert.ok(
+    logs.some((line) => line.includes("LEAKED") && line.includes(LANE_LOCK) && line.includes(SLOT_FILE)),
+    "a split is the outcome the lane lock leaked from most often, and it is the one outcome whose " +
+      `result cannot carry the answer, so the log has to: ${logs.join(" | ")}`,
+  );
 });
 
 test("a step that throws mid-run does not take the lane with it", async () => {
