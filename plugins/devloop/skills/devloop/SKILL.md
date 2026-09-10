@@ -59,16 +59,22 @@ bash ${CLAUDE_PLUGIN_ROOT}/skills/devloop/slot.sh --release <issue-id> # a run t
 bash ${CLAUDE_PLUGIN_ROOT}/skills/devloop/slot.sh --list               # who holds what
 ```
 
-**A run gives its own lane and slot back, whatever way it ends.** `task.js` releases them in a
-`finally`, so a split, a `needs_feedback`, a `blocked`, a handoff that failed and an exception all
-go through it, and `release-lane.sh` proves ownership from the owner file beside the lock and the
-id in the slot file before removing anything. `--release` above is for a run that never reported at
+**A run gives its own lane and slot back, whatever way it ends.** `task.js` and `rework.js` release
+them in a `finally`, so a split, a `needs_feedback`, a `blocked`, a `red`, a handoff that failed and
+an exception all go through it, and `release-lane.sh` proves ownership from the owner file beside
+the lock and the id in the slot file before removing anything. `--release` above is for a run that never reported at
 all - killed, crashed, or a supervisor that lost its context. A lane or a slot that was not given
 back is named in the run's log whatever way the run ended, and a run that got past triage carries
 the outcome for both in its result as well - so a leak arrives in the answer rather than in
 somebody's memory. A run that bounced at triage - a dead triage agent, a split, a `needs_feedback` -
 has built its result before the release step answers, so for those three the log is the only place
-it appears.
+it appears. Every `rework.js` ending but an exception carries both answers, because the endings that
+used to return early set a result instead.
+
+A rework dispatched without a slot gives only the lane back. `config.sh --args` always reserves one,
+so that is the hand-built args object the dispatch documents rather than anything the pipeline
+produces - and slot 1, which the script falls back to for `TEST_ENV_NUMBER`, is whichever run
+actually reserved it. Its reservation is not this run's to remove.
 
 The slot number IS the test database - task.js derives `TEST_ENV_NUMBER` from it - so two lanes
 on one slot share a database. `slot.sh` checks the lane lock before handing a number out, which
@@ -433,7 +439,8 @@ Workflow({ scriptPath: <script>,
 
 Two agents, no design and no review: merge master in keeping BOTH sides of every conflict, push
 without force, wait for CI on the new head, re-apply `lane-verified`. It takes a lane the same way
-`task.js` does, so give it a free slot. It strips the label while it works, because a
+`task.js` does, so give it a free slot, and it gives the lane back the same way - in a `finally`, so
+a `red`, a `blocked` and an exception all go through it rather than only the handoff. It strips the label while it works, because a
 `lane-verified` branch that cannot merge is a lie the lander keeps acting on.
 
 Find the dropped ones in the train's own result - `stranded` - or on the pull requests, which each

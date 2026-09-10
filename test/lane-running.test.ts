@@ -176,6 +176,21 @@ test("a rework lane labelled with ANOTHER id belongs to that issue, not to this 
   assert.match(out, /1 lane\(s\) in flight belong to other issues/);
 });
 
+test("a rework that has reached its release step still belongs to the id its labels carry", () => {
+  const space = workspace([
+    {
+      task: "w111",
+      run: "wf_rw",
+      script: "rework.js",
+      labels: ["resolve:pitwall-AAA#100", "handoff:pitwall-AAA#100", "release:pitwall-AAA#100"],
+    },
+  ]);
+  const { status, out } = ask(space, "pitwall-90b");
+  assert.equal(status, 1, out);
+  assert.match(out, /^NOT-RUNNING/);
+  assert.match(out, /1 lane\(s\) in flight belong to other issues/);
+});
+
 test("a retried phase numbered after the id is still this lane", () => {
   const space = workspace([{ task: "w111", run: "wf_aaa", labels: ["fix:pitwall-90b#2"] }]);
   const { status, out } = ask(space, "pitwall-90b");

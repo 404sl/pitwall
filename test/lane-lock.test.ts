@@ -340,15 +340,158 @@ test("the release step is one command and is not asked to look at the lock again
 });
 
 test("every brief that takes a lane lock records the owner in the same command", () => {
-  const source = readFileSync(join(SKILL, "task.js"), "utf8");
-  const offenders = source
-    .split("\n")
-    .filter((line) => line.includes("mkdir /tmp/") && line.includes("-lane-"))
-    .filter((line) => !line.includes(".owner"));
-  assert.deepEqual(
-    offenders,
-    [],
-    "a brief takes the lane lock without recording who holds it, so the release at the end of the " +
-      `run cannot prove the lock is that run's own and the lane leaks:\n${offenders.join("\n")}`,
+  for (const file of ["task.js", "rework.js"]) {
+    const source = readFileSync(join(SKILL, file), "utf8");
+    const offenders = source
+      .split("\n")
+      .filter((line) => /mkdir (\/tmp\/\S*-lane-|\$\{LANE_LOCK\})/.test(line))
+      .filter((line) => !line.includes(".owner") && !line.includes("OWNER_FILE"));
+    assert.deepEqual(
+      offenders,
+      [],
+      `${file} takes the lane lock without recording who holds it, so the release at the end of ` +
+        `the run cannot prove the lock is that run's own and the lane leaks:\n${offenders.join("\n")}`,
+    );
+  }
+});
+
+const REWORK_ARGS = {
+  id: "zz-aaa1",
+  pr: 739,
+  repo: "site",
+  slot: 3,
+  root: "/root",
+  skillDir: "/skill",
+  lockPrefix: "pw",
+  repos: { site: { slug: "acme/site", path: "repo", test: "npm test" } },
+};
+
+const RESOLVED = { status: "resolved", branch: "devloop/zz-aaa1", oldHead: "aaaaaaa", newHead: "bbbbbbb", files: ["db/schema.rb"] };
+
+function reworkRelease(calls: Call[]): Call {
+  const found = calls.filter((c) => c.label === "release:zz-aaa1#739");
+  const only = found[0];
+  assert.ok(
+    only,
+    `the lane was never given back. Steps seen: ${calls.map((c) => c.label || "?").join(", ")}`,
+  );
+  assert.equal(found.length, 1, "the lane was released more than once");
+  return only;
+}
+
+test("a rework whose pull request comes back red gives its lane and its slot back", async () => {
+  const { calls, done } = runScript("rework.js", REWORK_ARGS, (call, n) => {
+    if (n === 1) return RESOLVED;
+    if (n === 2) return { status: "red", ciConclusion: "failure", notes: "two specs failed" };
+    return { lane: "released", slot: "released", notes: "lane: RELEASED" };
+  });
+
+  const result = await done;
+  const prompt = reworkRelease(calls).prompt;
+  assert.match(prompt, /release-lane\.sh --lane \/tmp\/pw-lane-4\.lock --slot \/tmp\/pw-slots\/3 --owner 'zz-aaa1'/);
+  assert.equal(result["outcome"], "red");
+  assert.equal(result["lane"], "released");
+  assert.equal(result["slot"], "released");
+});
+
+test("a rework blocked at the merge gives the lane back without running the handoff", async () => {
+  const { calls, done } = runScript("rework.js", REWORK_ARGS, (call, n) => {
+    if (n === 1) return { status: "blocked", notes: "the push was refused" };
+    return { lane: "released", slot: "released" };
+  });
+
+  const result = await done;
+  reworkRelease(calls);
+  assert.equal(result["outcome"], "blocked");
+  assert.equal(result["lane"], "released");
+  assert.equal(
+    calls.some((c) => c.label === "handoff:zz-aaa1#739"),
+    false,
+    "a blocked merge went on to hand off anyway",
+  );
+});
+
+test("a rework whose step throws does not take the lane with it", async () => {
+  const { calls, done } = runScript("rework.js", REWORK_ARGS, (call, n) => {
+    if (n === 1) throw new Error("the resolve agent died mid-merge");
+    return { lane: "released", slot: "released" };
+  });
+
+  await assert.rejects(done, /died mid-merge/);
+  reworkRelease(calls);
+});
+
+test("a rework dispatched with no slot asks for no slot back and says so", async () => {
+  const args: Record<string, unknown> = { ...REWORK_ARGS };
+  delete args["slot"];
+  const { calls, done } = runScript("rework.js", args, (call, n) => {
+    if (n === 1) return RESOLVED;
+    if (n === 2) return { status: "verified", ciConclusion: "success", notes: "labelled" };
+    return { lane: "already_gone" };
+  });
+
+  const result = await done;
+  const release = reworkRelease(calls);
+  assert.equal(
+    /--slot/.test(release.prompt),
+    false,
+    "a run given no slot was told to give back slot 1, which belongs to whichever run reserved it",
+  );
+  assert.match(release.prompt, /--lane \/tmp\/pw-lane-2\.lock --owner 'zz-aaa1'/);
+  assert.deepEqual((release.schema as { required: string[] }).required, ["lane"]);
+  assert.equal(result["lane"], "already_gone");
+  assert.match(String(result["slot"]), /^not_reserved/);
+});
+
+test("a rework release step that answers nothing is reported as a leak naming what to read", async () => {
+  const { logs, done } = runScript("rework.js", REWORK_ARGS, (call, n) => {
+    if (n === 1) return RESOLVED;
+    if (n === 2) return { status: "red", ciConclusion: "failure" };
+    return null;
+  });
+
+  const result = await done;
+  assert.match(String(result["lane"]), /^LEAKED/);
+  assert.match(String(result["lane"]), new RegExp(LANE_LOCK.replace(/[/.]/g, "\\$&")));
+  assert.ok(
+    logs.some((line) => line.includes("LEAKED") && line.includes(LANE_LOCK) && line.includes(SLOT_FILE)),
+    `a leaked lane was not reported in the log: ${logs.join(" | ")}`,
+  );
+});
+
+test("a rework's release step is one command and carries no backtick", async () => {
+  const { calls, done } = runScript("rework.js", REWORK_ARGS, (call, n) => {
+    if (n === 1) return RESOLVED;
+    if (n === 2) return { status: "verified", ciConclusion: "success" };
+    return { lane: "already_gone", slot: "released" };
+  });
+
+  await done;
+  const prompt = reworkRelease(calls).prompt;
+  assert.equal(prompt.includes("`"), false, "a backtick in the prompt closes its template literal early");
+  assert.equal(
+    calls[0]?.prompt.includes("`"),
+    false,
+    "a backtick in the brief that takes the lane lock closes its template literal early - the file " +
+      "stays valid JavaScript and becomes a different program, so node --check and CI both pass",
+  );
+  assert.equal((prompt.match(/release-lane\.sh/g) || []).length, 1, "the release command is written more than once");
+  assert.equal(/\brmdir\b|\brm -/.test(prompt), false, "the release step is told to remove something by hand");
+});
+
+test("a rework given a slot as a string releases the lane its own brief claimed", async () => {
+  const { calls, done } = runScript("rework.js", { ...REWORK_ARGS, slot: "3" }, (call, n) => {
+    if (n === 1) return { status: "blocked", notes: "the push was refused" };
+    return { lane: "released", slot: "released" };
+  });
+
+  await done;
+  const claimed = calls[0]?.prompt.match(/mkdir (\S+\.lock)/);
+  assert.ok(claimed, "the resolve brief no longer tells the lane which lock to take");
+  assert.match(
+    reworkRelease(calls).prompt,
+    new RegExp(`--lane ${claimed[1]?.replace(/[/.]/g, "\\$&")} `),
+    "the release names a different lane from the one the brief told the run to claim, so the lock " +
+      "it actually holds is left standing and reads already_gone",
   );
 });
