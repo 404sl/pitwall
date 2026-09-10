@@ -21,6 +21,8 @@ export type RunningState = "working" | "awaiting-lander" | "stranded";
 export type ProblemScope = "run" | "console" | "project";
 
 export const REFRESH_SOURCE = "pitwall serve: re-collection";
+export const PARTIAL_SOURCE = "pitwall snapshot: partial collection";
+export const KEPT_SOURCE = "pitwall snapshot: kept from the last readable collection";
 
 export interface NeedsYouRow {
   id: string;
@@ -254,8 +256,12 @@ function claimedBy(project: Project): Set<string> {
   );
 }
 
+function carriesKept(project: Project): boolean {
+  return errorsOf(project).some((error) => error.source === KEPT_SOURCE);
+}
+
 function runningRows(projects: Project[], generatedAt: string): RunningRow[] {
-  const groups = projects.map((project) => {
+  const groups = projects.filter((project) => !carriesKept(project)).map((project) => {
     const claimed = claimedBy(project);
     const rows = RUNNING_ORDER.map((state) => {
       const unclaimed = issuesOf(project).filter(
@@ -390,7 +396,11 @@ function problemRows(snapshot: Snapshot): ProblemRow[] {
 }
 
 export function refreshFailure(snapshot: Snapshot): CollectionError | undefined {
-  return errorsOf(snapshot).find((error) => error.source === REFRESH_SOURCE);
+  const errors = errorsOf(snapshot);
+  return (
+    errors.find((error) => error.source === REFRESH_SOURCE) ??
+    errors.find((error) => error.source === PARTIAL_SOURCE)
+  );
 }
 
 export const ISSUE_TYPES = ["bug", "feature", "task", "chore", "epic", "decision"];
