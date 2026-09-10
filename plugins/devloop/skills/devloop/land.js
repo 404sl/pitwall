@@ -1390,7 +1390,7 @@ phase('Survey')
 for (const name of DEPLOYS) {
   const { commands, unconfirmable, why } = readBacks(name)
   if (!unconfirmable) continue
-  log(`BEFORE ANYTHING MERGES - ${why}. ${commands.length ? 'An environment nobody can ask closes' : `Anything landing in ${name} closes`} on whatever the deploy step says, with no revision this lander read back.`)
+  log(`BEFORE ANYTHING MERGES - ${why}. ${commands.length ? 'An environment nobody can ask rests' : `Anything landing in ${name} rests`} on whatever the deploy step says, with no revision this lander read back - it closes on that word unless a revision the step itself names is not the sha that merged, and then nothing closes.`)
 }
 
 // Taken before anything is surveyed and given back in the finally below, whatever happened.

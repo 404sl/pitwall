@@ -1141,6 +1141,36 @@ test("a report naming wrong revisions for every environment is not believed beca
   assert.match(said, new RegExp(SHA.slice(0, 12)), "the log does not say what merged");
 });
 
+test("the gap named before anything merges does not promise a close the report can still withdraw", async () => {
+  const { calls, logs, done } = landOnce({
+    args: NO_VERIFY_TWO_ENV,
+    deploy: {
+      status: "deployed",
+      hosts: [...hosts(SHA, "docs", "staging"), ...hosts(SHA, "docs", "production")],
+      notes: "both live",
+    },
+    check: null,
+    close: { status: "closed", closed: ["pitwall-7b1"] },
+  });
+  await done;
+
+  const warned = logs.find((l) => l.startsWith("BEFORE ANYTHING MERGES"));
+  assert.ok(warned, `the configuration gap was not named before anything merged. Logged:\n${logs.join("\n")}`);
+  assert.match(
+    warned,
+    /unless/,
+    "this is the one line an upgrading reader sees on the first run, and it says a repository with no verify closes " +
+      "on whatever the deploy step says, full stop. It no longer does: a revision the step itself names that is not " +
+      `the sha that merged holds the run, with no host read anywhere. Logged: ${warned}`,
+  );
+  assert.match(
+    warned,
+    /nothing closes/,
+    `the line does not say what happens when the step's own revisions disagree with what merged. Logged: ${warned}`,
+  );
+  assert.ok(calls.length > 0);
+});
+
 test("a wrong revision reported for the repository nobody can read is not covered by a sibling that confirms", async () => {
   const { calls, logs, done } = landOnce({
     args: HALF_CONFIGURED,
