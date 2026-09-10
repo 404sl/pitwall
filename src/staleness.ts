@@ -109,7 +109,7 @@ export function isAssessable(classification: Classification): boolean {
   return scopeOf(classification) !== undefined;
 }
 
-const STAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z \S+$/;
+const STAMP = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z) \S+$/;
 
 function withoutStampLines(text: string): string {
   return text
@@ -140,14 +140,18 @@ export function noteBlocks(notes: string): string[] {
     .filter((paragraph) => paragraph !== "");
 }
 
-function withoutStamps(block: string): string {
+export function noteSaid(block: string): { said: string; at?: string } {
   const said = withoutStampLines(block);
-  return said === "" ? block : said;
+  if (said === "") {
+    return { said: block };
+  }
+  const at = STAMP.exec(block.split("\n")[0]?.trim() ?? "")?.[1];
+  return at === undefined ? { said } : { said, at };
 }
 
 function lastNote(notes: string): string {
   const paragraphs = noteBlocks(notes);
-  return withoutStamps(paragraphs[paragraphs.length - 1] ?? notes.trim());
+  return noteSaid(paragraphs[paragraphs.length - 1] ?? notes.trim()).said;
 }
 
 export function quote(text: string): string {

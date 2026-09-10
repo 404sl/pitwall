@@ -708,6 +708,57 @@ test("the note quoted under the call is somebody's words, and only where somebod
   assert.doesNotMatch(pageMarkup(aPreview()), /pw-call__ask/, "the snapshot carries no notes to quote");
 });
 
+test("a stamped note is quoted by what it says, with its date beside the quote and not inside it", () => {
+  const stamped = renderToStaticMarkup(
+    createElement(LatestNote, {
+      classification: "yours:decision",
+      closed: false,
+      notes: `${THREE_NOTES}\n\n2026-09-10T00:41:03Z lane-devloop/pitwall-326\nDecide whether the count or a size is the honest summary.`,
+    }),
+  );
+  const quoted = /<q class="pw-call__ask-text">([^<]*)<\/q>/.exec(stamped)?.[1];
+  assert.equal(quoted, "Decide whether the count or a size is the honest summary.");
+  assert.doesNotMatch(
+    quoted ?? "",
+    /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z/,
+    "the first thing a reader meets is somebody's words, not the machine's clock",
+  );
+  assert.match(
+    stamped,
+    /<time class="pw-call__ask-when" datetime="2026-09-10T00:41:03Z"/i,
+    "the date is not dropped either - it is what tells a reader this note is the newest",
+  );
+  assert.doesNotMatch(
+    stamped,
+    /pw-call__ask-when[^>]*>[^<]*lane-devloop/,
+    "the writer names a branch, and a branch name here embeds a tracker id",
+  );
+
+  const unstamped = renderToStaticMarkup(
+    createElement(LatestNote, { classification: "yours:decision", closed: false, notes: THREE_NOTES }),
+  );
+  assert.match(unstamped, /<q class="pw-call__ask-text">/);
+  assert.doesNotMatch(
+    unstamped,
+    /pw-call__ask-when|pw-call__ask-separator/,
+    "a date not read from that block is not that block's date",
+  );
+
+  const stampOnly = renderToStaticMarkup(
+    createElement(LatestNote, {
+      classification: "yours:access",
+      closed: false,
+      notes: "The token never arrived.\n\n2026-09-10T00:41:03Z lane-devloop/pitwall-326",
+    }),
+  );
+  assert.match(
+    stampOnly,
+    /<q class="pw-call__ask-text">2026-09-10T00:41:03Z lane-devloop\/pitwall-326<\/q>/,
+    "a block with nothing but a stamp in it still quotes as written rather than as nothing",
+  );
+  assert.doesNotMatch(stampOnly, /pw-call__ask-when/, "the same instant is never printed twice");
+});
+
 test("the loaded ticket page puts the notes it fetched inside the disclosure, not down the page", () => {
   const markup = detailMarkup({ notes: THREE_NOTES });
   const opens = markup.indexOf('<details class="pw-disclosure"');

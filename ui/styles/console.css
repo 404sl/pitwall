@@ -502,13 +502,18 @@ body {
   padding-inline-start: calc(var(--pw-rail) + 16px);
 }
 
-.pw-call__ask-label {
+.pw-call__ask-meta {
+  margin-inline-end: 8px;
+}
+
+.pw-call__ask-label,
+.pw-call__ask-separator,
+.pw-call__ask-when {
   font-family: var(--pw-font-data);
   font-size: 12px;
   line-height: 1.6;
   letter-spacing: 0.02em;
   color: var(--pw-muted);
-  margin-inline-end: 8px;
 }
 
 .pw-call__ask-text {
@@ -648,6 +653,10 @@ body {
 
   .pw-call__ask {
     max-inline-size: 100%;
+  }
+
+  .pw-call__ask-meta {
+    display: block;
   }
 
   .pw-disclosure__separator {
