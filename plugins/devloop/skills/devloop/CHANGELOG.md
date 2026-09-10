@@ -1,5 +1,107 @@
 # Changelog
 
+## 0.1.20
+
+**A lander reported `"deployed":"failed"` for a deploy that had succeeded.** The deploy finished,
+both environments came up on the merged sha and the change was live on the public page; the agent
+whose job was to say so hit a session limit and was killed, and the run rendered its silence as
+failure. `deployed = (d && d.status) || 'failed'` cannot tell the two apart, and they are not the
+same state: a step that returns an error has told you something, a step that was killed has told
+you nothing. Re-running a deploy is not free, and a supervisor reading `failed` has every reason
+to do it - which is the obvious response and the wrong one.
+
+The same run's close step died the same way, and it was worse. Four issues whose pull requests
+had merged AND deployed were left `in_progress` - pitwall-7b1, pitwall-myo, pitwall-q02.1,
+pitwall-q02.2 - and nothing anywhere reported that drift. They were found only because somebody
+went looking after noticing the deploy report was wrong. A project whose stated purpose is
+telling a person whether the reason an issue stopped is still true had left four finished
+tickets claiming to be in progress hours after they shipped.
+
+So the lander now distinguishes `unknown` from `failed`, and where it can, it does not have to
+choose between them:
+
+- **A deploy step that reports nothing is answered by the hosts, not by the agent.** The pipeline
+  already had this primitive and threw it away at the moment it mattered: `deploy-one.sh` runs the
+  deploy and then reads `git_revision` back and compares, precisely so a deploy that claims success
+  without the revision changing is caught rather than believed. A new read-back step runs only when
+  the deploy step went silent. It is asked for one thing - the revision each host reports, keyed by
+  the repository AND the environment whose command produced it - and it is told nothing about what
+  that revision ought to be. A repository serving something else everywhere is `failed`; one of
+  several repositories serving something else is `partial`, and so is a repository confirmed in one
+  environment and serving something else in another; an environment that did not answer is
+  `unknown`, because silence from a host is not an answer from it either. A deploy that reported its
+  own failure is NOT read back - that one told us something, and `deploy-one.sh` had already asked
+  the server before saying it.
+- **The read-back is not told the answer it is being asked to produce, and does not decide.** Its
+  brief carries no sha, no merge list and no description of what a deployed host would be serving,
+  and its schema has no status for 'live': it reports what it read, or that it could not read. The
+  live-or-not judgement is made afterwards in code, against each deploying repository's own LAST
+  merge sha, compared as a prefix of at least seven hex characters. A step handed the value its
+  caller will compare against can satisfy its brief by quoting that value back without reading
+  anything, and with an unattended `bd close` behind the reply that is the same shape of error as
+  the one this release is about. Against the LAST sha rather than the set of them, because a run
+  deploys every few merges as well as at the end: a host left serving the mid-run deploy is serving
+  a revision genuinely on the default branch and genuinely live, and still missing the merge after
+  it. A missing, empty or unparseable revision, or one reported against a repository that did not
+  land, is `unknown` rather than `failed` - nothing read is not the same as something wrong.
+  **This applies to the silent path only.** A deploy step that DOES report `deployed` is still
+  promoted on its own word, with no comparison against what merged, even though it hands back the
+  same revisions - pitwall-azp, beside pitwall-80o. Deploys are not verified in code generally yet.
+- **EVERY environment a repository deploys to must report that repository's last merge sha before
+  it is treated as deployed, and an environment that did not report is unconfirmed rather than
+  absent.** This is the decision the reviews kept finding made silently inside a schema change, so
+  it is written here rather than only in code: ONE environment's matching revision does NOT confirm
+  a repository configured with two, for the purpose of closing tracker issues unattended. A change
+  live in staging and not in production is live in neither as far as a tester is concerned, and
+  closing its issue says it shipped. The number of environments to require is the length of that
+  repository's `deploy` array, which the lander is already handed; the alternative considered and
+  rejected was refusing to promote any multi-environment repository from a read-back at all, which
+  would report `unknown` on every successful deploy of the only repository here that deploys.
+- **Observations are keyed by `{repository, environment}`, never by the repository alone.** Keyed by
+  repository, two entries for one repository resolved last-write-wins: the same two observations in
+  the reverse order gave the opposite verdict, and one of those orders closes tracker issues while a
+  host is serving something stale. Two entries for one pair that disagree are now read as no answer
+  for that pair, which is the same rule this release applies to every other contradiction.
+- **A read-back is not spawned where there is nothing to read, and reads only repositories that
+  deploy.** Where a landed repository deploys but records no `verify` command, or records fewer
+  commands than it has environments, no environment set can be confirmed however the step replies -
+  so no step is spawned, the deploy stays `unknown`, the issues stay open until a person reads a
+  host, and the log names the shape to configure (`repos.<name>.verify` as one command per
+  environment, keyed by environment name) because that config lives in the root repository. A
+  repository with a `verify` and no `deploy` is not read back at all: it has no deploy behind its
+  host, and its non-answer used to drag a whole run to `unknown` while every deploying host matched.
+- **An unknown deploy says what a person should check** rather than what happened: the verify
+  command for each environment, the sha each repository merged, and the issues left open until
+  somebody settles it. It says in the same breath that it is not a failure and must not be
+  re-deployed on the strength of the line.
+- **The close step has a schema and its answer is read.** It reports the ids it actually closed,
+  and anything merged-and-deployed that it did not name comes back in the result as `unclosed`
+  and is logged loudly. A killed close step now reports the drift it caused. The loud line fires
+  on `unclosed` alone: a pull request that named no tracker issue is a designed state the close
+  brief has a block for, and a red line about zero issues is a false alarm on a board whose rule
+  is that red means a lane needs a person.
+- Where nothing that landed is in a repository with a deploy configured, a silent deploy step
+  settles as `not_needed` from the config rather than costing a read-back of endpoints that do
+  not exist, and the mid-run deploy logs `unknown` instead of `undefined`.
+- **The DEPLOY step's own read-back section is unchanged from 0.1.19.** Every `verify` command a
+  landed repository records is printed to it as before, whether or not there is one per
+  environment, and a repository that records none still gets the instruction to work out what is
+  live by whatever means the project offers. Two deltas and no others: the fallback prose names
+  `.pitwall.json`, which is the file that exists, and an object-valued `verify` prints each of its
+  commands where a single object used to render as one unreadable value. Everything this release
+  adds about environment counts lives in the read-back step and the log, not in that brief - the
+  deploy step's word is still what promotes a deploy to `deployed` and closes tracker issues
+  (pitwall-azp), so tightening the path nothing reported must not loosen the one that is trusted.
+  For the same reason no sentence written for a person reading the log reaches any brief: the line
+  naming `repos.<name>.verify` is an instruction to edit configuration, and a brief goes to an
+  agent with tools and a checkout that the same brief forbids it to touch.
+
+The result object gains `closed` and `unclosed`. `closed` is `null` until the close step has run
+and reported: `not_needed` used to mean both "nothing needed closing" and "that step never ran",
+which reads to anything downstream as the first, and conflating those two is what this release is
+about. `deployed` can now be `unknown`, which no consumer treats as failure - and nothing may
+render it as one.
+
 ## 0.1.19
 
 **Two lander runs half an hour apart reported the same merge-lock token, and nothing noticed.**

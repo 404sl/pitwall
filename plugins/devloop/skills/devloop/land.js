@@ -190,7 +190,7 @@ const LAND = {
     // conflict: the rebase surfaced a disagreement about what the code should do, rather
     // than two edits to nearby lines. That is a decision, and it goes back to a person.
     status: { enum: ['merged', 'red_after_rebase', 'conflict', 'master_red', 'blocked'] },
-    mergeSha: { type: 'string' },
+    mergeSha: { type: 'string', description: 'the sha of the commit the merge produced ON THE DEFAULT BRANCH - the squash commit gh pr merge reports, never the pull request head, because a deployed host is compared against this' },
     masterGreen: { type: 'boolean' },
     failureDetail: { type: 'string', description: 'the failing examples and their messages, in enough detail to act on without re-running anything' },
     notes: { type: 'string' }
@@ -229,6 +229,38 @@ const DEPLOYED = {
     status: { enum: ['deployed', 'partial', 'failed', 'not_needed'] },
     staging: { type: 'string', description: 'the sha staging is serving, read back from the host' },
     production: { type: 'string', description: 'the sha production is serving, read back from the host' },
+    notes: { type: 'string' }
+  }
+}
+
+const LIVE = {
+  type: 'object',
+  required: ['status', 'hosts', 'notes'],
+  properties: {
+    status: { enum: ['read', 'unreadable'] },
+    hosts: {
+      type: 'array',
+      description: 'one entry per command in the list you were given, whether or not it answered',
+      items: {
+        type: 'object',
+        required: ['repo', 'environment', 'revision'],
+        properties: {
+          repo: { type: 'string', description: 'the repository name beside the command in the list you were given, copied exactly' },
+          environment: { type: 'string', description: 'the environment name beside the command in the list you were given, copied exactly. One repository appears once per environment and the two are not interchangeable - a reply that names the wrong one is read as a report about a host nobody asked about.' },
+          revision: { type: 'string', description: 'THE REVISION VALUE ALONE, as hex characters and nothing else - not the response body it came in, not a branch name, not a version. An empty string when the host did not answer or answered no revision.' }
+        }
+      }
+    },
+    notes: { type: 'string' }
+  }
+}
+
+const CLOSED = {
+  type: 'object',
+  required: ['status', 'closed'],
+  properties: {
+    status: { enum: ['closed', 'partial', 'none'] },
+    closed: { type: 'array', items: { type: 'string' }, description: 'the tracker ids bd actually closed, one per close that succeeded - an empty array when none were' },
     notes: { type: 'string' }
   }
 }
@@ -701,19 +733,80 @@ function deployCommands(landed) {
   'notes' and return status 'not_needed' rather than inventing a deploy)`
 }
 
+function lastMerged(landed, name) {
+  let found = null
+  for (const l of landed) if (l.repo === name) found = l
+  return found
+}
+
+const ONE_ENVIRONMENT = 'only'
+
+function environments(name) {
+  const deploy = ((CONFIGURED[name] || {}).deploy || [])
+  return Array.isArray(deploy) ? deploy.filter(Boolean).length : 0
+}
+
+function readBacks(name) {
+  const verify = (CONFIGURED[name] || {}).verify
+  const targets = environments(name)
+  const commands = typeof verify === 'string'
+    ? (verify.trim() ? [{ environment: ONE_ENVIRONMENT, command: verify.trim() }] : [])
+    : verify && typeof verify === 'object'
+      ? Object.entries(verify)
+        .filter(([, c]) => typeof c === 'string' && c.trim())
+        .map(([environment, command]) => ({ environment, command: command.trim() }))
+      : []
+  if (!commands.length) {
+    return { commands: [], why: `${name} records no verify command in .pitwall.json, so nothing here can read what its ${targets} environment(s) are serving` }
+  }
+  if (commands.length !== targets) {
+    return { commands: [], why: `${name} deploys to ${targets} environment(s) and its verify names ${commands.length}, so ${targets > commands.length ? 'at least one environment' : 'an environment that is not deployed to'} can never be confirmed - set one command per environment in repos.${name}.verify, keyed by the environment name` }
+  }
+  return { commands, why: '' }
+}
+
+function liveReads(landed) {
+  const reads = []
+  const blocked = []
+  for (const name of [...new Set(landed.map((l) => l.repo))]) {
+    if (!DEPLOYS.has(name)) continue
+    const { commands, why } = readBacks(name)
+    if (why) blocked.push(why)
+    for (const c of commands) reads.push({ repo: name, ...c })
+  }
+  return { reads, blocked }
+}
+
 function verifyCommands(landed) {
-  const repos = [...new Set(landed.map((l) => l.repo))]
   const out = []
-  for (const name of repos) {
-    const cfg = CONFIGURED[name] || {}
-    if (!cfg.verify) continue
-    out.push(`  ${cfg.verify}`)
+  for (const name of [...new Set(landed.map((l) => l.repo))]) {
+    const verify = (CONFIGURED[name] || {}).verify
+    if (typeof verify === 'string') {
+      if (verify.trim()) out.push(`  ${verify.trim()}`)
+    } else if (verify && typeof verify === 'object') {
+      for (const c of Object.values(verify)) if (typeof c === 'string' && c.trim()) out.push(`  ${c.trim()}`)
+    }
   }
   return out.length
     ? out.join('\n')
-    : `  This project records no verify command in .autofix.json. Work out what the deployed
+    : `  This project records no verify command in .pitwall.json. Work out what the deployed
   version is by whatever means the project offers, and say in 'notes' what you used - a deploy
   nobody confirmed is a deploy that may not have happened.`
+}
+
+function heldBackReads(landed) {
+  const { reads, blocked } = liveReads(landed)
+  const out = reads.map((r) => `  ${r.repo} ${r.environment}  ${r.command}`).concat(blocked.map((b) => `  ${b}`))
+  return out.length ? out.join('\n') : '  (nothing that landed deploys anywhere a host could be read)'
+}
+
+function readSha(reported) {
+  const s = String(reported == null ? '' : reported).trim().toLowerCase()
+  return /^[0-9a-f]{7,40}$/.test(s) ? s : ''
+}
+
+function samePrefix(a, b) {
+  return !!a && !!b && (a.startsWith(b) || b.startsWith(a))
 }
 
 function deployPrompt(landed) {
@@ -771,6 +864,39 @@ docs has no deploy target of its own. The change is on origin/master and visible
 pulls, but an ARTICLE is not live until publish.rb sends it, and a cover image is not live
 until the SITE is deployed. Say which of those still apply.` : ''}
 
+${LAW}`
+}
+
+function livePrompt(landed) {
+  return `Report what revision each host below is serving. Nothing else is asked of you.
+
+Deploy nothing, merge nothing, close nothing, re-run nothing, and change no code. This step only
+reads, and what it reads is compared by the caller afterwards.
+
+Run each of these and report what came back. Each line is one repository in one environment:
+${liveReads(landed).reads.map((r) => `  ${r.repo}  ${r.environment}  ${r.command}`).join('\n')}
+
+For each one, report the REVISION VALUE ON ITS OWN - the hex characters and nothing around them.
+These endpoints answer with a document; the revision is one field of it, and the rest of the
+document is not an answer to this question. Paste the hex, not the body it arrived in.
+
+Report every line above as its own entry, carrying BOTH names printed beside it - the repository
+and the environment - even the ones that did not answer. One repository appears once per
+environment and the caller compares each environment separately, so an entry that names the wrong
+environment is a report about a host nobody asked about. Report each line once: a second entry for
+the same pair contradicts the first and is read as no answer at all.
+An empty revision is the correct report for a host that did not answer, that timed out, or that
+answered something with no revision in it. Return 'unreadable' as the status when that happened
+to any of them, and 'read' when every command answered.
+
+DO NOT WORK OUT WHETHER THIS IS THE RIGHT REVISION, and do not go looking for what it should be.
+Whether what a host serves is current is not yours to judge and not yours to know - you have not
+been told what merged, deliberately, because a step that knows the expected answer can produce
+it without reading anything, and this step exists precisely because something else's word was
+taken once already. Report what you read. Guess nothing, and fill nothing in.
+
+DO NOT DEPLOY, whatever you find. A deploy is somebody's decision once they know what is live,
+and this step is how they find out.
 ${LAW}`
 }
 
@@ -846,6 +972,54 @@ const DEPLOYS = new Set(Object.entries(CONFIGURED || {})
   .filter(([, r]) => r && Array.isArray(r.deploy) && r.deploy.length)
   .map(([name]) => name))
 
+function readHosts(landed, back) {
+  const served = new Map()
+  for (const h of (back && back.hosts) || []) {
+    if (!h || typeof h.repo !== 'string' || typeof h.environment !== 'string') continue
+    const key = `${h.repo}\u0000${h.environment}`
+    const revision = readSha(h.revision)
+    const seen = served.get(key)
+    if (!seen) served.set(key, { revision })
+    else if (seen.revision !== revision) served.set(key, { revision: '', contradicted: true })
+  }
+  const confirmed = []
+  const mismatched = []
+  const silent = []
+  const states = []
+  for (const name of [...new Set(landed.map((l) => l.repo))]) {
+    if (!DEPLOYS.has(name)) continue
+    const { commands, why } = readBacks(name)
+    const expected = readSha((lastMerged(landed, name) || {}).mergeSha)
+    if (why) { silent.push(why); states.push('unknown'); continue }
+    if (!expected) { silent.push(`${name} recorded no merge sha, so what its hosts reported cannot be compared against anything`); states.push('unknown'); continue }
+    let matched = 0
+    let wrong = 0
+    let unread = 0
+    for (const c of commands) {
+      const seen = served.get(`${name}\u0000${c.environment}`)
+      if (seen && seen.contradicted) {
+        unread += 1
+        silent.push(`${name} ${c.environment} came back twice with two different revisions, and two contradictory answers are not an answer`)
+      } else if (!seen || !seen.revision) {
+        unread += 1
+        silent.push(`${name} ${c.environment} reported no revision`)
+      } else if (samePrefix(expected, seen.revision)) {
+        matched += 1
+        confirmed.push({ name, environment: c.environment, revision: seen.revision })
+      } else {
+        wrong += 1
+        mismatched.push(`${name} ${c.environment} is serving ${seen.revision.slice(0, 12)}, and what merged was ${expected.slice(0, 12)}`)
+      }
+    }
+    states.push(unread ? 'unknown' : wrong ? (matched ? 'partial' : 'failed') : 'deployed')
+  }
+  const status = (!back || back.status !== 'read' || !states.length || states.includes('unknown')) ? 'unknown'
+    : states.every((st) => st === 'deployed') ? 'deployed'
+      : states.every((st) => st === 'failed') ? 'failed'
+        : 'partial'
+  return { status, confirmed, mismatched, silent }
+}
+
 function closePrompt(landed, deployed) {
   return `Close the tracker issues for work that is now merged and deployed, and only those.
 
@@ -914,6 +1088,12 @@ ${landed.filter((l) => !l.issue).map((l) => `  ${l.slug}#${l.number} - ${l.title
 
 Use --reason, never --notes: --notes overwrites the whole field and has already destroyed a
 decision somebody recorded. Change no code.
+
+REPORT THE IDS YOU ACTUALLY CLOSED, one per bd close that succeeded, and an empty list if none
+were. Anything in the list above that you do not name comes back as drift a person has to chase:
+on 2026-09-09 this step was killed mid-run and four merged-and-deployed issues sat in_progress
+for hours with nothing anywhere reporting it. An id you closed and did not name reads the same
+way, so name them - and do not name one you did not close.
 ${LAW}`
 }
 
@@ -951,6 +1131,8 @@ const matchedPreflight = new Set()
 const surveyedEver = new Map()
 let masterBroken = false
 let deployed = 'not_needed'
+let closed = null
+let unclosed = []
 let lockState = `LEAKED - the release step never reported. Read ${MERGE_LOCK}/holder before touching anything.`
 
 try {
@@ -1067,7 +1249,7 @@ try {
         if (landed.length % DEPLOY_EVERY === 0) {
           phase('Deploy')
           const mid = await agent(deployPrompt(landed.slice(-DEPLOY_EVERY)), { label: `deploy:${landed.length}`, phase: 'Deploy', schema: DEPLOYED })
-          log(`deployed at ${landed.length} merges: ${mid && mid.status}`)
+          log(`deployed at ${landed.length} merges: ${(mid && mid.status) || 'unknown - that step reported nothing, and the deploy at the end of this run covers the same merges'}`)
         }
         continue
       }
@@ -1133,8 +1315,26 @@ try {
   if (landed.length && !masterBroken) {
     phase('Deploy')
     const d = await agent(deployPrompt(landed), { label: 'deploy', phase: 'Deploy', schema: DEPLOYED })
-    deployed = (d && d.status) || 'failed'
-    log(`deploy: ${deployed}${d && d.staging ? ` staging ${d.staging.slice(0, 8)} production ${(d.production || '').slice(0, 8)}` : ''}`)
+    deployed = (d && d.status) || 'unknown'
+    let servingText = d && readSha(d.staging) ? `staging ${readSha(d.staging).slice(0, 8)} production ${readSha(d.production).slice(0, 8) || '(not a revision)'}` : ''
+
+    if (deployed === 'unknown' && !landed.some((l) => DEPLOYS.has(l.repo))) {
+      deployed = 'not_needed'
+      log('the deploy step reported nothing, and nothing that landed is in a repository with a deploy configured - there was never anything to deploy, and that is settled by the config rather than by the step')
+    } else if (deployed === 'unknown') {
+      const { reads, blocked } = liveReads(landed)
+      if (blocked.length || !reads.length) {
+        log(`the deploy step reported nothing, and reading the hosts back cannot settle it either, so the deploy stays unknown and the issues stay open until a person reads a host:\n    ${(blocked.length ? blocked : ['nothing that landed deploys anywhere a host could be read']).join('\n    ')}`)
+      } else {
+        const back = await agent(livePrompt(landed), { label: 'deploy-check', phase: 'Deploy', schema: LIVE, model: 'haiku', effort: 'low' })
+        const read = readHosts(landed, back)
+        deployed = read.status
+        if (read.confirmed.length) servingText = read.confirmed.map((c) => `${c.name} ${c.environment} ${c.revision.slice(0, 8)}`).join(' ')
+        log(`the deploy step reported nothing, so the hosts were read back instead - deploy is ${deployed}${back && back.notes ? `\n    ${back.notes}` : ''}`)
+        for (const line of [...read.mismatched, ...read.silent]) log(`    ${line}`)
+      }
+    }
+    log(`deploy: ${deployed}${servingText ? ` ${servingText}` : ''}`)
 
     // "A merge that is not live is not done" is the right rule for a repository that HAS a
     // deploy. For one that does not, there is nothing to wait for and the gate never opens.
@@ -1152,12 +1352,27 @@ try {
     if (closable.length) {
       phase('Deploy')
       const where = deployed === 'deployed'
-        ? `${deployed} - staging and production both serving ${(d.staging || '').slice(0, 8)}`
-        : `${deployed} - nothing needed deploying, so these are closed on the merge alone`
-      await agent(closePrompt(closable, where), { label: 'close', phase: 'Deploy', model: 'sonnet', effort: 'low' })
+        ? `deployed${servingText ? ` - ${servingText}` : ''}`
+        : 'these repositories have no deploy to be live in, so they are closed on the merge alone'
+      const c = await agent(closePrompt(closable, where), { label: 'close', phase: 'Deploy', model: 'sonnet', effort: 'low', schema: CLOSED })
+      closed = (c && c.status) || 'unknown'
+      const reported = new Set((c && c.closed) || [])
+      unclosed = closable.filter((l) => l.issue && !reported.has(l.issue)).map((l) => l.issue)
+      if (unclosed.length) {
+        log(`CLOSE ${closed === 'unknown' ? 'UNKNOWN - that step reported nothing, which is not the same as a refusal' : closed} - these merged and deployed and nothing confirmed they were closed, so they are sitting in_progress with nothing reporting it: ${unclosed.join(' ')}\n    Check them with bd show before closing anything by hand.${c && c.notes ? `\n    ${c.notes}` : ''}`)
+      } else if (reported.size) {
+        log(`closed ${reported.size} issue(s) - ${[...reported].join(' ')}`)
+      } else {
+        log(`nothing to close - what landed in this run named no tracker issue, so there is nothing sitting in_progress behind it${closed === 'unknown' ? ', and the close step reported nothing either' : ''}`)
+      }
     }
     if (heldBack.length) {
-      log(`deploy ${deployed} - staying open until it is live: ${heldBack.map((l) => l.issue || keyOf(l)).join(' ')}`)
+      const waiting = heldBack.map((l) => l.issue || keyOf(l)).join(' ')
+      if (deployed === 'unknown') {
+        log(`deploy UNKNOWN - nothing reported whether it happened and reading the hosts back did not settle it either. THIS IS NOT A FAILURE and must not be re-run on the strength of this line. What settles it, in this order: what each host is serving, against the shas that merged.\n${heldBackReads(landed)}\n    merged: ${landed.map((l) => `${l.repo} ${(l.mergeSha || '').slice(0, 12) || '(sha not recorded)'}`).join(', ')}\n    left open until somebody says: ${waiting}`)
+      } else {
+        log(`deploy ${deployed} - staying open until it is live: ${waiting}`)
+      }
     }
   } else if (masterBroken) {
     log('master is red - nothing deployed and nothing closed')
@@ -1196,5 +1411,5 @@ if (PREFLIGHTED) {
   }
 }
 
-log(`landed ${landed.length}, stopped ${stopped.length}, skipped ${skipped.length}, deploy ${deployed}`)
-return { landed, stopped, skipped, deployed, masterBroken, lock: lockState }
+log(`landed ${landed.length}, stopped ${stopped.length}, skipped ${skipped.length}, deploy ${deployed}${unclosed.length ? `, NOT CONFIRMED CLOSED ${unclosed.join(' ')}` : ''}`)
+return { landed, stopped, skipped, deployed, closed, unclosed, masterBroken, lock: lockState }
