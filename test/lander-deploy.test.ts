@@ -164,7 +164,7 @@ test("a deploy the agent reports as failed stays failed, and is not read back", 
 
 test("a close step that reported nothing names the issues it left in_progress", async () => {
   const { logs, done } = landOnce({
-    deploy: { status: "deployed", staging: SHA, production: SHA, notes: "" },
+    deploy: { status: "deployed", hosts: hosts(SHA), notes: "" },
     close: null,
   });
   const result = await done;
@@ -181,7 +181,7 @@ test("a close step that reported nothing names the issues it left in_progress", 
 
 test("a close step that reports the ids it closed is not reported as drift", async () => {
   const { logs, done } = landOnce({
-    deploy: { status: "deployed", staging: SHA, production: SHA, notes: "" },
+    deploy: { status: "deployed", hosts: hosts(SHA), notes: "" },
     close: { status: "closed", closed: ["pitwall-7b1"] },
   });
   const result = await done;
@@ -285,7 +285,7 @@ test("a read-back with no endpoint to read is never run and never deployed", asy
 test("a run that closed everything it could says so quietly when nothing named an issue", async () => {
   const { logs, done } = landOnce({
     prs: [{ ...PR, issue: undefined }],
-    deploy: { status: "deployed", staging: SHA, production: SHA, notes: "" },
+    deploy: { status: "deployed", hosts: hosts(SHA), notes: "" },
     close: { status: "none", closed: [] },
   });
   const result = await done;
@@ -456,7 +456,7 @@ test("the close step is distinguishable from a close step that never ran", async
 });
 
 test("the merge sha a host is compared against is described as the squash commit", async () => {
-  const { calls, done } = landOnce({ deploy: { status: "deployed", staging: SHA, production: SHA, notes: "" }, close: { status: "closed", closed: ["pitwall-7b1"] } });
+  const { calls, done } = landOnce({ deploy: { status: "deployed", hosts: hosts(SHA), notes: "" }, close: { status: "closed", closed: ["pitwall-7b1"] } });
   await done;
 
   const land = calls.find((c) => c.label.startsWith("land:"));
@@ -512,4 +512,132 @@ test("a repository with no verify command keeps the deploy step's fallback instr
     "the deploy step was handed a sentence saying nothing can read what its environments serve, in place of the " +
       "instruction to find out. That replaces a task with a statement that the task is impossible.",
   );
+});
+
+test("a deploy step that reports deployed while serving another revision closes nothing", async () => {
+  const { calls, logs, done } = landOnce({
+    deploy: { status: "deployed", hosts: hosts(OTHER), notes: "deployed and verified" },
+    close: { status: "closed", closed: ["pitwall-7b1"] },
+  });
+  const result = await done;
+
+  assert.notEqual(
+    result.deployed,
+    "deployed",
+    "the deploy step said it deployed while its own read-back named a revision that is not what merged, and the run " +
+      "took the word and discarded the evidence beside it. The silent path has compared those shas since 0.1.20; the " +
+      "reported path is the ordinary one and was the only one still unchecked.",
+  );
+  assert.equal(
+    calls.filter((c) => c.label === "close").length,
+    0,
+    "issues were closed as deployed while the host the deploy step read was serving another revision",
+  );
+
+  const said = logs.join("\n");
+  assert.match(said, new RegExp(OTHER.slice(0, 12)), "the log does not say what the host is serving");
+  assert.match(said, new RegExp(SHA.slice(0, 12)), "the log does not say what merged");
+  assert.match(said, /docs/, "the log does not say which repository is serving it");
+});
+
+test("a deploy step that reports deployed and names the merged sha closes its issues", async () => {
+  const { calls, logs, done } = landOnce({
+    deploy: { status: "deployed", hosts: hosts(SHA), notes: "deployed and verified" },
+    close: { status: "closed", closed: ["pitwall-7b1"] },
+  });
+  const result = await done;
+
+  assert.equal(
+    result.deployed,
+    "deployed",
+    "the host the deploy step read was serving the merge sha and the run still would not call it deployed - which would " +
+      "hold every ordinary successful run's issues open forever.",
+  );
+  assert.equal(calls.filter((c) => c.label === "close").length, 1);
+  assert.match(logs.join("\n"), new RegExp(`deploy: deployed docs only ${SHA.slice(0, 8)}`));
+});
+
+test("a deploy step that reports deployed and names no revision is read back rather than believed", async () => {
+  const { calls, done } = landOnce({
+    deploy: { status: "deployed", hosts: [], notes: "mina said done" },
+    check: { status: "read", hosts: hosts(SHA), notes: "the host answered" },
+    close: { status: "closed", closed: ["pitwall-7b1"] },
+  });
+  const result = await done;
+
+  assert.ok(
+    calls.find((c) => c.label === "deploy-check"),
+    "a deploy step reported deployed with nothing to compare against what merged, and no host was read back. " +
+      `Steps: ${calls.map((c) => c.label).join(", ")}`,
+  );
+  assert.equal(
+    result.deployed,
+    "deployed",
+    "the blind read-back found the merge sha live and the run did not resolve the deploy, so a step that answers the " +
+      "status and forgets the hosts would strand its issues.",
+  );
+  assert.equal(calls.filter((c) => c.label === "close").length, 1);
+});
+
+test("a deploy step that reports deployed on one of two environments is not deployed", async () => {
+  const { calls, done } = landOnce({
+    args: TWO_ENV,
+    deploy: { status: "deployed", hosts: [{ repo: "docs", environment: "staging", revision: SHA }], notes: "staging is live" },
+    check: null,
+    close: { status: "closed", closed: ["pitwall-7b1"] },
+  });
+  const result = await done;
+
+  assert.notEqual(
+    result.deployed,
+    "deployed",
+    "the deploy step reported one of the two environments it deploys to and called the whole thing deployed. A change " +
+      "live in one environment and not the other is live in neither.",
+  );
+  assert.equal(calls.filter((c) => c.label === "close").length, 0);
+});
+
+test("the deploy step is told which repository and environment each read-back line belongs to", async () => {
+  const { calls, done } = landOnce({ args: TWO_ENV, deploy: null, check: null });
+  await done;
+
+  const deploy = calls.find((c) => c.label === "deploy");
+  assert.ok(deploy);
+  for (const line of ["docs  staging  curl", "docs  production  curl"]) {
+    assert.ok(
+      deploy.prompt.includes(line),
+      `the deploy brief does not name the repository and environment beside its read-back commands, so nothing it reports ` +
+        `can be matched to a host. Expected a line carrying '${line}'. Asked:\n${deploy.prompt}`,
+    );
+  }
+});
+
+test("a deploy step reading one unkeyed host is told the environment name the comparison uses", async () => {
+  const { calls, done } = landOnce({ deploy: null, check: null });
+  await done;
+
+  const deploy = calls.find((c) => c.label === "deploy");
+  assert.ok(deploy);
+  assert.ok(
+    deploy.prompt.includes("docs  only  curl"),
+    `a repository whose verify is a single command has one environment, and the comparison keys it by the name this brief ` +
+      `prints. A brief that prints no name gets an invented one back, which matches no host. Asked:\n${deploy.prompt}`,
+  );
+});
+
+test("the deploy step's schema carries the hosts its status is checked against", async () => {
+  const { calls, done } = landOnce({ deploy: { status: "deployed", hosts: hosts(SHA), notes: "" }, close: { status: "closed", closed: ["pitwall-7b1"] } });
+  await done;
+
+  const deploy = calls.find((c) => c.label === "deploy");
+  assert.ok(deploy && deploy.schema, "the deploy step was spawned with no schema");
+  const properties = deploy.schema.properties;
+  assert.ok(
+    properties.hosts,
+    "the deploy step is asked for a status and no per-repository revision, so a staging/production pair cannot be " +
+      "attributed to the repositories that landed and nothing can compare it.",
+  );
+  for (const field of ["repo", "environment", "revision"]) {
+    assert.ok(properties.hosts.items.properties[field], `a reported host carries no ${field}`);
+  }
 });

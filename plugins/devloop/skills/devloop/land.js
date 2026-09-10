@@ -293,13 +293,26 @@ const VERIFY = {
   }
 }
 
+const HOST = {
+  type: 'object',
+  required: ['repo', 'environment', 'revision'],
+  properties: {
+    repo: { type: 'string', description: 'the repository name beside the command in the list you were given, copied exactly' },
+    environment: { type: 'string', description: 'the environment name beside the command in the list you were given, copied exactly. One repository appears once per environment and the two are not interchangeable - a reply that names the wrong one is read as a report about a host nobody asked about.' },
+    revision: { type: 'string', description: 'THE REVISION VALUE ALONE, as hex characters and nothing else - not the response body it came in, not a branch name, not a version. An empty string when the host did not answer or answered no revision.' }
+  }
+}
+
 const DEPLOYED = {
   type: 'object',
   required: ['status', 'notes'],
   properties: {
     status: { enum: ['deployed', 'partial', 'failed', 'not_needed'] },
-    staging: { type: 'string', description: 'the sha staging is serving, read back from the host' },
-    production: { type: 'string', description: 'the sha production is serving, read back from the host' },
+    hosts: {
+      type: 'array',
+      description: "one entry per read-back line in the list you were given, whether or not it answered. A 'deployed' is compared against these, and the status on its own confirms nothing.",
+      items: HOST
+    },
     notes: { type: 'string' }
   }
 }
@@ -312,15 +325,7 @@ const LIVE = {
     hosts: {
       type: 'array',
       description: 'one entry per command in the list you were given, whether or not it answered',
-      items: {
-        type: 'object',
-        required: ['repo', 'environment', 'revision'],
-        properties: {
-          repo: { type: 'string', description: 'the repository name beside the command in the list you were given, copied exactly' },
-          environment: { type: 'string', description: 'the environment name beside the command in the list you were given, copied exactly. One repository appears once per environment and the two are not interchangeable - a reply that names the wrong one is read as a report about a host nobody asked about.' },
-          revision: { type: 'string', description: 'THE REVISION VALUE ALONE, as hex characters and nothing else - not the response body it came in, not a branch name, not a version. An empty string when the host did not answer or answered no revision.' }
-        }
-      }
+      items: HOST
     },
     notes: { type: 'string' }
   }
@@ -1008,9 +1013,9 @@ function verifyCommands(landed) {
   for (const name of [...new Set(landed.map((l) => l.repo))]) {
     const verify = (CONFIGURED[name] || {}).verify
     if (typeof verify === 'string') {
-      if (verify.trim()) out.push(`  ${verify.trim()}`)
+      if (verify.trim()) out.push(`  ${name}  ${ONE_ENVIRONMENT}  ${verify.trim()}`)
     } else if (verify && typeof verify === 'object') {
-      for (const c of Object.values(verify)) if (typeof c === 'string' && c.trim()) out.push(`  ${c.trim()}`)
+      for (const [environment, c] of Object.entries(verify)) if (typeof c === 'string' && c.trim()) out.push(`  ${name}  ${environment}  ${c.trim()}`)
     }
   }
   return out.length
@@ -1033,6 +1038,10 @@ function readSha(reported) {
 
 function samePrefix(a, b) {
   return !!a && !!b && (a.startsWith(b) || b.startsWith(a))
+}
+
+function servingLine(confirmed) {
+  return confirmed.map((c) => `${c.name} ${c.environment} ${c.revision.slice(0, 8)}`).join(' ')
 }
 
 function deployPrompt(landed) {
@@ -1070,9 +1079,16 @@ Then READ BACK what each host is actually serving, rather than trusting that the
 said Done:
 ${verifyCommands(landed)}
 
-Every environment must report the sha you just merged. Report each in 'staging' and 'production'. If one deployed and
-the other did not, that is status 'partial' and it is worth saying loudly - it is the exact
-half-live state this step exists to prevent.
+Report every line above as its own entry in 'hosts', carrying BOTH names printed beside it - the
+repository and the environment - copied exactly, and the REVISION VALUE ON ITS OWN: the hex
+characters, not the document the host answered them in. Report the lines that did not answer too,
+with an empty revision.
+
+Every environment must be serving the sha that merged into its repository. Those entries are what
+is compared against the merges listed above, and a 'deployed' whose revisions are not those shas
+is not read as deployed - so one environment serving it while another does not is status
+'partial', and it is worth saying loudly, it is the exact half-live state this step exists to
+prevent.
 ${landed.some((l) => l.repo === 'extension') ? `
 The extension changed too. Rebuild it into the main checkout so it can be reloaded in Chrome:
 dist/ is gitignored so building writes no tracked file, but the branch the checkout sits on
@@ -1579,22 +1595,37 @@ try {
   if (landed.length && !masterBroken) {
     phase('Deploy')
     const d = await agent(deployPrompt(landed), { label: 'deploy', phase: 'Deploy', schema: DEPLOYED })
-    deployed = (d && d.status) || 'unknown'
-    let servingText = d && readSha(d.staging) ? `staging ${readSha(d.staging).slice(0, 8)} production ${readSha(d.production).slice(0, 8) || '(not a revision)'}` : ''
+    const reported = (d && d.status) || 'unknown'
+    deployed = reported
+    let servingText = ''
+
+    if (reported === 'deployed') {
+      const own = readHosts(landed, { status: 'read', hosts: (d && d.hosts) || [] })
+      deployed = own.status
+      servingText = servingLine(own.confirmed)
+      if (deployed !== 'deployed') {
+        log(`the deploy step reported deployed, and the revisions it says the hosts are serving do not confirm it - deploy is ${deployed}`)
+        for (const line of [...own.mismatched, ...own.silent]) log(`    ${line}`)
+      }
+    }
+
+    const unsettled = reported === 'deployed'
+      ? 'the deploy step reported deployed and named no revision that could be compared against what merged'
+      : 'the deploy step reported nothing'
 
     if (deployed === 'unknown' && !landed.some((l) => DEPLOYS.has(l.repo))) {
       deployed = 'not_needed'
-      log('the deploy step reported nothing, and nothing that landed is in a repository with a deploy configured - there was never anything to deploy, and that is settled by the config rather than by the step')
+      log(`${unsettled}, and nothing that landed is in a repository with a deploy configured - there was never anything to deploy, and that is settled by the config rather than by the step`)
     } else if (deployed === 'unknown') {
       const { reads, blocked } = liveReads(landed)
       if (blocked.length || !reads.length) {
-        log(`the deploy step reported nothing, and reading the hosts back cannot settle it either, so the deploy stays unknown and the issues stay open until a person reads a host:\n    ${(blocked.length ? blocked : ['nothing that landed deploys anywhere a host could be read']).join('\n    ')}`)
+        log(`${unsettled}, and reading the hosts back cannot settle it either, so the deploy stays unknown and the issues stay open until a person reads a host:\n    ${(blocked.length ? blocked : ['nothing that landed deploys anywhere a host could be read']).join('\n    ')}`)
       } else {
         const back = await agent(livePrompt(landed), { label: 'deploy-check', phase: 'Deploy', schema: LIVE, model: 'haiku', effort: 'low' })
         const read = readHosts(landed, back)
         deployed = read.status
-        if (read.confirmed.length) servingText = read.confirmed.map((c) => `${c.name} ${c.environment} ${c.revision.slice(0, 8)}`).join(' ')
-        log(`the deploy step reported nothing, so the hosts were read back instead - deploy is ${deployed}${back && back.notes ? `\n    ${back.notes}` : ''}`)
+        if (read.confirmed.length) servingText = servingLine(read.confirmed)
+        log(`${unsettled}, so the hosts were read back instead - deploy is ${deployed}${back && back.notes ? `\n    ${back.notes}` : ''}`)
         for (const line of [...read.mismatched, ...read.silent]) log(`    ${line}`)
       }
     }
@@ -1633,7 +1664,7 @@ try {
     if (heldBack.length) {
       const waiting = heldBack.map((l) => l.issue || keyOf(l)).join(' ')
       if (deployed === 'unknown') {
-        log(`deploy UNKNOWN - nothing reported whether it happened and reading the hosts back did not settle it either. THIS IS NOT A FAILURE and must not be re-run on the strength of this line. What settles it, in this order: what each host is serving, against the shas that merged.\n${heldBackReads(landed)}\n    merged: ${landed.map((l) => `${l.repo} ${(l.mergeSha || '').slice(0, 12) || '(sha not recorded)'}`).join(', ')}\n    left open until somebody says: ${waiting}`)
+        log(`deploy UNKNOWN - ${reported === 'deployed' ? 'the deploy step said it deployed and nothing named a revision that confirms it' : 'nothing reported whether it happened'} and reading the hosts back did not settle it either. THIS IS NOT A FAILURE and must not be re-run on the strength of this line. What settles it, in this order: what each host is serving, against the shas that merged.\n${heldBackReads(landed)}\n    merged: ${landed.map((l) => `${l.repo} ${(l.mergeSha || '').slice(0, 12) || '(sha not recorded)'}`).join(', ')}\n    left open until somebody says: ${waiting}`)
       } else {
         log(`deploy ${deployed} - staying open until it is live: ${waiting}`)
       }
