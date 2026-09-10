@@ -424,3 +424,74 @@ test("neither lander works under a token the holder file does not hold", async (
     );
   }
 });
+
+test("neither lander stands down over the newline cat prints", async () => {
+  const mine = "lander-1788974078-40586";
+  for (const file of ["land.js", "land-train.js"]) {
+    for (const reported of [
+      { token: mine, holder: `${mine}\n` },
+      { token: `${mine}\n`, holder: `${mine}\n` },
+    ]) {
+      const { calls, done } = runScript(file, LAND_ARGS, (call, n) => {
+        if (n === 1) return { status: "taken", ...reported };
+        if (call.label && call.label.startsWith("survey")) return { prs: [] };
+        if (call.label === "release") return { status: "released" };
+        return { status: "error", notes: "nothing to build" };
+      });
+      const result = (await done) as { lock?: string };
+
+      assert.ok(
+        calls.length > 1,
+        `${file} stood down over ${JSON.stringify(reported)}, where the only difference is the ` +
+          "newline the holder file ends with and cat prints back. The lock step is told to report " +
+          "what cat printed verbatim and untidied, so that newline is the expected answer, not a " +
+          "foreign lander - and standing down here halts every merge while telling the operator " +
+          `the lock belongs to somebody else. Steps seen: ${calls.map((c) => c.label || "?").join(", ")}`,
+      );
+
+      assert.match(
+        releasePromptOf(calls),
+        new RegExp(`--token '${mine}'`),
+        `${file} handed the removal a token the holder file cannot match. release-lock.sh refuses ` +
+          "a token carrying a newline, so the lock would be left standing by the very step that " +
+          "exists to give it back.",
+      );
+
+      assert.doesNotMatch(
+        result.lock || "",
+        /LEAKED/,
+        `${file} reported a leak for a lock it holds and released`,
+      );
+    }
+  }
+});
+
+test("land-train.js reads the holder file before it stands down for another lander", async () => {
+  const theirs = "land-train-1788975899-51221";
+  const { calls, done } = runScript("land-train.js", LAND_ARGS, (call, n) => {
+    if (n === 1) return { status: "held", holder: `${theirs}\n` };
+    return { status: "error", notes: "nothing to build" };
+  });
+  const result = (await done) as { status?: string; notes?: string };
+
+  const prompt = lockPromptOf(calls);
+  const opens = prompt.indexOf("If it prints HELD");
+  const closes = prompt.indexOf("If it prints TAKEN");
+  assert.ok(opens >= 0 && closes > opens, "the lock prompt no longer branches on HELD and TAKEN");
+  assert.ok(
+    prompt.slice(opens, closes).includes("cat /tmp/devloop-merge.lock/holder"),
+    "the HELD branch never reads the holder file, and the step's schema requires 'holder' of " +
+      "every outcome it can report. HELD is ordinary contention, not an edge case, so the step " +
+      "is asked for a value it was given no way to obtain - it either fills in the one field " +
+      "ownership is decided from or burns its retries and answers nothing.",
+  );
+
+  assert.equal(calls.length, 1, `the train carried on past a lock it does not hold: ${calls.map((c) => c.label || "?").join(", ")}`);
+  assert.equal(result.status, "held");
+  assert.ok(
+    (result.notes || "").includes(theirs),
+    `the train required a holder of the lock step and then threw it away: ${result.notes}. A run ` +
+      "that says only 'another lander holds it' cannot be told from one standing down over a " +
+      "lock nobody owns.",
+  );
+});

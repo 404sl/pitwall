@@ -31,15 +31,39 @@ holder file itself, and no per-run identity is exposed to a script. So the decis
 token is minted by the lock step stands; what changed is that the run no longer takes the step's
 word for what the lock says.
 
+**The comparison ignores the newline `cat` prints, and the removal is handed a trimmed token.**
+The holder file is written with `printf` and a trailing newline, so a step doing exactly as it is
+told - report what `cat` printed, verbatim and untidied - reports that newline as part of `holder`.
+An exact comparison reads a whitespace-only difference as a foreign lander, and the cost of that
+is the whole serial pipeline: the lander surveys nothing, merges nothing, leaves standing the lock
+directory it created itself, and tells the operator the holder names another lander. Every other
+reader of that file already normalises - `release-lock.sh` and `lock-check.sh` through `$(cat)`,
+`triage-scan.sh` and `queue.sh` through `.read().strip()` - and both landers now do the same, on
+both values. The trimmed token is also what `release-lock.sh` is handed, which refuses a token
+carrying a newline rather than releasing anything.
+
+**The train's lock step can now answer the field it is required to report.** `holder` is required
+of every outcome the step may report, and the train's HELD branch had no read of the holder file in
+it - HELD is ordinary contention, not an edge case. A step asked for a value it was given no way to
+obtain either fills in the one field ownership is decided from or burns its retries and answers
+nothing. That branch now reads the holder file and reports what it printed, with an empty answer
+named as the correct one where the file does not exist yet - which is how a lock looks between
+another run's `mkdir` and its `printf`. The train quotes it in the note it stands down with, so a
+lock another train legitimately holds no longer reads exactly like one nobody owns.
+
 **What this does not fix, stated plainly, because the report's cause is inferred.** The leading
 theory is that an identical `(prompt, opts)` replays a cached result - which is how `resume` is
 specified to work, and a lander is resumed by hand after `stopped=merge_refused`. Under a replay
 the lock step does not run, so every value it reports is stale together and agrees with itself:
-this guard cannot see that, and nothing inside a script can. It closes the causes that leave a
-trace in the file - a retyped or carried-over token, a holder file written by somebody else
-between the `mkdir` and the `printf` - and it is sound whether or not the caching theory holds.
-Distinguishing a replayed acquisition needs per-run entropy reaching the script through `args`,
-which is a change to every launch path and is filed as pitwall-lr0.
+this guard cannot see that, and nothing inside a script can. What it does cover is narrower than
+the title of the report and is worth stating exactly: it fires when the holder file disagrees with
+what the step says it wrote - either value misreported, or a holder file a person wrote by hand -
+because `mkdir` is the mutex and no other lander writes a holder file it did not create. A token
+carried over from an earlier run and then written INTO the file reads back identically, so it
+agrees with itself and passes, which is the same blind spot as a replay. The guard is sound either
+way and it is not the whole of "a lander can hold a token it did not mint". Distinguishing a
+replayed acquisition needs per-run entropy reaching the script through `args`, which is a change to
+every launch path and is filed as pitwall-lr0.
 
 ## 0.1.18
 
@@ -85,7 +109,6 @@ printed `.../rework.js`; both now name the staging step instead.
 staged file now matches this install byte for byte and that the printed `scriptPath` is the path
 just written. A second test asserts no file in the skill spells out a `scriptPath` of its own: a
 path written by hand is the one way left to dispatch something other than what was just staged.
-
 
 ## 0.1.17
 
@@ -162,7 +185,6 @@ the reference scan has no such fallback.** The two are deliberately different. A
 something rather than an empty quote; the reference scan must never be handed a writer token to read
 as an issue id, which is how the false `resolved` above was produced. In that fallback no
 attribution is printed either - the same instant is not shown twice.
-
 
 ## 0.1.16
 
