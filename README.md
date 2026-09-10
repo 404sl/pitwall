@@ -52,7 +52,11 @@ pitwall serve        serve the console on http://127.0.0.1:7373/
 ```
 
 `snapshot` discovers projects, reads their trackers, classifies every issue and reports
-lane state. `status` renders that document as one terminal screen, reading the snapshot
+lane state. It exits non-zero when every project it found failed, and when nobody said
+where to look at all — no config and a fallback scan that found nothing — so a script can
+tell a machine with no projects from a run that could not work out where to look without
+reading `errors[]`. A config whose roots list is empty is an answer, and exits 0.
+`status` renders that document as one terminal screen, reading the snapshot
 the server reads or another file given with `--from`; both it and the console lead with the
 snapshot's age rather than the time it was taken, and both call a snapshot stale once it is
 ten minutes old, because a screen that reads as current when it is not is worse than no
