@@ -297,6 +297,7 @@ if [ -n "$ISSUE" ] && [ -n "$NOTE_FILE" ]; then
   # bd-note.sh takes a lock, then verifies and retries. Through it the same eight-way race loses
   # none. The read-back below stays regardless - it is what caught this in the first place.
   bd_err=$( (cd "$ROOT_DIR" && BEADS_DIR="${BEADS_DIR:-$ROOT_DIR/.beads}" \
+    PITWALL_SESSION="${PITWALL_SESSION:-lane-${BRANCH}}" \
     bash "$SKILL_DIR/bd-note.sh" "$ISSUE" --note-file "$NOTE_FILE" >/dev/null) 2>&1 )
   bd_code=$?
   if [ "$bd_code" != "0" ]; then

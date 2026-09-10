@@ -21,6 +21,7 @@
 #
 # usage: bd-note.sh <issue-id> <note text>
 #        bd-note.sh <issue-id> --note-file <path>
+#        PITWALL_SESSION=<name>  names the writer in the stamp; else $USER, else unknown
 set -u
 
 id=${1:-}; shift || true
@@ -49,6 +50,11 @@ LOCK=/tmp/${PFX}-bd-write.lock
 token=$(printf '%s' "$note" | tr -cd 'A-Za-z0-9' | cut -c1-24)
 [ -n "$token" ] || token=$(printf '%s' "$note" | cut -c1-12)
 
+writer=$(printf '%s' "${PITWALL_SESSION:-${USER:-unknown}}" | tr -s '[:space:]' '-')
+writer=${writer#-}; writer=${writer%-}
+[ -n "$writer" ] || writer=unknown
+stamped=$(printf '\n%s %s\n%s' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$writer" "$note")
+
 note_landed() {
   bd show "$id" --json 2>/dev/null | python3 -c "
 import json,sys,re
@@ -75,7 +81,7 @@ done
 
 status=1
 for attempt in 1 2 3; do
-  bd update "$id" --append-notes "$note" >/dev/null 2>&1
+  bd update "$id" --append-notes "$stamped" >/dev/null 2>&1
   sleep 0.3                          # the write is not always readable the instant it returns
   note_landed; rc=$?
   if [ "$rc" -eq 0 ]; then
@@ -97,7 +103,7 @@ done
 
 if [ "$status" -ne 0 ]; then
   echo "! bd-note: note did NOT land on $id after 4 attempts - the text follows so it is not lost:" >&2
-  printf '%s\n' "$note" >&2
+  printf '%s\n' "$stamped" >&2
   exit 1
 fi
 echo "bd-note: appended to $id"

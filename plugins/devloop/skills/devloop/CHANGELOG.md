@@ -1,5 +1,81 @@
 # Changelog
 
+## 0.1.17
+
+**A note in the tracker said nothing about when it was written or by whom, so a superseded one read
+exactly like a current one.** pitwall-666 held 17,569 characters in 60 blank-line-separated blocks
+and not one timestamp. The first thing anybody met at the top of it was `NEEDS THE ADMIN PANEL, NOT
+A LANE` - true when it was written, false a few hours later, and indistinguishable from the newest
+line in the field. Two runs read it, correctly obeyed it, and refused a P0.
+
+**`bd-note.sh` now stamps what it writes.** One line above each note carrying an ISO-8601 UTC date
+and the writer - `2026-09-10T00:13:11Z devloop-pitwall-326` - where the writer is `$PITWALL_SESSION`,
+else `$USER`, else `unknown`. The stamp is added by the helper, not by its callers: callers that
+format their own produce a field where stamped and unstamped notes sit side by side and neither can
+be trusted. The stamp is preceded by a blank line, so it opens a block of its own in the sense the
+console already counts.
+
+**A stamped note is one block only when it is a single paragraph.** Blocks are blank-line separated,
+so a multi-paragraph note carries its stamp on the first block and the paragraphs after it follow as
+the unstamped blocks they were written as - including the LAST one, which is the block the console
+quotes. Nothing downstream may assume the block it holds is stamped, and a multi-paragraph note
+therefore shows no date in the quoted slot; its date stays in the history.
+
+**The handoff names its own lane.** `lane-handoff.sh` is the one caller today and it sets
+`PITWALL_SESSION` to `lane-<branch>` unless the environment already names the session, so a note
+from a lane says which lane rather than which unix account ran it.
+
+**Notes already in the field are not rewritten.** Their dates are not recoverable and an invented
+one is worse than none, so an unstamped note stays unstamped and the boundary is visible: above the
+first stamp, append order is all there is.
+
+**The read-back still verifies the note, not the stamp.** The token it greps for is taken from the
+note as written, before the stamp is attached. Taken afterwards, two notes from one writer in the
+same second tokenise identically, and the check would confirm a lost note against the previous
+one's stamp - silently reinstating the lost-write bug this script exists to catch. A test holds
+that ordering.
+
+**The stamp is metadata in a content field, so every reader of that field had to learn it.** One
+definition of what a stamp is lives in `staleness.ts`, and the readers go through it rather than
+matching the shape themselves. `noteSaid(block)` returns what a block SAYS and the instant it was
+written at, separately; `reasonOf` drops stamp lines from the whole field before the
+referenced-issue, pull-request and precondition checks read it; `lastNote` quotes what the block
+says. No caller strips for itself and the console defines no pattern of its own - the reason being
+that three independent readers were found during this change and each one that forgot produced a
+different wrong answer.
+
+**The console reads a note in two places and they want opposite things.** Under the title of an
+issue that wants something from you, `LatestNote` quotes the newest block - and a quote that opens
+with a machine timestamp is the bug this change exists to fix. It now quotes the prose and prints
+the stamp's instant beside it as attribution, in the same format as the staleness `checked at`
+two bands down, so the two dates on the page compare at a glance. Where the newest block carries no
+stamp the slot renders exactly as it did before: no date, no placeholder. A date not read from that
+block is not that block's date. The Notes history keeps rendering the field as written, stamps and
+writer names visible, because there the stamps ARE the feature.
+
+**`lane-<branch>` embeds a tracker id, and left in the prose that read as a reference.** A parked
+record whose note named nobody came back `resolved` on the evidence `every issue it names has since
+closed: pitwall-777`, and with that issue open the board reported a reference as checked that
+nothing had checked.
+
+**What counts as a stamp is the whole line, both ends anchored** - an instant, one space, one word,
+end of line - and `$PITWALL_SESSION` is collapsed to a single dashed word so a stamp always has that
+shape. The first cut of this matched an instant followed by anything, and that was wrong in the
+direction that matters: a note quoting its own run log,
+`2026-09-09T08:14:02Z gate refused: waiting on pitwall-333 to land the contract field`, lost the line
+before the referenced-issue check read it, every id that survived had closed, and a record waiting on
+an open issue reported `resolved`. Prose after the instant now keeps the line. **The residual, stated
+plainly: a line that is nothing but an instant and one word is still dropped, so if that word is the
+only place a note names an open issue, the referenced-issue check does not see it and the record can
+read as `resolved` when it is still blocked.** The anchored shape makes that narrow - a pasted log
+line almost always says something after its instant - and it does not make it impossible.
+
+**Where a block is nothing but stamp-shaped lines the quote falls back to the block as written, and
+the reference scan has no such fallback.** The two are deliberately different. A reader must see
+something rather than an empty quote; the reference scan must never be handed a writer token to read
+as an issue id, which is how the false `resolved` above was produced. In that fallback no
+attribution is printed either - the same instant is not shown twice.
+
 ## 0.1.16
 
 **The lander resolved a surveyed pull request through a name the survey chose for itself, and

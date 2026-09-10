@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode, type Ref } from "react";
 import { isYours, type Authority, type Classification, type StalenessVerdict } from "@404sl/pitwall-schema";
 import type { ClassificationReason } from "../../src/classify.js";
-import { noteBlocks, quote } from "../../src/staleness.js";
+import { noteBlocks, noteSaid, quote } from "../../src/staleness.js";
 import {
   buildIssueView,
   type FilterState,
@@ -216,10 +216,23 @@ export function LatestNote({
   if (closed || classification === undefined || !isYours(classification) || latest === undefined) {
     return null;
   }
+  const { said, at } = noteSaid(latest);
   return (
     <p className="pw-call__ask">
-      <span className="pw-call__ask-label">{strings.issue.call.latestNote}</span>
-      <q className="pw-call__ask-text">{quote(latest)}</q>
+      <span className="pw-call__ask-meta">
+        <span className="pw-call__ask-label">{strings.issue.call.latestNote}</span>
+        {at === undefined ? null : (
+          <>
+            <span aria-hidden="true" className="pw-call__ask-separator">
+              {strings.issue.notes.separator}
+            </span>
+            <time className="pw-call__ask-when" dateTime={at}>
+              {stamp(at)}
+            </time>
+          </>
+        )}
+      </span>
+      <q className="pw-call__ask-text">{quote(said)}</q>
     </p>
   );
 }
