@@ -31,18 +31,41 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$deploy_cmd" ] && [ -n "$revision_cmd" ] || {
   echo "usage: deploy-one.sh --label staging --repo-path DIR --deploy CMD --revision CMD [--expect SHA] [--timeout SEC]" >&2
+  echo "       --repo-path is the repository the deploy worktree is cut FROM; the deploy itself" >&2
+  echo "       runs in a throwaway worktree at origin/master, never in that working tree." >&2
   exit 2; }
 [ -n "$label" ] || label="environment"
 cd "$repo_path" || { echo "! $label: cannot enter $repo_path"; exit 2; }
+repo_path=$(pwd)
+
+git fetch origin master --quiet || {
+  echo "! $label: cannot fetch origin/master in $repo_path - refusing rather than deploying"
+  echo "! from a ref that may be stale, which is the failure this worktree exists to prevent."
+  exit 2; }
+master=$(git rev-parse origin/master) || { echo "! $label: cannot resolve origin/master"; exit 2; }
 
 # mina ships origin/master, so that is what the server must end up serving. Defaulting to
 # it means no caller has to substitute a sha into a stored command.
-if [ -z "$expect" ]; then
-  git fetch origin master --quiet || true
-  expect=$(git rev-parse origin/master) || { echo "! $label: cannot resolve origin/master"; exit 2; }
-fi
+[ -n "$expect" ] || expect=$master
 
-echo "-----> $label: deploying, expecting ${expect:0:8} (timeout ${timeout_s}s)"
+work_parent=""; work_tree=""
+cleanup() {
+  trap_rc=$?
+  cd /
+  [ -n "$work_tree" ] && git -C "$repo_path" worktree remove --force "$work_tree" >/dev/null 2>/dev/null
+  [ -n "$work_parent" ] && rm -rf "$work_parent"
+  exit "$trap_rc"
+}
+trap cleanup EXIT
+
+git -C "$repo_path" worktree prune >/dev/null 2>/dev/null
+work_parent=$(mktemp -d "${TMPDIR:-/tmp}/deploy-one-XXXXXX") || { echo "! $label: cannot create a scratch directory for the deploy worktree"; exit 2; }
+work_tree="$work_parent/src"
+git -C "$repo_path" worktree add --detach "$work_tree" "$master" --quiet || {
+  echo "! $label: cannot cut a worktree at ${master:0:8} from $repo_path"; exit 2; }
+cd "$work_tree" || { echo "! $label: cannot enter $work_tree"; exit 2; }
+
+echo "-----> $label: deploying from a worktree at ${master:0:8}, expecting ${expect:0:8} (timeout ${timeout_s}s)"
 timeout "$timeout_s" bash -c "$deploy_cmd" < /dev/null
 rc=$?
 [ "$rc" -eq 124 ] && echo "-----> $label: deploy command hit the ${timeout_s}s timeout and was killed - asking the server what it is serving"
