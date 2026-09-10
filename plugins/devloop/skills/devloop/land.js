@@ -517,7 +517,6 @@ function versionVerdict(read) {
       detail: `the version step could not read what it needs - ${trimmed(read.notes) || `it reported only '${read.status}'`}`
     }
   }
-  if (read.labelled === false || read.open === false) return null
   if (!read.touchesPlugin) return null
   const branch = trimmed(read.branchVersion)
   const master = trimmed(read.masterVersion)
@@ -529,6 +528,13 @@ function versionVerdict(read) {
     }
   }
   if (!ahead) {
+    if (read.labelled === false || read.open === false) {
+      return {
+        why: 'version_not_ahead',
+        defer: read.labelled === false ? `${LABEL} is no longer on it` : 'it is closed, merged or a draft',
+        detail: `the branch declares devloop plugin version ${branch} and origin/master holds ${master}, which is not strictly greater`
+      }
+    }
     if (read.labelled !== true || read.open !== true) {
       return {
         why: 'version_unreadable',
@@ -1363,6 +1369,11 @@ try {
         label: `version:${keyOf(pr)}`, phase: 'Land', schema: VERSION, model: 'haiku', effort: 'low'
       })
       const stale = versionVerdict(declared)
+      if (stale && stale.defer) {
+        seen.delete(keyOf(pr))
+        log(`DEFERRED ${keyOf(pr)} - ${stale.detail}, and the version step reports ${stale.defer}, so nothing is un-queued and no merge is delegated; it goes back for a later round`)
+        continue
+      }
       if (stale) {
         stopped.push({ ...pr, why: stale.why, detail: stale.detail })
         log(`STOPPED ${keyOf(pr)} - ${stale.why}\n    ${stale.detail}`)

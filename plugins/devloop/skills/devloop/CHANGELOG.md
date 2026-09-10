@@ -44,35 +44,46 @@ moment of the merge.
   number on its own and a label left on buys the same refusal once per run forever.
   `version_unreadable` is deliberately kept queued, alongside `master_red` and `agent_error` - that
   is ignorance rather than a finding, and un-queueing on ignorance loses work silently.
-- **A refusal only un-queues a pull request that is still in the queue.** The version step also reads
-  `labels`, `state` and `isDraft` back from the pull request it is about to have merged, and a
-  verdict is taken only while `lane-verified` is still on it and it is still open and not a draft.
-  This is the one refusal in `land.js` that fires in front of `land-one.sh`, and the survey it acts
-  on is up to an hour old: a lane can pull its label back for rework in that window, and a branch
-  mid-rework is exactly the one whose number is behind. Un-queueing it would append "attempted, not
-  landed" to an issue that lane is holding `in_progress` and reopen it for a second lane. So a pull
-  request the step reports as no longer labelled or no longer open falls through to `land-one.sh`,
-  whose shell check is the authority on both, and comes back exit 7 - deferred, label untouched,
-  tracker untouched. A step that reports no queue state at all refuses on `version_unreadable`
-  instead, which stops the merge without un-queueing anything.
-- **Both landers log the versions they did not compare.** A wrong `touchesPlugin` is the only route
-  straight past the guard, and the skip used to leave nothing in the run log; it now names both
-  numbers and says the diff listed no path under `plugins/` or `.claude-plugin/`.
+- **The queue state decides HOW a refusal is recorded, never WHETHER the numbers are compared.** The
+  version step also reads `labels`, `state` and `isDraft` back from the pull request it is about to
+  have merged. This is the one refusal in `land.js` that fires in front of `land-one.sh`, and the
+  survey it acts on is up to an hour old: a lane can pull its label back for rework in that window,
+  and a branch mid-rework is exactly the one whose number is behind. Un-queueing it would append
+  "attempted, not landed" to an issue that lane is holding `in_progress` and reopen it for a second
+  lane. So a pull request the step reports as no longer labelled or no longer open is DEFERRED - the
+  merge is not delegated, the label is not touched, the tracker is not touched, and it goes back for
+  a later round - rather than refused as `version_not_ahead`. What it must not do is fall through to
+  `land-one.sh`: that script is the authority on the LABEL and never reads a version, so handing a
+  behind number to it is not "let the shell decide this", it is "skip the version check and let the
+  shell decide something else". One misreported `labelled`, or a lane that re-labels between the read
+  and the shell's own check, would have merged the number this release exists to refuse. A step that
+  reports no queue state at all refuses on `version_unreadable` instead, which stops the merge
+  without un-queueing anything.
+- **Both landers log the versions they did not compare.** A misreported `touchesPlugin` - or a
+  misreported `no_manifest` - is what is left to get straight past the guard, now that a queue state
+  reported as gone defers the merge instead of skipping the comparison; the skip used to leave
+  nothing in the run log, and it now names both numbers and says the diff listed no path under
+  `plugins/` or `.claude-plugin/`.
 - **A train refused on its version is retired, not left standing.** The same retire step the red path
   uses closes the release pull request and deletes its branch, so a refusal does not leave a branch
   on the remote that reads like open work. The pull requests it carried keep their labels and go back
   to the queue.
-- **Twenty-four tests hold it**, stubbing the agent for both landers: equal, lower, string-ordered
+- **Twenty-seven tests hold it**, stubbing the agent for both landers: equal, lower, string-ordered
   (`0.1.9` against `0.1.21`), strictly greater, plugin-untouched, unreadable, unparseable, a step
   that answers nothing, a repository with no manifest, two pull requests in one run where the second
   is refused against the version the first just published, and which of the two refusals un-queues.
-  Four more cover the queue state a refusal rests on - a label pulled back, a closed or draft pull
-  request, a step that reported neither, and a step that could read neither the manifest nor the
-  pull request, which refuses rather than deferring because `land-one.sh` checks the label and the
-  checks and never a version - and two read the run log, since a skipped comparison that says
-  nothing is indistinguishable from one that never happened. Two read the prompt itself,
-  because the difference between "no plugin here" and "could not read it" is the one thing a stub
-  cannot check.
+  Seven more cover the queue state, and three of those exist because a stub proved a behind number
+  merging: a label pulled back, a closed pull request, and an uncomparable version with the label
+  gone, each with the merge stub answering `merged` - so what is asserted is that nothing landed,
+  which is the only form of that assertion a fall-through could not satisfy. One of the three also
+  reads the `DEFERRED` line for both numbers and the flag, because a deferral that names neither
+  leaves nobody anything to fix. The rest: a label pulled back and a closed pull request against a
+  shell that answers exit 7, a step that reported neither flag, and a step that could read neither
+  the manifest nor the pull request, which refuses rather than defers because `land-one.sh` checks
+  the label and the checks and never a version. Two read the run log, since a skipped comparison
+  that says nothing is indistinguishable from one that never happened, and two read the prompt
+  itself, because the difference between "no plugin here" and "could not read it" is the one thing a
+  stub cannot check.
 
 ## 0.1.21
 
