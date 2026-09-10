@@ -115,6 +115,9 @@ if (isEntry) {
         for (const line of undeliveredReport(result.delivered)) {
           process.stderr.write(`pitwall snapshot: ${line}\n`);
         }
+        for (const unlisted of result.unlisted) {
+          process.stderr.write(`pitwall snapshot: ${unlisted.message}\n`);
+        }
         if (!result.read) {
           process.stderr.write(
             `pitwall snapshot: nothing could be read, so ${snapshotPath()} was left as it was\n`,

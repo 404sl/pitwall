@@ -47,7 +47,26 @@ function unlisted(root: string, options: TransportOptions): string | undefined {
     return undefined;
   }
   const listed = options.configPath ?? configPath({ env: options.env });
-  return `${resolve(root)} was found by scanning for workspaces, not listed in ${listed}, so nothing its workspace file names is run here`;
+  return `${resolve(root)} was found by scanning for workspaces, not listed in ${listed}, so nothing its workspace file names for delivery is used here`;
+}
+
+export function unlistedNotifiers(
+  roots: readonly string[],
+  options: TransportOptions = {},
+): string | undefined {
+  if (options.source === "config") {
+    return undefined;
+  }
+  const named = roots
+    .map((root) => resolve(root))
+    .filter((root) => "command" in notifyCommandOf(root));
+  if (named.length === 0) {
+    return undefined;
+  }
+  const listed = options.configPath ?? configPath({ env: options.env });
+  const many = named.length !== 1;
+  const them = many ? "them" : "it";
+  return `${named.length} workspace${many ? "s" : ""} found by scanning name${many ? "" : "s"} a ${NOTIFY_FIELD} command, so no completion notice is delivered for ${them}. List ${them} in roots in ${listed} to deliver: ${named.join(", ")}`;
 }
 
 export function sessionRefOf(root: string, options: TransportOptions = {}): string | undefined {

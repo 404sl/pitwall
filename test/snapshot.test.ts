@@ -381,22 +381,29 @@ test("with no ref for this session a notice is computed, held and recorded on th
   assert.match(recorded, /mw-1\.1 Completion notice/);
 });
 
-test("a workspace found by scanning cannot run the command its own file names", async () => {
-  const place = withConfig("{}");
-  rmSync(place.configPath);
-  const root = join(place.home, "work", "scanned");
+function scannedRoot(place: Workspace, name: string, notify: boolean): string {
+  const root = join(place.home, "work", name);
   mkdirSync(root, { recursive: true });
   cpSync(join(TRACKER, "bd-output"), join(root, "bd-output"), { recursive: true });
-  const log = join(root, "delivered.jsonl");
   writeFileSync(
     join(root, "notify.mjs"),
     `import { appendFileSync, readFileSync } from "node:fs";
-     appendFileSync(${JSON.stringify(log)}, readFileSync(0, "utf8"));`,
+     appendFileSync(${JSON.stringify(join(root, "delivered.jsonl"))}, readFileSync(0, "utf8"));`,
   );
   writeFileSync(
     join(root, ".pitwall.json"),
-    JSON.stringify({ idPrefix: "mw", notify: [execPath, join(root, "notify.mjs")] }),
+    JSON.stringify(
+      notify ? { idPrefix: "mw", notify: [execPath, join(root, "notify.mjs")] } : { idPrefix: "mw" },
+    ),
   );
+  return root;
+}
+
+test("a workspace found by scanning neither runs its own command nor is written to", async () => {
+  const place = withConfig("{}");
+  rmSync(place.configPath);
+  const root = scannedRoot(place, "scanned", true);
+  const log = join(root, "delivered.jsonl");
   const notes = join(root, "notes.log");
   const env = { ...place.env, [SESSION_REF_VAR]: "9f31bd" };
   await emitSnapshot({ ...options(place), env });
@@ -404,19 +411,45 @@ test("a workspace found by scanning cannot run the command its own file names", 
     ...options(place),
     env: { ...env, BD_LIST_FIXTURE: "landed", BD_NOTES_LOG: notes },
   });
-  assert.deepEqual(
-    result.delivered.map((entry) => [entry.notice.issueId, entry.delivery.delivered]),
-    [
-      ["mw-1", false],
-      ["mw-1.1", false],
-    ],
-  );
+  assert.deepEqual(result.delivered, []);
   assert.equal(existsSync(log), false);
-  const held = result.delivered[0]?.delivery;
-  const reason = held === undefined || held.delivered ? "" : held.reason;
-  assert.match(reason, /was found by scanning for workspaces/);
-  assert.match(reason, new RegExp(place.configPath));
-  assert.match(readFileSync(notes, "utf8"), /was found by scanning for workspaces/);
+  assert.equal(existsSync(notes), false);
+  assert.equal(result.unlisted.length, 1);
+  assert.equal(result.unlisted[0]?.source, place.configPath);
+  const said = result.unlisted[0]?.message ?? "";
+  assert.match(said, /1 workspace found by scanning names a notify command/);
+  assert.match(said, new RegExp(root));
+  assert.match(said, new RegExp(place.configPath));
+});
+
+test("a scanned workspace that names no command is nothing to report", async () => {
+  const place = withConfig("{}");
+  rmSync(place.configPath);
+  scannedRoot(place, "scanned", false);
+  const result = await emitSnapshot({ ...options(place), env: place.env });
+  assert.deepEqual(result.unlisted, []);
+});
+
+test("the board reports a scanned notifier once, and the same row after a refresh", async () => {
+  const place = withConfig("{}");
+  rmSync(place.configPath);
+  const root = scannedRoot(place, "scanned", true);
+  const notes = join(root, "notes.log");
+  const { errors } = await consoleCollector({ ...options(place), env: place.env })();
+  const refreshed = await consoleCollector({
+    ...options(place),
+    env: { ...place.env, BD_LIST_FIXTURE: "landed", BD_NOTES_LOG: notes },
+  })();
+  const said = (rows: readonly { source: string; message: string }[]) =>
+    rows.filter((row) => row.source === place.configPath).map((row) => row.message);
+  assert.equal(said(errors).length, 1);
+  assert.match(said(errors)[0] ?? "", /no completion notice is delivered for it/);
+  assert.deepEqual(said(refreshed.errors), said(errors));
+  assert.deepEqual(
+    refreshed.errors.filter((error) => /notice for mw-planning-session/.test(error.message)),
+    [],
+  );
+  assert.equal(existsSync(notes), false);
 });
 
 test("a notice the tracker would not record reaches the board as an error", async () => {

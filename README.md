@@ -132,9 +132,14 @@ program to run, in a workspace you have listed yourself:
 Run Pitwall from a directory whose children are workspaces and it finds them by scanning
 instead, which is enough to read a board and is not enough to run a program: a workspace file
 is committed, so a repository you merely cloned could otherwise name a command that runs on
-your machine at the next `snapshot`. A workspace found by scanning holds its notices and says
-so, naming the file to list it in. `sessionRef` in a workspace file is read on the same
-terms. `PITWALL_SESSION_REF` is not, because the environment of the run is yours.
+your machine at the next `snapshot`. For a workspace found by scanning, notices are not
+computed at all and nothing is written to its tracker — collecting one stays a read. Where
+such a workspace does name a `notify` command, that is said once per collection rather than
+once per notice: `snapshot` writes a line to standard error naming the roots and the file to
+list them in, and the console carries the same line as one row against that file, because it
+is a fact about your configuration and not about any issue. `sessionRef` in a workspace file
+is read on the same terms. `PITWALL_SESSION_REF` is not, because the environment of the run
+is yours.
 
 A relative path with a separator in it, like `script/notify-session.sh`, resolves against the
 workspace root; a bare name with no separator is looked up on `PATH` like any other program.
@@ -160,10 +165,11 @@ the environment wins where both are set — two sessions collecting the same wor
 different refs and must not share a configured one.
 
 Where that ref is unknown, every notice is held rather than sent, because with nothing to
-compare against any of them might be the collecting session's own work coming back at it. A
-notice that was not delivered — held, refused, or handed to a command that failed — is
-appended to its own issue with the reason, so what did not arrive is readable afterwards
-rather than lost. `snapshot` writes a line to standard error for each of them as well, and
+compare against any of them might be the collecting session's own work coming back at it. In
+a workspace you have listed, a notice that was not delivered — held, refused, or handed to a
+command that failed — is appended to its own issue with the reason, so what did not arrive is
+readable afterwards rather than lost. `snapshot` writes a line to standard error for each of
+them as well, and
 where the tracker refused the note too — the one case where the reason would otherwise be
 written down nowhere — the notice is reported as an error on the board, beside everything
 else the collection could not do. Silence is not one of the outcomes.

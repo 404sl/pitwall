@@ -42,13 +42,14 @@ export interface ServeOptions extends StateOptions {
 
 export function consoleCollector(options: SnapshotOptions = {}): Collector {
   return async () => {
-    const { snapshot, read, delivered } = await emitSnapshot(options);
+    const { snapshot, read, delivered, unlisted } = await emitSnapshot(options);
     return {
       read,
       errors: [
         ...snapshot.errors,
         ...snapshot.projects.flatMap((project) => project.errors),
         ...lostNotices(delivered),
+        ...unlisted,
       ],
     };
   };

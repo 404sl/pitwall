@@ -162,9 +162,13 @@ function collectingEnv(): Record<string, string> {
   };
 }
 
-function snapshotRun(env: Record<string, string>): Promise<{ code: number | null; stderr: string }> {
+function snapshotRun(
+  env: Record<string, string>,
+  cwd?: string,
+): Promise<{ code: number | null; stderr: string }> {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [TSX, CLI, "snapshot"], {
+      cwd,
       env,
       stdio: ["ignore", "ignore", "pipe"],
     });
@@ -186,4 +190,35 @@ test("a notice that snapshot could neither deliver nor record is reported on sta
   assert.match(stderr, /pitwall snapshot: mw-1 notice for mw-planning-session \(c1796a\)/);
   assert.match(stderr, /was not delivered/);
   assert.match(stderr, /could not be recorded on the issue either/);
+});
+
+test("two scanned workspaces naming a command are one line on standard error", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pitwall-cli-scanned-"));
+  const configPath = join(home, "config.json");
+  const here = join(home, "work", "here");
+  mkdirSync(here, { recursive: true });
+  for (const name of ["one", "two"]) {
+    const root = join(home, "work", name);
+    mkdirSync(root, { recursive: true });
+    cpSync(join(FIXTURES, "bd", "tracker", "bd-output"), join(root, "bd-output"), {
+      recursive: true,
+    });
+    writeFileSync(
+      join(root, ".pitwall.json"),
+      JSON.stringify({ idPrefix: name, notify: ["script/notify-session.sh"] }),
+    );
+  }
+  const env = {
+    PATH: `${join(FIXTURES, "bd", "ok")}:/usr/bin:/bin`,
+    HOME: home,
+    XDG_STATE_HOME: join(home, "state"),
+    PITWALL_CONFIG: configPath,
+  };
+  const { code, stderr } = await snapshotRun(env, here);
+  assert.equal(code, 0, stderr);
+  const reported = stderr.split("\n").filter((line) => /found by scanning/.test(line));
+  assert.equal(reported.length, 1, stderr);
+  assert.match(reported[0] ?? "", /2 workspaces found by scanning name a notify command/);
+  assert.match(reported[0] ?? "", /work\/one, .*work\/two$/);
+  assert.match(reported[0] ?? "", new RegExp(`List them in roots in ${configPath}`));
 });
