@@ -1,0 +1,27 @@
+[
+  {
+    "id": "mw-4.2",
+    "title": "Add the threadId column",
+    "description": "The session event table has no thread.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "notes": null,
+    "created_at": "2026-09-02T11:00:00Z",
+    "updated_at": "2026-09-09T17:10:00Z",
+    "metadata": null,
+    "labels": [],
+    "dependencies": [
+      {
+        "id": "mw-4",
+        "title": "Record every session event",
+        "status": "in_progress",
+        "dependency_type": "parent-child"
+      }
+    ],
+    "dependents": null,
+    "dependency_count": 1,
+    "dependent_count": 0,
+    "comment_count": 0
+  }
+]

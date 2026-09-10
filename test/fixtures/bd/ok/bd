@@ -5,6 +5,9 @@ case "$BEADS_DIR" in
   *) echo "Error: no beads database found under ${BEADS_DIR:-\$PWD}" >&2; exit 1 ;;
 esac
 out=$(dirname "$BEADS_DIR")/bd-output
+if [ -n "$BD_CALL_LOG" ]; then
+  printf '%s\n' "$*" >> "$BD_CALL_LOG"
+fi
 case "$*" in
   "statuses --json") cat "$out/statuses.json" ;;
   "list --all --limit 0 --json") cat "$out/${BD_LIST_FIXTURE:-all}.json" ;;
@@ -14,6 +17,7 @@ case "$*" in
       cat "$out/show-$3.json"
     else
       echo "Error fetching $3: no issue found matching \"$3\"" >&2
+      printf '{\n  "error": "no issues found matching the provided IDs",\n  "schema_version": 1\n}\n'
       exit 1
     fi
     ;;

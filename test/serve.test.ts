@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { connect } from "node:net";
 import { createServer, request } from "node:http";
 import { networkInterfaces, tmpdir } from "node:os";
-import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import type { AddressInfo } from "node:net";
@@ -334,16 +334,20 @@ function trackerServer(
   bin: string,
   issues: Array<Record<string, unknown>>,
   errors: Array<Record<string, unknown>> = [],
+  extra: Record<string, string> = {},
 ): Server {
   const { env } = stateWith(trackerSnapshot(issues, errors));
   return createConsoleServer({
-    env: { ...env, PATH: `${join(BD_FIXTURES, bin)}:/usr/bin:/bin` },
+    env: { ...env, PATH: `${join(BD_FIXTURES, bin)}:/usr/bin:/bin`, ...extra },
     uiDir: builtConsole(),
   });
 }
 
 test("one issue is served with its body, which the snapshot never carries", async (t) => {
-  const server = trackerServer("ok", [indexed("mw-1", "open", "parked:umbrella")]);
+  const server = trackerServer("ok", [
+    indexed("mw-1", "open", "parked:umbrella"),
+    indexed("mw-1.1", "open", "ready"),
+  ]);
   t.after(() => server.close());
   const { origin } = await started(server);
 
@@ -367,9 +371,26 @@ test("one issue is served with its body, which the snapshot never carries", asyn
   assert.equal(document.includes("\"notes\""), false);
 });
 
+test("opening one ticket costs one call to the tracker, not a reading of the whole board", async (t) => {
+  const log = join(mkdtempSync(join(tmpdir(), "pitwall-calls-")), "bd.log");
+  const server = trackerServer(
+    "ok",
+    [indexed("mw-1", "open", "parked:umbrella"), indexed("mw-1.1", "open", "ready")],
+    [],
+    { BD_CALL_LOG: log },
+  );
+  t.after(() => server.close());
+  const { origin } = await started(server);
+
+  assert.equal((await fetch(`${origin}/api/issue/mw/mw-1`)).status, 200);
+  const ran = readFileSync(log, "utf8").split("\n").filter((line) => line !== "");
+  assert.deepEqual(ran, ["show --id mw-1 --json --include-dependents"]);
+});
+
 test("an issue that is not there is a 404, told apart from one that could not be read", async (t) => {
   const readable = trackerServer("ok", [indexed("mw-1", "open", "parked:umbrella")]);
   const unreadable = trackerServer("failing", [indexed("mw-1", "open", "parked:umbrella")]);
+  const shown = "bd show --id mw-1 --json --include-dependents";
   t.after(() => {
     readable.close();
     unreadable.close();
@@ -386,7 +407,7 @@ test("an issue that is not there is a 404, told apart from one that could not be
   assert.equal(failed.status, 503);
   const unread = (await failed.json()) as { message: string; source: string; tried: string[] };
   assert.match(unread.message, /mw-1 could not be read/);
-  assert.ok(unread.tried.includes("bd statuses --json"));
+  assert.ok(unread.tried.includes(shown));
   assert.ok(unread.tried.some((entry) => entry.endsWith(".beads")));
 });
 
@@ -478,6 +499,47 @@ test("an issue the snapshot never indexed is served without a snapshot to compar
   assert.equal(body.issue.classification, "parked:roadmap");
   assert.deepEqual(body.issue.reason, { rule: "stored-status", status: "deferred" });
   assert.equal(body.issue.staleness.verdict, "unchecked");
+});
+
+test("the verdict one ticket reports agrees with the blocker status beside it", async (t) => {
+  const unread = { source: join(TRACKER, ".beads"), message: "bd list --all --limit 0 --json: timed out", at: "2026-09-08T13:02:00Z" };
+  const blind = trackerServer("ok", [], [unread]);
+  const stale = trackerServer("ok", [indexed("mw-1", "open", "ready"), indexed("mw-9", "open", "ready")]);
+  t.after(() => {
+    blind.close();
+    stale.close();
+  });
+
+  const blocked = (await (await fetch(`${(await started(blind)).origin}/api/issue/mw/mw-6`)).json()) as {
+    issue: {
+      classification: string;
+      reason: { rule: string; ids?: string[] };
+      blockedBy: Array<{ id: string; status: string }>;
+    };
+  };
+  assert.deepEqual(
+    blocked.issue.blockedBy.map((link) => [link.id, link.status]),
+    [["mw-9", "open"]],
+  );
+  assert.equal(blocked.issue.classification, "blocked");
+  assert.deepEqual(
+    blocked.issue.reason,
+    { rule: "blocked-open", ids: ["mw-9"] },
+    "a board that could not be collected must not turn an open blocker into a guess",
+  );
+
+  const ready = (await (await fetch(`${(await started(stale)).origin}/api/issue/mw/mw-1`)).json()) as {
+    issue: { classification: string; blockedBy: Array<{ id: string; status: string }> };
+  };
+  assert.deepEqual(
+    ready.issue.blockedBy.map((link) => [link.id, link.status]),
+    [["mw-9", "closed"]],
+  );
+  assert.equal(
+    ready.issue.classification,
+    "ready",
+    "a snapshot still carrying mw-9 as open must not park a ticket the tracker has unblocked",
+  );
 });
 
 test("a project the snapshot does not name is a read failure, not a missing issue", async (t) => {
