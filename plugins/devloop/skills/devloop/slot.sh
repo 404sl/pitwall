@@ -81,9 +81,11 @@ show() {
 case "$1" in
   --list) show; exit 0 ;;
   --release)
-    # DROP THE LANE LOCK TOO. A lane releases its own lock at handoff, so a run that ends any
-    # other way - split, needs_feedback, blocked, a crash - leaks it, and the next occupant of
-    # that slot is refused with LANE_BUSY on a lock whose owner is long gone.
+    # DROP THE LANE LOCK TOO. A run now gives its own lane and slot back in task.js's finally,
+    # through release-lane.sh, whatever way it ends - so this is for a run that never reported at
+    # all: killed, crashed, or a supervisor that lost its context. It used to be the only thing
+    # that could, and nothing called it, and the next occupant of an unreleased slot is refused
+    # with LANE_BUSY on a lock whose owner is long gone.
     #
     # That is not hypothetical: on 2026-08-29 app-vyom ended as a split and left lane-3 held.
     # app-vyom.1 was dispatched into the same slot, found the lock, correctly refused to remove
@@ -98,7 +100,7 @@ case "$1" in
       if [ -f "$SLOTDIR/$n" ] && [ "$(cat "$SLOTDIR/$n")" = "$2" ]; then
         rm -f "$SLOTDIR/$n"
         lock="/tmp/${PFX}-lane-$((n + 1)).lock"
-        if [ -d "$lock" ] && rmdir "$lock" 2>/dev/null; then
+        if [ -d "$lock" ] && rm -f "${lock%.lock}.owner" && rmdir "$lock" 2>/dev/null; then
           echo "released slot $n and lane $((n + 1))"
         else
           echo "released slot $n"

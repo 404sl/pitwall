@@ -1,5 +1,84 @@
 # Changelog
 
+## 0.1.21
+
+**A lane that ended any way other than by handing off kept its lane lock, and its slot with it.**
+Only the success path gave anything back: `lane-handoff.sh` drops the lock last, after the label is
+on, so a split, a `needs_feedback`, a `blocked`, a handoff that failed and a crash all left the lock
+standing and the slot reserved. The next run given that slot is refused with LANE_BUSY on a lock
+whose owner is long gone - on 2026-08-29 `app-vyom` ended as a split and left lane 3 held, and
+`app-vyom.1` and `app-vyom.2` were dispatched into it one after the other and returned having done
+nothing, about 330k tokens for two lanes that could not start.
+
+The outcomes that leak are the ones the pipeline is designed to produce often. `needs_feedback` is
+the correct answer to a ticket that needs a decision and a split is the correct answer to work
+spanning two repositories; neither is an error path, so neither reads as something to clean up
+after. Five non-handoff endings in one afternoon leaked nothing only because none of them reached
+the database: the lock is taken minutes in, so the three that returned inside three minutes died in
+front of it.
+
+- **The release is in the script's own `finally`, which is every exit path there is.** A shell trap
+  was considered and is the wrong level for the same reason it was the wrong level for the merge
+  lock: the lock is taken by an agent whose shell exits as soon as the command returns, so a trap
+  there fires at once and releases a lock the run is still holding. The process that lives as long
+  as the run is the workflow script, and `task.js` now wraps everything from Triage to its own return
+  in `try`/`finally`. The body is deliberately left unindented - re-indenting 400 lines would bury
+  the change in whitespace - which is how the same fix was shaped for `land-train.js`.
+- **Ownership is proved from the owner file, not assumed from the registry.** `release-lane.sh` reads
+  the id out of the owner file beside the lock and the id in the slot file, and removes only what
+  names this run: a foreign owner, a missing owner file and an id that no lane could have written are
+  all left exactly as they were. An unprovable release is a visible leak in the run's result rather
+  than a guess, because a lock left standing costs a dispatch and one deleted out from under a live
+  lane costs two runs their work. A regular file at the lock path is reported as the fault it is -
+  `mkdir` can never succeed against it, so that lane is blocked for good rather than until a run
+  finishes.
+- **The lock and the owner file are now taken in one command.** They used to be two, with a window
+  between them in which the lock existed and named nobody, and the generic brief never wrote one at
+  all - so a release that proves ownership from that file would have answered `not_mine` for every
+  lock those lanes took. A lock taken without an owner file beside it cannot be proved to be
+  anybody's, and the brief says so where it is taken.
+- **The slot reservation comes back in the same step.** Nothing released it either, and it is the
+  reservation that `config.sh --args` consults before dispatching, so a workspace would have run out
+  of lanes after as many non-handoff endings as it has lanes. `slot.sh --gc` stays a suggestion
+  rather than becoming automatic: it runs against slots whose runs may still be alive, and it freed
+  two live ones that way on 2026-08-24.
+- **Nothing drops a lane lock without taking its owner file with it, and the owner file goes first.**
+  That file is now the proof of ownership, so a lock dropped while a stale owner naming a finished run
+  stays beside it is worse than the leak this fixes: between the drop and the run's own release, a
+  second run can take the lane, and a release proving itself against the file left behind would remove
+  a live lane's lock. `lane-handoff.sh` dropped the lock and left the file, which was harmless while
+  nothing read it; `slot.sh --release` and `kill-lane.sh` did the same. With the file removed first the
+  same window reads an empty owner, which is `not_mine`, so nothing is removed. The removal is `rmdir`
+  rather than `rm -rf` and the path must be shaped like a lane lock: a lane lock is a bare directory,
+  so anything inside it is the fault the `STILL_HELD` branch reports, and a mis-derived path is the one
+  mistake here that costs more than a leak.
+- **A leak is named in the log whatever way the run ended, and a run past triage carries the lane and
+  the slot in its result**, as the landers report the merge lock. `not_mine` and `already_gone` are
+  outcomes rather than failures to clean up - a handoff that dropped the lock itself reads
+  `already_gone` - and only a missing answer or a lock still standing is reported, naming the path to
+  read before anything is removed by hand. The three triage bounces - a dead triage agent, a split, a
+  `needs_feedback` that never reached the work loop - build their result object before the `finally`
+  runs, and JavaScript evaluates a `return` expression before the `finally`, so the answer cannot be
+  attached to it afterwards. Those runs still release, and their leak is in the log; the result field
+  is for runs that reach the work loop. Tests pin both halves, because the shipped sentence claimed
+  both and only one held.
+
+`slot.sh --release` keeps its behaviour and is now for the case it is actually safe for: a run that
+never reported at all. It takes the owner file with the lock like everything else that drops one. `rework.js` takes the same lock on the same terms and releases it only at its own
+handoff; that is the same defect in a second script and is filed separately rather than folded in
+here.
+
+The tests drive `release-lane.sh` as a real process against temporary lock directories - a matching
+owner is removed along with its owner file and its slot, a foreign owner and a missing owner file are
+not, an absent lock reads `already_gone` and takes the owner file a handoff left behind with it, an
+empty or quote-carrying id removes nothing, and a regular file at the lock path is a fault - and
+`task.js` as a function body with a stubbed agent, where a `needs_feedback`, a split, a throw and a
+verified handoff must all reach the release step, a split's leak reaches the log, and no script that
+drops a lane lock leaves its owner file behind. All nineteen fail before this change: nine drive
+`release-lane.sh`, which does not exist before it, one reads every script that drops a lane lock and
+names the line, and nine drive `task.js` - eight because nothing there reaches a release step at all,
+and one because the briefs take the lock without recording who holds it.
+
 ## 0.1.20
 
 **A lander reported `"deployed":"failed"` for a deploy that had succeeded.** The deploy finished,

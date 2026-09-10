@@ -325,7 +325,11 @@ fi
 
 # 6. Give the lane back last, so a crash before this leaves the slot held rather than handing it
 #    to a dispatch that lands on top of a run still finishing.
-[ -n "$LOCK" ] && rmdir "$LOCK" 2>/dev/null
+if [ -n "$LOCK" ]; then
+  lane="${LOCK%/}"
+  rm -f "${lane%.lock}.owner"
+  rmdir "$lane" 2>/dev/null
+fi
 
 if [ -n "$NOTE_VERDICT" ]; then
   echo "note-unconfirmed: ${SLUG}#${PR} at ${head_sha} IS labelled ${LABEL}, the worktree is gone"

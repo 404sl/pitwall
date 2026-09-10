@@ -55,9 +55,20 @@ see who holds what.
 
 ```
 slot=$(bash ${CLAUDE_PLUGIN_ROOT}/skills/devloop/slot.sh <issue-id>)   # reserves it, prints the number
-bash ${CLAUDE_PLUGIN_ROOT}/skills/devloop/slot.sh --release <issue-id> # when the lane ends
+bash ${CLAUDE_PLUGIN_ROOT}/skills/devloop/slot.sh --release <issue-id> # a run that never reported
 bash ${CLAUDE_PLUGIN_ROOT}/skills/devloop/slot.sh --list               # who holds what
 ```
+
+**A run gives its own lane and slot back, whatever way it ends.** `task.js` releases them in a
+`finally`, so a split, a `needs_feedback`, a `blocked`, a handoff that failed and an exception all
+go through it, and `release-lane.sh` proves ownership from the owner file beside the lock and the
+id in the slot file before removing anything. `--release` above is for a run that never reported at
+all - killed, crashed, or a supervisor that lost its context. A lane or a slot that was not given
+back is named in the run's log whatever way the run ended, and a run that got past triage carries
+the outcome for both in its result as well - so a leak arrives in the answer rather than in
+somebody's memory. A run that bounced at triage - a dead triage agent, a split, a `needs_feedback` -
+has built its result before the release step answers, so for those three the log is the only place
+it appears.
 
 The slot number IS the test database - task.js derives `TEST_ENV_NUMBER` from it - so two lanes
 on one slot share a database. `slot.sh` checks the lane lock before handing a number out, which
