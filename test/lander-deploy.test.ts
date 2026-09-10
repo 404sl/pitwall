@@ -1047,3 +1047,34 @@ test("a run that takes the step's word is not also told the step was not confirm
       "was refuted beside a verdict that closed its issues is the defect this ticket is about, written into the report.",
   );
 });
+
+test("a single verify command against two deploy environments reads the one host it can", async () => {
+  const oneStringTwoEnvironments = {
+    ...ARGS,
+    repos: { docs: { ...TWO_ENV.repos.docs, verify: ARGS.repos.docs.verify } },
+  };
+  const { calls, logs, done } = landOnce({
+    args: oneStringTwoEnvironments,
+    deploy: null,
+    check: { status: "read", hosts: hosts(SHA), notes: "the host answered" },
+  });
+  const result = await done;
+
+  const check = calls.find((c) => c.label === "deploy-check");
+  assert.ok(
+    check,
+    "a verify written as a single string against a repository that deploys twice names one environment and leaves one " +
+      `unaskable, and the one it names went unread. Steps: ${calls.map((c) => c.label).join(", ")}`,
+  );
+  assert.ok(
+    check.prompt.includes("https://staging.example.com/health"),
+    "the read-back was spawned without the one command a single-string verify provides",
+  );
+  assert.equal(
+    result.deployed,
+    "unknown",
+    "one of the two environments configures nothing that can be asked, so the host that answered confirms its own " +
+      "environment and not the repository. A single confirmed environment out of two is not a deploy.",
+  );
+  assert.match(logs.join("\n"), /one command per environment/);
+});
