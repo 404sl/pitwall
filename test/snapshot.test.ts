@@ -126,6 +126,60 @@ test("closedToday counts the issues closed on the day collection started", async
   assert.equal(later.projects[0]?.metrics.closedToday, 0);
 });
 
+test("landedToday counts the closures of the day whose reason names a merge", async () => {
+  const place = workspace([TRACKER]);
+  const snapshot = await collectSnapshot({
+    ...options(place, new Date("2026-09-08T18:00:00Z")),
+    env: { ...place.env, BD_LIST_FIXTURE: "merged" },
+  });
+  const metrics = snapshot.projects[0]?.metrics;
+  assert.equal(metrics?.closedToday, 3);
+  assert.equal(metrics?.landedToday, 2, "a closure that names no merge is closed and not landed");
+  const served = await emitSnapshot({
+    ...options(place, new Date("2026-09-08T18:00:00Z")),
+    env: { ...place.env, BD_LIST_FIXTURE: "merged" },
+  });
+  assert.equal(
+    served.snapshot.projects[0]?.metrics.landedToday,
+    2,
+    "what the tracker measured must survive into the snapshot that is served",
+  );
+});
+
+test("landedToday is absent rather than zero when a closure of the day records no reason", async () => {
+  const place = workspace([TRACKER]);
+  const snapshot = await collectSnapshot({
+    ...options(place, new Date("2026-09-08T18:00:00Z")),
+    env: { ...place.env, BD_LIST_FIXTURE: "landed" },
+  });
+  const metrics = snapshot.projects[0]?.metrics;
+  assert.equal(metrics?.closedToday, 2);
+  assert.equal(metrics?.landedToday, undefined);
+  const written = JSON.parse(JSON.stringify(snapshot)) as { projects: { metrics: object }[] };
+  assert.equal(
+    "landedToday" in (written.projects[0]?.metrics ?? {}),
+    false,
+    "an uncomputed figure must reach a console as absent, never as a zero it can read",
+  );
+  const served = await emitSnapshot({
+    ...options(place, new Date("2026-09-08T18:00:00Z")),
+    env: { ...place.env, BD_LIST_FIXTURE: "landed" },
+  });
+  assert.equal(
+    served.snapshot.projects[0]?.metrics.landedToday,
+    undefined,
+    "the history log must not answer a question the tracker itself left unanswered",
+  );
+});
+
+test("a tracker that could not be read reports no landedToday rather than nothing landed", async () => {
+  const snapshot = await collectSnapshot(options(workspace([NO_TRACKER])));
+  const metrics = snapshot.projects[0]?.metrics;
+  assert.ok((snapshot.projects[0]?.errors ?? []).length > 0);
+  assert.equal(metrics?.closedToday, 0);
+  assert.equal(metrics?.landedToday, undefined);
+});
+
 test("a project that failed to collect blocks an issue whose blocker it never saw", async () => {
   const place = workspace([degradedRoot()]);
   const snapshot = await collectSnapshot({

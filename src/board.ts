@@ -114,6 +114,11 @@ export interface BoardTotals {
   issues: number;
 }
 
+export interface TodayTotals {
+  landed: number | undefined;
+  closed: number;
+}
+
 export interface Board {
   generatedAt: string;
   projectCount: number;
@@ -131,6 +136,7 @@ export interface Board {
   filtered: boolean;
   options: FilterOptions;
   issueCount: number;
+  today: TodayTotals;
   totals: BoardTotals;
   refreshFailure?: CollectionError;
 }
@@ -464,6 +470,19 @@ function filterOptions(projects: Project[]): FilterOptions {
   };
 }
 
+function todayTotals(projects: Project[]): TodayTotals {
+  const metrics = projects.map((project) => project.metrics ?? {});
+  const landed = metrics.map((entry) => entry.landedToday);
+  const counted = landed.filter((count): count is number => count !== undefined);
+  return {
+    landed:
+      landed.length > 0 && counted.length === landed.length
+        ? counted.reduce((sum, count) => sum + count, 0)
+        : undefined,
+    closed: metrics.reduce((sum, entry) => sum + (entry.closedToday ?? 0), 0),
+  };
+}
+
 function boardTotals(projects: Project[], generatedAt: string, running: RunningRow[]): BoardTotals {
   return {
     needsYou: needsYouGroups(projects).reduce((sum, group) => sum + group.rows.length, 0),
@@ -502,6 +521,7 @@ export function buildBoard(snapshot: Snapshot, filter: FilterState = {}): Board 
     filtered,
     options: filterOptions(projects),
     issueCount: shown.reduce((sum, project) => sum + issuesOf(project).length, 0),
+    today: todayTotals(projects),
     totals: boardTotals(projects, generatedAt, everyRunning),
     refreshFailure: refreshFailure(snapshot),
   };

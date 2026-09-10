@@ -17,6 +17,7 @@ export const strings = {
     running: "Running",
     ready: "Ready",
     parked: "Parked",
+    today: "Today",
     problems: "Problems",
   },
   empty: {
@@ -26,6 +27,12 @@ export const strings = {
     ready: "Nothing is ready to pick up.",
     parked: "Nothing parked.",
     problems: "Every project read cleanly.",
+  },
+  today: {
+    landed: "landed {count}",
+    closed: "closed {count}",
+    unknown: "unknown",
+    unknownNotice: "Nothing computed how many landed today. This is not a count of zero.",
   },
   column: {
     issue: "Issue",

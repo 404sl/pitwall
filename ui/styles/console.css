@@ -352,18 +352,25 @@ body {
 }
 
 .pw-parked,
+.pw-today,
 .pw-more,
 .pw-empty {
   margin: 8px 0 0;
   padding-inline-start: 12px;
 }
 
-.pw-parked {
+.pw-parked,
+.pw-today {
   font-family: var(--pw-font-data);
   font-size: 12px;
   line-height: 1.6;
   letter-spacing: 0.02em;
   color: var(--pw-ink);
+}
+
+.pw-today__unknown {
+  font-style: italic;
+  color: var(--pw-muted);
 }
 
 .pw-parked + .pw-parked--blocked {

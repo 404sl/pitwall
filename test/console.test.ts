@@ -1253,3 +1253,72 @@ test("a filter value the snapshot never knew says so where it is chosen and wher
   assert.ok(textOf(markup).includes(`type ${named}`), "the stated filter must name it as one the snapshot has not");
   assert.ok(markup.includes("0 of 5 issues"));
 });
+
+const { Today } = await import("../ui/components/Today.tsx");
+
+function metricsBoard(metrics: Array<Record<string, unknown>>, filter: FilterState = {}): Board {
+  return buildBoard(
+    snapshotOf(
+      metrics.map((entry, index) =>
+        project(`p${index}`, { metrics: entry, issues: [issue(`p${index}-1`, "ready")] }),
+      ),
+    ),
+    filter,
+  );
+}
+
+function todayMarkup(board: Board): string {
+  return renderToStaticMarkup(
+    createElement(Band, {
+      id: "today",
+      label: strings.band.today,
+      count: board.filtered ? strings.filters.notFiltered : undefined,
+      children: createElement(Today, { today: board.today }),
+    }),
+  );
+}
+
+test("the day's landed figure is summed only where every project computed one", () => {
+  assert.deepEqual(
+    metricsBoard([
+      { landedToday: 9, closedToday: 13 },
+      { landedToday: 4, closedToday: 6 },
+    ]).today,
+    { landed: 13, closed: 19 },
+  );
+  assert.deepEqual(
+    metricsBoard([{ landedToday: 9, closedToday: 13 }, { closedToday: 6 }]).today,
+    { landed: undefined, closed: 19 },
+    "a partial sum presented as the day's total is the lie this field exists to stop",
+  );
+  assert.deepEqual(buildBoard(snapshotOf([])).today, { landed: undefined, closed: 0 });
+});
+
+test("a measured zero landed reads as a zero, and an uncomputed one reads as unknown", () => {
+  const measured = textOf(todayMarkup(metricsBoard([{ landedToday: 0, closedToday: 19 }])));
+  assert.ok(measured.includes("landed 0"), "nothing merged is a reading and renders as one");
+  assert.ok(measured.includes("closed 19"));
+  assert.equal(measured.includes(strings.today.unknown), false);
+
+  const markup = todayMarkup(metricsBoard([{ closedToday: 19 }]));
+  const read = textOf(markup);
+  assert.ok(read.includes("landed unknown"));
+  assert.ok(read.includes("closed 19"), "the figure that was computed still reads as a figure");
+  assert.equal(read.includes("landed 0"), false, "an uncomputed figure must never read as a measured zero");
+  assert.equal(read.includes(`landed ${strings.issue.facts.none}`), false);
+  assert.ok(markup.includes("pw-today__unknown"), "unknown is marked so it reads as quieter than a count");
+  assert.ok(read.includes(strings.today.unknownNotice), "a reader who cannot see the italics is told in words");
+  assert.equal(markup.includes("pw-band--alert"), false, "throughput is not a signal and never paints like one");
+});
+
+test("metrics are per project, so a filtered today band says it is not filtered rather than narrowing", () => {
+  const board = metricsBoard(
+    [
+      { landedToday: 9, closedToday: 13 },
+      { landedToday: 4, closedToday: 6 },
+    ],
+    { type: "bug" },
+  );
+  assert.deepEqual(board.today, { landed: 13, closed: 19 });
+  assert.ok(todayMarkup(board).includes(strings.filters.notFiltered));
+});

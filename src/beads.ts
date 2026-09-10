@@ -84,6 +84,7 @@ export interface ReadIssueOptions {
 
 export interface ClosedIssue extends UnclassifiedIssue {
   closedAt: string | undefined;
+  closeReason: string | undefined;
 }
 
 export interface IssueText {
@@ -303,6 +304,7 @@ function toIssue(
     blockedBy: edges.get(id) ?? [],
     origin: originOf(row["metadata"]),
     closedAt: textOf(row["closed_at"]),
+    closeReason: textOf(row["close_reason"]),
   };
 }
 
