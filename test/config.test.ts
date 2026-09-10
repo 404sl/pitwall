@@ -2,11 +2,13 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { Project } from "@404sl/pitwall-schema";
+import { WORKSPACE_FILE } from "../src/autofix.ts";
 import { collectProjects, configPath, describeRoots, historyLimits, resolveRoots } from "../src/config.ts";
 import { DEFAULT_LIMITS } from "../src/history.ts";
+import { slotsPath } from "../src/lanes.ts";
 
 const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), "fixtures");
 const SCAN = join(FIXTURES, "scan");
@@ -22,6 +24,34 @@ function withConfig(contents: string): { home: string; path: string } {
 
 function config(roots: string[]): { home: string; path: string } {
   return withConfig(JSON.stringify({ roots }));
+}
+
+const LOCK_PREFIX = "fixture";
+
+const GH_LISTING = [
+  "#!/bin/sh",
+  "cat <<'JSON'",
+  JSON.stringify([{ headRefName: "autofix/pw-narrowed" }]),
+  "JSON",
+  "",
+].join("\n");
+
+function withGh<T>(run: () => T): T {
+  const bin = mkdtempSync(join(tmpdir(), "pitwall-stub-"));
+  const stub = join(bin, "gh");
+  writeFileSync(stub, GH_LISTING);
+  chmodSync(stub, 0o755);
+  const path = process.env["PATH"];
+  process.env["PATH"] = path === undefined ? bin : `${bin}:${path}`;
+  try {
+    return run();
+  } finally {
+    if (path === undefined) {
+      delete process.env["PATH"];
+    } else {
+      process.env["PATH"] = path;
+    }
+  }
 }
 
 test("the default config location sits under the home directory", () => {
@@ -154,6 +184,41 @@ test("one unreadable root does not stop the others loading", () => {
   );
   assert.equal(projects[3]?.repos.length, 3);
   assert.equal(projects[3]?.authority.idPrefix, "mw");
+});
+
+test("a collected project passes its env down to the handoff read", () => {
+  const lockRoot = mkdtempSync(join(tmpdir(), "pitwall-lanes-"));
+  const slots = slotsPath(LOCK_PREFIX, lockRoot);
+  mkdirSync(slots, { recursive: true });
+  writeFileSync(join(slots, "1"), "pw-narrowed\n");
+  const workspace = mkdtempSync(join(tmpdir(), "pitwall-workspace-"));
+  const checkout = join(workspace, "checkout");
+  mkdirSync(checkout);
+  writeFileSync(
+    join(workspace, WORKSPACE_FILE),
+    JSON.stringify({
+      idPrefix: "pw",
+      lockPrefix: LOCK_PREFIX,
+      lanes: 1,
+      repos: { site: { path: "checkout" } },
+    }),
+  );
+  const { path: rootsFile } = config([workspace]);
+  const nowhere = mkdtempSync(join(tmpdir(), "pitwall-nogh-"));
+
+  const { projects } = withGh(() =>
+    collectProjects({
+      env: { PATH: nowhere, PITWALL_CONFIG: rootsFile },
+      home: "/home/nobody",
+      lockRoot,
+    }),
+  );
+
+  assert.equal(projects.length, 1);
+  assert.equal(projects[0]?.lanes[0]?.state, "working");
+  assert.equal(projects[0]?.errors.length, 1);
+  assert.equal(projects[0]?.errors[0]?.source, checkout);
+  assert.match(projects[0]?.errors[0]?.message ?? "", /ENOENT/);
 });
 
 test("a config that could not be read is named as the reason for the scan", () => {

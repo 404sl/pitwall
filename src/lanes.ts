@@ -17,6 +17,7 @@ export interface LaneOptions {
   lockRoot?: string;
   lanes?: number;
   repos?: readonly string[];
+  env?: Record<string, string | undefined>;
 }
 
 export interface LaneReading {
@@ -100,9 +101,14 @@ function branchesOf(parsed: unknown): string[] {
   });
 }
 
-function labelledIn(repo: string, errors: CollectionError[]): string[] {
+function labelledIn(
+  repo: string,
+  env: Record<string, string | undefined>,
+  errors: CollectionError[],
+): string[] {
   const listed = spawnSync("gh", handoffArgs(), {
     cwd: repo,
+    env,
     encoding: "utf8",
     maxBuffer: FIND_OUTPUT_LIMIT,
     timeout: HANDOFF_TIMEOUT_MS,
@@ -128,11 +134,12 @@ function mentions(text: string, issueId: string): boolean {
 
 function handoffReader(
   repos: readonly string[],
+  env: Record<string, string | undefined>,
   errors: CollectionError[],
 ): (issueId: string) => boolean {
   let labelled: string[] | undefined;
   return (issueId) => {
-    labelled ??= repos.flatMap((repo) => labelledIn(repo, errors));
+    labelled ??= repos.flatMap((repo) => labelledIn(repo, env, errors));
     return labelled.some((branch) => mentions(branch, issueId));
   };
 }
@@ -261,7 +268,7 @@ export function readLanes(lockPrefix: string, options: LaneOptions = {}): LaneRe
     dir,
     lockPrefix,
     lockRoot: options.lockRoot,
-    handedOff: handoffReader(options.repos ?? [], errors),
+    handedOff: handoffReader(options.repos ?? [], options.env ?? process.env, errors),
     errors,
   };
   const lanes = [...slots]
