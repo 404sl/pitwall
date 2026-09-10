@@ -8,6 +8,7 @@ import { stateHome, type StateOptions } from "./state.js";
 export const DEFAULT_MAX_SNAPSHOTS = 500;
 export const DEFAULT_MAX_AGE_DAYS = 30;
 export const DEFAULT_WINDOW_DAYS = 14;
+export const DEFAULT_MIN_INTERVAL_MINUTES = 60;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const MINUTE_MS = 60 * 1000;
@@ -34,12 +35,14 @@ const INSERT =
 const DELETE_OLDER = "DELETE FROM snapshots WHERE generated_at < ?";
 const DELETE_BEYOND =
   "DELETE FROM snapshots WHERE id NOT IN (SELECT id FROM snapshots ORDER BY id DESC LIMIT ?)";
+const SELECT_RECORDED = "SELECT max(generated_at) AS recorded FROM snapshots";
 const SELECT_WINDOW =
   "SELECT generated_at, frame, CASE WHEN frame IS NULL THEN document END AS document FROM snapshots WHERE generated_at >= ? ORDER BY generated_at ASC, id ASC";
 
 export interface HistoryLimits {
   maxSnapshots: number;
   maxAgeDays: number;
+  minIntervalMinutes: number;
 }
 
 export interface HistoryOptions extends StateOptions {
@@ -106,6 +109,7 @@ interface Track {
 export const DEFAULT_LIMITS: HistoryLimits = {
   maxSnapshots: DEFAULT_MAX_SNAPSHOTS,
   maxAgeDays: DEFAULT_MAX_AGE_DAYS,
+  minIntervalMinutes: DEFAULT_MIN_INTERVAL_MINUTES,
 };
 
 export function historyPath(options: StateOptions = {}): string {
@@ -293,6 +297,23 @@ function append(db: DatabaseSync, snapshot: Snapshot): void {
   );
 }
 
+function recordedAt(db: DatabaseSync): Date | undefined {
+  const held = db.prepare(SELECT_RECORDED).get() as { recorded: string | null };
+  if (typeof held.recorded !== "string") {
+    return undefined;
+  }
+  const at = new Date(held.recorded);
+  return Number.isNaN(at.getTime()) ? undefined : at;
+}
+
+function tooSoon(db: DatabaseSync, limits: HistoryLimits, now: Date): boolean {
+  const recorded = recordedAt(db);
+  if (recorded === undefined) {
+    return false;
+  }
+  return now.getTime() - recorded.getTime() < limits.minIntervalMinutes * MINUTE_MS;
+}
+
 function prune(db: DatabaseSync, limits: HistoryLimits, now: Date): void {
   db.prepare(DELETE_OLDER).run(new Date(now.getTime() - limits.maxAgeDays * DAY_MS).toISOString());
   db.prepare(DELETE_BEYOND).run(Math.max(Math.floor(limits.maxSnapshots), 1));
@@ -333,8 +354,10 @@ export async function recordSnapshot(
     db = new sql.DatabaseSync(path);
     db.exec(CREATE);
     migrate(db);
-    append(db, snapshot);
-    prune(db, limits, now);
+    if (!tooSoon(db, limits, now)) {
+      append(db, snapshot);
+      prune(db, limits, now);
+    }
     return { path, metrics: derive(db, options.windowDays ?? DEFAULT_WINDOW_DAYS, now) };
   } catch (cause) {
     return { path, metrics: new Map(), error: collectionError(path, cause) };

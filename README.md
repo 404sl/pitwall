@@ -80,21 +80,25 @@ still read, so a workspace that has not been renamed keeps working; where a dire
 both, `.pitwall.json` is the one in use. Run it from a directory whose children are
 project workspaces, or configure the roots explicitly.
 
-Every `snapshot` run is appended to a local SQLite log at `~/.local/state/pitwall/history.db`
-(`XDG_STATE_HOME` is honoured). A tracker holds current state and no time series, so the
-metrics that need more than one reading — the median minutes from claim to close, how often
-claimed work goes back to open — are derived from that log rather than stored in it. Each of
-them needs at least two runs before it says anything; until then the median and the bounce
-rate are absent rather than zero.
+A `snapshot` run is appended to a local SQLite log at `~/.local/state/pitwall/history.db`
+(`XDG_STATE_HOME` is honoured), at most one row an hour however often it runs. A tracker
+holds current state and no time series, so the metrics that need more than one reading — the
+median minutes from claim to close, how often claimed work goes back to open — are derived
+from that log rather than stored in it. Each of them needs at least two recorded rows before
+it says anything; until then the median and the bounce rate are absent rather than zero.
 
 The log keeps the newest 500 snapshots and 30 days of them, and both bounds also bound the
-answers, because the metrics can only be derived from runs the log still holds. The window
-is 14 days or as far back as the log reaches, whichever is shorter: at hourly runs 500
-snapshots is the full fortnight, and at the ten-minute cadence the status screen's staleness
-line invites it is under four days. `history.maxSnapshots` and `history.maxAgeDays` in
-`~/.config/pitwall/config.json` move both bounds — a fortnight at ten minutes needs about
-2000 snapshots and, at a couple of hundred kilobytes each, roughly half a gigabyte. The
-default is sized to be safe on an unattended laptop, not to reach the longest window.
+answers, because the metrics can only be derived from rows the log still holds. The window
+is 14 days or as far back as the log reaches, whichever is shorter, and the hourly floor is
+what keeps those two in step: a fortnight at a row an hour is 336 rows, well inside the 500.
+A console left open collects far faster than that — it re-collects on request against a
+60-second floor, about 480 times in a working day — so without the floor one day at the
+screen would evict the fortnight the median and the bounce rate are read over, and keep
+rendering them over the last few hours. `history.maxSnapshots`, `history.maxAgeDays` and
+`history.minIntervalMinutes` in `~/.config/pitwall/config.json` move all three bounds
+together — a fortnight at ten-minute resolution needs a `minIntervalMinutes` of 10 and about
+2000 snapshots, which at a couple of hundred kilobytes each is roughly half a gigabyte. The
+default is sized to be safe on an unattended laptop, not to reach the finest resolution.
 
 `landedToday` needs one reading, not two: it counts the issues closed today whose closure
 names a merge, read from the tracker itself. Landed means merged, not deployed. Where the
