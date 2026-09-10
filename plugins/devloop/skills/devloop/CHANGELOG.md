@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.14
+## 0.1.15
 
 **Nothing answered "is a lane for this id running right now", and four signals answered it
 wrongly.** A supervisor tore down a healthy lane 42 minutes into its run on the strength of an
@@ -120,6 +120,76 @@ registry path from `LOCK_PREFIX` falling back to `devloop` instead of this works
 claimed" while three slots were claimed under the prefix the config names. It resolves the
 prefix from the config now and refuses with exit 6 rather than defaulting, the rule `slot.sh`
 and `lock-check.sh` already follow: an answer about another project's lanes is worse than none.
+
+## 0.1.14
+
+**A deploy shipped the right code with whatever configuration a shared checkout happened to be
+sitting on.** `deploy-one.sh` was handed `--repo-path` pointing at the main checkout and ran the
+deploy command there, so `config/deploy.rb` - and everything it loads - came from that working
+tree. The CODE is cloned on the server from origin at `:branch`, so the code is always current.
+HOST, USER, DOMAIN and BRANCH are read locally, and nothing downstream reads them back. Right
+code, wrong configuration, reported as success.
+
+Measured while fixing it: the marketing checkout was on `master`, nothing ahead, FOUR COMMITS
+BEHIND origin/master. `config/deploy.rb` was byte-identical across those four, which is why no
+deploy had been affected - but `config/app.yml`, which `deploy.rb` loads at parse time through
+`app_config`, was nine lines behind. Earlier the same day another checkout was found sitting on a
+feature branch with nobody knowing who left it there. Both give the same signature.
+
+**The revision check cannot catch this class, and it is not broken.** It compares the deployed
+`git_revision` against the merge sha; the code always comes from origin, so the comparison passes
+with certainty while the configuration is stale. It looks at the half that is never wrong.
+
+**So the deploy runs in a worktree cut at `origin/master`, not in the checkout it was pointed at.**
+`--repo-path` is now the repository the worktree is cut FROM. The script fetches, resolves
+`origin/master`, adds a detached worktree under a `mktemp` directory, runs the deploy with that as
+its working directory, and removes both on every exit path through an `EXIT` trap that preserves
+the script's own exit code. The shared checkout is never pulled, checked out or stashed: adding and
+removing a worktree writes nothing into its working tree, which is why this is a worktree rather
+than a pull.
+
+**Cut at `origin/master`, not at local `master`, and a failed fetch is now fatal.** "On the right
+branch" and "current" are different properties, and that difference is the whole defect. A fetch
+that fails leaves a stale `origin/master` to cut from, which is the same bug wearing the fix's
+clothes - it has already produced one by-hand safety check that compared against a ref several
+commits old and concluded all clear. The script now refuses rather than deploy from a ref it could
+not confirm.
+
+`--expect` still decides the outcome, so a caller that passes the merge sha gets exactly the
+comparison it got before. Only the directory the deploy runs in has changed.
+
+**Nothing enforced the documented slot reservation, and a sixth collision found it.** The lane a
+run used was chosen by whoever dispatched and passed in as an argument, while reserving it was a
+separate step the caller was trusted to remember. Those two can disagree and nothing asks. A
+cleanup emptied the registry, every lane dispatched for the following hour ran without a
+reservation - two Rails lanes among them completed and merged - and nobody noticed. What
+prevented a collision was the lane lock, exactly as `slot.sh`'s own header says: *"THIS FILE IS
+BOOKKEEPING, NOT SAFETY."* The pipeline ran on the safety net with the bookkeeping gone, and it
+surfaced only because one lane checked its brief against the registry, found its slot empty, and
+refused to start rather than falling back to a number that looked free.
+
+**Documentation was not the lever, and the file said so itself.** The rule is in `SKILL.md` in
+bold, three lines above the command that would have prevented it, and the same passage already
+recorded five earlier collisions from picking numbers by hand - one of them 153k tokens spent
+discovering a fact `slot.sh --list` prints instantly. A sixth happened anyway.
+
+**So `config.sh --args` allocates the lane instead of accepting one.** It takes `<issue-id>`,
+calls `slot.sh <id>` - which records the reservation and consults the lane lock in one step, and
+hands back the same number if the id already holds one - and emits what it got. There is no
+number left to choose. Where a lane cannot be reserved, `--args` prints nothing and exits
+non-zero: a full pool, a locked lane, a parked issue or a config it cannot resolve stops the
+dispatch, which is what a full pool should always have meant.
+
+**A trailing number is still accepted, and is now CHECKED rather than used.** `queue.sh` writes
+its registry entry before it prints `<id> <slot>`, so `slot.sh` hands that same number back and
+the two-argument form keeps working unchanged. A number that disagrees is refused with both
+values named, and the reservation is left standing - releasing it would also drop the lane lock,
+which may belong to a run that is still live.
+
+The CLI suite drives `--args` against a throwaway registry: it asserts the reported lane is the
+one recorded, that a second dispatch of the same issue gets that lane rather than another, that a
+locked lane is never handed out, and that a disagreeing number and a full pool both stop with
+nothing on stdout.
 
 ## 0.1.13
 
