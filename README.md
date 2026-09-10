@@ -111,6 +111,50 @@ arrives, and the failure is recorded in `errors`. `node:sqlite` arrived in Node 
 on an older Node there is no log at all — the metrics are simply absent, and nothing is
 reported as an error, because a module a runtime never shipped is not a failed read.
 
+## Completion notices
+
+When an issue closes, the session that asked for it is the one that wants to hear. Pitwall
+computes that notice from two consecutive snapshots — an issue that was open at the previous
+collection and closed at this one — and delivers it by running a command you configure.
+Until you configure one, notices are computed and nothing is sent.
+
+First, `notify` in the workspace's `.pitwall.json`, an array of words whose first is the
+program to run:
+
+```json
+{
+  "idPrefix": "mw",
+  "notify": ["script/notify-session.sh"]
+}
+```
+
+A relative path resolves against the workspace root, and the array is handed to the program
+directly rather than to a shell — write `["sh", "-c", "…"]` if you want one. The notice
+arrives as one JSON object on standard input, never on the command line, because it carries
+issue titles and a session ref and a command line is readable by anyone on the machine.
+Exit 0 means delivered. Any other exit means it was not, and what the command wrote on
+standard error becomes the recorded reason.
+
+The object carries `issueId`, `title`, `origin` — the `session` that asked and the `ref`
+that addresses it, which is the one to deliver to, because session names are neither unique
+nor stable — `text`, the line to deliver, and `pull` only where a pull request was open for
+the issue at the previous collection, as the snapshot records it. A notice is computed only
+for an issue that records who asked, so a tracker whose issues carry no origin produces none
+and nothing is appended to anything.
+
+Second, `PITWALL_SESSION_REF` in the environment of the run, naming the session doing the
+collecting. It is what stops a loop that creates, claims, lands and closes its own work from
+interrupting itself once per pull request: a notice whose origin ref is this one is never
+sent. A fixed single-session setup can name `sessionRef` in the workspace file instead, and
+the environment wins where both are set — two sessions collecting the same workspace have
+different refs and must not share a configured one.
+
+Where that ref is unknown, every notice is held rather than sent, because with nothing to
+compare against any of them might be the collecting session's own work coming back at it. A
+notice that was not delivered — held, refused, or handed to a command that failed — is
+appended to its own issue with the reason, so what did not arrive is readable afterwards
+rather than lost. Silence is not one of the outcomes.
+
 ## How it is put together
 
 ```

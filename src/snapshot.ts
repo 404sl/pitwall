@@ -17,6 +17,7 @@ import { recordSnapshot, type HistoryMetrics } from "./history.js";
 import { deliver, noticesFor, type Delivered, type Noter, type Sender } from "./notify.js";
 import { issueMatcher, readPipeline } from "./pipeline.js";
 import { preconditionProbe, pullLookup } from "./probes.js";
+import { sessionRefOf, workspaceSender } from "./sender.js";
 import { readSnapshot, writeSnapshot } from "./state.js";
 import { assess, isAssessable, lastNoteAt, type StalenessContext } from "./staleness.js";
 import { VERSION } from "./version.js";
@@ -314,24 +315,24 @@ async function announce(
   previous: Snapshot | undefined,
   options: SnapshotOptions,
 ): Promise<Delivered[]> {
-  const sender = options.sender;
-  if (sender === undefined) {
-    return [];
-  }
   const delivered: Delivered[] = [];
   for (const entry of gathered) {
+    const root = entry.project.root;
+    const sessionRef = options.sessionRef ?? sessionRefOf(root, { env: options.env });
     const notices = noticesFor({
       previous: previous?.projects.find((project) => project.id === entry.project.id),
       issues: entry.project.issues,
       closed: entry.closed,
-      sessionRef: options.sessionRef,
+      sessionRef,
     });
     if (notices.length === 0) {
       continue;
     }
+    const sender =
+      options.sender ??
+      workspaceSender(root, { env: options.env, timeoutMs: options.timeoutMs, sessionRef });
     const note =
-      options.note ??
-      noteAppender(entry.project.root, { env: options.env, timeoutMs: options.timeoutMs });
+      options.note ?? noteAppender(root, { env: options.env, timeoutMs: options.timeoutMs });
     delivered.push(...(await deliver(notices, { sender, note })));
   }
   return delivered;
