@@ -49,6 +49,8 @@ const NO_PLUGIN = {
   masterVersion: "",
   branchVersion: "",
   touchesPlugin: false,
+  labelled: true,
+  open: true,
   notes: "this repository carries no devloop plugin manifest on master",
 };
 
