@@ -269,7 +269,7 @@ test("the same root listed twice is checked once and is reported as listed twice
   assert.equal(repeated.severity, "fail");
   assert.ok(repeated.result.includes(dir), `result does not name the root: ${repeated.result}`);
   assert.match(repeated.result, /listed 2 times/);
-  assert.match(repeated.result, /the console reports this workspace 2 times/);
+  assert.match(repeated.result, /it is read once/);
   assert.equal(twice.code, 1);
   const once = await diagnose(options([dir]));
   assert.equal(once.checks.filter((check) => check.name.endsWith(" listed")).length, 0);

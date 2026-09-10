@@ -19,11 +19,14 @@ export interface RootsOptions {
 
 export interface ResolvedRoots {
   roots: string[];
+  listed: string[];
   source: RootsSource;
   from: string;
   configPath: string;
   errors: CollectionError[];
 }
+
+type LocatedRoots = Omit<ResolvedRoots, "roots">;
 
 export function configPath(options: RootsOptions = {}): string {
   const override = (options.env ?? process.env)[CONFIG_VAR];
@@ -79,19 +82,19 @@ function scanForWorkspaces(parent: string, errors: CollectionError[]): string[] 
     .sort();
 }
 
-function locateRoots(options: RootsOptions): ResolvedRoots {
+function locateRoots(options: RootsOptions): LocatedRoots {
   const path = configPath(options);
   const errors: CollectionError[] = [];
   if (existsSync(path)) {
     try {
-      return { roots: readRoots(path), source: "config", from: path, configPath: path, errors };
+      return { listed: readRoots(path), source: "config", from: path, configPath: path, errors };
     } catch (cause) {
       errors.push(collectionError(path, cause));
     }
   }
   const parent = dirname(resolve(options.cwd ?? process.cwd()));
   return {
-    roots: scanForWorkspaces(parent, errors),
+    listed: scanForWorkspaces(parent, errors),
     source: "scan",
     from: parent,
     configPath: path,
@@ -100,7 +103,8 @@ function locateRoots(options: RootsOptions): ResolvedRoots {
 }
 
 export function resolveRoots(options: RootsOptions = {}): ResolvedRoots {
-  const resolved = locateRoots(options);
+  const located = locateRoots(options);
+  const resolved: ResolvedRoots = { ...located, roots: [...new Set(located.listed)] };
   if (resolved.roots.length === 0) {
     resolved.errors.push(collectionError(resolved.from, describeRoots(resolved)));
   }

@@ -42,6 +42,24 @@ test("roots come from the config file when it is there", () => {
   assert.deepEqual(resolved.errors, []);
 });
 
+test("a root listed twice is read once, in the order it was first listed", () => {
+  const { home } = config([
+    join(FIXTURES, "multi"),
+    join(FIXTURES, "single"),
+    `${join(FIXTURES, "multi")}/`,
+  ]);
+  const resolved = resolveRoots({ env: {}, home, cwd: SCAN });
+  assert.deepEqual(resolved.roots, [join(FIXTURES, "multi"), join(FIXTURES, "single")]);
+  assert.deepEqual(resolved.listed, [
+    join(FIXTURES, "multi"),
+    join(FIXTURES, "single"),
+    join(FIXTURES, "multi"),
+  ]);
+  assert.equal(describeRoots(resolved), `2 workspace roots from ${resolved.configPath}`);
+  const { projects } = collectProjects({ env: {}, home, cwd: SCAN });
+  assert.equal(projects.length, 2);
+});
+
 test("roots come from a config named by PITWALL_CONFIG", () => {
   const { path } = config([join(FIXTURES, "plain")]);
   const resolved = resolveRoots({ env: { PITWALL_CONFIG: path }, home: "/home/nobody", cwd: SCAN });

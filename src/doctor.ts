@@ -95,7 +95,7 @@ function rootsCheck(roots: ResolvedRoots): Check {
 
 function timesListed(roots: ResolvedRoots): Map<string, number> {
   const counted = new Map<string, number>();
-  for (const root of roots.roots) {
+  for (const root of roots.listed) {
     const dir = resolve(root);
     counted.set(dir, (counted.get(dir) ?? 0) + 1);
   }
@@ -109,7 +109,7 @@ function repeatedRootChecks(roots: ResolvedRoots, counted: ReadonlyMap<string, n
       severity: "fail" as const,
       name: `${basename(dir)} listed`,
       tried: triedOf(roots),
-      result: `${dir} is listed ${times} times · the console reports this workspace ${times} times`,
+      result: `${dir} is listed ${times} times · it is read once, so the extra entries do nothing`,
     }));
 }
 
@@ -355,7 +355,7 @@ export async function diagnose(options: DoctorOptions = {}): Promise<Diagnosis> 
     await ghCheck(env, timeoutMs),
   ];
   const claims = new Map<string, string[]>();
-  for (const root of counted.keys()) {
+  for (const root of roots.roots) {
     const reading = await workspaceChecks(root, options);
     checks.push(...reading.checks);
     if (reading.lockPrefix !== undefined) {
