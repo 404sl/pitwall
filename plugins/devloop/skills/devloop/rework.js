@@ -54,6 +54,10 @@ const ID = input.id
 const REPO_KEY = input.repo || 'site'
 const SLOT = input.slot || 1
 const LANE = SLOT + 1 // slot N takes lane N+1; the lane number is also TEST_ENV_NUMBER
+const LANE_LOCK = `/tmp/${LOCK_PREFIX}-lane-${LANE}.lock`
+const OWNER_FILE = `/tmp/${LOCK_PREFIX}-lane-${LANE}.owner`
+const SLOT_FILE = input.slot ? `/tmp/${LOCK_PREFIX}-slots/${SLOT}` : null
+const GIVEN_BACK = new Set(['released', 'already_gone'])
 
 const repo = REPOS[REPO_KEY]
 if (!PR) return { error: 'no pull request number given - call with args: { pr: 739, id: "sr-x", repo: "site", slot: 4 }' }
@@ -61,7 +65,8 @@ if (!repo) return { error: `unknown repo ${REPO_KEY} - expected one of ${Object.
 
 const SLUG = repo.slug
 const REPO_PATH = `${ROOT}/${repo.path}`
-const WT_PATH = `${WT}/${ID || `pr-${PR}`}-rework`
+const OWNER = ID || `pr-${PR}`
+const WT_PATH = `${WT}/${OWNER}-rework`
 
 // A Rails worktree does not boot from a bare checkout: .env, config/master.key and node_modules
 // are gitignored, and config/cable.yml dereferences AppConfig at load time, so a missing .env is
@@ -99,6 +104,50 @@ const RESOLVE = {
   },
 }
 
+const SLOT_ARG = SLOT_FILE ? ` --slot ${SLOT_FILE}` : ''
+const SLOT_SAID = SLOT_FILE ? ` and slot ${SLOT}` : ''
+const NO_SLOT = 'not_reserved - this run carried no slot, so it has no reservation to give back'
+
+const LANE_BACK = {
+  type: 'object',
+  required: SLOT_FILE ? ['lane', 'slot'] : ['lane'],
+  properties: {
+    lane: { enum: ['released', 'not_mine', 'already_gone', 'still_held'], description: 'the word release-lane.sh printed after lane:, lowercased - it reports its own outcome and you are not asked to judge it' },
+    slot: { enum: ['released', 'not_mine', 'already_gone', 'still_held'], description: 'the word it printed after slot:, lowercased' },
+    notes: { type: 'string', description: 'everything it printed, verbatim' },
+  },
+}
+
+function releaseLanePrompt() {
+  return `Give lane ${LANE}${SLOT_SAID} back. Run this command once, exactly as it stands, and
+report what it printed:
+
+  bash ${SKILL_DIR}/release-lane.sh --lane ${LANE_LOCK}${SLOT_ARG} --owner '${OWNER}'
+
+Every value is already in the command. There is nothing to look up, substitute or confirm first,
+and nothing for you to judge: the script proves ownership itself - the owner file beside the lock${SLOT_FILE ? `
+and the id in the slot file` : ''} - and removes only what names this run. An earlier release step of
+this shape was told to supply a value it had already been given, went looking for it, found none
+and declined to touch the lock at all, which left every other lane waiting on it.
+
+Report the word after 'lane:' as 'lane'${SLOT_FILE ? `, the word after 'slot:' as 'slot'` : ''}, lowercased, and
+everything it printed as 'notes'.${SLOT_FILE ? '' : ` This run carried no slot, so the command names none, the
+script prints no slot line, and there is nothing to report for one.`} Remove nothing by hand, run no other
+command, and never use 2>&1.`
+}
+
+function settle(path, answer) {
+  if (GIVEN_BACK.has(answer)) return answer
+  if (answer === 'not_mine') return `not_mine - ${path} does not record ${OWNER}, so nothing was removed and nothing should be`
+  return `LEAKED - ${path} was not given back, or the release step answered nothing. Read it before removing anything: clear it if it records this run, and leave it alone if it records another.`
+}
+
+let laneLock = `LEAKED - the release step never reported. Read ${LANE_LOCK} before touching anything.`
+let slotClaim = SLOT_FILE ? `LEAKED - the release step never reported. Read ${SLOT_FILE} before touching anything.` : NO_SLOT
+let result = null
+
+try {
+
 phase('Resolve')
 
 const resolved = await agent(
@@ -111,15 +160,23 @@ feature, you have misread the task. The only edits you make are inside conflict 
 
 TAKE THE LANE LOCK FIRST, so you do not share a test database with another lane:
 
-  mkdir /tmp/${LOCK_PREFIX}-lane-${LANE}.lock 2>/dev/null && echo GOT_LANE || echo LANE_BUSY
+  mkdir ${LANE_LOCK} 2>/dev/null && printf '%s\\n' "${OWNER} slot ${SLOT} TEST_ENV_NUMBER ${LANE}" > ${OWNER_FILE} && echo GOT_LANE || echo LANE_BUSY
+
+ONE COMMAND, not two. The owner file beside the lock is what proves the lock is yours: when this
+run ends, whatever way it ends, the lane is given back by reading that file and removing the lock
+only if it names this run. A lock taken without it cannot be proved to be anybody's, so it is left
+standing and the lane is lost until a person clears it. The file sits BESIDE the lock, never inside
+it - anything inside the lock directory makes the rmdir that drops it fail, and then the lane is
+blocked for good rather than until a run finishes.
 
 If it prints LANE_BUSY, wait and retry rather than proceeding without it.
 
 DO NOT RELEASE IT YOURSELF. Hold it until the end; the handoff step passes it to
-lane-handoff.sh, which drops it last, after the label is on. An earlier version of this told you
-to rmdir it once the suite finished AND passed --lane-lock to the script - so the lock was
-already gone by the time the script looked, and the script's rmdir tolerates absence, which
-means its exit 0 was not evidence the lock had ever been held. The window between your last
+lane-handoff.sh, which drops it last, after the label is on, and this run gives the lane back itself
+as it ends whatever way it ends - so there is nothing for you to clean up on any path. An earlier
+version of this told you to rmdir it once the suite finished AND passed --lane-lock to the script -
+so the lock was already gone by the time the script looked, and the script's rmdir tolerates
+absence, which means its exit 0 was not evidence the lock had ever been held. The window between your last
 test and the handoff is exactly when another lane can take the same test database.
 
 SET UP:
@@ -244,7 +301,7 @@ status "already_clean" - say so rather than inventing a change.`,
 )
 
 if (!resolved || resolved.status === 'blocked') {
-  return {
+  result = {
     pr: PR,
     id: ID,
     outcome: 'blocked',
@@ -255,14 +312,16 @@ if (!resolved || resolved.status === 'blocked') {
 // A head that did not move means nothing was pushed, whatever the agent believes it did. The
 // whole point of this run is that the branch changes; reporting success without that is how a
 // pull request gets handed back into a train that drops it again for the same reason.
-if (resolved.status === 'resolved' && resolved.oldHead && resolved.newHead && resolved.oldHead === resolved.newHead) {
-  return {
+if (!result && resolved.status === 'resolved' && resolved.oldHead && resolved.newHead && resolved.oldHead === resolved.newHead) {
+  result = {
     pr: PR,
     id: ID,
     outcome: 'blocked',
     notes: `resolve reported success but the branch head did not move (${resolved.oldHead}). Nothing was pushed, so the next train would drop this again for the same conflicts.`,
   }
 }
+
+if (!result) {
 
 phase('Handoff')
 
@@ -309,7 +368,7 @@ WHEN IT IS GREEN, hand off with the script rather than by hand:
     --pr ${PR} --branch ${resolved.branch || '<the branch>'} \\
     ${ID ? `--issue ${ID} --note-file <a file holding your tracker note>` : ''} \\
     --worktree ${WT_PATH} \\
-    --lane-lock /tmp/${LOCK_PREFIX}-lane-${LANE}.lock
+    --lane-lock ${LANE_LOCK}
 
 It reads the title, body and commit messages back from GitHub and git, runs the compliance check
 over them, refuses to label anything whose rollup is empty or stale, applies lane-verified, reads
@@ -331,7 +390,7 @@ Report the CI conclusion and whether the label is on.`,
   { schema: HANDOFF, phase: 'Handoff', label: ID ? `handoff:${ID}#${PR}` : `handoff:#${PR}` },
 )
 
-return {
+result = {
   pr: PR,
   id: ID,
   repo: REPO_KEY,
@@ -343,3 +402,16 @@ return {
   ci: handed ? handed.ciConclusion : null,
   notes: handed ? handed.notes : 'handoff agent returned nothing',
 }
+
+}
+
+} finally {
+  const back = await agent(releaseLanePrompt(), { label: ID ? `release:${ID}#${PR}` : `release:#${PR}`, phase: 'Handoff', schema: LANE_BACK, model: 'haiku', effort: 'low' })
+  laneLock = settle(LANE_LOCK, back && back.lane)
+  if (SLOT_FILE) slotClaim = settle(SLOT_FILE, back && back.slot)
+  if (!GIVEN_BACK.has(back && back.lane) || (SLOT_FILE && !GIVEN_BACK.has(back && back.slot))) {
+    log(`lane ${LANE}: ${laneLock}${SLOT_FILE ? `\n    slot ${SLOT}: ${slotClaim}` : ''}${back && back.notes ? `\n    ${back.notes}` : ''}`)
+  }
+}
+
+return { ...result, lane: laneLock, slot: slotClaim }

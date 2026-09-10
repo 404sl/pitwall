@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.1.23
+
+**A rework gave its lane back only when it handed off.** `rework.js` takes the lane lock in its
+first step and the handoff script drops it last, after the label is on - so a pull request that came
+back red, a merge that reported `blocked`, and any step that threw all left `/tmp/<prefix>-lane-<n>`
+standing. The next run given that slot is refused with `LANE_BUSY` on a lock whose owner has long
+since exited. This is the same defect 0.1.21 fixed for `task.js`, in the second script that takes
+the same lock on the same terms, and the two endings that leak are ordinary: a rework exists because
+a branch fell behind master, and CI coming back red on the new head is a normal answer to that.
+
+- **The lock and its owner file are taken in one command.** The brief used a bare `mkdir` and wrote
+  no owner file at all, so an ownership-checked release would have answered `not_mine` for every
+  lock a rework ever took. The owner is the issue id, or `pr-<n>` when a rework is dispatched
+  against a pull request alone.
+- **The release runs in a `finally`,** so `red`, `blocked`, a handoff that answered nothing and an
+  exception all reach it. A shell trap is still the wrong level for the reason recorded under
+  0.1.21: the lock is taken by a step whose shell exits as soon as the command returns, so a trap
+  there fires while the run is still holding it.
+- **Both endings that used to return early now set a result instead,** so every ending but an
+  exception carries what happened to the lane and the slot. `task.js` has three returns that cannot -
+  a return expression is evaluated before a `finally` - and for those the log is the only record; a
+  rework now has none.
+- **A rework with no slot gives only the lane back.** `--slot` is passed only when the args carry
+  one. `config.sh --args` always reserves a slot and emits it as a number, so the case is the
+  hand-built args object the dispatch documents - and slot 1, which the script falls back to for
+  `TEST_ENV_NUMBER`, is whichever run actually reserved it. Releasing that would be taking a live
+  run's reservation.
+- **`lane-running.sh` knows the third label.** It decides that a rework journal belongs to another
+  issue only when every label in it carries an id, matched against a fixed set of prefixes. A
+  `release:` label is new, and left out it would have turned every other issue's rework from
+  `NOT-RUNNING` into `UNKNOWN` - which nothing may read as dead, so a supervisor would have waited
+  on a lane that was not its own.
+
+The tests drive `rework.js` as a function body with stubbed steps: a red pull request, a blocked
+merge, a throwing step and a run with no slot must all reach the release, the release command must
+name the lane the brief told the run to claim, and a release that answers nothing is a reported
+leak. A source test now reads both scripts and fails on a brief that takes a lane lock without
+recording who holds it. All nine fail before this change.
+
 ## 0.1.22
 
 **A branch could walk the published plugin version backwards, and nothing between a green build and
