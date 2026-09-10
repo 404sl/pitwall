@@ -116,7 +116,8 @@ reported as an error, because a module a runtime never shipped is not a failed r
 When an issue closes, the session that asked for it is the one that wants to hear. Pitwall
 computes that notice from two consecutive snapshots — an issue that was open at the previous
 collection and closed at this one — and delivers it by running a command you configure.
-Until you configure one, notices are computed and nothing is sent.
+In a workspace you have listed, notices are computed until you configure one and nothing is
+sent; a workspace found by scanning is read and nothing more.
 
 First, `notify` in the workspace's `.pitwall.json`, an array of words whose first is the
 program to run, in a workspace you have listed yourself:
