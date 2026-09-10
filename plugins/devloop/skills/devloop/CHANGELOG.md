@@ -1,5 +1,70 @@
 # Changelog
 
+## 0.1.19
+
+**Two lander runs half an hour apart reported the same merge-lock token, and nothing noticed.**
+The token carries the epoch second it was minted, so the pair is self-refuting: a run that
+started at 19:44 reported `lander-1788974078-40586`, minted at 19:14 by a run that started
+eleven seconds before it. The later run cannot have executed `date +%s` and been given 19:14,
+which rules out a same-second, same-pid collision by thirty minutes. Reported as issue #60.
+
+**Why a duplicate token is worse than a duplicate name.** Release-by-token is the ownership
+guard everywhere: the removal deletes the lock when the holder file holds the token it was
+handed. Two runs carrying one token both pass that check, so the first to finish deletes the
+other's lock while it is mid-merge or mid-deploy - and `held_by_other`, which tells a foreign
+lander apart by "a token that is not the one you wrote", cannot see the difference either.
+
+**Both landers now decide ownership from the holder file rather than from the answer about it.**
+The lock step reports two values - the token it wrote, and what `cat` printed back out of the
+holder file, verbatim and untidied - and the run itself requires them to be equal before it
+lands anything. They used to be one value, with the step asked to judge the comparison and
+report the verdict; the step is now asked only for what it saw, and `holder` is required of it
+whichever outcome it reports. A mismatch is treated as somebody else holding the lock: the run
+surveys nothing, merges nothing, asks for no removal, and says in its result which two values
+disagreed so whoever reads it knows which run to leave alone.
+
+**This is the fix shape the report asked for, and it is deliberately not the other one.** The
+issue offered an alternative - mint the token from something unique to the run, in the script -
+and that remains impossible here for the reasons recorded under 0.1.13: `Date.now()` and
+`Math.random()` throw in the workflow runner, a script has no filesystem access to read the
+holder file itself, and no per-run identity is exposed to a script. So the decision that the
+token is minted by the lock step stands; what changed is that the run no longer takes the step's
+word for what the lock says.
+
+**The comparison ignores the newline `cat` prints, and the removal is handed a trimmed token.**
+The holder file is written with `printf` and a trailing newline, so a step doing exactly as it is
+told - report what `cat` printed, verbatim and untidied - reports that newline as part of `holder`.
+An exact comparison reads a whitespace-only difference as a foreign lander, and the cost of that
+is the whole serial pipeline: the lander surveys nothing, merges nothing, leaves standing the lock
+directory it created itself, and tells the operator the holder names another lander. Every other
+reader of that file already normalises - `release-lock.sh` and `lock-check.sh` through `$(cat)`,
+`triage-scan.sh` and `queue.sh` through `.read().strip()` - and both landers now do the same, on
+both values. The trimmed token is also what `release-lock.sh` is handed, which refuses a token
+carrying a newline rather than releasing anything.
+
+**The train's lock step can now answer the field it is required to report.** `holder` is required
+of every outcome the step may report, and the train's HELD branch had no read of the holder file in
+it - HELD is ordinary contention, not an edge case. A step asked for a value it was given no way to
+obtain either fills in the one field ownership is decided from or burns its retries and answers
+nothing. That branch now reads the holder file and reports what it printed, with an empty answer
+named as the correct one where the file does not exist yet - which is how a lock looks between
+another run's `mkdir` and its `printf`. The train quotes it in the note it stands down with, so a
+lock another train legitimately holds no longer reads exactly like one nobody owns.
+
+**What this does not fix, stated plainly, because the report's cause is inferred.** The leading
+theory is that an identical `(prompt, opts)` replays a cached result - which is how `resume` is
+specified to work, and a lander is resumed by hand after `stopped=merge_refused`. Under a replay
+the lock step does not run, so every value it reports is stale together and agrees with itself:
+this guard cannot see that, and nothing inside a script can. What it does cover is narrower than
+the title of the report and is worth stating exactly: it fires when the holder file disagrees with
+what the step says it wrote - either value misreported, or a holder file a person wrote by hand -
+because `mkdir` is the mutex and no other lander writes a holder file it did not create. A token
+carried over from an earlier run and then written INTO the file reads back identically, so it
+agrees with itself and passes, which is the same blind spot as a replay. The guard is sound either
+way and it is not the whole of "a lander can hold a token it did not mint". Distinguishing a
+replayed acquisition needs per-run entropy reaching the script through `args`, which is a change to
+every launch path and is filed as pitwall-lr0.
+
 ## 0.1.18
 
 **Updating the plugin did not update what runs, because what runs is a copy and nothing rewrote

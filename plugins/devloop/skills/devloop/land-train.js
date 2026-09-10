@@ -23,6 +23,7 @@ export const meta = {
 const input = (typeof args === 'string' ? JSON.parse(args) : args) || {}
 const SKILL_DIR = input.skillDir
 const TOKEN_SHAPE = /^[A-Za-z0-9._-]+$/
+const trimmed = (v) => String(v || '').trim()
 
 // REFUSE RATHER THAN RENDER "undefined". This value is interpolated into shell commands
 // the lane is told to run - `bash ${SKILL_DIR}/lane-handoff.sh` and, for a Rails repo,
@@ -339,8 +340,15 @@ const lock = await agent(
 
   mkdir /tmp/devloop-merge.lock 2>/dev/null && echo "TAKEN" || echo "HELD"
 
-If it prints HELD, another lander is running: report status "held" and DO NOTHING ELSE. Do not
-remove the lock, do not wait for it, do not proceed.
+If it prints HELD, another lander is running. Read who has it, and DO NOTHING ELSE - do not
+remove the lock, do not wait for it, do not proceed:
+
+  cat /tmp/devloop-merge.lock/holder
+
+Report status "held" and what cat printed as 'holder'. If the file is not there yet, report an
+empty 'holder' - that is how a lock looks between another run's mkdir and its printf, and this
+field is the one ownership is decided from, so a value filled in to have something to say is
+worse than none.
 
 If it prints TAKEN, STAMP THE LOCK WITH AN IDENTITY THAT IS YOURS. The holder file used to say
 just "lander", which identifies nothing, so the release step could not prove the lock it was
@@ -351,16 +359,28 @@ refused, and every train leaked its lock and needed clearing by hand. Mint a tok
   printf '%s\\n' "$TOKEN" > /tmp/devloop-merge.lock/holder
   cat /tmp/devloop-merge.lock/holder
 
-Report status "taken" and the token EXACTLY as cat printed it back, not as you intended to write
-it. The release step is handed what you report and can compare against nothing else, so a token
-you omit or retype is a lock this run cannot give back.`,
-  { schema: { type: 'object', required: ['status'], properties: {
-      status: { type: 'string', enum: ['taken', 'held'] }, token: { type: 'string' } } },
+Report status "taken", the token you wrote as 'token', and what cat printed back as 'holder',
+verbatim and untidied. Report both even when they are identical, and do not correct either one to
+match the other: the train compares them and stands down when they differ, because the file is
+the fact and the value you report is a claim about it. The newline the file ends with and cat
+prints back is not a difference - the train ignores whitespace around both values. The release
+step is handed what you report and can compare against nothing else, so a token you omit or
+retype is a lock this run cannot give back.`,
+  { schema: { type: 'object', required: ['status', 'holder'], properties: {
+      status: { type: 'string', enum: ['taken', 'held'] }, token: { type: 'string' },
+      holder: { type: 'string' } } },
     model: 'haiku', effort: 'low', phase: 'Lock' },
 )
 
+const token = trimmed(lock && lock.token)
+const holder = trimmed(lock && lock.holder)
 if (!lock || lock.status !== 'taken') {
-  return { status: 'held', notes: 'Another lander holds /tmp/devloop-merge.lock. Nothing was done.' }
+  return { status: 'held', notes: `Another lander holds /tmp/devloop-merge.lock${holder ? `, whose holder file reads [${holder}]` : ''}. Nothing was done.` }
+}
+
+if (!token || !TOKEN_SHAPE.test(token) || holder !== token) {
+  const unproven = `LEAKED - the lock step reported taken, but /tmp/devloop-merge.lock/holder reads [${holder}] against a token of [${token}], so this train cannot prove the lock is its own. Nothing was built and nothing was removed. Read /tmp/devloop-merge.lock/holder: if it names a run that has finished, clear it; if it names another lander, it is theirs and they give it back themselves.`
+  return { status: 'held', notes: unproven, lock: unproven }
 }
 
 const landed = []
@@ -513,7 +533,7 @@ case this step is trying to stop.`,
   )
 }
 } finally {
-if (!lock.token || !TOKEN_SHAPE.test(lock.token)) {
+if (!token || !TOKEN_SHAPE.test(token)) {
   lockState = `LEAKED - /tmp/devloop-merge.lock is held under a token this run cannot quote back, so no removal was even asked for. Read /tmp/devloop-merge.lock/holder, and leave it alone unless it names a run that has finished.`
   log(lockState)
 } else {
@@ -523,7 +543,7 @@ because a lock left behind stands down every train after it for no reason.
 
 RUN THIS ONE COMMAND, EXACTLY AS IT STANDS, AND NOTHING ELSE:
 
-  bash ${SKILL_DIR}/release-lock.sh --lock /tmp/devloop-merge.lock --token '${lock.token}'
+  bash ${SKILL_DIR}/release-lock.sh --lock /tmp/devloop-merge.lock --token '${token}'
 
 It reads the holder file, removes the lock only if that file holds this run's token, and prints
 what it did on its first line: RELEASED, NOT_MINE, ALREADY_GONE or STILL_HELD. Report that word
@@ -552,13 +572,13 @@ ALREADY_GONE likewise: there was nothing to release. Report what it printed and 
 if (released && released.status === 'released') {
   lockState = 'released'
 } else if (released && released.status === 'not_mine') {
-  lockState = `not_mine - /tmp/devloop-merge.lock/holder did not hold ${lock.token}, so nothing was removed and nothing should be`
+  lockState = `not_mine - /tmp/devloop-merge.lock/holder did not hold ${token}, so nothing was removed and nothing should be`
   log(`${lockState}.\n    ${released.notes || 'the script reported NOT_MINE and says what the holder file read instead'}`)
 } else if (released && released.status === 'already_gone') {
   lockState = 'already_gone - /tmp/devloop-merge.lock was not there to release'
   log(`${lockState}. Something removed this run's lock while it was working, so another train may have been running beside it.\n    ${released.notes || ''}`)
 } else {
-  lockState = `LEAKED - /tmp/devloop-merge.lock still held ${lock.token} after the release step, or the step answered nothing. Check /tmp/devloop-merge.lock/holder still reads ${lock.token} before removing it - if it reads anything else, another train has it and it is not yours.`
+  lockState = `LEAKED - /tmp/devloop-merge.lock still held ${token} after the release step, or the step answered nothing. Check /tmp/devloop-merge.lock/holder still reads ${token} before removing it - if it reads anything else, another train has it and it is not yours.`
   log(`${lockState}\n    ${(released && released.notes) || 'the release agent returned nothing'}`)
 }
 }

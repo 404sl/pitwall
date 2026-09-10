@@ -47,7 +47,7 @@ const THE_PR = {
 
 function lander(reply: Reply, args: Record<string, unknown> = {}) {
   return runScript("land.js", { ...ARGS, ...args }, (call, n) => {
-    if (n === 1) return { status: "taken", token: "lander-1788964650-29574" };
+    if (n === 1) return { status: "taken", token: "lander-1788964650-29574", holder: "lander-1788964650-29574" };
     if (call.label === "release") return { status: "released" };
     return reply(call, n);
   });
