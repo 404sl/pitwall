@@ -641,3 +641,78 @@ test("the deploy step's schema carries the hosts its status is checked against",
     assert.ok(properties.hosts.items.properties[field], `a reported host carries no ${field}`);
   }
 });
+
+test("a deploy step that reports deployed where no host can be read back still closes its issues", async () => {
+  const noVerify = {
+    ...ARGS,
+    repos: { docs: { path: "site", slug: "owner/site", deploy: TWO_ENV.repos.docs.deploy } },
+  };
+  const { calls, logs, done } = landOnce({
+    args: noVerify,
+    deploy: { status: "deployed", hosts: [], notes: "both deployed; the project offers nothing that prints a revision" },
+    check: null,
+    close: { status: "closed", closed: ["pitwall-7b1"] },
+  });
+  const result = await done;
+
+  assert.equal(
+    result.deployed,
+    "deployed",
+    "a repository that deploys and configures no verify has no host anybody can read, so there is no revision to " +
+      "contradict the step - and the run held its issues open anyway. Nothing was checked before this comparison " +
+      "existed either: turning an unverifiable config into a permanent hold on a patch release is the 2026-08-25 " +
+      "pile-up, issues sitting in_progress and invisible to the queue, reached by upgrading rather than by deploying.",
+  );
+  assert.equal(
+    calls.filter((c) => c.label === "close").length,
+    1,
+    "the close step was never spawned for a deploy nothing was able to check, so every issue this run merged stays in_progress forever",
+  );
+  assert.equal(
+    calls.filter((c) => c.label === "deploy-check").length,
+    0,
+    "a read-back was spawned with no host to read",
+  );
+
+  const said = logs.join("\n");
+  assert.match(said, /no verify command/, "the log does not name the configuration that would have checked it");
+  assert.match(
+    said,
+    /own word/,
+    "this close rests on the step's assertion and nothing else, and the log reads like any other deployed run. A " +
+      "reader must be able to tell a revision somebody compared from a status somebody asserted.",
+  );
+});
+
+test("a repository nothing can read back does not launder a revision that contradicts what merged", async () => {
+  const halfConfigured = {
+    ...ARGS,
+    repos: {
+      docs: ARGS.repos.docs,
+      site: { path: "cli", slug: "owner/cli", deploy: ["bash deploy-one.sh --label production"] },
+    },
+  };
+  const inSite = { slug: "owner/cli", number: 18, title: "Read the lock back", branch: "devloop/pitwall-7b3", issue: "pitwall-7b3" };
+  const { calls, logs, done } = landOnce({
+    args: halfConfigured,
+    prs: [PR, inSite],
+    deploy: { status: "deployed", hosts: hosts(OTHER), notes: "both live" },
+    check: null,
+    close: { status: "closed", closed: ["pitwall-7b1", "pitwall-7b3"] },
+  });
+  const result = await done;
+
+  assert.notEqual(
+    result.deployed,
+    "deployed",
+    "one repository is serving a revision that is not what merged into it, and the run took the step's word back " +
+      "because a DIFFERENT repository happened to have no verify configured. A host that answered and disagreed is " +
+      "evidence; a host nobody could ask is not, and an unaskable one must not cancel out an answered one.",
+  );
+  assert.equal(
+    calls.filter((c) => c.label === "close").length,
+    0,
+    "issues were closed while a host the deploy step read was serving another revision",
+  );
+  assert.match(logs.join("\n"), new RegExp(OTHER.slice(0, 12)), "the log does not say what the host is serving");
+});

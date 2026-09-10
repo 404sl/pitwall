@@ -1595,13 +1595,15 @@ try {
   if (landed.length && !masterBroken) {
     phase('Deploy')
     const d = await agent(deployPrompt(landed), { label: 'deploy', phase: 'Deploy', schema: DEPLOYED })
-    const reported = (d && d.status) || 'unknown'
-    deployed = reported
+    const reportedStatus = (d && d.status) || 'unknown'
+    deployed = reportedStatus
     let servingText = ''
+    let refuted = false
 
-    if (reported === 'deployed') {
+    if (reportedStatus === 'deployed') {
       const own = readHosts(landed, { status: 'read', hosts: (d && d.hosts) || [] })
       deployed = own.status
+      refuted = own.mismatched.length > 0
       servingText = servingLine(own.confirmed)
       if (deployed !== 'deployed') {
         log(`the deploy step reported deployed, and the revisions it says the hosts are serving do not confirm it - deploy is ${deployed}`)
@@ -1609,9 +1611,11 @@ try {
       }
     }
 
-    const unsettled = reported === 'deployed'
-      ? 'the deploy step reported deployed and named no revision that could be compared against what merged'
-      : 'the deploy step reported nothing'
+    const unsettled = reportedStatus !== 'deployed'
+      ? 'the deploy step reported nothing'
+      : refuted
+        ? 'the deploy step reported deployed and named a revision that is not what merged'
+        : 'the deploy step reported deployed and named no revision that could be compared against what merged'
 
     if (deployed === 'unknown' && !landed.some((l) => DEPLOYS.has(l.repo))) {
       deployed = 'not_needed'
@@ -1619,7 +1623,13 @@ try {
     } else if (deployed === 'unknown') {
       const { reads, blocked } = liveReads(landed)
       if (blocked.length || !reads.length) {
-        log(`${unsettled}, and reading the hosts back cannot settle it either, so the deploy stays unknown and the issues stay open until a person reads a host:\n    ${(blocked.length ? blocked : ['nothing that landed deploys anywhere a host could be read']).join('\n    ')}`)
+        const why = (blocked.length ? blocked : ['nothing that landed deploys anywhere a host could be read']).join('\n    ')
+        if (reportedStatus === 'deployed' && !refuted) {
+          deployed = 'deployed'
+          log(`the deploy step reported deployed and nothing configured here can read a host back to check it, so this deploy closes on the step's own word and no revision anybody compared - which is what it did before this comparison existed. One verify command per deploy environment is what would check it:\n    ${why}`)
+        } else {
+          log(`${unsettled}, and reading the hosts back cannot settle it either, so the deploy stays unknown and the issues stay open until a person reads a host:\n    ${why}`)
+        }
       } else {
         const back = await agent(livePrompt(landed), { label: 'deploy-check', phase: 'Deploy', schema: LIVE, model: 'haiku', effort: 'low' })
         const read = readHosts(landed, back)
@@ -1664,7 +1674,7 @@ try {
     if (heldBack.length) {
       const waiting = heldBack.map((l) => l.issue || keyOf(l)).join(' ')
       if (deployed === 'unknown') {
-        log(`deploy UNKNOWN - ${reported === 'deployed' ? 'the deploy step said it deployed and nothing named a revision that confirms it' : 'nothing reported whether it happened'} and reading the hosts back did not settle it either. THIS IS NOT A FAILURE and must not be re-run on the strength of this line. What settles it, in this order: what each host is serving, against the shas that merged.\n${heldBackReads(landed)}\n    merged: ${landed.map((l) => `${l.repo} ${(l.mergeSha || '').slice(0, 12) || '(sha not recorded)'}`).join(', ')}\n    left open until somebody says: ${waiting}`)
+        log(`deploy UNKNOWN - ${unsettled}, and reading the hosts back did not settle it either. THIS IS NOT A FAILURE and must not be re-run on the strength of this line. What settles it, in this order: what each host is serving, against the shas that merged.\n${heldBackReads(landed)}\n    merged: ${landed.map((l) => `${l.repo} ${(l.mergeSha || '').slice(0, 12) || '(sha not recorded)'}`).join(', ')}\n    left open until somebody says: ${waiting}`)
       } else {
         log(`deploy ${deployed} - staying open until it is live: ${waiting}`)
       }
