@@ -5,23 +5,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import { runScript, type Call } from "./support/workflow.js";
+
 const SKILL = join(import.meta.dirname, "..", "plugins", "devloop", "skills", "devloop");
-const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
-
-type Call = { prompt: string; label: string };
-
-function runScript(file: string, args: unknown, reply: (call: Call, n: number) => unknown) {
-  const source = readFileSync(join(SKILL, file), "utf8").replace(/^export const /m, "const ");
-  const calls: Call[] = [];
-  const body = new AsyncFunction("args", "agent", "phase", "log", "parallel", source);
-  const agent = async (prompt: string, opts: { label?: string } = {}) => {
-    const call = { prompt, label: opts.label || "" };
-    calls.push(call);
-    return reply(call, calls.length);
-  };
-  const noop = () => {};
-  return { calls, done: body(args, agent, noop, noop, noop) };
-}
 
 const RELEASE_LOCK = join(SKILL, "release-lock.sh");
 
