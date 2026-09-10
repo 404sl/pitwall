@@ -94,6 +94,28 @@ async function sent(notice: Notice, sender: Sender): Promise<Delivery> {
   }
 }
 
+function lossOf(entry: Delivered): string {
+  const who = `${entry.notice.origin.session} (${entry.notice.origin.ref})`;
+  const what = entry.delivery.delivered
+    ? `${entry.notice.issueId} notice for ${who} was delivered`
+    : `${entry.notice.issueId} notice for ${who} was not delivered: ${entry.delivery.reason}`;
+  return entry.error === undefined
+    ? `${what}, and the reason is recorded on the issue`
+    : `${what}, and could not be recorded on the issue either: ${entry.error.message}`;
+}
+
+export function undeliveredReport(delivered: readonly Delivered[]): string[] {
+  return delivered
+    .filter((entry) => !entry.delivery.delivered || entry.error !== undefined)
+    .map(lossOf);
+}
+
+export function lostNotices(delivered: readonly Delivered[]): CollectionError[] {
+  return delivered.flatMap((entry) =>
+    entry.error === undefined ? [] : [{ ...entry.error, message: lossOf(entry) }],
+  );
+}
+
 export async function deliver(
   notices: readonly Notice[],
   options: DeliverOptions,

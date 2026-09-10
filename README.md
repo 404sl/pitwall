@@ -111,6 +111,70 @@ arrives, and the failure is recorded in `errors`. `node:sqlite` arrived in Node 
 on an older Node there is no log at all — the metrics are simply absent, and nothing is
 reported as an error, because a module a runtime never shipped is not a failed read.
 
+## Completion notices
+
+When an issue closes, the session that asked for it is the one that wants to hear. Pitwall
+computes that notice from two consecutive snapshots — an issue that was open at the previous
+collection and closed at this one — and delivers it by running a command you configure.
+In a workspace you have listed, notices are computed until you configure one and nothing is
+sent; a workspace found by scanning is read and nothing more.
+
+First, `notify` in the workspace's `.pitwall.json`, an array of words whose first is the
+program to run, in a workspace you have listed yourself:
+
+```json
+{
+  "idPrefix": "mw",
+  "notify": ["script/notify-session.sh"]
+}
+```
+
+`notify` is read only for a workspace named in `roots` in `~/.config/pitwall/config.json`.
+Run Pitwall from a directory whose children are workspaces and it finds them by scanning
+instead, which is enough to read a board and is not enough to run a program: a workspace file
+is committed, so a repository you merely cloned could otherwise name a command that runs on
+your machine at the next `snapshot`. For a workspace found by scanning, notices are not
+computed at all and nothing is written to its tracker — collecting one stays a read. Where
+such a workspace does name a `notify` command, that is said once per collection rather than
+once per notice: `snapshot` writes a line to standard error naming the roots and the file to
+list them in, and the console carries the same line as one row against that file, because it
+is a fact about your configuration and not about any issue. `sessionRef` in a workspace file
+is read on the same terms. `PITWALL_SESSION_REF` is not, because the environment of the run
+is yours.
+
+A relative path with a separator in it, like `script/notify-session.sh`, resolves against the
+workspace root; a bare name with no separator is looked up on `PATH` like any other program.
+The array is handed to the program directly rather than to a shell — write `["sh", "-c", "…"]`
+if you want one. The notice arrives as one JSON object on standard input, never on the command
+line, because it carries issue titles and a session ref and a command line is readable by
+anyone on the machine. Exit 0 means delivered, so read standard input before exiting 0: a
+command that exits 0 without reading is taken at its word. Any other exit means the notice was
+not delivered, and what the command wrote on standard error becomes the recorded reason.
+
+The object carries `issueId`, `title`, `origin` — the `session` that asked and the `ref`
+that addresses it, which is the one to deliver to, because session names are neither unique
+nor stable — `text`, the line to deliver, and `pull` only where a pull request was open for
+the issue at the previous collection, as the snapshot records it. A notice is computed only
+for an issue that records who asked, so a tracker whose issues carry no origin produces none
+and nothing is appended to anything.
+
+Second, `PITWALL_SESSION_REF` in the environment of the run, naming the session doing the
+collecting. It is what stops a loop that creates, claims, lands and closes its own work from
+interrupting itself once per pull request: a notice whose origin ref is this one is never
+sent. A fixed single-session setup can name `sessionRef` in the workspace file instead, and
+the environment wins where both are set — two sessions collecting the same workspace have
+different refs and must not share a configured one.
+
+Where that ref is unknown, every notice is held rather than sent, because with nothing to
+compare against any of them might be the collecting session's own work coming back at it. In
+a workspace you have listed, a notice that was not delivered — held, refused, or handed to a
+command that failed — is appended to its own issue with the reason, so what did not arrive is
+readable afterwards rather than lost. `snapshot` writes a line to standard error for each of
+them as well, and
+where the tracker refused the note too — the one case where the reason would otherwise be
+written down nowhere — the notice is reported as an error on the board, beside everything
+else the collection could not do. Silence is not one of the outcomes.
+
 ## How it is put together
 
 ```

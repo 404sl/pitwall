@@ -3,8 +3,18 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { basename, dirname, join } from "node:path";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
+import { execPath } from "node:process";
 import type { AddressInfo } from "node:net";
 import { SCHEMA_VERSION, isYours, parseSnapshot } from "@404sl/pitwall-schema";
 import type { Notice } from "../src/notify.ts";
@@ -12,6 +22,7 @@ import { KEPT_SOURCE, PARTIAL_SOURCE, REFRESH_SOURCE, buildBoard } from "../src/
 import { consoleCollector, createConsoleServer, listen } from "../src/serve.ts";
 import { collectSnapshot, emitSnapshot } from "../src/snapshot.ts";
 import { historyPath } from "../src/history.ts";
+import { SESSION_REF_VAR } from "../src/sender.ts";
 import { readSnapshot, snapshotPath } from "../src/state.ts";
 import { VERSION } from "../src/version.ts";
 
@@ -288,14 +299,175 @@ test("nothing is announced to the session that closed the work itself", async ()
   assert.deepEqual(result.delivered, []);
 });
 
-test("a collection with no sender delivers nothing at all", async () => {
-  const place = workspace([TRACKER]);
-  await emitSnapshot(options(place));
+function notifyingRoot(place: Workspace): { root: string; log: string } {
+  const root = mkdtempSync(join(tmpdir(), "pitwall-notify-snapshot-"));
+  cpSync(join(TRACKER, "bd-output"), join(root, "bd-output"), { recursive: true });
+  const log = join(root, "delivered.jsonl");
+  writeFileSync(
+    join(root, "notify.mjs"),
+    `import { appendFileSync, readFileSync } from "node:fs";
+     appendFileSync(${JSON.stringify(log)}, readFileSync(0, "utf8"));`,
+  );
+  writeFileSync(
+    join(root, ".pitwall.json"),
+    JSON.stringify({ idPrefix: "mw", notify: [execPath, join(root, "notify.mjs")] }),
+  );
+  writeFileSync(place.configPath, JSON.stringify({ roots: [root] }));
+  return { root, log };
+}
+
+test("a collection that supplies no sender reaches the command the workspace configures", async () => {
+  const place = withConfig("{}");
+  const { log } = notifyingRoot(place);
+  const env = { ...place.env, [SESSION_REF_VAR]: "9f31bd" };
+  await emitSnapshot({ ...options(place), env });
   const result = await emitSnapshot({
+    ...options(place),
+    env: { ...env, BD_LIST_FIXTURE: "landed" },
+  });
+  assert.deepEqual(
+    result.delivered.map((entry) => [entry.notice.issueId, entry.delivery.delivered]),
+    [
+      ["mw-1", true],
+      ["mw-1.1", true],
+    ],
+  );
+  assert.deepEqual(
+    readFileSync(log, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => (JSON.parse(line) as Notice).issueId),
+    ["mw-1", "mw-1.1"],
+  );
+});
+
+test(`${SESSION_REF_VAR} is what keeps a session from being told about its own work`, async () => {
+  const place = withConfig("{}");
+  const { log } = notifyingRoot(place);
+  const env = { ...place.env, [SESSION_REF_VAR]: "c1796a" };
+  await emitSnapshot({ ...options(place), env });
+  const result = await emitSnapshot({
+    ...options(place),
+    env: { ...env, BD_LIST_FIXTURE: "landed" },
+  });
+  assert.deepEqual(result.delivered, []);
+  assert.equal(existsSync(log), false);
+});
+
+test("with no ref for this session a notice is computed, held and recorded on the issue", async () => {
+  const place = withConfig("{}");
+  const { root, log } = notifyingRoot(place);
+  const notes = join(root, "notes.log");
+  await emitSnapshot({ ...options(place), env: place.env });
+  const result = await emitSnapshot({
+    ...options(place),
+    env: { ...place.env, BD_LIST_FIXTURE: "landed", BD_NOTES_LOG: notes },
+  });
+  assert.deepEqual(
+    result.delivered.map((entry) => [entry.notice.issueId, entry.delivery.delivered]),
+    [
+      ["mw-1", false],
+      ["mw-1.1", false],
+    ],
+  );
+  assert.deepEqual(
+    result.delivered.map((entry) => entry.error),
+    [undefined, undefined],
+  );
+  assert.equal(existsSync(log), false);
+  const recorded = readFileSync(notes, "utf8");
+  assert.match(recorded, /mw-1 Completion notice for mw-planning-session \(c1796a\)/);
+  assert.match(recorded, new RegExp(`${SESSION_REF_VAR} is not set`));
+  assert.match(recorded, /mw-1\.1 Completion notice/);
+});
+
+function scannedRoot(place: Workspace, name: string, notify: boolean): string {
+  const root = join(place.home, "work", name);
+  mkdirSync(root, { recursive: true });
+  cpSync(join(TRACKER, "bd-output"), join(root, "bd-output"), { recursive: true });
+  writeFileSync(
+    join(root, "notify.mjs"),
+    `import { appendFileSync, readFileSync } from "node:fs";
+     appendFileSync(${JSON.stringify(join(root, "delivered.jsonl"))}, readFileSync(0, "utf8"));`,
+  );
+  writeFileSync(
+    join(root, ".pitwall.json"),
+    JSON.stringify(
+      notify ? { idPrefix: "mw", notify: [execPath, join(root, "notify.mjs")] } : { idPrefix: "mw" },
+    ),
+  );
+  return root;
+}
+
+test("a workspace found by scanning neither runs its own command nor is written to", async () => {
+  const place = withConfig("{}");
+  rmSync(place.configPath);
+  const root = scannedRoot(place, "scanned", true);
+  const log = join(root, "delivered.jsonl");
+  const notes = join(root, "notes.log");
+  const env = { ...place.env, [SESSION_REF_VAR]: "9f31bd" };
+  await emitSnapshot({ ...options(place), env });
+  const result = await emitSnapshot({
+    ...options(place),
+    env: { ...env, BD_LIST_FIXTURE: "landed", BD_NOTES_LOG: notes },
+  });
+  assert.deepEqual(result.delivered, []);
+  assert.equal(existsSync(log), false);
+  assert.equal(existsSync(notes), false);
+  assert.equal(result.unlisted.length, 1);
+  assert.equal(result.unlisted[0]?.source, place.configPath);
+  const said = result.unlisted[0]?.message ?? "";
+  assert.match(said, /1 workspace found by scanning names a notify command/);
+  assert.match(said, new RegExp(root));
+  assert.match(said, new RegExp(place.configPath));
+});
+
+test("a scanned workspace that names no command is nothing to report", async () => {
+  const place = withConfig("{}");
+  rmSync(place.configPath);
+  scannedRoot(place, "scanned", false);
+  const result = await emitSnapshot({ ...options(place), env: place.env });
+  assert.deepEqual(result.unlisted, []);
+});
+
+test("the board reports a scanned notifier once, and the same row after a refresh", async () => {
+  const place = withConfig("{}");
+  rmSync(place.configPath);
+  const root = scannedRoot(place, "scanned", true);
+  const notes = join(root, "notes.log");
+  const { errors } = await consoleCollector({ ...options(place), env: place.env })();
+  const refreshed = await consoleCollector({
+    ...options(place),
+    env: { ...place.env, BD_LIST_FIXTURE: "landed", BD_NOTES_LOG: notes },
+  })();
+  const said = (rows: readonly { source: string; message: string }[]) =>
+    rows.filter((row) => row.source === place.configPath).map((row) => row.message);
+  assert.equal(said(errors).length, 1);
+  assert.match(said(errors)[0] ?? "", /no completion notice is delivered for it/);
+  assert.deepEqual(said(refreshed.errors), said(errors));
+  assert.deepEqual(
+    refreshed.errors.filter((error) => /notice for mw-planning-session/.test(error.message)),
+    [],
+  );
+  assert.equal(existsSync(notes), false);
+});
+
+test("a notice the tracker would not record reaches the board as an error", async () => {
+  const place = withConfig("{}");
+  notifyingRoot(place);
+  await emitSnapshot({ ...options(place), env: place.env });
+  const collect = consoleCollector({
     ...options(place),
     env: { ...place.env, BD_LIST_FIXTURE: "landed" },
   });
-  assert.deepEqual(result.delivered, []);
+  const { errors } = await collect();
+  const lost = errors.filter((error) => /notice for mw-planning-session/.test(error.message));
+  assert.deepEqual(
+    lost.map((error) => error.source),
+    ["mw-1", "mw-1.1"],
+  );
+  assert.match(lost[0]?.message ?? "", /was not delivered/);
+  assert.match(lost[0]?.message ?? "", /could not be recorded on the issue either/);
 });
 
 function pipelineRoot(remote: string): string {

@@ -10,13 +10,19 @@ import {
 } from "@404sl/pitwall-schema";
 import { noteAppender, readIssues, type ClosedIssue, type IssueText } from "./beads.js";
 import { KEPT_SOURCE, PARTIAL_SOURCE } from "./board.js";
-import { recordOnce } from "./errors.js";
+import { collectionError, recordOnce } from "./errors.js";
 import { hasLiveStructuralBlocker, type ClassifyContext } from "./classify.js";
-import { collectProjects, historyLimits, type RootsOptions } from "./config.js";
+import {
+  collectProjects,
+  historyLimits,
+  type ResolvedRoots,
+  type RootsOptions,
+} from "./config.js";
 import { recordSnapshot, type HistoryMetrics } from "./history.js";
 import { deliver, noticesFor, type Delivered, type Noter, type Sender } from "./notify.js";
 import { issueMatcher, readPipeline } from "./pipeline.js";
 import { preconditionProbe, pullLookup } from "./probes.js";
+import { sessionRefOf, unlistedNotifiers, workspaceSender } from "./sender.js";
 import { readSnapshot, writeSnapshot } from "./state.js";
 import { assess, isAssessable, lastNoteAt, type StalenessContext } from "./staleness.js";
 import { VERSION } from "./version.js";
@@ -37,6 +43,7 @@ export interface SnapshotResult {
   code: number;
   read: boolean;
   delivered: Delivered[];
+  unlisted: CollectionError[];
 }
 
 type GatheredMetrics = Pick<Metrics, "readyCount" | "inboxCount" | "closedToday" | "landedToday">;
@@ -290,6 +297,7 @@ interface Assembled {
   snapshot: Snapshot;
   code: number;
   gathered: Gathered[];
+  roots: ResolvedRoots;
 }
 
 async function assemble(options: SnapshotOptions): Promise<Assembled> {
@@ -306,32 +314,59 @@ async function assemble(options: SnapshotOptions): Promise<Assembled> {
     }),
     code: everyProjectFailed(gathered) ? 1 : 0,
     gathered,
+    roots,
   };
+}
+
+function announces(roots: ResolvedRoots, options: SnapshotOptions): boolean {
+  return roots.source === "config" || (options.sender !== undefined && options.note !== undefined);
+}
+
+function unlistedReport(roots: ResolvedRoots, options: SnapshotOptions): CollectionError[] {
+  if (announces(roots, options)) {
+    return [];
+  }
+  const found = unlistedNotifiers(roots.roots, {
+    source: roots.source,
+    configPath: roots.configPath,
+    env: options.env,
+  });
+  return found === undefined ? [] : [collectionError(roots.configPath, found)];
 }
 
 async function announce(
   gathered: readonly Gathered[],
   previous: Snapshot | undefined,
+  roots: ResolvedRoots,
   options: SnapshotOptions,
 ): Promise<Delivered[]> {
-  const sender = options.sender;
-  if (sender === undefined) {
+  if (!announces(roots, options)) {
     return [];
   }
   const delivered: Delivered[] = [];
+  const trust = { source: roots.source, configPath: roots.configPath };
   for (const entry of gathered) {
+    const root = entry.project.root;
+    const sessionRef = options.sessionRef ?? sessionRefOf(root, { ...trust, env: options.env });
     const notices = noticesFor({
       previous: previous?.projects.find((project) => project.id === entry.project.id),
       issues: entry.project.issues,
       closed: entry.closed,
-      sessionRef: options.sessionRef,
+      sessionRef,
     });
     if (notices.length === 0) {
       continue;
     }
+    const sender =
+      options.sender ??
+      workspaceSender(root, {
+        ...trust,
+        env: options.env,
+        timeoutMs: options.timeoutMs,
+        sessionRef,
+      });
     const note =
-      options.note ??
-      noteAppender(entry.project.root, { env: options.env, timeoutMs: options.timeoutMs });
+      options.note ?? noteAppender(root, { env: options.env, timeoutMs: options.timeoutMs });
     delivered.push(...(await deliver(notices, { sender, note })));
   }
   return delivered;
@@ -357,9 +392,9 @@ function withHistory(project: Project, derived: HistoryMetrics | undefined): Pro
 
 export async function emitSnapshot(options: SnapshotOptions = {}): Promise<SnapshotResult> {
   const previous = readSnapshot(options).snapshot;
-  const { snapshot, code, gathered } = await assemble(options);
+  const { snapshot, code, gathered, roots } = await assemble(options);
   if (!readSomething(gathered)) {
-    return { snapshot, path: undefined, code, read: false, delivered: [] };
+    return { snapshot, path: undefined, code, read: false, delivered: [], unlisted: [] };
   }
   const history = await recordSnapshot(snapshot, {
     env: options.env,
@@ -381,6 +416,7 @@ export async function emitSnapshot(options: SnapshotOptions = {}): Promise<Snaps
     path,
     code,
     read: true,
-    delivered: await announce(gathered, previous, options),
+    delivered: await announce(gathered, previous, roots, options),
+    unlisted: unlistedReport(roots, options),
   };
 }
