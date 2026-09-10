@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.1.26
+
+**The handoff halted over an instruction its brief had already settled, because the settlement was
+a hundred lines past the point it decided.** On `pitwall-hru`, run `wf_00e58d18-768`, the handoff
+returned `blocked` - "Awaiting explicit user decision" - on a twice-reviewed pull request whose CI
+was green. It read no checks, applied no label, wrote no tracker note and left no worktree removed,
+so a finished change sat unlabelled and therefore invisible to the lander until a supervisor
+reconstructed the verdict from the journal by hand.
+
+- **The brief already carried the settlement, and the ticket's diagnosis of where it lived was
+  wrong.** It is in the rules block - one copy, stated once - which the fix, handoff and split
+  briefs splice, and the handoff has spliced it since the dev loop was first published. What it
+  did not have was the
+  settlement anywhere near its compliance step, which is the one place in the brief that names
+  `blocked` as an exit for an attribution problem. A step handed "add a trailer" meets that exit
+  first and takes it, and reading the rules a hundred lines later does not undo a decision already
+  made.
+- **So the compliance step now says, where it decides, that an instruction to add the trailers is
+  not a finding.** Nothing is in the commit to rewrite, nothing in the body to edit, nothing to ask,
+  and a conflict with that instruction is not a value `status` can take. The rules block is
+  untouched and still the only statement of the rule.
+- **Four assertions hold the shape rather than a live run.** The settlement is stated exactly once;
+  both steps that write commit and pull request text splice the rules; the sentence sits before
+  those rules in the handoff brief rather than after them; and the handoff brief carries no
+  backticks of its own, which is the failure that took every lane down on 2026-09-09 and was until
+  now asserted only over the rules block.
+
 ## 0.1.25
 
 **Every lane and every lander stalled on a home-directory config nobody could read.** On one
