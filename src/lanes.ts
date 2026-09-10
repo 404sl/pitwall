@@ -144,8 +144,12 @@ function handoffReader(
   };
 }
 
-function touchedSince(worktree: string): string[] | Error {
+function touchedSince(
+  worktree: string,
+  env: Record<string, string | undefined>,
+): string[] | Error {
   const found = spawnSync("find", recencyArgs(worktree), {
+    env,
     encoding: "utf8",
     maxBuffer: FIND_OUTPUT_LIMIT,
   });
@@ -173,8 +177,12 @@ interface Probe {
   lastActivityAt?: string;
 }
 
-function probeOf(worktree: string, errors: CollectionError[]): Probe {
-  const touched = touchedSince(worktree);
+function probeOf(
+  worktree: string,
+  env: Record<string, string | undefined>,
+  errors: CollectionError[],
+): Probe {
+  const touched = touchedSince(worktree, env);
   if (touched instanceof Error) {
     errors.push(collectionError(worktree, touched));
     return { worktree, live: true };
@@ -202,12 +210,13 @@ interface Registry {
   dir: string;
   lockPrefix: string;
   lockRoot: string | undefined;
+  env: Record<string, string | undefined>;
   handedOff: (issueId: string) => boolean;
   errors: CollectionError[];
 }
 
 function laneAt(slot: number, entry: string, registry: Registry): Lane {
-  const { dir, lockPrefix, lockRoot, errors } = registry;
+  const { dir, lockPrefix, lockRoot, env, errors } = registry;
   const file = join(dir, entry);
   let issueId: string | undefined;
   try {
@@ -230,7 +239,7 @@ function laneAt(slot: number, entry: string, registry: Registry): Lane {
       ? { slot, state: "handed-off", executor: "local", issueId }
       : { slot, state: "working", executor: "local", issueId };
   }
-  const live = freshestOf(trees.map((worktree) => probeOf(worktree, errors)));
+  const live = freshestOf(trees.map((worktree) => probeOf(worktree, env, errors)));
   if (live === undefined) {
     return { slot, state: "stranded", executor: "local", issueId, worktree: trees[0] };
   }
@@ -264,11 +273,13 @@ export function readLanes(lockPrefix: string, options: LaneOptions = {}): LaneRe
     }
   }
   const errors: CollectionError[] = [];
+  const env = options.env ?? process.env;
   const registry: Registry = {
     dir,
     lockPrefix,
     lockRoot: options.lockRoot,
-    handedOff: handoffReader(options.repos ?? [], options.env ?? process.env, errors),
+    env,
+    handedOff: handoffReader(options.repos ?? [], env, errors),
     errors,
   };
   const lanes = [...slots]

@@ -132,6 +132,22 @@ test("a probe that fails is reported working with an error, never stranded", () 
   assert.match(errors[0]?.message ?? "", /probe rejected/);
 });
 
+test("the recency probe runs find under the env it was given, not the one it inherited", () => {
+  const root = lockRoot();
+  claim(root, 1, "pw-narrowed");
+  const dir = worktree(root, "pw-narrowed", 0);
+  const nowhere = mkdtempSync(join(tmpdir(), "pitwall-nofind-"));
+
+  const { lanes, errors } = readLanes(PREFIX, { lockRoot: root, env: { PATH: nowhere } });
+
+  assert.equal(lanes[0]?.state, "working");
+  assert.equal(lanes[0]?.worktree, dir);
+  assert.equal(lanes[0]?.lastActivityAt, undefined);
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0]?.source, dir);
+  assert.match(errors[0]?.message ?? "", /ENOENT/);
+});
+
 test("a find that rejects every primary but -mmin still tells working from stranded", () => {
   const root = lockRoot();
   claim(root, 1, "pw-alive");
