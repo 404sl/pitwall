@@ -40,6 +40,7 @@ function closed(id: string, origin?: Origin): ClosedIssue {
     blockedBy: [],
     origin,
     closedAt: CLOSED_AT,
+    closeReason: undefined,
   };
 }
 

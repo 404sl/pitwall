@@ -10,6 +10,7 @@ import { Parked } from "./components/Parked.js";
 import { Problems } from "./components/Problems.js";
 import { Ready } from "./components/Ready.js";
 import { Running, runningSummary } from "./components/Running.js";
+import { Today } from "./components/Today.js";
 import { IssuePage } from "./components/IssuePage.js";
 import { countLabel } from "./format.js";
 import { filterOf, routeOf } from "./routes.js";
@@ -245,6 +246,13 @@ export function App() {
             totals={board.filtered ? board.totals.parked : undefined}
             filteredEmpty={emptyOf(board.totals.parked.length)}
           />
+        </Band>
+        <Band
+          id="today"
+          label={strings.band.today}
+          count={board.filtered ? strings.filters.notFiltered : undefined}
+        >
+          <Today today={board.today} />
         </Band>
         <Band
           id="problems"

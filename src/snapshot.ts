@@ -38,7 +38,9 @@ export interface SnapshotResult {
   delivered: Delivered[];
 }
 
-type GatheredMetrics = Pick<Metrics, "readyCount" | "inboxCount" | "closedToday">;
+type GatheredMetrics = Pick<Metrics, "readyCount" | "inboxCount" | "closedToday" | "landedToday">;
+
+const NAMES_A_MERGE = /\b(merged|landed)\b/i;
 
 function closedOn(at: string | undefined, day: Date): boolean {
   if (at === undefined) {
@@ -55,15 +57,25 @@ function closedOn(at: string | undefined, day: Date): boolean {
   );
 }
 
+function landedCount(closedToday: readonly ClosedIssue[], readable: boolean): number | undefined {
+  if (!readable || closedToday.some((issue) => issue.closeReason === undefined)) {
+    return undefined;
+  }
+  return closedToday.filter((issue) => NAMES_A_MERGE.test(issue.closeReason ?? "")).length;
+}
+
 function metricsOf(
   issues: readonly Issue[],
   closed: readonly ClosedIssue[],
   day: Date,
+  readable: boolean,
 ): GatheredMetrics {
+  const today = closed.filter((issue) => closedOn(issue.closedAt ?? issue.updatedAt, day));
   return {
     readyCount: issues.filter((issue) => issue.classification === "ready").length,
     inboxCount: issues.filter((issue) => isYours(issue.classification)).length,
-    closedToday: closed.filter((issue) => closedOn(issue.closedAt ?? issue.updatedAt, day)).length,
+    closedToday: today.length,
+    landedToday: landedCount(today, readable),
   };
 }
 
@@ -164,13 +176,14 @@ async function gather(project: Project, options: SnapshotOptions, day: Date): Pr
     timeoutMs: options.timeoutMs,
     knownIds: context.knownIds,
   });
+  const unreadable = project.errors.length > 0 || collected.errors.length > 0;
   return {
     closed: collected.closed,
     project: Project.parse({
       ...project,
       issues,
       pipeline: pipeline.pipeline,
-      metrics: metricsOf(issues, collected.closed, day),
+      metrics: metricsOf(issues, collected.closed, day, !unreadable),
       errors: [
         ...project.errors,
         ...collected.errors,
@@ -179,7 +192,7 @@ async function gather(project: Project, options: SnapshotOptions, day: Date): Pr
         ...unassessable,
       ],
     }),
-    unreadable: project.errors.length > 0 || collected.errors.length > 0,
+    unreadable,
   };
 }
 
@@ -250,7 +263,7 @@ function withHistory(project: Project, derived: HistoryMetrics | undefined): Pro
   if (derived === undefined) {
     return project;
   }
-  const metrics: Metrics = { ...project.metrics, landedToday: derived.landedToday };
+  const metrics: Metrics = { ...project.metrics };
   if (derived.medianTimeToLandMinutes !== undefined) {
     metrics.medianTimeToLandMinutes = derived.medianTimeToLandMinutes;
   }
