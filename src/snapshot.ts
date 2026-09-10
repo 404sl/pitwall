@@ -153,7 +153,6 @@ async function assessed(
 interface Gathered {
   project: Project;
   closed: readonly ClosedIssue[];
-  unreadable: boolean;
   issuesRead: boolean;
 }
 
@@ -202,7 +201,6 @@ async function gather(project: Project, options: SnapshotOptions, day: Date): Pr
         ...unassessable,
       ],
     }),
-    unreadable,
     issuesRead: collected.errors.length === 0,
   };
 }
@@ -286,7 +284,7 @@ function keptBoard(
 }
 
 function readSomething(gathered: readonly Gathered[]): boolean {
-  return gathered.some((entry) => !entry.unreadable);
+  return gathered.some((entry) => entry.issuesRead);
 }
 
 function everyProjectFailed(gathered: readonly Gathered[]): boolean {

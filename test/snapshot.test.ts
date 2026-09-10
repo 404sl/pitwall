@@ -898,6 +898,41 @@ function lanedRoot(): string {
   return root;
 }
 
+test("the only project there is writes its board when its tracker answered and its lanes did not", async () => {
+  const root = lanedRoot();
+  const id = basename(root);
+  const place = workspace([root]);
+  const state = { env: place.env, home: place.home };
+  const file = join(place.home, "lock-root-is-a-file");
+  writeFileSync(file, "");
+  const result = await emitSnapshot({
+    ...options(place, new Date("2026-09-08T09:30:00Z")),
+    lockRoot: file,
+    env: { ...place.env, BD_LIST_FIXTURE: "partial" },
+  });
+  assert.equal(result.read, true, "a tracker that answered is a collection that read something");
+  assert.equal(result.code, 0);
+  assert.equal(result.path, snapshotPath(state), "the snapshot must reach disk");
+  const stored = readSnapshot(state).snapshot;
+  assert.ok(stored);
+  const project = stored.projects[0];
+  assert.deepEqual(
+    (project?.issues ?? []).map((issue) => issue.id).sort(),
+    ["mw-5", "mw-6"],
+    "the issues the tracker answered with must survive the lane failure",
+  );
+  assert.deepEqual(
+    (project?.errors ?? []).map((error) => error.source),
+    [join(file, `${id}-slots`)],
+    "the project still reports the lane read it could not do",
+  );
+  assert.equal(
+    stored.errors.some((error) => error.source === PARTIAL_SOURCE),
+    false,
+    "one project whose tracker answered is not a partial collection",
+  );
+});
+
 test("a project whose issues were read keeps them even though the rest of it failed", async () => {
   const root = lanedRoot();
   const id = basename(root);
