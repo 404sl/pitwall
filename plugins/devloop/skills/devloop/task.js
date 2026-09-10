@@ -208,6 +208,16 @@ const SHIP = {
   }
 }
 
+const LANE = {
+  type: 'object',
+  required: ['lane', 'slot'],
+  properties: {
+    lane: { enum: ['released', 'not_mine', 'already_gone', 'still_held'], description: 'the word release-lane.sh printed after lane:, lowercased - it reports its own outcome and you are not asked to judge it' },
+    slot: { enum: ['released', 'not_mine', 'already_gone', 'still_held'], description: 'the word it printed after slot:, lowercased' },
+    notes: { type: 'string', description: 'everything it printed, verbatim' }
+  }
+}
+
 const LAW = `
 NON-NEGOTIABLE RULES. They outrank speed, and they outrank finishing the task.
 
@@ -369,7 +379,12 @@ a change nobody can reproduce.
 Other lanes run at the same time on this machine. If this repository's suite uses a shared
 resource - a database, a fixed port, a scratch directory - claim lane ${laneIndex + 2} first:
 
-  mkdir /tmp/${LOCK_PREFIX}-lane-${laneIndex + 2}.lock 2>/dev/null && echo GOT_LANE || echo LANE_BUSY
+  mkdir /tmp/${LOCK_PREFIX}-lane-${laneIndex + 2}.lock 2>/dev/null && printf '%s\\n' "${ID} slot ${SLOT} lane ${laneIndex + 2}" > /tmp/${LOCK_PREFIX}-lane-${laneIndex + 2}.owner && echo GOT_LANE || echo LANE_BUSY
+
+ONE COMMAND, not two. The owner file beside the lock is what proves the lock is yours: when this
+run ends, whatever way it ends, the lane is given back by reading that file and removing the lock
+only if it names this run. A lock taken without it cannot be proved to be anybody's, so it is
+left standing and the lane is lost until a person clears it.
 
 If that prints LANE_BUSY, stop and hand back rather than running anyway.`
   }
@@ -397,12 +412,14 @@ this repository's test database ${laneIndex + 2}. If another run is already usin
 database mid-suite and it will reset yours, and neither of you will be told - it surfaces as
 unexplained spec failures in files you never touched. Before anything else:
 
-  mkdir /tmp/${LOCK_PREFIX}-lane-${laneIndex + 2}.lock 2>/dev/null && echo GOT_LANE || echo LANE_BUSY
+  mkdir /tmp/${LOCK_PREFIX}-lane-${laneIndex + 2}.lock 2>/dev/null && printf '%s\\n' "${ID} slot ${SLOT} TEST_ENV_NUMBER ${laneIndex + 2}" > /tmp/${LOCK_PREFIX}-lane-${laneIndex + 2}.owner && echo GOT_LANE || echo LANE_BUSY
 
-If that prints GOT_LANE, record who holds it, so the next run that is refused can read the answer
-instead of guessing it off a process list that has usually exited by the time anyone looks:
-
-  printf '%s\\n' "${ID} slot ${SLOT} TEST_ENV_NUMBER ${laneIndex + 2}" > /tmp/${LOCK_PREFIX}-lane-${laneIndex + 2}.owner
+ONE COMMAND, not two, and the owner file is not optional. It records who holds the lock, so the
+next run that is refused can read the answer instead of guessing it off a process list that has
+usually exited by the time anyone looks - and it is the proof of ownership this run's own release
+reads at the end: whatever way the run ends, the lane is given back only if that file names it. A
+lock taken without it cannot be proved to be anybody's, so it is left standing and the lane is
+lost until a person clears it.
 
 That file sits BESIDE the lock, never inside it. A file inside the lock directory would make the
 rmdir below fail, and the lane would stay held forever - the same permanent-block failure the
@@ -1282,6 +1299,40 @@ async function design(task) {
   return brief
 }
 
+const LANE_LOCK = `/tmp/${LOCK_PREFIX}-lane-${SLOT + 1}.lock`
+const SLOT_FILE = `/tmp/${LOCK_PREFIX}-slots/${SLOT}`
+const GIVEN_BACK = new Set(['released', 'already_gone'])
+
+function releaseLanePrompt() {
+  return `Give lane ${SLOT + 1} and slot ${SLOT} back. Run this command once, exactly as it stands, and
+report what it printed:
+
+  bash ${SKILL_DIR}/release-lane.sh --lane ${LANE_LOCK} --slot ${SLOT_FILE} --owner '${ID}'
+
+Every value is already in the command. There is nothing to look up, substitute or confirm first,
+and nothing for you to judge: the script proves ownership itself - the owner file beside the lock
+and the id in the slot file - and removes only what names this run. An earlier release step of
+this shape was told to supply a value it had already been given, went looking for it, found none
+and declined to touch the lock at all, which left every other lane waiting on it.
+
+Report the word after 'lane:' as 'lane' and the word after 'slot:' as 'slot', lowercased, and
+everything it printed as 'notes'. Remove nothing by hand, run no other command, and never use
+2>&1.`
+}
+
+function settle(path, answer) {
+  if (GIVEN_BACK.has(answer)) return answer
+  if (answer === 'not_mine') return `not_mine - ${path} does not record ${ID}, so nothing was removed and nothing should be`
+  return `LEAKED - ${path} was not given back, or the release step answered nothing. Read it before removing anything: clear it if it records this run, and leave it alone if it records another.`
+}
+
+let laneLock = `LEAKED - the release step never reported. Read ${LANE_LOCK} before touching anything.`
+let slotClaim = `LEAKED - the release step never reported. Read ${SLOT_FILE} before touching anything.`
+let task = { id: ID, title: null, repo: null, priority: null }
+let result = null
+
+try {
+
 phase('Triage')
 
 const triage = await agent(`Decide whether one tracker issue can be done without a person, and where it lives.
@@ -1603,12 +1654,11 @@ Change no code. Never use 2>&1.`, { label: `handover:${ID}`, phase: 'Triage', sc
   return { id: ID, title: triage.title, repo: triage.repo, outcome: 'needs_feedback', question: triage.reason }
 }
 
-const task = { id: ID, title: triage.title, repo: triage.repo, priority: triage.priority, ui: triage.ui, ticket: triage.ticket }
+task = { id: ID, title: triage.title, repo: triage.repo, priority: triage.priority, ui: triage.ui, ticket: triage.ticket }
 log(`starting ${ID} (P${task.priority}, ${task.repo}) - ${task.title}`)
 
 let feedback = null
 let brief = task.ui ? await design(task) : null
-let result = null
 let reworks = 0
 
 // Outer: rebase cycles. Inner: review rounds. A rebase that goes red restarts the inner
@@ -1695,6 +1745,15 @@ if (!result && reworks >= MAX_REWORKS) {
 }
 }
 
+} finally {
+  const back = await agent(releaseLanePrompt(), { label: `release:${ID}`, phase: 'Ship', schema: LANE, model: 'haiku', effort: 'low' })
+  laneLock = settle(LANE_LOCK, back && back.lane)
+  slotClaim = settle(SLOT_FILE, back && back.slot)
+  if (!GIVEN_BACK.has(back && back.lane) || !GIVEN_BACK.has(back && back.slot)) {
+    log(`lane ${SLOT + 1}: ${laneLock}\n    slot ${SLOT}: ${slotClaim}${back && back.notes ? `\n    ${back.notes}` : ''}`)
+  }
+}
+
 const MARK = {
   verified: 'READY TO LAND', needs_feedback: 'NEEDS YOU', no_change_needed: 'NOTHING TO DO',
   blocked: 'BLOCKED', handoff_failed: 'NOT LABELLED', agent_error: 'AGENT DIED', split: 'SPLIT'
@@ -1707,4 +1766,4 @@ if (result.question) bits.push(`asks: ${result.question}`)
 if (result.summary && !result.question) bits.push(result.summary)
 log(`${MARK[result.outcome] || result.outcome} ${task.id} P${task.priority} ${task.repo} - ${task.title}${bits.length ? `\n    ${bits.join('\n    ')}` : ''}`)
 
-return { id: task.id, title: task.title, repo: task.repo, priority: task.priority, ...result }
+return { id: task.id, title: task.title, repo: task.repo, priority: task.priority, ...result, lane: laneLock, slot: slotClaim }
