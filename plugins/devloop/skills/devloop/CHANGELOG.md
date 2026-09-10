@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.1.16
+
+**The lander resolved a surveyed pull request through a name the survey chose for itself, and
+silently merged nothing.** `404sl/pitwall-site#23` was open, green, mergeable and labelled. The
+survey rendered its repository as `site`, which in this workspace is the key for the CLI
+checkout, so the lander resolved it to `404sl/pitwall#23` - a real pull request, merged the day
+before. It found a merged pull request, concluded there was nothing to do, and reported the PR in
+no list at all. Twice, on the same one. The same run rendered that repository two ways four
+surveys apart.
+
+Nothing was damaged because the collision happened to be already merged. Had it been open and
+green the lander would have merged it: the wrong pull request, under the wrong issue, reported as
+a success. Every number 1-25 currently exists in both repositories, so the alignment is not rare.
+
+**A repository is identified by its slug now, everywhere the lander keys on one.** The survey
+returns `slug` - the `owner/name` it copied from the command it ran - and the configured key is
+derived from that rather than read out of the answer. `seen`, the pre-flight intersection and
+every log line are keyed on `owner/name#number`, which cannot name two pull requests, and the
+survey is told that a number alone identifies nothing. A slug matching no configured repository
+is reported as skipped rather than resolved to whatever key it resembles; it used to reach the
+merge step, where the lookup threw and took the run down with it.
+
+`preflighted` takes `owner/name#number`. A configured key is still accepted and is rewritten to
+that repository's slug, so an existing caller keeps working, and `config.sh --land` normalises
+both forms and still refuses a repository it cannot find.
+
+**Every pull request a run surveys now ends up in one of its lists.** A pull request deferred on
+every round, or left queued behind a red master, came back in none of them - and a pull request
+in no list reads exactly like one nobody labelled. The run reconciles what it surveyed against
+what it acted on and reports the difference as skipped, saying which it was, so no future reason
+for not acting on a surveyed pull request can be silent by omission.
+
 ## 0.1.15
 
 **Nothing answered "is a lane for this id running right now", and four signals answered it

@@ -178,11 +178,12 @@ print(json.dumps({
 PY
     ;;
   --land)
-    # Any trailing arguments are the PRs the supervisor pre-flighted, as repo#number, and
-    # are passed through as 'preflighted'. land.js merges only those. The repo half must be
-    # a key of "repos" below, not a GitHub slug, because that is what its survey reports -
-    # and a name matching nothing filters that PR out silently, so this refuses rather than
-    # printing a config that quietly lands less than the caller meant.
+    # Any trailing arguments are the PRs the supervisor pre-flighted, as owner/name#number,
+    # and are passed through as 'preflighted'. land.js merges only those. A key of "repos"
+    # below is accepted too and is rewritten to that repository's slug, because the slug is
+    # what land.js keys its survey on - and a repository matching nothing filters that PR out
+    # silently, so this refuses rather than printing a config that quietly lands less than the
+    # caller meant.
     #
     # GIVEN NONE, THE FIELD IS OMITTED, which land.js reads as do-not-filter. That is the
     # old behaviour and it is safe; an empty list would instead mean land nothing.
@@ -199,18 +200,24 @@ out = {
     "deployEvery": cfg.get("deployEvery", 3),
     "repos": repos,
 }
+slugs = {name: (r or {}).get("slug") for name, r in repos.items()}
+known = sorted({s for s in slugs.values() if s})
 pre = []
 for a in sys.argv[3:]:
     a = a.strip()
     if not a:
         continue
-    name, sep, num = a.partition("#")
-    if not sep or not num.isdigit() or not name:
-        sys.stderr.write("pre-flighted PR must be repo#number, got: %s\n" % a); sys.exit(2)
-    if repos and name not in repos:
-        sys.stderr.write("no repository named %s in this config - have: %s\n"
-                         % (name, ", ".join(sorted(repos)))); sys.exit(2)
-    pre.append("%s#%d" % (name, int(num)))
+    where, sep, num = a.rpartition("#")
+    if not sep or not num.isdigit() or not where:
+        sys.stderr.write("pre-flighted PR must be owner/name#number, got: %s\n" % a); sys.exit(2)
+    slug = slugs.get(where, where)
+    if not slug:
+        sys.stderr.write("repository %s has no slug in this config - add slug: \"owner/name\" to it\n"
+                         % where); sys.exit(2)
+    if repos and slug not in known:
+        sys.stderr.write("no repository %s in this config - have: %s\n"
+                         % (where, ", ".join(known))); sys.exit(2)
+    pre.append("%s#%d" % (slug, int(num)))
 if pre:
     out["preflighted"] = pre
 print(json.dumps(out))
