@@ -145,7 +145,7 @@ while true; do
   if [ -n "${ready// /}" ] && [ "$busy" = "0" ] && ! lander_running && [ "$ready" != "$prev_ready" ]; then
     echo "QUEUE: ready to land, no lanes running - $ready"
     prev_ready=$ready
-  elif [ -n "${ready// /}" ] && [ "$busy" = "UNKNOWN" ] && [ "$ready" != "$prev_blind" ]; then
+  elif [ -n "${ready// /}" ] && [ "$busy" = "UNKNOWN" ] && ! lander_running && [ "$ready" != "$prev_blind" ]; then
     echo "QUEUE: ready to land, and whether a lane is running cannot be established - $ready"
     echo "  lane-running.sh --any answered UNKNOWN, which is not 'no lanes running'. Read it"
     echo "  before starting a train - a train over a live lane moves master underneath it."
