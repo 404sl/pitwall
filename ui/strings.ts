@@ -115,6 +115,28 @@ export const strings = {
     heading: "Nothing to show",
     unreachable: "Could not reach pitwall serve at",
   },
+  actions: {
+    region: "Act on this issue",
+    answer: "Answer it",
+    ready: "Mark it ready",
+    notMine: "Not mine",
+    scope: "These write to the tracker. No lane runs, nothing merges or deploys.",
+    answerLabel: "Your answer",
+    answerHint: "It goes on the ticket. The lane that picks this up reads it.",
+    answerSubmit: "Write the answer",
+    notMineLabel: "Why this is not yours",
+    notMineHint: "It goes on the ticket, and it is how the board learns it classified this wrong.",
+    notMineSubmit: "Write the reason",
+    writing: "Writing to the tracker…",
+    waiting: "Reading the issue first — these open when it has loaded.",
+    doneAnswer:
+      "Answer written to {id}. needs-decision and needs-access are cleared. A lane can pick it up when nothing else holds it — the board catches up at its next snapshot.",
+    doneReady: "{id} is cleared for a lane. The board catches up at its next snapshot.",
+    doneNotMine:
+      "Reason written to {id}, and it is off your queue. The board catches up at its next snapshot.",
+    failed: "{id} was not changed.",
+    unreachable: "The console could not be reached, so nothing was written.",
+  },
   issue: {
     back: "Back to the board",
     loading: "Reading the issue…",

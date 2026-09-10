@@ -3,9 +3,16 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { extname, resolve, sep } from "node:path";
 import { pipeline } from "node:stream";
 import { fileURLToPath } from "node:url";
-import type { CollectionError, Issue, Project, Snapshot } from "@404sl/pitwall-schema";
+import type { Classification, CollectionError, Issue, Project, Snapshot } from "@404sl/pitwall-schema";
 import { REFRESH_SOURCE, stalenessErrors } from "./board.js";
-import { collectionFailed, readIssue } from "./beads.js";
+import {
+  IssueActionFailure,
+  OWNER_LABELS,
+  collectionFailed,
+  issueActor,
+  readIssue,
+  type IssueReading,
+} from "./beads.js";
 import { collectionError } from "./errors.js";
 import { lostNotices } from "./notify.js";
 import { createUpdateCheck, type UpdateCheck } from "./registry.js";
@@ -243,6 +250,20 @@ function projectIn(snapshot: Snapshot, id: string): Project | undefined {
   return snapshot.projects.find((project) => project.id === id);
 }
 
+function readIndexedIssue(
+  indexed: Project,
+  id: string,
+  options: ServeOptions,
+): Promise<IssueReading> {
+  return readIssue(indexed.root, id, {
+    env: options.env,
+    lanes: indexed.lanes,
+    issues: indexed.issues,
+    collectionComplete: !collectionFailed(indexed.root, indexed.errors),
+    timeoutMs: options.timeoutMs,
+  });
+}
+
 async function serveIssue(
   res: ServerResponse,
   options: ServeOptions,
@@ -266,13 +287,7 @@ async function serveIssue(
     });
     return;
   }
-  const reading = await readIssue(indexed.root, route.id, {
-    env: options.env,
-    lanes: indexed.lanes,
-    issues: indexed.issues,
-    collectionComplete: !collectionFailed(indexed.root, indexed.errors),
-    timeoutMs: options.timeoutMs,
-  });
+  const reading = await readIndexedIssue(indexed, route.id, options);
   if (reading.kind === "unreadable") {
     sendJson(res, 503, {
       message: `${route.id} could not be read: ${reading.error.message}`,
@@ -382,6 +397,222 @@ function serveConsole(res: ServerResponse, uiDir: string, pathname: string): voi
   sendFile(res, file);
 }
 
+export const ACTION_HEADER = "x-pitwall-action";
+export const ACTIONS = ["answer", "ready", "not-mine"] as const;
+export type ActionName = (typeof ACTIONS)[number];
+const MAX_BODY = 16_384;
+const SAME_ORIGIN = "same-origin";
+
+function actionRoute(pathname: string): { project: string; id: string; action: ActionName } | undefined {
+  const segments = pathname.slice(ISSUE_PREFIX.length).split("/");
+  if (segments.length !== 3) {
+    return undefined;
+  }
+  let project: string;
+  let id: string;
+  let action: string;
+  try {
+    [project, id, action] = segments.map((segment) => decodeURIComponent(segment)) as [string, string, string];
+  } catch {
+    return undefined;
+  }
+  if (project === "" || id === "") {
+    return undefined;
+  }
+  const named = ACTIONS.find((candidate) => candidate === action);
+  return named === undefined ? undefined : { project, id, action: named };
+}
+
+function sameOrigin(origin: string, host: string | undefined): boolean {
+  if (host === undefined) {
+    return false;
+  }
+  try {
+    return new URL(origin).host === host;
+  } catch {
+    return false;
+  }
+}
+
+function refusalOf(req: IncomingMessage): string | undefined {
+  if (req.headers[ACTION_HEADER] === undefined) {
+    return `it carried no ${ACTION_HEADER} header`;
+  }
+  const { origin } = req.headers;
+  if (origin !== undefined && !sameOrigin(origin, req.headers.host)) {
+    return `it came from ${origin}`;
+  }
+  const site = req.headers["sec-fetch-site"];
+  if (typeof site === "string" && site !== SAME_ORIGIN) {
+    return `the browser reported it as ${site}`;
+  }
+  return undefined;
+}
+
+function readBody(req: IncomingMessage): Promise<string> {
+  return new Promise((done, failed) => {
+    let body = "";
+    req.setEncoding("utf8");
+    req.on("data", (chunk: string) => {
+      body += chunk;
+      if (body.length > MAX_BODY) {
+        failed(new Error(`it is longer than ${String(MAX_BODY)} bytes`));
+        req.destroy();
+      }
+    });
+    req.on("end", () => done(body));
+    req.on("error", (cause: Error) => failed(cause));
+  });
+}
+
+function textIn(body: string): string {
+  if (body === "") {
+    return "";
+  }
+  const parsed: unknown = JSON.parse(body);
+  if (typeof parsed !== "object" || parsed === null) {
+    return "";
+  }
+  const value = (parsed as { text?: unknown }).text;
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function noteFor(action: ActionName, text: string, classification: Classification): string {
+  if (action === "answer") {
+    return `Answered from the console: ${text}`;
+  }
+  if (action === "not-mine") {
+    return `Not mine — the console classified this ${classification}. Reason: ${text}`;
+  }
+  return "Marked ready from the console.";
+}
+
+function missingText(action: ActionName, id: string): string | undefined {
+  if (action === "answer") {
+    return `${id} was not changed - an answer needs the answer itself, and this request carried none.`;
+  }
+  if (action === "not-mine") {
+    return `${id} was not changed - say why it is not yours, so the next reader knows.`;
+  }
+  return undefined;
+}
+
+async function serveAction(
+  req: IncomingMessage,
+  res: ServerResponse,
+  options: ServeOptions,
+  route: { project: string; id: string; action: ActionName },
+): Promise<void> {
+  const refusal = refusalOf(req);
+  if (refusal !== undefined) {
+    sendJson(res, 403, {
+      message: `${route.id} was not changed - ${refusal}, so it was not sent by the console. A console action must carry the ${ACTION_HEADER} header and come from the console's own origin.`,
+      id: route.id,
+      action: route.action,
+    });
+    return;
+  }
+  let text: string;
+  try {
+    text = textIn(await readBody(req));
+  } catch (cause) {
+    sendJson(res, 400, {
+      message: `${route.id} was not changed - the request body could not be read: ${cause instanceof Error ? cause.message : String(cause)}`,
+      id: route.id,
+      action: route.action,
+    });
+    return;
+  }
+  const missing = text === "" ? missingText(route.action, route.id) : undefined;
+  if (missing !== undefined) {
+    sendJson(res, 400, { message: missing, id: route.id, action: route.action });
+    return;
+  }
+  const stored = readSnapshot(options);
+  if (stored.snapshot === undefined) {
+    sendJson(res, 503, {
+      message: `${route.id} was not changed - ${stored.error.source} could not be read: ${stored.error.message}`,
+      source: stored.error.source,
+      tried: [stored.path],
+    });
+    return;
+  }
+  const indexed = projectIn(stored.snapshot, route.project);
+  if (indexed === undefined) {
+    sendJson(res, 503, {
+      message: `${route.id} was not changed - the snapshot names no project ${route.project}`,
+      source: stored.path,
+      tried: [stored.path],
+    });
+    return;
+  }
+  const reading = await readIndexedIssue(indexed, route.id, options);
+  if (reading.kind === "unreadable") {
+    sendJson(res, 503, {
+      message: `${route.id} was not changed - it could not be read first: ${reading.error.message}`,
+      source: reading.error.source,
+      tried: [reading.error.source, ...reading.tried],
+    });
+    return;
+  }
+  if (reading.kind === "missing") {
+    sendJson(res, 404, {
+      message: `${indexed.name} has no issue ${route.id}`,
+      project: indexed.name,
+      id: route.id,
+    });
+    return;
+  }
+  const { classification } = reading.issue;
+  if (classification === undefined) {
+    sendJson(res, 400, {
+      message: `${route.id} was not changed - it is closed, and the console acts on open work only.`,
+      id: route.id,
+      action: route.action,
+    });
+    return;
+  }
+  const note = noteFor(route.action, text, classification);
+  const removedLabels = [...OWNER_LABELS];
+  const act = issueActor(indexed.root, { env: options.env, timeoutMs: options.timeoutMs });
+  try {
+    await act(route.id, { note, removeLabels: removedLabels });
+  } catch (cause) {
+    const failed = cause instanceof Error ? cause.message : String(cause);
+    const noted = cause instanceof IssueActionFailure && cause.noted;
+    sendJson(res, 502, {
+      message: noted
+        ? `${route.id} carries the note but is still parked - the labels were not cleared: ${failed}`
+        : `${route.id} was not changed - ${failed}`,
+      id: route.id,
+      action: route.action,
+      noted,
+    });
+    return;
+  }
+  sendJson(res, 200, {
+    id: route.id,
+    action: route.action,
+    project: indexed.id,
+    classification,
+    note,
+    removedLabels,
+  });
+}
+
+export function sendActionFailure(
+  res: ServerResponse,
+  route: { id: string; action: ActionName },
+  cause: unknown,
+): void {
+  const message = `${route.id} may or may not have changed - the action failed after it began: ${cause instanceof Error ? cause.message : String(cause)}`;
+  if (res.headersSent) {
+    process.stderr.write(`pitwall serve: ${message}, after the response had gone out\n`);
+    return;
+  }
+  sendJson(res, 500, { message, id: route.id, action: route.action });
+}
+
 export function createConsoleServer(options: ServeOptions = {}): Server {
   const uiDir = resolve(options.uiDir ?? UI_DIR);
   const updates = options.updates ?? createUpdateCheck();
@@ -398,6 +629,19 @@ export function createConsoleServer(options: ServeOptions = {}): Server {
     }
     if (pathname === VERSION_ROUTE) {
       serveVersion(res, updates);
+      return;
+    }
+    if (req.method === "POST" && pathname.startsWith(ISSUE_PREFIX)) {
+      const acting = actionRoute(pathname);
+      if (acting === undefined) {
+        sendJson(res, 404, {
+          message: `No console action at ${pathname}. The actions are ${ACTIONS.join(", ")}.`,
+        });
+        return;
+      }
+      void serveAction(req, res, options, acting).catch((cause: unknown) => {
+        sendActionFailure(res, acting, cause);
+      });
       return;
     }
     if (pathname.startsWith(ISSUE_PREFIX)) {
