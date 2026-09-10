@@ -1,5 +1,50 @@
 # Changelog
 
+## 0.1.18
+
+**Updating the plugin did not update what runs, because what runs is a copy and nothing rewrote
+it.** The Workflow tool refuses a `scriptPath` outside the working directory, so `task.js`,
+`land.js` and `rework.js` are dispatched from `<root>/.autofix-run/` rather than from the install.
+Those copies were made by hand, at whatever moment somebody remembered, and nothing compared them
+with anything. Measured while fixing this: the `land.js` in force in this workspace differed from
+the repository by 128 lines - it matched install 0.1.15 while the repository was at 0.1.17 - so a
+two-release-old merge-and-deploy policy was running against a current backlog.
+
+**A merged fix was three states away from being in force, and only two of them were visible
+anywhere**: merged in the repository, published and installed, copied into `.autofix-run`. The
+last step had a person in it and took between two minutes and an hour depending on when anybody
+looked, which made "merged" and "in force" two different states rendered identically.
+
+**`run-script.sh` now stages the workflow scripts, and the dispatch steps call it.** It copies
+all four - `task.js`, `land.js`, `rework.js`, `land-train.js` - from the resolved install into
+`<root>/.autofix-run/` and prints the absolute path of the one asked for. `config.sh --args` and
+`config.sh --land` run it before they print anything and carry the result as `scriptPath`, so the
+copy happens on the step a dispatch cannot skip. Staging comes first, ahead of `slot.sh`, because
+a failed copy that had already reserved a lane would strand the lane.
+
+**The copy is unconditional: nothing is compared, nothing is version-checked, nothing warns.**
+Comparing and refusing still needs somebody to act on the refusal, which is the same failure one
+step later; recording a version detects a version change and not a content change, and both halves
+of that have already happened here - a release where only one shell script differed, and a release
+where the version was deliberately not bumped. There is no stale copy if there is no persistent
+copy to go stale, and copying four files costs milliseconds against runs that take minutes.
+
+**Each file is written under a temporary name and renamed into place.** A lander reads its script
+at launch, so overwriting it mid-run is safe today - but by accident rather than by design. The
+rename means a future runner that re-reads its script cannot see a half-written file.
+
+**Two documented dispatches were already broken and are corrected with it.** The lander example
+hand-wrote `args: { preflighted: [...] }` and the rework example `args: { pr, id, repo, slot }`,
+neither carrying `skillDir`, which both scripts refuse to run without. Both now build their args
+with `config.sh`. `triage-scan.sh` told a supervisor to relaunch the lander at
+`~/.claude/skills/devloop/land.js`, a path the tool does not even resolve, and `stranded.sh`
+printed `.../rework.js`; both now name the staging step instead.
+
+**A test holds it.** It plants a stale copy, runs `config.sh --args` and `--land`, and asserts the
+staged file now matches this install byte for byte and that the printed `scriptPath` is the path
+just written. A second test asserts no file in the skill spells out a `scriptPath` of its own: a
+path written by hand is the one way left to dispatch something other than what was just staged.
+
 ## 0.1.17
 
 **A note in the tracker said nothing about when it was written or by whom, so a superseded one read

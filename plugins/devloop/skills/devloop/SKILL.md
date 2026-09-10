@@ -127,8 +127,11 @@ gh pr list --state open --label lane-verified --json number   # in each repo
 gh pr view <n> --repo 404sl/<slug> --json labels,statusCheckRollup
 
 # Then hand it the list you just looked at. It merges those and nothing else.
-Workflow({ scriptPath: "${CLAUDE_PLUGIN_ROOT}/skills/devloop/land.js",
-           args: { preflighted: ["404sl/pitwall#588", "404sl/pitwall-schema#111"] } })
+args=$(bash ${CLAUDE_PLUGIN_ROOT}/skills/devloop/config.sh --land \
+         404sl/pitwall#588 404sl/pitwall-schema#111)
+
+Workflow({ scriptPath: <the scriptPath that object carries>,
+           args: <the object config.sh printed> })
 ```
 
 Launch it when any repo has a labelled PR and no lander run is already going. It takes
@@ -201,7 +204,7 @@ otherwise - and it is a different guarantee from this one. Do both.
 # BUILD THE ARGS WITH config.sh. Do not hand-write them, and do not pass a slot.
 args=$(bash ${CLAUDE_PLUGIN_ROOT}/skills/devloop/config.sh --args app-1056)
 
-Workflow({ scriptPath: "${CLAUDE_PLUGIN_ROOT}/skills/devloop/task.js",
+Workflow({ scriptPath: <the scriptPath that object carries>,
            args: <the object config.sh printed> })
 ```
 
@@ -226,11 +229,21 @@ number is still accepted for the sake of `queue.sh`, which reserves before it pr
 CHECKED against the reservation rather than used instead of it - one that disagrees is refused,
 naming both.
 
-**If the Workflow tool refuses `scriptPath` outside the working directory**, copy the
-scripts into the workspace and dispatch from there - `<workspace>/.devloop-run/`, gitignored,
-re-copied at every dispatch so it cannot drift from the skill, and removed at session end.
-That is a copy of the kind this skill's comments argue against, so keep it mechanical: never
-edit the copy, and never let one survive a session.
+**THE SCRIPT YOU DISPATCH IS A COPY, AND `--args` MAKES IT FRESH.** The Workflow tool refuses
+a `scriptPath` outside the working directory, so the workflow scripts cannot be dispatched from
+the install. `run-script.sh` copies all four into `<root>/.autofix-run/` and prints the path of
+the one asked for; `config.sh --args` and `--land` call it before they print anything and carry
+the result as `scriptPath`. So take the path out of the object and dispatch that - never a path
+under the install, and never one remembered from an earlier tick.
+
+It copies unconditionally, every time, without comparing or checking a version. That is the
+whole design: a copy that is rewritten at every dispatch cannot be stale, and there is nothing
+for anybody to notice or act on. Each copy is written under a temporary name and renamed into
+place, so a run that re-reads its script cannot see half a file.
+
+```
+bash ${CLAUDE_PLUGIN_ROOT}/skills/devloop/run-script.sh rework.js   # when no --args mode fits
+```
 
 Absolute path - the tool does not resolve `~`. `slot` is the lane `--args` reserved, and it
 only sets `TEST_ENV_NUMBER` so concurrent site runs do not share a test database; two live
@@ -398,8 +411,13 @@ refuses a pull request whose work is already done and already green - it bounces
 process and site#739 was dropped by two trains in a row for the same two conflicts.
 
 ```
-Workflow({ scriptPath: "${CLAUDE_PLUGIN_ROOT}/skills/devloop/rework.js",
-           args: { pr: 739, id: "app-st1o.1.2", repo: "site", slot: 4 } })
+# --args reserves the lane and carries root, repos and skillDir, which rework.js refuses to
+# run without. Add the pull request and the repo key to what it printed.
+args=$(bash ${CLAUDE_PLUGIN_ROOT}/skills/devloop/config.sh --args app-st1o.1.2)
+script=$(bash ${CLAUDE_PLUGIN_ROOT}/skills/devloop/run-script.sh rework.js)
+
+Workflow({ scriptPath: <script>,
+           args: { ...<the object config.sh printed>, pr: 739, repo: "site" } })
 ```
 
 Two agents, no design and no review: merge master in keeping BOTH sides of every conflict, push
