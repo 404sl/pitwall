@@ -1078,3 +1078,189 @@ test("a single verify command against two deploy environments reads the one host
   );
   assert.match(logs.join("\n"), /one command per environment/);
 });
+
+const NO_VERIFY_TWO_ENV = {
+  ...ARGS,
+  repos: { docs: { path: "site", slug: "owner/site", deploy: TWO_ENV.repos.docs.deploy } },
+};
+
+test("a reported revision for an environment nothing can read is still compared against what merged", async () => {
+  const { calls, logs, done } = landOnce({
+    args: PARTIAL_VERIFY,
+    deploy: {
+      status: "deployed",
+      hosts: [...hosts(SHA, "docs", "production"), ...hosts(OTHER, "docs", "staging")],
+      notes: "both live",
+    },
+    check: { status: "read", hosts: hosts(SHA, "docs", "production"), notes: "the host answered" },
+    close: { status: "closed", closed: ["pitwall-7b1"] },
+  });
+  const result = await done;
+
+  assert.notEqual(
+    result.deployed,
+    "deployed",
+    "the step's own report names the staging host serving a revision that is not what merged, and the run closed on " +
+      "that same report because staging is the environment nothing configured can read back. Absence of a command is " +
+      "what may rest on the step's word; a revision the step itself handed over is evidence and it disagrees.",
+  );
+  assert.equal(
+    calls.filter((c) => c.label === "close").length,
+    0,
+    "issues were closed while the report itself said a host is serving another revision",
+  );
+  const said = logs.join("\n");
+  assert.match(said, new RegExp(`docs staging is serving ${OTHER.slice(0, 12)}`), `the log does not say which repository is serving what. Logged:\n${said}`);
+  assert.match(said, new RegExp(SHA.slice(0, 12)), "the log does not say what merged, so the two revisions cannot be compared by whoever reads it");
+});
+
+test("a report naming wrong revisions for every environment is not believed because none can be read", async () => {
+  const { calls, logs, done } = landOnce({
+    args: NO_VERIFY_TWO_ENV,
+    deploy: {
+      status: "deployed",
+      hosts: [...hosts(OTHER, "docs", "staging"), ...hosts(OTHER, "docs", "production")],
+      notes: "both live",
+    },
+    check: null,
+    close: { status: "closed", closed: ["pitwall-7b1"] },
+  });
+  const result = await done;
+
+  assert.notEqual(
+    result.deployed,
+    "deployed",
+    "a repository configures no verify at all, the step reported deployed, and the revisions it named for both " +
+      "environments are not what merged - and the run closed on that report anyway. Nothing here can read a host, so " +
+      "the only evidence in the run is the report, and the report disagrees with the run.",
+  );
+  assert.equal(calls.filter((c) => c.label === "close").length, 0, "issues were closed against the report's own revisions");
+  assert.equal(calls.filter((c) => c.label === "deploy-check").length, 0, "a read-back was spawned with no host to read");
+  const said = logs.join("\n");
+  assert.match(said, new RegExp(`docs staging is serving ${OTHER.slice(0, 12)}`), `the log does not say which repository is serving what. Logged:\n${said}`);
+  assert.match(said, new RegExp(SHA.slice(0, 12)), "the log does not say what merged");
+});
+
+test("a wrong revision reported for the repository nobody can read is not covered by a sibling that confirms", async () => {
+  const { calls, logs, done } = landOnce({
+    args: HALF_CONFIGURED,
+    prs: [PR, IN_SITE],
+    deploy: {
+      status: "deployed",
+      hosts: [...hosts(SHA), ...hosts(OTHER, "site", "production")],
+      notes: "both live",
+    },
+    check: { status: "read", hosts: hosts(SHA), notes: "the host answered" },
+    close: { status: "closed", closed: ["pitwall-7b1", "pitwall-7b3"] },
+  });
+  const result = await done;
+
+  assert.notEqual(
+    result.deployed,
+    "deployed",
+    "the repository nobody can read back was reported serving a revision that is not what merged into it, and a " +
+      "readable sibling confirming its own host carried the run to deployed. A host that was read speaks for its own " +
+      "environment, never for a revision the report disagrees with somewhere else.",
+  );
+  assert.equal(calls.filter((c) => c.label === "close").length, 0, "issues were closed while the report disagreed about the unreadable repository");
+  const said = logs.join("\n");
+  assert.match(said, new RegExp(`site production is serving ${OTHER.slice(0, 12)}`), `the log does not say which repository is serving what. Logged:\n${said}`);
+  assert.match(said, new RegExp(SHA.slice(0, 12)), "the log does not say what merged");
+});
+
+test("a report that contradicts itself holds the run even where every host that was read confirms", async () => {
+  const { calls, logs, done } = landOnce({
+    args: TWO_ENV,
+    deploy: {
+      status: "deployed",
+      hosts: [
+        ...hosts(SHA, "docs", "staging"),
+        ...hosts(SHA, "docs", "production"),
+        ...hosts(OTHER, "docs", "prod"),
+        ...hosts(LATER, "docs", "prod"),
+      ],
+      notes: "both live",
+    },
+    check: {
+      status: "read",
+      hosts: [...hosts(SHA, "docs", "staging"), ...hosts(SHA, "docs", "production")],
+      notes: "both hosts answered",
+    },
+    close: { status: "closed", closed: ["pitwall-7b1"] },
+  });
+  const result = await done;
+
+  assert.notEqual(
+    result.deployed,
+    "deployed",
+    "the report named one host twice with two different revisions and the run closed anyway, because the part of the " +
+      "report that was checkable happened to agree. A report that cannot agree with itself is the weakest evidence in " +
+      "the system and a run may not rest on one, whatever else confirmed.",
+  );
+  assert.equal(calls.filter((c) => c.label === "close").length, 0, "issues were closed on a report that contradicts itself");
+  assert.match(
+    logs.join("\n"),
+    /two different revisions/,
+    "the contradiction was found and never printed, so a supervisor reading this run cannot tell it happened",
+  );
+  assert.doesNotMatch(
+    logs.join("\n"),
+    /read back instead - deploy is deployed/,
+    "the run logged the read-back verdict as deployed and the next line held the same run open. A log line that reports " +
+      "a verdict the run did not reach is the same defect as a run that reports what it did not check.",
+  );
+});
+
+test("the step's word is not described as the only revision when its report named one", async () => {
+  const { calls, logs, done } = landOnce({
+    args: NO_VERIFY_TWO_ENV,
+    deploy: {
+      status: "deployed",
+      hosts: [...hosts(SHA, "docs", "staging"), ...hosts(SHA, "docs", "production")],
+      notes: "both live",
+    },
+    check: null,
+    close: { status: "closed", closed: ["pitwall-7b1"] },
+  });
+  const result = await done;
+
+  assert.equal(
+    result.deployed,
+    "deployed",
+    "nothing configured can read either environment and every revision the report names is the sha that merged, so " +
+      "there is nothing disagreeing with the step and the close rests on its word as it always did",
+  );
+  assert.equal(calls.filter((c) => c.label === "close").length, 1);
+  const said = logs.join("\n");
+  assert.doesNotMatch(
+    said,
+    /no revision anybody here could read back/,
+    `the report named a revision for both environments and was told it named none. A run that reports what it did not check is this ticket's defect, and a log that reports what was not named is the same defect in the report. Logged:\n${said}`,
+  );
+  assert.match(said, new RegExp(SHA.slice(0, 12)), "the log does not say which revision the close is resting on");
+  assert.match(said, /own word/, "the log does not say the close rests on the step's assertion");
+});
+
+test("an unreadable environment whose reported revision agrees is not said to leave nothing to compare", async () => {
+  const { calls, logs, done } = landOnce({
+    args: PARTIAL_VERIFY,
+    deploy: {
+      status: "deployed",
+      hosts: [...hosts(SHA, "docs", "production"), ...hosts(SHA, "docs", "staging")],
+      notes: "both live",
+    },
+    check: { status: "read", hosts: hosts(SHA, "docs", "production"), notes: "the host answered" },
+    close: { status: "closed", closed: ["pitwall-7b1"] },
+  });
+  const result = await done;
+
+  assert.equal(result.deployed, "deployed", "every revision in the run is the sha that merged and the issues were held open");
+  assert.equal(calls.filter((c) => c.label === "close").length, 1);
+  const said = logs.join("\n");
+  assert.doesNotMatch(
+    said,
+    /leave no revision to compare/,
+    `the report named a revision for staging, it was compared against what merged and it agreed, and the log says staging left no revision to compare. Logged:\n${said}`,
+  );
+  assert.match(said, /own word/, "the log does not say the unreadable environment rests on the step's assertion");
+});
