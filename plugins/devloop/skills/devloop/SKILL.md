@@ -128,7 +128,7 @@ gh pr view <n> --repo 404sl/<slug> --json labels,statusCheckRollup
 
 # Then hand it the list you just looked at. It merges those and nothing else.
 Workflow({ scriptPath: "${CLAUDE_PLUGIN_ROOT}/skills/devloop/land.js",
-           args: { preflighted: ["site#588", "extension#111"] } })
+           args: { preflighted: ["404sl/pitwall#588", "404sl/pitwall-schema#111"] } })
 ```
 
 Launch it when any repo has a labelled PR and no lander run is already going. It takes
@@ -166,19 +166,23 @@ delegation. So query the queue, then launch; do not launch and then query, and r
 queue changed while you were deciding.
 
 **`preflighted` is that list, written down.** Give it every PR you just ran `gh pr view` on,
-as `repo#number`. The lander intersects its own survey against it and reports anything else as
-`SKIPPED <pr> - not pre-flighted, lands next run`, without spending a worktree, a rebase and a
-full CI wait to arrive at a refusal it could predict. It only ever merges FEWER PRs than
+as `owner/name#number`. The lander intersects its own survey against it and reports anything
+else as `SKIPPED <pr> - not pre-flighted, lands next run`, without spending a worktree, a
+rebase and a full CI wait to arrive at a refusal it could predict. It only ever merges FEWER PRs than
 before, never more, so it cannot turn an unchecked PR into a merged one - and a PR it skips
 keeps its label and lands on the next run, whose pre-flight will have seen it.
 
 Two ways to get it wrong, both quiet:
 
-- **The repo name is the key from `.autofix.json`, not the GitHub slug.** This workspace calls
-  them `site`, `extension`, `integration`, `docs` - so `extension#111`, never `ext#111`. A name
-  that does not match filters that PR out as though it were never labelled. The lander now says
-  `pre-flighted but never surveyed: ...` at the end of a run for exactly this, and that line is
-  the only warning you get.
+- **Name the repository by its GitHub slug, the same `owner/name` you passed to `--repo`.** A
+  key from `.autofix.json` is accepted and rewritten to that repository's slug, but the slug is
+  what the lander keys on, and it is the only form that cannot mean two repositories: a key is
+  this workspace's label, and `site` is the CLI checkout here while also being the obvious word
+  for the website repo. Pull request numbers repeat across repositories, so the wrong pairing
+  does not fail - it names a real, different pull request. A repository matching nothing filters
+  that PR out as though it were never labelled; the lander says `pre-flighted but never
+  surveyed: ...` at the end of a run for exactly this, and that line is the only warning you
+  get.
 - **Omitting the field means no filtering at all**, which is the old behaviour and is safe;
   passing `[]` means land nothing. An empty list is not the way to say "I did not check".
 

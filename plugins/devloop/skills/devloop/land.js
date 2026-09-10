@@ -105,11 +105,32 @@ if (!SKILL_DIR) {
 // did. Defaulting to an empty list would instead make every caller that has not been updated
 // silently land nothing, which reads identically to an empty queue.
 //
-// Accepts either 'repo#number' strings or {repo, number} objects, because both are the
-// obvious thing to pass and guessing wrong here fails silently as "nothing to land".
+// Accepts either 'owner/name#number' or 'repo#number' strings and the object form of either,
+// because all four are the obvious thing to pass and guessing wrong here fails silently as
+// "nothing to land". Every one of them is normalised to the SLUG, which is what the survey
+// reports and what the sets below are keyed on - a configured key is accepted as a way of
+// naming a repository, never as the identity of one.
 const PREFLIGHTED = Array.isArray(input.preflighted)
-  ? new Set(input.preflighted.map((p) => (typeof p === 'string' ? p.trim() : `${p.repo}#${p.number}`)))
+  ? new Set(input.preflighted.map(preflightKey))
   : null
+function preflightKey(p) {
+  const raw = typeof p === 'string' ? p.trim() : `${(p || {}).slug || (p || {}).repo}#${(p || {}).number}`
+  const cut = raw.lastIndexOf('#')
+  const where = cut < 0 ? raw : raw.slice(0, cut)
+  const number = cut < 0 ? '' : raw.slice(cut + 1)
+  const cfg = CONFIGURED[where] || {}
+  return `${cfg.slug || where}#${number}`
+}
+
+function keyOf(pr) {
+  return `${pr.slug || '(no repository reported)'}#${pr.number}`
+}
+
+function resolveRepo(p) {
+  const reported = typeof (p || {}).slug === 'string' ? p.slug.trim() : ''
+  const name = Object.keys(CONFIGURED).find((n) => (CONFIGURED[n] || {}).slug === reported)
+  return { ...p, slug: reported, repo: name }
+}
 // Was 10. Dropped to 3 on 2026-08-23, when lanes finishing faster than the ~8-minute land
 // cycle left production five merges and an hour behind master with everything green. Ten
 // merges is a long time for "merged" and "live" to mean different things, and a deploy that
@@ -139,10 +160,13 @@ const SURVEY = {
       description: 'every open PR carrying the lane-verified label, oldest first',
       items: {
         type: 'object',
-        required: ['repo', 'number', 'title', 'branch'],
+        required: ['slug', 'number', 'title', 'branch'],
         properties: {
-          // Not an enum: the repo names come from .autofix.json and differ per project.
-          repo: { type: 'string', description: 'which configured repository this PR is in' },
+          // The repository's own owner/name, never a key from .autofix.json. A key is a label
+          // this workspace chose - 'site' is the CLI checkout here and is also how a model
+          // describes the website repo - and pull request numbers repeat across repositories, so
+          // a key and a number together still name two different pull requests.
+          slug: { type: 'string', description: "the repository's owner/name, exactly as gh reports it" },
           number: { type: 'number' },
           title: { type: 'string' },
           branch: { type: 'string' },
@@ -319,10 +343,17 @@ readiness from the tracker, from a PR's title, or from how green it looks. A PR 
 label is somebody's work in progress whatever else is true of it.
 
 Look in each of these, and skip any directory that does not exist:
-${Object.entries(REPOS).map(([name, path]) => `  ${name}: ${path}`).join('\n')}
+${Object.entries(REPOS).map(([name, path]) => `  ${slug(name)}  ${path}`).join('\n')}
 
-In each:
-  cd <path> && gh pr list --state open --label ${LABEL} --json number,title,headRefName,createdAt
+In each, naming the repository rather than relying on the directory:
+  cd <path> && gh pr list --repo <that repository's owner/name> --state open --label ${LABEL} --json number,title,headRefName,createdAt
+
+RETURN THE owner/name AS 'slug', COPIED FROM THE LIST ABOVE, CHARACTER FOR CHARACTER. Do not
+abbreviate it, do not substitute a short name for it, and do not describe the repository in your
+own words anywhere in the answer. A pull request number identifies nothing on its own: every
+number currently open exists in more than one of these repositories, so a number paired with
+anything other than the exact owner/name names two pull requests and the wrong one can be
+merged under the right one's issue.
 
 Return them OLDEST FIRST, across all repositories together. Oldest first because a branch that
 has waited longest has had the most time to fall behind master, and every one landed ahead of
@@ -766,7 +797,7 @@ function retirePrompt(dead) {
 could not be landed, and the reason is recorded below. Leaving them labelled means every future
 lander run attempts them again and rediscovers the same thing, at six to ten minutes each.
 
-${dead.map((d) => `  ${d.repo} #${d.number} - ${d.why}${d.issue ? ` (tracker ${d.issue})` : ' (no tracker issue named)'}
+${dead.map((d) => `  ${d.slug}#${d.number} in ${REPOS[d.repo]} - ${d.why}${d.issue ? ` (tracker ${d.issue})` : ' (no tracker issue named)'}
     ${(d.detail || '').split('\n').join('\n    ').slice(0, 1200)}`).join('\n\n')}
 
 FOR EACH ONE, three things, in this order:
@@ -811,7 +842,7 @@ function closePrompt(landed, deployed) {
   return `Close the tracker issues for work that is now merged and deployed, and only those.
 
 From ${ROOT} - the tracker is at the root, not inside any repository:
-${landed.filter((l) => l.issue).map((l) => `  bd close ${l.issue} --reason "Landed in ${l.repo} #${l.number}${DEPLOYS.has(l.repo) ? ' and deployed' : ' - NOT deployed, see below'}"`).join('\n')}
+${landed.filter((l) => l.issue).map((l) => `  bd close ${l.issue} --reason "Landed in ${l.slug}#${l.number}${DEPLOYS.has(l.repo) ? ' and deployed' : ' - NOT deployed, see below'}"`).join('\n')}
 
 THAT LIST IS THE WHOLE JOB. Do not survey the tracker for other issues, and do not read pull
 requests this run did not land. On 2026-08-28 this step was handed ONE issue and went looking
@@ -871,7 +902,7 @@ issue closed early is one nobody looks at again. Say so and return instead.
 ${landed.filter((l) => !l.issue).length ? `
 These landed but named no tracker issue, so there is nothing to close for them - report them
 so a person can decide whether one was missed:
-${landed.filter((l) => !l.issue).map((l) => `  ${l.repo} #${l.number} - ${l.title}`).join('\n')}` : ''}
+${landed.filter((l) => !l.issue).map((l) => `  ${l.slug}#${l.number} - ${l.title}`).join('\n')}` : ''}
 
 Use --reason, never --notes: --notes overwrites the whole field and has already destroyed a
 decision somebody recorded. Change no code.
@@ -896,11 +927,11 @@ const stopped = []
 // rollup. Reported so a run that lands nothing says WHY rather than looking idle.
 const skipped = []
 // Which pre-flighted keys the survey actually turned up. Only used to complain at the end
-// about ones that never matched anything: 'repo' is a free string keyed by .autofix.json, so
-// passing 'ext' where the config says 'extension' filters that PR out silently and the run
-// looks like a clean drain of a queue it never touched. A typo has to be loud or it is worse
-// than no filter at all.
+// about ones that never matched anything: a number handed in against a repository that never
+// listed it filters that PR out silently and the run looks like a clean drain of a queue it
+// never touched. A typo has to be loud or it is worse than no filter at all.
 const matchedPreflight = new Set()
+const surveyedEver = new Map()
 let masterBroken = false
 let deployed = 'not_needed'
 let lockState = `LEAKED - the release step never reported. Read ${MERGE_LOCK}/holder before touching anything.`
@@ -922,7 +953,8 @@ try {
     // merge into a red master - so it could not land the fix for the red master. Queue order
     // alone turned two correct rules into a deadlock a person had to break.
     const surveyed = ((survey && survey.prs) || [])
-      .filter((p) => !seen.has(`${p.repo}#${p.number}`))
+      .map(resolveRepo)
+      .filter((p) => !seen.has(keyOf(p)))
       .map((p, i) => ({ p, i }))
       .sort((a, b) => {
         const pa = typeof a.p.priority === 'number' ? a.p.priority : 99
@@ -930,6 +962,16 @@ try {
         return pa - pb || a.i - b.i
       })
       .map(({ p }) => p)
+
+    for (const p of surveyed) surveyedEver.set(keyOf(p), p)
+
+    const foreign = surveyed.filter((p) => !p.repo)
+    for (const p of foreign) {
+      seen.add(keyOf(p))
+      skipped.push({ ...p, why: `no configured repository has the slug ${p.slug || '(the survey reported none)'} - nothing was merged and the label was left on` })
+      log(`SKIPPED ${keyOf(p)} - no configured repository has that slug`)
+    }
+    const known = surveyed.filter((p) => p.repo)
 
     // Keep only what the supervisor actually looked at. See PREFLIGHTED near the top for why
     // this run cannot merge anything else. This is NOT a rejection: the PR keeps its label,
@@ -940,15 +982,15 @@ try {
     // seen.delete()d the way a failed pre-merge check is - that one can resolve inside this
     // run, and this one cannot.
     const queue = PREFLIGHTED
-      ? surveyed.filter((p) => PREFLIGHTED.has(`${p.repo}#${p.number}`))
-      : surveyed
+      ? known.filter((p) => PREFLIGHTED.has(keyOf(p)))
+      : known
 
     if (PREFLIGHTED) {
-      for (const p of surveyed) {
-        if (PREFLIGHTED.has(`${p.repo}#${p.number}`)) { matchedPreflight.add(`${p.repo}#${p.number}`); continue }
-        seen.add(`${p.repo}#${p.number}`)
+      for (const p of known) {
+        if (PREFLIGHTED.has(keyOf(p))) { matchedPreflight.add(keyOf(p)); continue }
+        seen.add(keyOf(p))
         skipped.push({ ...p, why: 'not pre-flighted - labelled after the supervisor surveyed the queue' })
-        log(`SKIPPED ${p.repo}#${p.number} - not pre-flighted, lands next run`)
+        log(`SKIPPED ${keyOf(p)} - not pre-flighted, lands next run`)
       }
     }
 
@@ -959,19 +1001,19 @@ try {
       const why = round > 1
         ? 'queue drained'
         : surveyed.length
-          ? `nothing pre-flighted to land - ${surveyed.length} labelled but none seen by the supervisor, relaunch to pick them up`
+          ? `nothing pre-flighted to land - ${known.length} labelled but none seen by the supervisor, relaunch to pick them up`
           : 'nothing labelled lane-verified - nothing to land'
       log(why)
       break
     }
 
-    log(`round ${round}: ${queue.length} to land - ${queue.map((p) => `${p.repo}#${p.number}`).join(' ')}`)
+    log(`round ${round}: ${queue.length} to land - ${queue.map(keyOf).join(' ')}`)
 
     // Serial by construction. This loop is the whole design: one rebase, one CI wait, one
     // merge, then the next. Nothing here should ever be wrapped in parallel().
     for (let i = 0; i < queue.length; i++) {
       const pr = queue[i]
-      seen.add(`${pr.repo}#${pr.number}`)
+      seen.add(keyOf(pr))
       phase('Land')
 
       // THERE USED TO BE A SEPARATE 'verify' AGENT HERE, and it is gone deliberately.
@@ -990,16 +1032,16 @@ try {
       // A PR that comes back 7 is NOT retired: status 'blocked' puts it back for a later round,
       // which is what the old skipped-and-seen.delete path did.
       const r = await agent(landPrompt(pr, i + 1, queue.length), {
-        label: `land:${pr.repo}#${pr.number}`, phase: 'Land', schema: LAND
+        label: `land:${keyOf(pr)}`, phase: 'Land', schema: LAND
       })
 
       if (r && r.status === 'merged') {
         landed.push({ ...pr, mergeSha: r.mergeSha })
-        log(`LANDED ${pr.repo}#${pr.number} - ${pr.title}`)
+        log(`LANDED ${keyOf(pr)} - ${pr.title}`)
 
         if (r.masterGreen === false) {
           masterBroken = true
-          log(`MASTER RED after ${pr.repo}#${pr.number} - stopping, nothing else lands and nothing deploys\n    ${r.failureDetail || r.notes}`)
+          log(`MASTER RED after ${keyOf(pr)} - stopping, nothing else lands and nothing deploys\n    ${r.failureDetail || r.notes}`)
           break
         }
 
@@ -1020,13 +1062,13 @@ try {
       // stopwatch, and the rebase it already did is thrown away. Put it back so a later round
       // finds the run finished - by then it usually has.
       if (why === 'blocked') {
-        seen.delete(`${pr.repo}#${pr.number}`)
-        log(`DEFERRED ${pr.repo}#${pr.number} - CI had not finished; it goes back for a later round`)
+        seen.delete(keyOf(pr))
+        log(`DEFERRED ${keyOf(pr)} - CI had not finished; it goes back for a later round`)
         continue
       }
 
       stopped.push({ ...pr, why, detail: r && (r.failureDetail || r.notes) })
-      log(`STOPPED ${pr.repo}#${pr.number} - ${why}\n    ${(r && (r.failureDetail || r.notes)) || 'the agent returned nothing'}`)
+      log(`STOPPED ${keyOf(pr)} - ${why}\n    ${(r && (r.failureDetail || r.notes)) || 'the agent returned nothing'}`)
 
       // A red master blocks everything behind it, so there is no point trying the rest.
       //
@@ -1043,13 +1085,23 @@ try {
           ? queue.slice(i + 1).filter((q) => specs.some((f) => (q.title || '').includes(f.replace('_spec.rb', ''))))
           : []
         if (suspects.length) {
-          log(`ONE OF THE PRs STILL QUEUED MAY BE THE FIX FOR THIS RED MASTER: ${suspects.map((q) => `${q.repo}#${q.number}`).join(' ')}\n    the failing spec is ${specs.join(', ')} and those titles mention it. Not merged - master must go green first - but check before treating the queue as blocked.`)
+          log(`ONE OF THE PRs STILL QUEUED MAY BE THE FIX FOR THIS RED MASTER: ${suspects.map(keyOf).join(' ')}\n    the failing spec is ${specs.join(', ')} and those titles mention it. Not merged - master must go green first - but check before treating the queue as blocked.`)
         } else if (specs.length) {
           log(`Failing spec: ${specs.join(', ')}. No PR still queued mentions it, so the fix is not in this run.`)
         }
         break
       }
     }
+  }
+
+  const acted = new Set([...landed, ...stopped, ...skipped].map(keyOf))
+  for (const [key, pr] of surveyedEver) {
+    if (acted.has(key)) continue
+    const why = masterBroken
+      ? 'not attempted - master was red in front of it, so nothing behind it was tried'
+      : `surveyed but not landed after ${MAX_ROUNDS} rounds - CI had not finished in the time this run had; still labelled, lands next run`
+    skipped.push({ ...pr, why })
+    log(`NOT ACTED ON ${key} - ${why}`)
   }
 
   // Before anything else, un-queue what could not be landed - including when nothing landed at
@@ -1088,7 +1140,7 @@ try {
       await agent(closePrompt(closable, where), { label: 'close', phase: 'Deploy', model: 'sonnet', effort: 'low' })
     }
     if (heldBack.length) {
-      log(`deploy ${deployed} - staying open until it is live: ${heldBack.map((l) => l.issue || `${l.repo}#${l.number}`).join(' ')}`)
+      log(`deploy ${deployed} - staying open until it is live: ${heldBack.map((l) => l.issue || keyOf(l)).join(' ')}`)
     }
   } else if (masterBroken) {
     log('master is red - nothing deployed and nothing closed')
@@ -1118,14 +1170,14 @@ try {
 
 if (PREFLIGHTED) {
   // Never matched a surveyed PR in any round. Either the PR closed or lost its label between
-  // the supervisor's query and this run - harmless - or the repo name does not match the one
-  // .autofix.json configures, which silently excluded real work. Both want a person's eye,
+  // the supervisor's query and this run - harmless - or it was handed in against a repository
+  // that never listed that number, which silently excluded real work. Both want a person's eye,
   // and the second one is invisible without this line.
   const unmatched = [...PREFLIGHTED].filter((k) => !matchedPreflight.has(k))
   if (unmatched.length) {
-    log(`pre-flighted but never surveyed: ${unmatched.join(' ')} - closed, unlabelled, or a repo name that does not match the config`)
+    log(`pre-flighted but never surveyed: ${unmatched.join(' ')} - closed, unlabelled, or a number paired with a repository that never listed it`)
   }
 }
 
-log(`landed ${landed.length}, stopped ${stopped.length}, deploy ${deployed}`)
+log(`landed ${landed.length}, stopped ${stopped.length}, skipped ${skipped.length}, deploy ${deployed}`)
 return { landed, stopped, skipped, deployed, masterBroken, lock: lockState }
