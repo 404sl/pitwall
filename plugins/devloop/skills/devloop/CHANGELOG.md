@@ -1,5 +1,59 @@
 # Changelog
 
+## 0.1.22
+
+**A branch could walk the published plugin version backwards, and nothing between a green build and
+a merge looked at the number.** The guard now runs in the two landers, at the moment each merge is
+about to happen, and it reads `origin/master` fresh rather than trusting anything carried from
+earlier in the run.
+
+A check at push time cannot be correct here however carefully it is written. PR #80 was rebased to
+declare 0.1.16 with master at 0.1.15 and was green on node 20 and 22; #89 then landed and took
+0.1.16 for itself, so the number #80 had been checked against was stale again and nothing re-checked
+it before landing. Master moves after a push, and the only moment the comparison is true is the
+moment of the merge.
+
+- **The comparison is scoped to branches that change what the marketplace serves.** A branch whose
+  diff against master lists any path under `plugins/` or `.claude-plugin/` must declare a version
+  strictly greater than master's; a branch that touches none of them is not asked about a number it
+  never claimed. Scoping matters more than it looks: of the 26 changes merged before this one, 12
+  declared no bump at all and 8 of those touched no plugin file, so an unscoped rule would refuse
+  roughly half the queue - including every change confined to `src/`, `ui/` and `test/`. The three
+  that did ship plugin content without a bump are exactly what this refuses, and one of them is
+  recorded two releases below: WRITING-TICKETS.md reached the marketplace only on the next unrelated
+  release, because the release that added it never bumped.
+- **An unreadable master refuses, and so does a version that is not three numbers.** A failed fetch,
+  a manifest with no `version` field, and a string like `v0.1.22-rc` all stop the merge and say which
+  happened. The alternative - treating a number nobody could read as nothing to block on - is the one
+  outcome that makes the guard worse than absent, because it looks present and passes everything.
+  A repository that carries no `plugins/devloop/.claude-plugin/plugin.json` on master at all is a
+  different case and is reported rather than refused: it ships no plugin, so it has no published
+  number to walk backwards. That distinction is drawn from `git ls-tree` printing nothing, not from
+  `git show` erroring - told to infer it from an error, a careful reader reports "unreadable"
+  instead, and since an unreadable verdict is deliberately never un-queued, every repository
+  without the plugin would be refused on every run for ever.
+- **The agent reads, the script decides.** The step asks for two version strings, whether the diff
+  touches plugin files, and which of three states it was in; the comparison and the refusal are in
+  `land.js` and `land-train.js`, where a test can drive them. That is why a per-pull-request agent
+  call returns after one was removed at 0.1.18 for costing ~50k of context: this one is two
+  read-only git commands on haiku at low effort, and it cannot talk itself past the guard because it
+  is not the thing holding the verdict.
+- **A refusal un-queues the pull request; an unreadable number does not.** `version_not_ahead`
+  joins `conflict` and `red_after_rebase` in the retire step: the label comes off, the finding goes
+  onto the tracker issue and the issue goes back to open, because nothing in the pipeline bumps a
+  number on its own and a label left on buys the same refusal once per run forever.
+  `version_unreadable` is deliberately kept queued, alongside `master_red` and `agent_error` - that
+  is ignorance rather than a finding, and un-queueing on ignorance loses work silently.
+- **A train refused on its version is retired, not left standing.** The same retire step the red path
+  uses closes the release pull request and deletes its branch, so a refusal does not leave a branch
+  on the remote that reads like open work. The pull requests it carried keep their labels and go back
+  to the queue.
+- **Eighteen tests hold it**, stubbing the agent for both landers: equal, lower, string-ordered
+  (`0.1.9` against `0.1.21`), strictly greater, plugin-untouched, unreadable, unparseable, a step
+  that answers nothing, a repository with no manifest, two pull requests in one run where the second
+  is refused against the version the first just published, and which of the two refusals un-queues. One more reads the prompt itself, because the
+  difference between "no plugin here" and "could not read it" is the one thing a stub cannot check.
+
 ## 0.1.21
 
 **A lane that ended any way other than by handing off kept its lane lock, and its slot with it.**

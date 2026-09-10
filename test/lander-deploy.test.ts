@@ -44,12 +44,21 @@ const TWO_ENV = {
   },
 };
 
+const NO_PLUGIN = {
+  status: "no_manifest",
+  masterVersion: "",
+  branchVersion: "",
+  touchesPlugin: false,
+  notes: "this repository carries no devloop plugin manifest on master",
+};
+
 function landOnce(replies: Replies) {
   const queue = replies.prs || [PR];
   const shas: Record<string, string> = { "owner/site#16": SHA, "owner/site#17": LATER };
   return runScript("land.js", replies.args || ARGS, (call: Call, n: number) => {
     if (n === 1) return { status: "taken", token: "lander-1788964650-29574", holder: "lander-1788964650-29574" };
     if (call.label.startsWith("survey")) return n === 2 ? { prs: queue } : { prs: [] };
+    if (call.label.startsWith("version:")) return NO_PLUGIN;
     if (call.label.startsWith("land:")) return { status: "merged", mergeSha: shas[call.label.slice(5)] || SHA, masterGreen: true, notes: "" };
     if (call.label === "deploy") return replies.deploy;
     if (call.label === "deploy-check") return replies.check;

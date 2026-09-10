@@ -45,10 +45,19 @@ const THE_PR = {
   issue: "pitwall-abc",
 };
 
+const NO_PLUGIN = {
+  status: "no_manifest",
+  masterVersion: "",
+  branchVersion: "",
+  touchesPlugin: false,
+  notes: "this repository carries no devloop plugin manifest on master",
+};
+
 function lander(reply: Reply, args: Record<string, unknown> = {}) {
   return runScript("land.js", { ...ARGS, ...args }, (call, n) => {
     if (n === 1) return { status: "taken", token: "lander-1788964650-29574", holder: "lander-1788964650-29574" };
     if (call.label === "release") return { status: "released" };
+    if (call.label.startsWith("version:")) return NO_PLUGIN;
     return reply(call, n);
   });
 }

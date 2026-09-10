@@ -60,6 +60,9 @@ const TOKEN_SHAPE = /^[A-Za-z0-9._-]+$/
 const trimmed = (v) => String(v || '').trim()
 const ID_PREFIX = input.idPrefix || 'sr'
 const LABEL = 'lane-verified'
+const PLUGIN_MANIFEST = 'plugins/devloop/.claude-plugin/plugin.json'
+const MARKETPLACE_MANIFEST = '.claude-plugin/marketplace.json'
+const SEMVER = /^(\d+)\.(\d+)\.(\d+)$/
 
 // Where the helper scripts live. A workflow script cannot read its own directory, so this is
 // passed in or falls back to where the skill is installed on this machine.
@@ -193,6 +196,19 @@ const LAND = {
     mergeSha: { type: 'string', description: 'the sha of the commit the merge produced ON THE DEFAULT BRANCH - the squash commit gh pr merge reports, never the pull request head, because a deployed host is compared against this' },
     masterGreen: { type: 'boolean' },
     failureDetail: { type: 'string', description: 'the failing examples and their messages, in enough detail to act on without re-running anything' },
+    notes: { type: 'string' }
+  }
+}
+
+const VERSION = {
+  type: 'object',
+  required: ['status', 'masterVersion', 'branchVersion', 'touchesPlugin', 'notes'],
+  additionalProperties: false,
+  properties: {
+    status: { enum: ['read', 'no_manifest', 'unreadable'], description: "'read' only when both git show calls printed a manifest you could copy a version string out of" },
+    masterVersion: { type: 'string', description: `the "version" string in origin/master's ${PLUGIN_MANIFEST}, verbatim. An empty string when you could not read one.` },
+    branchVersion: { type: 'string', description: `the "version" string in the branch's ${PLUGIN_MANIFEST}, verbatim. An empty string when you could not read one.` },
+    touchesPlugin: { type: 'boolean', description: 'true when the branch changes any file under plugins/ or .claude-plugin/ - that is what the marketplace serves' },
     notes: { type: 'string' }
   }
 }
@@ -474,6 +490,101 @@ green - is vacuously true of an empty array and reads as a pass forever.
 
 Report the conclusions you actually saw in 'checks', and the head sha in 'headRefOid', so the
 run's log says what was true rather than only whether it liked it.`
+}
+
+function versionAhead(branch, master) {
+  const a = SEMVER.exec(branch)
+  const b = SEMVER.exec(master)
+  if (!a || !b) return null
+  for (let i = 1; i <= 3; i++) {
+    const x = Number(a[i])
+    const y = Number(b[i])
+    if (x !== y) return x > y
+  }
+  return false
+}
+
+function versionVerdict(read) {
+  if (!read) {
+    return { why: 'version_unreadable', detail: 'the version step answered nothing, and a number nobody read is not a number that is ahead' }
+  }
+  if (read.status === 'no_manifest') return null
+  if (read.status !== 'read') {
+    return {
+      why: 'version_unreadable',
+      detail: `origin/master's ${PLUGIN_MANIFEST} could not be read - ${trimmed(read.notes) || `the step reported only '${read.status}'`}`
+    }
+  }
+  if (!read.touchesPlugin) return null
+  const branch = trimmed(read.branchVersion)
+  const master = trimmed(read.masterVersion)
+  const ahead = versionAhead(branch, master)
+  if (ahead === null) {
+    return {
+      why: 'version_unreadable',
+      detail: `the declared devloop plugin version cannot be compared - the branch reported '${branch}' and origin/master reported '${master}', and a version that is not three numbers cannot be ordered against anything`
+    }
+  }
+  if (!ahead) {
+    return {
+      why: 'version_not_ahead',
+      detail: `the branch declares devloop plugin version ${branch} and origin/master holds ${master}, which is not strictly greater. Bump ${PLUGIN_MANIFEST} and ${MARKETPLACE_MANIFEST} above ${master} and push again.`
+    }
+  }
+  return null
+}
+
+function versionPrompt(pr) {
+  const path = REPOS[pr.repo]
+  return `Read two version numbers and report them. Nothing merges here, nothing is edited, and
+the working tree of ${path} is not yours to move - a person works in that checkout and may be
+mid-edit on their own branch.
+
+Repo: ${pr.repo} - ${path}
+Branch: ${pr.branch}
+
+FETCH FIRST, EVERY TIME. What matters is the number origin/master holds RIGHT NOW, not the one it
+held when this branch was pushed. Master moves between pull requests inside this very run, so a
+number read once at the top of the run is stale by the second merge.
+
+  cd ${path} && git fetch origin --quiet && echo FETCHED
+  cd ${path} && git ls-tree --name-only origin/master ${PLUGIN_MANIFEST}
+  cd ${path} && git show origin/master:${PLUGIN_MANIFEST}
+  cd ${path} && git show origin/${pr.branch}:${PLUGIN_MANIFEST}
+  cd ${path} && git diff --name-only origin/master...origin/${pr.branch}
+
+git show prints a file as it is at a ref and touches nothing. Do not check anything out, do not
+switch, do not reset, and do not stash.
+
+REPORT, DO NOT JUDGE. Whether this may merge is decided from what you report, not by you:
+
+  status 'read'         FETCHED printed, ls-tree printed the path, and both git show calls printed
+                        a manifest. Copy the "version" string out of each into masterVersion and
+                        branchVersion, verbatim - do not normalise them, pad them, or correct one
+                        to look like the other.
+  status 'no_manifest'  ls-tree printed NOTHING. ${PLUGIN_MANIFEST} is not in master's tree, so
+                        this repository ships no plugin and has no published number to walk
+                        backwards. Skip the two git show calls - there is nothing there to read,
+                        and their error is the expected result rather than a problem.
+  status 'unreadable'   FETCHED did not print, or ls-tree printed the path and a git show then
+                        failed anyway, or the manifest it printed carries no "version" string.
+                        Say which in notes.
+
+AN UNREADABLE MASTER IS NOT A CLEAR ROAD. If the fetch did not work, or the manifest is in the
+tree and you still cannot get a number out of it, report 'unreadable' and say why. Guessing a
+number turns a guard into a green light, and the merge that follows is the thing the guard exists
+to stop.
+
+WHAT ls-tree PRINTS IS WHAT DECIDES BETWEEN THE OTHER TWO, and nothing else decides it. Empty
+output means 'no_manifest'. Do not reach for 'no_manifest' because some other command errored, and
+do not report 'unreadable' for a repository that simply has no plugin in it - most of them do not,
+and the pull request is refused either way on a verdict that was never about the version.
+
+touchesPlugin is true when that last command lists ANY path under plugins/ or .claude-plugin/.
+Those are the files the marketplace serves, so a branch changing one of them ships under whatever
+number it declares. It is false when the diff lists none of them.
+
+${LAW}`
 }
 
 function landPrompt(pr, position, total) {
@@ -918,8 +1029,9 @@ ${LAW}`
 // author's work is left exactly as it was, only un-queued.
 //
 // NOT retired: 'master_red' (nothing is wrong with the PR), 'blocked' (CI simply had not
-// finished - a timing accident that the next round should retry), and 'agent_error' (we do not
-// know what happened, and un-queueing on ignorance loses work silently).
+// finished - a timing accident that the next round should retry), 'version_unreadable' (the
+// number could not be read at all, which is ignorance rather than a finding), and 'agent_error'
+// (we do not know what happened, and un-queueing on ignorance loses work silently).
 const RETIRE = { type: 'object', required: ['status'], additionalProperties: false, properties: {
   status: { enum: ['retired', 'partial', 'nothing_to_do'] },
   retired: { type: 'array', items: { type: 'string' } },
@@ -1230,6 +1342,19 @@ try {
       //
       // A PR that comes back 7 is NOT retired: status 'blocked' puts it back for a later round,
       // which is what the old skipped-and-seen.delete path did.
+      const declared = await agent(versionPrompt(pr), {
+        label: `version:${keyOf(pr)}`, phase: 'Land', schema: VERSION, model: 'haiku', effort: 'low'
+      })
+      const stale = versionVerdict(declared)
+      if (stale) {
+        stopped.push({ ...pr, why: stale.why, detail: stale.detail })
+        log(`STOPPED ${keyOf(pr)} - ${stale.why}\n    ${stale.detail}`)
+        continue
+      }
+      if (declared.status === 'no_manifest') {
+        log(`${keyOf(pr)} - origin/master carries no ${PLUGIN_MANIFEST}, so this repository has no published plugin version to walk backwards`)
+      }
+
       const r = await agent(landPrompt(pr, i + 1, queue.length), {
         label: `land:${keyOf(pr)}`, phase: 'Land', schema: LAND
       })
@@ -1305,7 +1430,7 @@ try {
 
   // Before anything else, un-queue what could not be landed - including when nothing landed at
   // all, which is exactly the run whose findings would otherwise be repeated in full.
-  const dead = stopped.filter((sp) => sp.why === 'conflict' || sp.why === 'red_after_rebase')
+  const dead = stopped.filter((sp) => sp.why === 'conflict' || sp.why === 'red_after_rebase' || sp.why === 'version_not_ahead')
   if (dead.length) {
     phase('Deploy')
     const rt = await agent(retirePrompt(dead), { label: `retire:${dead.length}`, phase: 'Deploy', schema: RETIRE, model: 'sonnet' })
