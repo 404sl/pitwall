@@ -839,3 +839,25 @@ test("a host that went quiet on the read-back does not hand the run back to the 
   );
   assert.equal(calls.filter((c) => c.label === "close").length, 0);
 });
+
+test("a step that names the merge sha for the repository it can read is not said to have named nothing", async () => {
+  const { calls, logs, done } = landOnce({
+    args: HALF_CONFIGURED,
+    prs: [PR, IN_SITE],
+    deploy: { status: "deployed", hosts: hosts(SHA), notes: "both live" },
+    check: { status: "read", hosts: hosts(SHA), notes: "the host answered" },
+    close: { status: "closed", closed: ["pitwall-7b1", "pitwall-7b3"] },
+  });
+  const result = await done;
+
+  assert.equal(calls.filter((c) => c.label === "deploy-check").length, 1);
+  assert.equal(result.deployed, "deployed");
+  assert.equal(calls.filter((c) => c.label === "close").length, 1);
+  assert.doesNotMatch(
+    logs.join("\n"),
+    /named no revision/,
+    "the step named the sha that merged into the one repository anybody can read, it was compared and it matched, and " +
+      "the log says it named nothing. This is the ordinary mixed run - a step doing its job while an unverifiable " +
+      "repository drags the status to unknown - so it is the line a supervisor reads most often.",
+  );
+});
