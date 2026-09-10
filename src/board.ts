@@ -14,7 +14,13 @@ import {
 } from "@404sl/pitwall-schema";
 import { parentIdOf, type ClassificationReason } from "./classify.js";
 import { priorityLabel } from "./format.js";
-import { stalenessSource, unresolvedCount } from "./staleness.js";
+import {
+  UNRESOLVED_KINDS,
+  stalenessSource,
+  unresolvedOf,
+  type Unresolved,
+  type UnresolvedKind,
+} from "./staleness.js";
 
 export type NeedsYouKind = "decision" | "access";
 export type RunningState = "working" | "awaiting-lander" | "stranded";
@@ -579,7 +585,7 @@ export interface StalenessView {
   checked: boolean;
   checkedAt?: string;
   evidence: string[];
-  unresolved: number;
+  unresolved: Unresolved[];
 }
 
 export interface IssuePreview {
@@ -600,6 +606,21 @@ export function stalenessErrors(source: { errors?: CollectionError[] }, id: stri
   return errorsOf(source).filter((error) => error.source === stalenessSource(id));
 }
 
+function unresolvedTally(errors: readonly CollectionError[]): Unresolved[] {
+  const counts = new Map<UnresolvedKind, number>();
+  for (const error of errors) {
+    const named = unresolvedOf(error.message);
+    if (named === undefined) {
+      continue;
+    }
+    counts.set(named.kind, (counts.get(named.kind) ?? 0) + named.count);
+  }
+  return UNRESOLVED_KINDS.flatMap((kind) => {
+    const count = counts.get(kind);
+    return count === undefined ? [] : [{ kind, count }];
+  });
+}
+
 function stalenessView(staleness: Staleness | undefined, errors: readonly CollectionError[]): StalenessView {
   const verdict = staleness?.verdict ?? "unchecked";
   return {
@@ -607,7 +628,7 @@ function stalenessView(staleness: Staleness | undefined, errors: readonly Collec
     checked: verdict !== "unchecked",
     checkedAt: staleness?.checkedAt,
     evidence: staleness?.evidence ?? [],
-    unresolved: errors.reduce((sum, error) => sum + unresolvedCount(error.message), 0),
+    unresolved: unresolvedTally(errors),
   };
 }
 

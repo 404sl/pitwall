@@ -635,7 +635,7 @@ function aPreview(over: Partial<IssuePreview> = {}): IssuePreview {
       checked: true,
       checkedAt: "2026-09-08T13:00:00Z",
       evidence: ["it names sr-tot5, still open"],
-      unresolved: 0,
+      unresolved: [],
     },
     ...over,
   };
@@ -876,7 +876,7 @@ test("a landing issue whose pull request merged asks the reader to close it", ()
         checked: true,
         checkedAt: "2026-09-10T09:40:00Z",
         evidence: ["the pull request it waits on has merged: #91"],
-        unresolved: 0,
+        unresolved: [],
       },
     }),
   );
@@ -947,7 +947,7 @@ test("the staleness band states its method once and never lists what it could no
         checked: true,
         checkedAt: "2026-09-08T13:00:00Z",
         evidence: ["it names sr-tot5, still open"],
-        unresolved: 3,
+        unresolved: [{ kind: "reference", count: 3 }],
       },
     }),
   );
@@ -959,7 +959,12 @@ test("the staleness band states its method once and never lists what it could no
 
   const one = pageMarkup(
     aPreview({
-      staleness: { verdict: "still-blocking", checked: true, evidence: ["a"], unresolved: 1 },
+      staleness: {
+        verdict: "still-blocking",
+        checked: true,
+        evidence: ["a"],
+        unresolved: [{ kind: "reference", count: 1 }],
+      },
     }),
   );
   assert.match(one, /1 reference could not be checked; it is recorded under Problems\./);
@@ -968,10 +973,42 @@ test("the staleness band states its method once and never lists what it could no
   assert.doesNotMatch(none, /could not be checked/);
 });
 
+test("a precondition nobody could run is named as one, not as a reference nobody checked", () => {
+  const only = pageMarkup(
+    aPreview({
+      staleness: {
+        verdict: "unchecked",
+        checked: false,
+        evidence: [],
+        unresolved: [{ kind: "precondition", count: 1 }],
+      },
+    }),
+  );
+  assert.match(only, /1 precondition could not be run; it is recorded under Problems\./);
+  assert.doesNotMatch(only, /could not be checked/, "there was no reference, so none is claimed");
+  assert.doesNotMatch(only, /reference/);
+
+  const both = pageMarkup(
+    aPreview({
+      staleness: {
+        verdict: "still-blocking",
+        checked: true,
+        evidence: ["a"],
+        unresolved: [
+          { kind: "reference", count: 2 },
+          { kind: "precondition", count: 3 },
+        ],
+      },
+    }),
+  );
+  assert.match(both, /2 references could not be checked; they are recorded under Problems\./);
+  assert.match(both, /3 preconditions could not be run; they are recorded under Problems\./);
+});
+
 test("a verdict with no evidence to act on says so rather than showing an empty list", () => {
   const markup = pageMarkup(
     aPreview({
-      staleness: { verdict: "still-blocking", checked: true, evidence: [], unresolved: 0 },
+      staleness: { verdict: "still-blocking", checked: true, evidence: [], unresolved: [] },
     }),
   );
   assert.match(markup, /Checked; nothing has changed that this check can see\./);
@@ -994,12 +1031,16 @@ test("the preview a click starts from is the snapshot's own record of the issue"
   assert.equal(preview?.classification, "yours:decision");
   assert.equal(preview?.closed, false);
   assert.deepEqual(preview?.staleness.evidence, ["site#1128 is closed, not merged"]);
-  assert.equal(preview?.staleness.unresolved, 3, "only this issue's own failed lookups are counted");
+  assert.deepEqual(
+    preview?.staleness.unresolved,
+    [{ kind: "reference", count: 3 }],
+    "only this issue's own failed lookups are counted",
+  );
   assert.equal(previewIssue(snapshot, "session-replay", "sr-nope"), undefined);
   assert.equal(previewIssue(snapshot, "nowhere", "sr-15s2"), undefined);
 });
 
-test("the count of references a check could not make is the count the failure recorded", () => {
+test("each kind of failed check is counted as its own kind, never summed into references", () => {
   const view = buildIssueView({
     ...payload({ staleness: { verdict: "still-blocking", evidence: ["site#1128 is closed, not merged"] } }),
     errors: [
@@ -1007,9 +1048,36 @@ test("the count of references a check could not make is the count the failure re
       { source: "staleness sr-i6yt", message: "1 precondition could not be run: `npm whoami`", at: GENERATED_AT },
     ],
   });
-  assert.equal(view.staleness.unresolved, 3);
+  assert.deepEqual(view.staleness.unresolved, [
+    { kind: "reference", count: 2 },
+    { kind: "precondition", count: 1 },
+  ]);
   assert.deepEqual(view.staleness.evidence, ["site#1128 is closed, not merged"]);
-  assert.equal(buildIssueView(payload()).staleness.unresolved, 0);
+
+  const probed = buildIssueView({
+    ...payload(),
+    errors: [
+      { source: "staleness sr-i6yt", message: "1 precondition could not be run: `npm whoami`", at: GENERATED_AT },
+    ],
+  });
+  assert.deepEqual(
+    probed.staleness.unresolved,
+    [{ kind: "precondition", count: 1 }],
+    "a probe nobody could run is no reference at all",
+  );
+
+  const unnumbered = buildIssueView({
+    ...payload(),
+    errors: [
+      {
+        source: "staleness sr-i6yt",
+        message: "no pull request host is configured, so pull requests could not be looked up",
+        at: GENERATED_AT,
+      },
+    ],
+  });
+  assert.deepEqual(unnumbered.staleness.unresolved, [], "a failure with no leading count contributes nothing");
+  assert.deepEqual(buildIssueView(payload()).staleness.unresolved, []);
 });
 
 const { Band } = await import("../ui/components/Band.tsx");
