@@ -1,5 +1,51 @@
 # Changelog
 
+## 0.1.17
+
+**`kill-lane.sh` reported a truncated rescue as saved, then deleted the worktree it came from.**
+The rescue diff was written by one compound block, `saved:` printed unconditionally, and the
+worktree removed - so a rescue that captured one of two dirty paths, or that never opened its
+output file at all, was indistinguishable from a complete one and the only copy of the work
+was gone by the time anybody read the diff.
+
+Checking exit statuses does not fix it, and that is the part worth writing down.
+`git diff --no-index -- /dev/null <path>` exits **1** when it cannot read the path, which is
+the same code it returns for the ordinary case of two files differing. There is no status to
+test. Reproduced with an untracked symlink to a directory - any untracked, non-ignored path the
+walk cannot read does it: the walk printed `error: Could not access 'linkdir/null'`, wrote a diff
+holding 1 of 2 paths, and reported success.
+
+So the write is now verified by its CONTENT: the number of `diff --git` headers in the file
+must equal the number of paths git says are staged, unstaged or untracked. On a mismatch, or
+an empty file, the script says how many of how many arrived, leaves the worktree where it is,
+and exits 8 having cleaned up nothing else - the branch, the lane lock and the slot claim all
+stay held, because freeing them invites a re-dispatch that would fail on `worktree add` against
+a path that still exists.
+
+**The way out is three steps and the order is the whole point:** copy the work out by hand, REMOVE
+THE WORKTREE, then re-run. A re-run is safe, but it is not enough on its own - with the worktree
+still in place the rescue falls short again, stops again with the same output, and the lane lock
+and slot claim stay held indefinitely. So the script now prints the exact
+`git -C <repo> worktree remove --force <worktree>` command for the worktree it kept, because the
+reader of that output is usually an agent in a blocked lane and needs a command rather than a
+description.
+
+**The two counts in the output are derived differently and can disagree, which is deliberate.**
+The `UNCOMMITTED WORK PRESENT - N path(s)` line comes from `git status --porcelain`, which counts
+a staged-and-modified file once and an untracked directory once. The verification counts
+`diff --git` headers, and the diff carries two for the first and one per file for the second - so
+it is compared against `diff --cached --name-only` + `diff --name-only` + `ls-files --others`,
+which is shaped the same way. Comparing it against the reported count instead would raise a false
+alarm on both shapes, and a false alarm here means a worktree left behind and a lane blocked.
+
+**8 and not 7.** 7 already means the script refused before touching anything, and is retryable
+once the lane is confirmed dead. 8 means it stopped part-way and somebody has to copy the work
+first. `--force` skips the running check and does not skip this one: it overrides a verdict about
+whether a lane is alive, not the only copy of its work.
+
+**An empty or partial read is not a clean one** - the same rule this pipeline already applies
+to tracker queries and compliance checks, applied to the one write whose failure is permanent.
+
 ## 0.1.16
 
 **The lander resolved a surveyed pull request through a name the survey chose for itself, and

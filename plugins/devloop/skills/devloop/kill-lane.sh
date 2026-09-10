@@ -17,7 +17,8 @@
 # id: slot N takes lane N+1. That off-by-one is exactly why it gets missed by hand.
 #
 # Exit: 0 cleaned, 6 bad arguments, 7 refused because a lane may still be running or a
-# rebase is in progress in the worktree.
+# rebase is in progress in the worktree, 8 the rescue diff does not hold what the worktree
+# had - the worktree is kept and nothing else is cleaned up.
 
 set -u
 
@@ -151,6 +152,8 @@ RESCUE="${DEVLOOP_RESCUE:-$HOME/.claude/devloop-rescued}"
 # because the stamp has one-second resolution and an issue can have both a plain and a
 # -rework worktree rescued inside the same second.
 seen_wt=""
+incomplete=0
+incomplete_wts=""
 for raw in "/tmp/${PFX}-worktrees/${ID}" "/private/tmp/${PFX}-worktrees/${ID}" \
            "/tmp/${PFX}-worktrees/${ID}-rework" "/private/tmp/${PFX}-worktrees/${ID}-rework"; do
   [ -d "$raw" ] || continue
@@ -182,8 +185,21 @@ for raw in "/tmp/${PFX}-worktrees/${ID}" "/private/tmp/${PFX}-worktrees/${ID}" \
             git -C "$wt" diff --no-index --binary -- /dev/null "$f" || true
           done
       } > "$out"
-      echo "  saved: $out"
-      echo "  READ IT before assuming the lane died with nothing worth keeping."
+      want=$( { git -C "$wt" diff --cached --name-only
+                git -C "$wt" diff --name-only
+                git -C "$wt" ls-files --others --exclude-standard; } | wc -l | tr -d ' ')
+      got=$(grep -c '^diff --git ' "$out" 2>/dev/null || true)
+      got="${got:-0}"
+      if [ -s "$out" ] && [ "$got" -eq "$want" ]; then
+        echo "  saved: $out (${got} of ${want} path(s))"
+        echo "  READ IT before assuming the lane died with nothing worth keeping."
+      else
+        echo "  RESCUE INCOMPLETE - ${got} of ${want} path(s) reached $out"
+        echo "  WORKTREE LEFT IN PLACE: $wt"
+        incomplete=1
+        incomplete_wts="$incomplete_wts $wt"
+        continue
+      fi
     else
       echo "  would save to: $out"
     fi
@@ -191,6 +207,19 @@ for raw in "/tmp/${PFX}-worktrees/${ID}" "/private/tmp/${PFX}-worktrees/${ID}" \
 
   run "git -C '$DIR' worktree remove --force '$wt' >/dev/null 2>&1 || rm -rf '$wt'"
 done
+
+if [ "$incomplete" = 1 ]; then
+  echo
+  echo "STOPPING: the rescue diff does not hold everything the worktree had, so nothing else was"
+  echo "cleaned up - the branch, the lane lock and the slot claim are all still held."
+  echo "Copy the work you want to keep out of the worktree, THEN REMOVE THE WORKTREE, then run this"
+  echo "script again. A re-run with the worktree still there rescues the same paths, reports the same"
+  echo "shortfall and stops here again - the lane stays blocked until the worktree is gone:"
+  for wt in $incomplete_wts; do
+    echo "  git -C '$DIR' worktree remove --force '$wt'"
+  done
+  exit 8
+fi
 run "git -C '$DIR' worktree prune"
 
 # 2. The local branch, but ONLY when nothing was pushed. A branch whose commits reached origin is

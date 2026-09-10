@@ -314,6 +314,17 @@ The lock is the one that gets forgotten because it is the only one whose name is
 id - **slot N takes lane N+1**, and that off-by-one is exactly what a hand cleanup misses. The
 script also refuses to delete a branch that reached origin, since a pull request may point at it.
 
+It verifies the rescue diff before removing anything. If the diff does not hold every dirty
+path the worktree had, it says how many of how many arrived, leaves the worktree in place and
+exits **8** having cleaned up nothing else. The remedy is three steps in this order: copy the work
+out by hand, **remove the worktree**, then run the script again - and it prints the exact
+`git worktree remove --force` command for the worktree it kept. Re-running is safe but does not
+finish on its own: with the worktree still there the rescue falls short again and the lane stays
+blocked, so the removal is the step that ends it. That is a separate code from the 7 above because
+the remedy is different: a 7 is retryable once the lane is confirmed dead, an 8 needs somebody to
+copy the work first. `--force` does not skip this check - it overrides a verdict about whether a
+lane is running, not the only copy of its work.
+
 ## A landed pull request reads CLOSED, not MERGED
 
 The train squashes each branch onto a release branch and merges ONE pull request, so every
