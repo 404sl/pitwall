@@ -175,6 +175,19 @@ test("a run that ends in needs_feedback gives its lane and its slot back", async
   assert.equal(result["slot"], "released");
 });
 
+test("a slot that arrives as a string still names the lane the brief told the run to claim", async () => {
+  const { calls, done } = runScript("task.js", { ...TASK_ARGS, slot: "3" }, (call, n) => {
+    if (n === 1) return TRIAGE_OK;
+    if (n === 2) return { status: "blocked", summary: "needs a device" };
+    return { lane: "released", slot: "released" };
+  });
+
+  await done;
+  const prompt = releaseCall(calls).prompt;
+  assert.match(prompt, /--lane \/tmp\/pw-lane-4\.lock /, "the lane number was built by string concatenation");
+  assert.match(prompt, /--slot \/tmp\/pw-slots\/3 /);
+});
+
 test("a run that ends as a split gives its lane back, before the work loop ever starts", async () => {
   const { calls, done } = runScript("task.js", TASK_ARGS, (call, n) => {
     if (n === 1) {

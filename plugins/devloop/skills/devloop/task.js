@@ -1299,12 +1299,13 @@ async function design(task) {
   return brief
 }
 
-const LANE_LOCK = `/tmp/${LOCK_PREFIX}-lane-${SLOT + 1}.lock`
+const LANE_NUMBER = SLOT - 1 + 2
+const LANE_LOCK = `/tmp/${LOCK_PREFIX}-lane-${LANE_NUMBER}.lock`
 const SLOT_FILE = `/tmp/${LOCK_PREFIX}-slots/${SLOT}`
 const GIVEN_BACK = new Set(['released', 'already_gone'])
 
 function releaseLanePrompt() {
-  return `Give lane ${SLOT + 1} and slot ${SLOT} back. Run this command once, exactly as it stands, and
+  return `Give lane ${LANE_NUMBER} and slot ${SLOT} back. Run this command once, exactly as it stands, and
 report what it printed:
 
   bash ${SKILL_DIR}/release-lane.sh --lane ${LANE_LOCK} --slot ${SLOT_FILE} --owner '${ID}'
@@ -1750,7 +1751,7 @@ if (!result && reworks >= MAX_REWORKS) {
   laneLock = settle(LANE_LOCK, back && back.lane)
   slotClaim = settle(SLOT_FILE, back && back.slot)
   if (!GIVEN_BACK.has(back && back.lane) || !GIVEN_BACK.has(back && back.slot)) {
-    log(`lane ${SLOT + 1}: ${laneLock}\n    slot ${SLOT}: ${slotClaim}${back && back.notes ? `\n    ${back.notes}` : ''}`)
+    log(`lane ${LANE_NUMBER}: ${laneLock}\n    slot ${SLOT}: ${slotClaim}${back && back.notes ? `\n    ${back.notes}` : ''}`)
   }
 }
 
