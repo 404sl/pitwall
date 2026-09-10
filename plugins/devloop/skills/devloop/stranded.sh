@@ -154,7 +154,8 @@ if [ "$found" = "1" ]; then
   echo
   echo "Run rework on each BEFORE the next train, or the next train drops them again against a"
   echo "master that has moved further away:"
-  echo "  Workflow({ scriptPath: \".../rework.js\", args: { pr: <n>, id: \"<sr-id>\", repo: \"<repo>\", slot: <free slot> } })"
+  echo "  args=\$(config.sh --args <id>); script=\$(run-script.sh rework.js)"
+  echo "  Workflow({ scriptPath: <script>, args: { ...\$args, pr: <n>, repo: \"<repo>\" } })"
   exit 1
 fi
 

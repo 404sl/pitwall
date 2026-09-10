@@ -830,8 +830,8 @@ listing = " ".join(f"{r}#{n}" for r, n in waiting[:12]) + (" ..." if len(waiting
 if not held:
     print(f"LANDER IDLE: {len(waiting)} labelled PR(s) waiting and no lander holding the merge lock.")
     print(f"    {listing}")
-    print("    Relaunch it - this session only, a triage agent cannot: "
-          "Workflow({scriptPath: '~/.claude/skills/devloop/land.js'})")
+    print("    Relaunch it - this session only, a triage agent cannot. Build the dispatch with")
+    print("    config.sh --land naming the PRs above, and dispatch the scriptPath it carries.")
     sys.exit(1)
 
 # AGE ALONE IS NOT EVIDENCE OF DEATH, and this said it was.

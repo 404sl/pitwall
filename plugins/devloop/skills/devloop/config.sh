@@ -12,11 +12,14 @@
 #   config.sh                       print the whole config as JSON
 #   config.sh root                  print one top-level field
 #   config.sh repos.site.test       print a nested field
-#   config.sh --args app-abc1       reserve a lane through slot.sh and print the args object
-#                                   for a task.js dispatch. An optional third argument is
-#                                   checked against the reservation, never used instead of it.
-#   config.sh --land [repo#n ...]   print the args object for a land.js run, naming the
-#                                   pre-flighted PRs it is allowed to merge
+#   config.sh --args app-abc1       stage the workflow scripts through run-script.sh, reserve a
+#                                   lane through slot.sh, and print the args object for a task.js
+#                                   dispatch, carrying the scriptPath to dispatch. An optional
+#                                   third argument is checked against the reservation, never used
+#                                   instead of it.
+#   config.sh --land [repo#n ...]   stage the workflow scripts and print the args object for a
+#                                   land.js run, naming the pre-flighted PRs it is allowed to
+#                                   merge and the scriptPath to dispatch
 #   config.sh --check               validate the file and report what is missing
 #
 # WHERE IT LOOKS, in order: $DEVLOOP_CONFIG, then .autofix.json walking up from the cwd. Walking
@@ -149,6 +152,10 @@ PY
   --args)
     # config.sh --args <issue-id> [slot]  ->  the args object for a task.js dispatch
     [ $# -ge 2 ] || { echo "usage: config.sh --args <issue-id> [slot]" >&2; exit 2; }
+    SCRIPT_PATH="$(PITWALL_CONFIG="$CONFIG" bash "$SKILL_DIR/run-script.sh" task.js)" || {
+      echo "config.sh --args: run-script.sh could not stage task.js - dispatch stops." >&2
+      exit 1
+    }
     SLOT="$(PITWALL_CONFIG="$CONFIG" bash "$SKILL_DIR/slot.sh" "$2")" || {
       echo "config.sh --args: slot.sh would not reserve a lane for $2 - dispatch stops." >&2
       exit 1
@@ -163,13 +170,14 @@ PY
       echo "                  reservation decides the lane and is not overridden from here." >&2
       exit 1
     fi
-    python3 - "$CONFIG" "$2" "$SLOT" "$SKILL_DIR" <<'PY'
+    python3 - "$CONFIG" "$2" "$SLOT" "$SKILL_DIR" "$SCRIPT_PATH" <<'PY'
 import json, sys
 cfg = json.load(open(sys.argv[1]))
 print(json.dumps({
     "id": sys.argv[2],
     "slot": int(sys.argv[3]),
     "skillDir": sys.argv[4],
+    "scriptPath": sys.argv[5],
     "root": cfg["root"],
     "idPrefix": cfg.get("idPrefix", "sr"),
     "lockPrefix": cfg.get("lockPrefix", "devloop"),
@@ -188,12 +196,17 @@ PY
     # GIVEN NONE, THE FIELD IS OMITTED, which land.js reads as do-not-filter. That is the
     # old behaviour and it is safe; an empty list would instead mean land nothing.
     shift
-    python3 - "$CONFIG" "$SKILL_DIR" "$@" <<'PY'
+    SCRIPT_PATH="$(PITWALL_CONFIG="$CONFIG" bash "$SKILL_DIR/run-script.sh" land.js)" || {
+      echo "config.sh --land: run-script.sh could not stage land.js - the lander does not start." >&2
+      exit 1
+    }
+    python3 - "$CONFIG" "$SKILL_DIR" "$SCRIPT_PATH" "$@" <<'PY'
 import json, sys
 cfg = json.load(open(sys.argv[1]))
 repos = cfg.get("repos", {})
 out = {
     "skillDir": sys.argv[2],
+    "scriptPath": sys.argv[3],
         "root": cfg["root"],
     "idPrefix": cfg.get("idPrefix", "sr"),
     "lockPrefix": cfg.get("lockPrefix", "devloop"),
@@ -203,7 +216,7 @@ out = {
 slugs = {name: (r or {}).get("slug") for name, r in repos.items()}
 known = sorted({s for s in slugs.values() if s})
 pre = []
-for a in sys.argv[3:]:
+for a in sys.argv[4:]:
     a = a.strip()
     if not a:
         continue
