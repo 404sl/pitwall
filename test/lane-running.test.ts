@@ -365,6 +365,19 @@ test("--stale-minutes is the window the silence is measured against", () => {
   assert.doesNotMatch(askAny(space, ["--stale-minutes", "45"]).out, /journal silent/);
 });
 
+test("a fresh agent transcript beside a cold journal is not silence", () => {
+  const space = workspace([{ task: "w111", run: "wf_aaa", labels: ["fix:pitwall-90b"] }]);
+  writeFileSync(
+    join(space.wf, "session-1", "subagents", "workflows", "wf_aaa", "agent-a1.jsonl"),
+    `${JSON.stringify({ type: "assistant", agentId: "a1" })}\n`,
+  );
+  silence(space, "wf_aaa", 720);
+  const { status, out } = askAny(space);
+  assert.equal(status, 0, out);
+  assert.match(out, /^RUNNING/);
+  assert.doesNotMatch(out, /journal silent/);
+});
+
 test("a result written in one task directory cancels an empty copy of it in another", () => {
   const space = workspace([{ task: "w111", run: "wf_aaa", labels: ["fix:pitwall-90b"] }]);
   const second = join(space.root, "tasks-2");

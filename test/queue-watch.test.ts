@@ -124,6 +124,27 @@ function landGate(space: Workspace, ready: string): string {
   ]);
 }
 
+function landGateAcrossTicks(space: Workspace, ready: string): { first: string; second: string } {
+  const journal = join(space.wf, "session-1", "subagents", "workflows", "wf_aaa", "journal.jsonl");
+  const out = run(space, [
+    `skill=${JSON.stringify(SKILL)}`,
+    `PFX=pitwall-queue-watch-test-${process.pid}`,
+    'prev_ready=""',
+    'prev_blind=""',
+    'prev_silent=""',
+    shellFunction("lanes_busy"),
+    shellFunction("silent_lanes"),
+    shellFunction("lander_running"),
+    shellFunction("land_gate"),
+    `land_gate ${JSON.stringify(ready)} "$(lanes_busy)"`,
+    "echo __TICK__",
+    `touch -t 202001010000 ${JSON.stringify(journal)}`,
+    `land_gate ${JSON.stringify(ready)} "$(lanes_busy)"`,
+  ]);
+  const [first, second] = out.split("__TICK__");
+  return { first: (first ?? "").trim(), second: (second ?? "").trim() };
+}
+
 test("the supervisor's land gate is not 0 while a lane is in flight", () => {
   assert.equal(lanesBusy(workspace("lane")), "RUNNING");
 });
@@ -153,6 +174,13 @@ test("the land gate says so when the lane holding it shut has gone silent", () =
 
 test("the land gate stays quiet while the lane holding it shut is still writing", () => {
   assert.equal(landGate(workspace("lane"), "site#61"), "");
+});
+
+test("a lane that goes silent after the gate has already seen that ready set is still announced", () => {
+  const { first, second } = landGateAcrossTicks(workspace("lane"), "site#61");
+  assert.equal(first, "");
+  assert.match(second, /gone silent - site#61/);
+  assert.match(second, /w111/);
 });
 
 test("the land gate announces work ready to land when no lane is running", () => {
