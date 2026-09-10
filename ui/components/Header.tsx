@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import type { CollectionError } from "@404sl/pitwall-schema";
 import mark from "../brand/logo/pitwall-mark.svg";
+import { BuildToken } from "./Build.js";
 import { fill, stamp } from "../format.js";
-import { PARTIAL_SOURCE, snapshotAge, type SnapshotAge } from "../model.js";
+import { PARTIAL_SOURCE, snapshotAge, type BuildState, type SnapshotAge } from "../model.js";
 import { strings } from "../strings.js";
 
 const TICK_MS = 30_000;
@@ -12,6 +13,7 @@ interface HeaderProps {
   generatedAt: string;
   version: string;
   update?: string;
+  build?: BuildState;
   refreshFailure?: CollectionError;
 }
 
@@ -42,7 +44,7 @@ function useNow(): number {
   return now;
 }
 
-export function Header({ projectCount, generatedAt, version, update, refreshFailure }: HeaderProps) {
+export function Header({ projectCount, generatedAt, version, update, build, refreshFailure }: HeaderProps) {
   const noun = projectCount === 1 ? strings.header.project : strings.header.projects;
   const now = useNow();
   const age = snapshotAge(generatedAt, now);
@@ -64,6 +66,7 @@ export function Header({ projectCount, generatedAt, version, update, refreshFail
                 </>
               )}
             </span>
+            {build === undefined ? null : <BuildToken build={build} />}
           </p>
         </div>
       </div>

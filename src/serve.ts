@@ -13,6 +13,7 @@ import {
   readIssue,
   type IssueReading,
 } from "./beads.js";
+import { createBuildCheck, type BuildCheck } from "./build.js";
 import { collectionError } from "./errors.js";
 import { lostNotices } from "./notify.js";
 import { createUpdateCheck, type UpdateCheck } from "./registry.js";
@@ -42,6 +43,7 @@ export interface ServeOptions extends StateOptions {
   uiDir?: string;
   timeoutMs?: number;
   updates?: UpdateCheck;
+  builds?: BuildCheck;
   collect?: Collector;
   refreshFloorMs?: number;
   now?: () => number;
@@ -222,9 +224,13 @@ function serveSnapshot(res: ServerResponse, options: ServeOptions, refresher: Re
   });
 }
 
-function serveVersion(res: ServerResponse, updates: UpdateCheck): void {
+function serveVersion(res: ServerResponse, updates: UpdateCheck, builds: BuildCheck): void {
   const update = updates.update();
-  sendJson(res, 200, update === undefined ? { running: VERSION } : { running: VERSION, update });
+  sendJson(res, 200, {
+    running: VERSION,
+    ...(update === undefined ? {} : { update }),
+    ...builds.state(),
+  });
 }
 
 function issueRoute(pathname: string): { project: string; id: string } | undefined {
@@ -616,6 +622,7 @@ export function sendActionFailure(
 export function createConsoleServer(options: ServeOptions = {}): Server {
   const uiDir = resolve(options.uiDir ?? UI_DIR);
   const updates = options.updates ?? createUpdateCheck();
+  const builds = options.builds ?? createBuildCheck();
   const refresher = createRefresher(options);
   return createServer((req: IncomingMessage, res: ServerResponse) => {
     if (!isLocalHost(req.headers.host)) {
@@ -628,7 +635,7 @@ export function createConsoleServer(options: ServeOptions = {}): Server {
       return;
     }
     if (pathname === VERSION_ROUTE) {
-      serveVersion(res, updates);
+      serveVersion(res, updates, builds);
       return;
     }
     if (req.method === "POST" && pathname.startsWith(ISSUE_PREFIX)) {

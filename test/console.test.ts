@@ -12,13 +12,14 @@ import {
   blockedSummary,
   buildBoard,
   buildIssueView,
+  buildState,
   parkedReasons,
   parkedSummary,
   previewIssue,
   problemKey,
   snapshotAge,
 } from "../ui/model.ts";
-import type { Board, FilterState, IssuePayload, IssuePreview } from "../ui/model.ts";
+import type { Board, BuildState, FilterState, IssuePayload, IssuePreview } from "../ui/model.ts";
 import { strings } from "../ui/strings.ts";
 import { countLabel } from "../ui/format.ts";
 import { boardHref, filterOf, filterQuery, issueHref, routeOf } from "../ui/routes.ts";
@@ -27,6 +28,7 @@ import { VERSION } from "../src/version.ts";
 
 register("./support/svg-stub.mjs", import.meta.url);
 const { Header } = await import("../ui/components/Header.tsx");
+const { BuildBanner, BuildToken } = await import("../ui/components/Build.tsx");
 
 const GENERATED_AT = "2026-09-08T14:11:00Z";
 const HEADER_NOW = Date.parse("2026-09-08T14:49:00Z");
@@ -37,17 +39,50 @@ function headerMarkup(
   generatedAt: string,
   update?: string,
   refreshFailure?: CollectionError,
+  build?: BuildState,
 ): string {
   const realNow = Date.now;
   Date.now = () => HEADER_NOW;
   try {
     return renderToStaticMarkup(
-      createElement(Header, { projectCount, generatedAt, version: VERSION, update, refreshFailure }),
+      createElement(Header, { projectCount, generatedAt, version: VERSION, update, refreshFailure, build }),
     );
   } finally {
     Date.now = realNow;
   }
 }
+
+const BUILT_AT = "2026-09-08T20:47:00Z";
+const BUILD_NOW = Date.parse("2026-09-10T19:47:00Z");
+const BUILT_FROM = "9f2c1ab0000000000000000000000000000000ab";
+const CHECKOUT_HEAD = "1a2b3c4000000000000000000000000000000000";
+
+function atBuildNow(render: () => string): string {
+  const realNow = Date.now;
+  Date.now = () => BUILD_NOW;
+  try {
+    return render();
+  } finally {
+    Date.now = realNow;
+  }
+}
+
+function bannerMarkup(build: BuildState): string {
+  return atBuildNow(() => renderToStaticMarkup(createElement(BuildBanner, { build })));
+}
+
+function tokenMarkup(build: BuildState): string {
+  return atBuildNow(() => renderToStaticMarkup(createElement(BuildToken, { build })));
+}
+
+const BEHIND: BuildState = {
+  kind: "behind",
+  branch: "master",
+  ahead: 23,
+  head: CHECKOUT_HEAD,
+  commit: BUILT_FROM,
+  at: BUILT_AT,
+};
 
 function headerAged(ms: number, projectCount = 3): string {
   return headerMarkup(projectCount, new Date(HEADER_NOW - ms).toISOString());
@@ -612,6 +647,140 @@ test("a header rendered from a stamp it cannot read shows the stamp and claims n
   assert.match(markup, /<span class="pw-header__age">not-a-date<\/span>/);
   assert.doesNotMatch(markup, /pw-header--stale/);
   assert.doesNotMatch(markup, /<time/);
+});
+
+
+test("a server that answers without build fields leaves the console unknown, never current", () => {
+  const answered = buildState({ kind: "read", version: { running: VERSION } });
+  assert.equal(answered.kind, "unknown");
+  assert.notEqual(answered.kind, "current");
+  assert.equal(answered.kind === "unknown" ? answered.because : "", strings.build.unknown.noServer);
+});
+
+test("a version route that answered nothing at all is unknown too, and waiting is neither", () => {
+  const unanswered = buildState({ kind: "unanswered" });
+  assert.equal(unanswered.kind, "unknown");
+  assert.notEqual(unanswered.kind, "current");
+  assert.equal(buildState({ kind: "waiting" }).kind, "absent");
+});
+
+test("a checkout that could not be read is named as the reason rather than counted as current", () => {
+  const failed = buildState({
+    kind: "read",
+    version: {
+      running: VERSION,
+      build: { commit: BUILT_FROM, at: BUILT_AT },
+      buildCheck: "unknown",
+      unknownBecause: { kind: "checkout", message: "fatal: not a git repository" },
+    },
+  });
+  assert.equal(failed.kind, "unknown");
+  assert.equal(
+    failed.kind === "unknown" ? failed.because : "",
+    "The checkout could not be read: fatal: not a git repository",
+  );
+});
+
+test("a build the checkout has never heard of reads as diverged, naming the commit and the branch", () => {
+  const diverged = buildState({
+    kind: "read",
+    version: {
+      running: VERSION,
+      build: { commit: BUILT_FROM },
+      checkout: { branch: "master", head: CHECKOUT_HEAD },
+      buildCheck: "unknown",
+      unknownBecause: { kind: "diverged" },
+    },
+  });
+  assert.equal(diverged.kind, "unknown");
+  assert.equal(diverged.kind === "unknown" ? diverged.because : "", "The build commit 9f2c1ab is not in master.");
+});
+
+test("a board served by a stale build names the count, the branch and both commits", () => {
+  const markup = bannerMarkup(BEHIND);
+  assert.match(markup, /23 commits on master are not in this console\./);
+  assert.match(markup, /Serving a build made 1d23h ago, at 9f2c1ab\./);
+  assert.match(markup, /master is at 1a2b3c4\./);
+  assert.match(markup, /Restart pitwall serve to pick them up\./);
+  assert.match(markup, /class="pw-call pw-call--yours pw-build__head"/);
+  assert.match(markup, new RegExp(`datetime="${BUILT_AT}"`, "i"));
+});
+
+test("one commit behind is one commit, not '1 commits'", () => {
+  const markup = bannerMarkup({ ...BEHIND, ahead: 1 });
+  assert.match(markup, /1 commit on master is not in this console\./);
+  assert.match(markup, /Restart pitwall serve to pick it up\./);
+  assert.doesNotMatch(markup, /1 commits/);
+  assert.doesNotMatch(markup, /pick them up/);
+});
+
+test("a build that records no time still names what it is serving rather than going silent", () => {
+  const markup = bannerMarkup({ kind: "behind", branch: "master", ahead: 2, head: CHECKOUT_HEAD, commit: BUILT_FROM });
+  assert.match(markup, /Serving a build that records no time, at 9f2c1ab\./);
+  assert.doesNotMatch(markup, /<time/);
+});
+
+test("a console that cannot tell says so on the board and declines to claim it is up to date", () => {
+  const markup = bannerMarkup({ kind: "unknown", commit: BUILT_FROM, at: BUILT_AT, because: "The server did not report its build." });
+  assert.match(markup, /Cannot tell whether this console is serving the current build\./);
+  assert.match(markup, /That is not the same as up to date\./);
+  assert.match(markup, /<span class="pw-call__ask-label">Reason<\/span>/);
+  assert.match(markup, /The server did not report its build\./);
+  assert.match(markup, /class="pw-call pw-call--waiting pw-build__head"/);
+  assert.doesNotMatch(markup, /pw-call--yours/);
+});
+
+test("an unknown with nothing stamped names the reason without inventing a commit", () => {
+  const markup = bannerMarkup({ kind: "unknown", because: strings.build.unknown.noStamp });
+  assert.match(markup, /This build records no commit\./);
+  assert.doesNotMatch(markup, /Serving a build/);
+  assert.doesNotMatch(markup, /title=/);
+});
+
+test("the banner stays off the board when the build is current, installed, or not yet answered", () => {
+  assert.equal(bannerMarkup({ kind: "current", branch: "master", commit: BUILT_FROM, at: BUILT_AT }), "");
+  assert.equal(bannerMarkup({ kind: "no-checkout", commit: BUILT_FROM, at: BUILT_AT }), "");
+  assert.equal(bannerMarkup({ kind: "absent" }), "");
+});
+
+test("the header token tells current apart from a console that has no such check", () => {
+  assert.match(tokenMarkup({ kind: "current", branch: "master", commit: BUILT_FROM, at: BUILT_AT }), /9f2c1ab/);
+  assert.match(
+    tokenMarkup({ kind: "current", branch: "master", commit: BUILT_FROM }),
+    /<span class="pw-header__build-state" role="status"><span aria-hidden="true"> · <\/span>current<\/span>/,
+  );
+  assert.match(
+    tokenMarkup({ kind: "no-checkout", commit: BUILT_FROM }),
+    /<span class="pw-header__build-state" role="status"><\/span>/,
+  );
+  assert.doesNotMatch(tokenMarkup({ kind: "no-checkout", commit: BUILT_FROM }), /current/);
+});
+
+test("the header token counts the commits it is behind, and reads unknown rather than current", () => {
+  assert.match(
+    tokenMarkup(BEHIND),
+    /<span class="pw-header__build-state pw-header__build-state--behind" role="status"><span aria-hidden="true"> · <\/span>23 behind<\/span>/,
+  );
+  assert.match(tokenMarkup({ ...BEHIND, ahead: 1 }), /> · <\/span>1 behind</);
+  assert.doesNotMatch(tokenMarkup({ ...BEHIND, ahead: 1 }), /1 behinds/);
+  assert.match(
+    tokenMarkup({ kind: "unknown", because: strings.build.unknown.noServer }),
+    /<span class="pw-header__build-state pw-header__build-state--unknown" role="status"><span aria-hidden="true"> · <\/span>unknown<\/span>/,
+  );
+});
+
+test("the live region is in the header before the first answer arrives, so the answer announces", () => {
+  const markup = tokenMarkup({ kind: "absent" });
+  assert.equal(markup, '<span class="pw-header__build-state" role="status"></span>');
+  assert.doesNotMatch(markup, /pw-header__build"/);
+});
+
+test("the build token is rendered beside the version, after the update it sits next to", () => {
+  const markup = headerMarkup(3, new Date(HEADER_NOW - 60_000).toISOString(), "0.1.99", undefined, BEHIND);
+  assert.ok(markup.indexOf("0.1.99 available") < markup.indexOf("pw-header__build"), "the build token follows the update");
+  assert.match(markup, /<span class="pw-sr">build <\/span><span class="pw-header__build">9f2c1ab<\/span>/);
+  assert.match(markup, /23 behind/);
+  assert.doesNotMatch(markup, /pw-header--stale/);
 });
 
 const { IssueDetail, IssuePage, LatestNote, Notes, callFor, reasonTemplate, shownOf } = await import(

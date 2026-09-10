@@ -520,6 +520,32 @@ body {
   color: var(--pw-ink);
 }
 
+.pw-build {
+  margin: 0;
+}
+
+.pw-build__head {
+  margin-block-start: 0;
+}
+
+.pw-build__detail,
+.pw-build__reason {
+  overflow-wrap: anywhere;
+}
+
+.pw-build__reason .pw-call__ask-text {
+  font-style: italic;
+}
+
+.pw-header__build-state--behind {
+  color: var(--pw-alert);
+  font-weight: 500;
+}
+
+.pw-header__build-state--unknown {
+  font-style: italic;
+}
+
 .pw-empty--method {
   margin-block-start: 12px;
   max-inline-size: 68ch;
@@ -723,6 +749,18 @@ body {
   .pw-call {
     font-size: 16px;
     max-inline-size: 100%;
+  }
+
+  .pw-header__version {
+    white-space: normal;
+  }
+
+  .pw-header__build {
+    display: block;
+  }
+
+  .pw-header__build-separator {
+    display: none;
   }
 
   .pw-call__ask {
