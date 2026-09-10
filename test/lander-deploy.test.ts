@@ -716,3 +716,126 @@ test("a repository nothing can read back does not launder a revision that contra
   );
   assert.match(logs.join("\n"), new RegExp(OTHER.slice(0, 12)), "the log does not say what the host is serving");
 });
+
+const HALF_CONFIGURED = {
+  ...ARGS,
+  repos: {
+    docs: ARGS.repos.docs,
+    site: { path: "cli", slug: "owner/cli", deploy: ["bash deploy-one.sh --label production"] },
+  },
+};
+
+const IN_SITE = { slug: "owner/cli", number: 18, title: "Read the lock back", branch: "devloop/pitwall-7b3", issue: "pitwall-7b3" };
+
+test("a reported deploy naming no revision still reads back the one repository that can be read", async () => {
+  const { calls, logs, done } = landOnce({
+    args: HALF_CONFIGURED,
+    prs: [PR, IN_SITE],
+    deploy: { status: "deployed", hosts: [], notes: "both live" },
+    check: { status: "read", hosts: hosts(SHA), notes: "the host answered" },
+    close: { status: "closed", closed: ["pitwall-7b1", "pitwall-7b3"] },
+  });
+  const result = await done;
+
+  assert.equal(
+    calls.filter((c) => c.label === "deploy-check").length,
+    1,
+    "one repository configures a verify command and it went unrun because a DIFFERENT repository configures none. " +
+      `A host that can be asked must be asked before the step's word is taken for the rest. Steps: ${calls.map((c) => c.label).join(", ")}`,
+  );
+  assert.equal(
+    result.deployed,
+    "deployed",
+    "the one readable host is serving the sha that merged and the other repository configures nothing that can be " +
+      "read, so there is no revision anywhere contradicting the step - and the run held its issues open anyway. " +
+      "That is the 2026-08-25 pile-up reached by upgrading.",
+  );
+  assert.equal(calls.filter((c) => c.label === "close").length, 1);
+
+  const said = logs.join("\n");
+  assert.match(said, /own word/, "the log does not say that the unreadable half rests on the step's assertion");
+  assert.match(said, /no verify command/, "the log does not name the configuration that would have checked the rest");
+});
+
+test("a reported deploy naming no revision is refused by the host it never mentioned", async () => {
+  const { calls, logs, done } = landOnce({
+    args: HALF_CONFIGURED,
+    prs: [PR, IN_SITE],
+    deploy: { status: "deployed", hosts: [], notes: "both live" },
+    check: { status: "read", hosts: hosts(OTHER), notes: "the host answered" },
+    close: { status: "closed", closed: ["pitwall-7b1", "pitwall-7b3"] },
+  });
+  const result = await done;
+
+  assert.notEqual(
+    result.deployed,
+    "deployed",
+    "a step reported deployed and named no host, a readable host came back serving another revision, and the run closed " +
+      "on the step's word anyway. Omitting the hosts is the cheaper failure than naming a wrong one and it must not pay better.",
+  );
+  assert.equal(
+    calls.filter((c) => c.label === "close").length,
+    0,
+    "issues were closed while a host that was read is serving another revision",
+  );
+  assert.match(logs.join("\n"), new RegExp(OTHER.slice(0, 12)), "the log does not say what the host is serving");
+});
+
+test("a reported host with an empty revision is not an answer the step can be credited with", async () => {
+  const { calls, done } = landOnce({
+    args: HALF_CONFIGURED,
+    prs: [PR, IN_SITE],
+    deploy: { status: "deployed", hosts: hosts(""), notes: "the health check timed out right after the deploy" },
+    check: { status: "read", hosts: hosts(OTHER), notes: "the host answered" },
+    close: { status: "closed", closed: ["pitwall-7b1", "pitwall-7b3"] },
+  });
+  const result = await done;
+
+  assert.equal(
+    calls.filter((c) => c.label === "deploy-check").length,
+    1,
+    "a host the step reported with no revision in it left the read-back unrun, so nothing asked the host itself",
+  );
+  assert.notEqual(result.deployed, "deployed", "a host that answered nothing was read as confirming the step");
+  assert.equal(calls.filter((c) => c.label === "close").length, 0);
+});
+
+test("a deploy step that reports one host twice with two revisions has contradicted itself", async () => {
+  const { calls, logs, done } = landOnce({
+    args: HALF_CONFIGURED,
+    prs: [PR, IN_SITE],
+    deploy: { status: "deployed", hosts: [...hosts(SHA), ...hosts(OTHER)], notes: "both live" },
+    check: { status: "read", hosts: hosts(SHA), notes: "the host answered" },
+    close: { status: "closed", closed: ["pitwall-7b1", "pitwall-7b3"] },
+  });
+  const result = await done;
+
+  assert.notEqual(
+    result.deployed,
+    "deployed",
+    "one step reported the same host serving two different revisions and the run still took its word for the " +
+      "repository nobody can read. A report that disagrees with itself is not evidence for anything else in it.",
+  );
+  assert.equal(calls.filter((c) => c.label === "close").length, 0);
+  assert.match(logs.join("\n"), /two different revisions/, "the log does not say the report contradicted itself");
+});
+
+test("a host that went quiet on the read-back does not hand the run back to the step's word", async () => {
+  const { calls, done } = landOnce({
+    args: HALF_CONFIGURED,
+    prs: [PR, IN_SITE],
+    deploy: { status: "deployed", hosts: [], notes: "both live" },
+    check: { status: "unreadable", hosts: hosts(""), notes: "the health check timed out" },
+    close: { status: "closed", closed: ["pitwall-7b1", "pitwall-7b3"] },
+  });
+  const result = await done;
+
+  assert.notEqual(
+    result.deployed,
+    "deployed",
+    "a repository that configures a verify command was asked, answered nothing, and the run closed on the step's word " +
+      "anyway. Only a repository nothing here can ask may rest on the report; one that was asked and did not answer " +
+      "is the unknown this comparison exists to hold.",
+  );
+  assert.equal(calls.filter((c) => c.label === "close").length, 0);
+});

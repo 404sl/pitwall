@@ -1231,14 +1231,16 @@ function readHosts(landed, back) {
   }
   const confirmed = []
   const mismatched = []
+  const contradicted = []
   const silent = []
+  const repos = []
   const states = []
   for (const name of [...new Set(landed.map((l) => l.repo))]) {
     if (!DEPLOYS.has(name)) continue
     const { commands, why } = readBacks(name)
     const expected = readSha((lastMerged(landed, name) || {}).mergeSha)
-    if (why) { silent.push(why); states.push('unknown'); continue }
-    if (!expected) { silent.push(`${name} recorded no merge sha, so what its hosts reported cannot be compared against anything`); states.push('unknown'); continue }
+    if (why) { silent.push(why); states.push('unknown'); repos.push({ name, state: 'unknown', unreadable: true }); continue }
+    if (!expected) { silent.push(`${name} recorded no merge sha, so what its hosts reported cannot be compared against anything`); states.push('unknown'); repos.push({ name, state: 'unknown' }); continue }
     let matched = 0
     let wrong = 0
     let unread = 0
@@ -1246,7 +1248,7 @@ function readHosts(landed, back) {
       const seen = served.get(`${name}\u0000${c.environment}`)
       if (seen && seen.contradicted) {
         unread += 1
-        silent.push(`${name} ${c.environment} came back twice with two different revisions, and two contradictory answers are not an answer`)
+        contradicted.push(`${name} ${c.environment} came back twice with two different revisions, and two contradictory answers are not an answer`)
       } else if (!seen || !seen.revision) {
         unread += 1
         silent.push(`${name} ${c.environment} reported no revision`)
@@ -1258,13 +1260,15 @@ function readHosts(landed, back) {
         mismatched.push(`${name} ${c.environment} is serving ${seen.revision.slice(0, 12)}, and what merged was ${expected.slice(0, 12)}`)
       }
     }
-    states.push(unread ? 'unknown' : wrong ? (matched ? 'partial' : 'failed') : 'deployed')
+    const state = unread ? 'unknown' : wrong ? (matched ? 'partial' : 'failed') : 'deployed'
+    states.push(state)
+    repos.push({ name, state })
   }
   const status = (!back || back.status !== 'read' || !states.length || states.includes('unknown')) ? 'unknown'
     : states.every((st) => st === 'deployed') ? 'deployed'
       : states.every((st) => st === 'failed') ? 'failed'
         : 'partial'
-  return { status, confirmed, mismatched, silent }
+  return { status, confirmed, mismatched, contradicted, silent, repos }
 }
 
 function closePrompt(landed, deployed) {
@@ -1599,15 +1603,16 @@ try {
     deployed = reportedStatus
     let servingText = ''
     let refuted = false
+    let readDisagreed = false
 
     if (reportedStatus === 'deployed') {
       const own = readHosts(landed, { status: 'read', hosts: (d && d.hosts) || [] })
       deployed = own.status
-      refuted = own.mismatched.length > 0
+      refuted = own.mismatched.length > 0 || own.contradicted.length > 0
       servingText = servingLine(own.confirmed)
       if (deployed !== 'deployed') {
         log(`the deploy step reported deployed, and the revisions it says the hosts are serving do not confirm it - deploy is ${deployed}`)
-        for (const line of [...own.mismatched, ...own.silent]) log(`    ${line}`)
+        for (const line of [...own.mismatched, ...own.contradicted, ...own.silent]) log(`    ${line}`)
       }
     }
 
@@ -1622,11 +1627,12 @@ try {
       log(`${unsettled}, and nothing that landed is in a repository with a deploy configured - there was never anything to deploy, and that is settled by the config rather than by the step`)
     } else if (deployed === 'unknown') {
       const { reads, blocked } = liveReads(landed)
-      if (blocked.length || !reads.length) {
+      const wordAlone = reportedStatus === 'deployed' && !refuted
+      if (!reads.length) {
         const why = (blocked.length ? blocked : ['nothing that landed deploys anywhere a host could be read']).join('\n    ')
-        if (reportedStatus === 'deployed' && !refuted) {
+        if (wordAlone) {
           deployed = 'deployed'
-          log(`the deploy step reported deployed and nothing configured here can read a host back to check it, so this deploy closes on the step's own word and no revision anybody compared - which is what it did before this comparison existed. One verify command per deploy environment is what would check it:\n    ${why}`)
+          log(`the deploy step reported deployed and no repository that landed configures a command that can read a host back, so this deploy closes on the step's own word and no revision anybody compared - which is what it did before this comparison existed. One verify command per deploy environment is what would check it:\n    ${why}`)
         } else {
           log(`${unsettled}, and reading the hosts back cannot settle it either, so the deploy stays unknown and the issues stay open until a person reads a host:\n    ${why}`)
         }
@@ -1636,7 +1642,18 @@ try {
         deployed = read.status
         if (read.confirmed.length) servingText = servingLine(read.confirmed)
         log(`${unsettled}, so the hosts were read back instead - deploy is ${deployed}${back && back.notes ? `\n    ${back.notes}` : ''}`)
-        for (const line of [...read.mismatched, ...read.silent]) log(`    ${line}`)
+        for (const line of [...read.mismatched, ...read.contradicted, ...read.silent]) log(`    ${line}`)
+        readDisagreed = read.mismatched.length > 0 || read.contradicted.length > 0
+
+        if (deployed === 'unknown' && blocked.length) {
+          const onlyUnreadable = read.repos.every((r) => r.state !== 'unknown' || r.unreadable)
+          if (wordAlone && !readDisagreed && onlyUnreadable) {
+            deployed = 'deployed'
+            log(`every host that could be read is serving what merged${servingText ? ` - ${servingText}` : ''}, and the rest of what landed configures no command that can read one back, so those close on the step's own word and no revision anybody compared. One verify command per deploy environment is what would check them:\n    ${blocked.join('\n    ')}`)
+          } else if (readDisagreed) {
+            log(`a host that was read is not serving what merged, so the step's word does not stand for the repositories nothing here can read either:\n    ${blocked.join('\n    ')}`)
+          }
+        }
       }
     }
     log(`deploy: ${deployed}${servingText ? ` ${servingText}` : ''}`)
@@ -1674,7 +1691,7 @@ try {
     if (heldBack.length) {
       const waiting = heldBack.map((l) => l.issue || keyOf(l)).join(' ')
       if (deployed === 'unknown') {
-        log(`deploy UNKNOWN - ${unsettled}, and reading the hosts back did not settle it either. THIS IS NOT A FAILURE and must not be re-run on the strength of this line. What settles it, in this order: what each host is serving, against the shas that merged.\n${heldBackReads(landed)}\n    merged: ${landed.map((l) => `${l.repo} ${(l.mergeSha || '').slice(0, 12) || '(sha not recorded)'}`).join(', ')}\n    left open until somebody says: ${waiting}`)
+        log(`deploy UNKNOWN - ${unsettled}, and ${readDisagreed ? 'a host that was read is serving something other than what merged' : 'reading the hosts back did not settle it either'}. THIS IS NOT A FAILURE and must not be re-run on the strength of this line. What settles it, in this order: what each host is serving, against the shas that merged.\n${heldBackReads(landed)}\n    merged: ${landed.map((l) => `${l.repo} ${(l.mergeSha || '').slice(0, 12) || '(sha not recorded)'}`).join(', ')}\n    left open until somebody says: ${waiting}`)
       } else {
         log(`deploy ${deployed} - staying open until it is live: ${waiting}`)
       }
