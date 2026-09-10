@@ -22,6 +22,7 @@ export const meta = {
 // the one that wrote them. A default that is right for its author is invisible to its author.
 const input = (typeof args === 'string' ? JSON.parse(args) : args) || {}
 const SKILL_DIR = input.skillDir
+const TOKEN_SHAPE = /^[A-Za-z0-9._-]+$/
 
 // REFUSE RATHER THAN RENDER "undefined". This value is interpolated into shell commands
 // the lane is told to run - `bash ${SKILL_DIR}/lane-handoff.sh` and, for a Rails repo,
@@ -351,8 +352,8 @@ refused, and every train leaked its lock and needed clearing by hand. Mint a tok
   cat /tmp/devloop-merge.lock/holder
 
 Report status "taken" and the token EXACTLY as cat printed it back, not as you intended to write
-it. The release step will remove the lock only if the holder still reads exactly this, so a token
-you report but did not write means a lock nobody can release.`,
+it. The release step is handed what you report and can compare against nothing else, so a token
+you omit or retype is a lock this run cannot give back.`,
   { schema: { type: 'object', required: ['status'], properties: {
       status: { type: 'string', enum: ['taken', 'held'] }, token: { type: 'string' } } },
     model: 'haiku', effort: 'low', phase: 'Lock' },
@@ -371,6 +372,10 @@ const flakes = []
 // on 2026-08-29 and were only found by going to look. Collected here so the run can say so.
 const skipped = new Set()
 let lastSha = null
+let outcome = { stopped: null }
+let stranded = []
+let released = null
+let lockState = `LEAKED - the release step never reported. Read /tmp/devloop-merge.lock/holder before touching anything.`
 
 // Build a train, test it, and merge it if green. On red, split and recurse: the failure is in one
 // half or the other, and log2(n) CI runs finds it. Depth is capped because a train that keeps
@@ -450,7 +455,8 @@ branch and the train's own pull request are yours to remove.`,
   return runTrain(included.slice(half), `${suffix || 'b'}b${depth}`, depth + 1)
 }
 
-const outcome = await runTrain(ONLY, '', 0)
+try {
+outcome = await runTrain(ONLY, '', 0)
 
 // A RED MASTER IS NEVER DEPLOYED. This condition used to be `landed.length && lastSha` alone,
 // and that is not the same thing as "it went well": runTrain pushes to `landed` BEFORE it
@@ -485,7 +491,7 @@ if (landed.length && lastSha && !masterIsRed) {
 // SAY WHICH BRANCHES WERE DROPPED, ON THE PULL REQUESTS THEMSELVES. Anything landed in this run
 // is gone from the list, because a branch dropped from an early build often goes on a later one
 // once whatever it clashed with has merged.
-const stranded = [...skipped].filter((n) => !landed.includes(n))
+stranded = [...skipped].filter((n) => !landed.includes(n))
 if (stranded.length) {
   await agent(
     `These pull requests on ${SLUG} were dropped from a release train for conflicting with
@@ -506,45 +512,57 @@ case this step is trying to stop.`,
     { model: 'haiku', effort: 'low', phase: 'Close', label: 'strand-notice' },
   )
 }
+} finally {
+if (!lock.token || !TOKEN_SHAPE.test(lock.token)) {
+  lockState = `LEAKED - /tmp/devloop-merge.lock is held under a token this run cannot quote back, so no removal was even asked for. Read /tmp/devloop-merge.lock/holder, and leave it alone unless it names a run that has finished.`
+  log(lockState)
+} else {
+released = await agent(
+  `Release the serial merge lock. This runs however the train ended - merged, stopped or failed -
+because a lock left behind stands down every train after it for no reason.
 
-// The holder file lives INSIDE the lock directory, and rmdir refuses a directory that is not
-// empty - so removing the lock means removing the holder first. Getting this wrong on
-// 2026-08-29 left the lock held after a clean run and the next train stood down against a
-// lander that had already finished. Verify rather than report: a lock that is still there
-// after this is a leak that blocks every future train until somebody clears it by hand.
-const released = await agent(
-  `Release the serial merge lock - but only if it is still THIS run's lock.
+RUN THIS ONE COMMAND, EXACTLY AS IT STANDS, AND NOTHING ELSE:
 
-RELEASE IS CONDITIONAL ON OWNERSHIP, and that is the point of this step rather than a formality.
-An unconditional delete of a shared lock is refused, correctly: if another train holds it, removing
-it puts two trains on one repository and corrupts merges and deploys to both environments. So prove
-the lock is yours by matching the token this run stamped into it:
+  bash ${SKILL_DIR}/release-lock.sh --lock /tmp/devloop-merge.lock --token '${lock.token}'
 
-  EXPECTED='${lock.token || ''}'
-  ACTUAL="$(cat /tmp/devloop-merge.lock/holder 2>/dev/null)"
-  echo "expected=[$EXPECTED] actual=[$ACTUAL]"
+It reads the holder file, removes the lock only if that file holds this run's token, and prints
+what it did on its first line: RELEASED, NOT_MINE, ALREADY_GONE or STILL_HELD. Report that word
+lowercased as 'status' and every other line it printed as 'notes'. You are reporting its answer,
+not forming one.
 
-If EXPECTED is empty, or the two do not match exactly, STOP. Do not remove anything. Report status
-"leaked" with both values in the notes - a lock held by somebody else, or one this run cannot prove
-it owns, must be left alone and surfaced.
+THE TOKEN IS ALREADY IN THAT COMMAND. Do not ask anybody for one and do not stop for want of one.
+A sibling lander's release step was once told to "substitute the token the lock step reported",
+read that as an instruction to go and find one, concluded it had been given nothing, and returned
+that refusal as its answer while the run reported success. The lock outlived it by 25 minutes.
 
-If they match exactly, the lock is yours and removing it is safe. The holder file is INSIDE the
-lock directory and rmdir refuses a non-empty directory, so remove it first:
+DO NOT LOOK AFTERWARDS TO SEE WHETHER THE LOCK IS GONE, and do not take the command apart into a
+cat, an rm and an ls. You cannot verify a release by re-reading the lock afterwards - between the
+removal and the check, another lander taking the lock is the system working, not a fault, and a
+second look cannot tell that apart from a removal that failed. That is why the removal and the
+report happen inside one process here, and why its output is the whole result.
 
-  rm -f /tmp/devloop-merge.lock/holder
-  rmdir /tmp/devloop-merge.lock
-
-Then PROVE it is gone rather than trusting the exit code:
-
-  ls -d /tmp/devloop-merge.lock 2>/dev/null && echo STILL_THERE || echo GONE
-
-Report status "released" only if that printed GONE. If it printed STILL_THERE, report status
-"leaked" and say what ls showed - a lock left behind blocks every future train until it is
-cleared by hand, so this must be visible rather than silently reported as done.`,
+NOT_MINE IS A CORRECT OUTCOME. The holder file does not hold this run's token, so nothing was
+removed and nothing should be - a lock that belongs to another train is not this one's to clear.
+ALREADY_GONE likewise: there was nothing to release. Report what it printed and stop.`,
   { schema: { type: 'object', required: ['status'], properties: {
-      status: { type: 'string', enum: ['released', 'leaked'] }, notes: { type: 'string' } } },
+      status: { enum: ['released', 'not_mine', 'already_gone', 'still_held'], description: 'the first word release-lock.sh printed, lowercased' },
+      notes: { type: 'string', description: 'every other line it printed' } } },
     model: 'haiku', effort: 'low', phase: 'Close', label: 'release' },
 )
+if (released && released.status === 'released') {
+  lockState = 'released'
+} else if (released && released.status === 'not_mine') {
+  lockState = `not_mine - /tmp/devloop-merge.lock/holder did not hold ${lock.token}, so nothing was removed and nothing should be`
+  log(`${lockState}.\n    ${released.notes || 'the script reported NOT_MINE and says what the holder file read instead'}`)
+} else if (released && released.status === 'already_gone') {
+  lockState = 'already_gone - /tmp/devloop-merge.lock was not there to release'
+  log(`${lockState}. Something removed this run's lock while it was working, so another train may have been running beside it.\n    ${released.notes || ''}`)
+} else {
+  lockState = `LEAKED - /tmp/devloop-merge.lock still held ${lock.token} after the release step, or the step answered nothing. Check /tmp/devloop-merge.lock/holder still reads ${lock.token} before removing it - if it reads anything else, another train has it and it is not yours.`
+  log(`${lockState}\n    ${(released && released.notes) || 'the release agent returned nothing'}`)
+}
+}
+}
 
 return {
   landed,
@@ -560,5 +578,5 @@ return {
   mergeSha: lastSha,
   stopped: outcome.stopped || null,
   notes: outcome.notes || null,
-  lock: released && released.status === 'released' ? 'released' : 'LEAKED - clear it by hand',
+  lock: lockState,
 }

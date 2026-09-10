@@ -56,6 +56,7 @@ if (UNSLUGGED.length) {
 // contend for one merge lock and one worktree directory.
 const LOCK_PREFIX = input.lockPrefix || 'devloop'
 const MERGE_LOCK = `/tmp/${LOCK_PREFIX}-merge.lock`
+const TOKEN_SHAPE = /^[A-Za-z0-9._-]+$/
 const ID_PREFIX = input.idPrefix || 'sr'
 const LABEL = 'lane-verified'
 
@@ -212,9 +213,18 @@ const LOCK = {
   required: ['status'],
   properties: {
     status: { enum: ['taken', 'held_by_other'] },
-    token: { type: 'string', description: 'the token written into the holder file, verbatim - the release step compares against it' },
+    token: { type: 'string', description: 'the token read back out of the holder file, verbatim - the release step is handed what you report and can compare against nothing else' },
     holder: { type: 'string', description: 'what the holder file said, when somebody else has it' },
     notes: { type: 'string' }
+  }
+}
+
+const RELEASE = {
+  type: 'object',
+  required: ['status'],
+  properties: {
+    status: { enum: ['released', 'not_mine', 'already_gone', 'still_held'], description: 'the first word release-lock.sh printed, lowercased - it reports its own outcome and you are not asked to judge it' },
+    notes: { type: 'string', description: 'every other line it printed' }
   }
 }
 
@@ -230,8 +240,9 @@ function lockPrompt() {
   cat ${MERGE_LOCK}/holder
   echo GOT_MERGE_LOCK
 
-REPORT THAT TOKEN VERBATIM as 'token' in your result. The release step compares against it and
-cannot compare against a value nobody carried forward.
+REPORT THAT TOKEN VERBATIM as 'token' in your result, exactly as cat printed it back. The release
+step is handed what you report and can compare against nothing else, so a token you omit or
+retype is a lock this run cannot give back.
 
 It used to be the bare word 'lander', which could not tell two concurrent landers apart: both
 wrote the same string, so each would read its own name in the other's lock and delete it. That
@@ -259,31 +270,44 @@ ${LAW}`
 
 function releasePrompt(token) {
   return `Give the merge lock back. This runs however the landing run ended - merged, stopped,
-or failed - because a lock left behind blocks everything afterwards for no reason. One run
-merged successfully, ended before its release step, and held up every other lane for twenty
-minutes with nothing behind it.
+or failed - because a lock left behind blocks everything afterwards for no reason. One run merged
+successfully, ended before its release step, and held up every other lane for twenty minutes with
+nothing behind it.
 
-Check it is yours before removing it, and never remove one that is not. Substitute the token the
-lock step reported, and RUN IT AS ONE COMMAND:
+RUN THIS ONE COMMAND, EXACTLY AS IT STANDS, AND NOTHING ELSE:
 
-  [ "$(cat ${MERGE_LOCK}/holder 2>/dev/null)" = "${token || 'THE-TOKEN-WAS-NOT-CARRIED'}" ] && rm -rf ${MERGE_LOCK} || echo NOT_MINE
+  bash ${SKILL_DIR}/release-lock.sh --lock ${MERGE_LOCK} --token '${token}'
 
-DO NOT SPLIT THAT INTO A cat AND THEN AN rm. On 2026-09-09 a release step ran the read and the
-removal as two separate commands, so the comparison never happened and the removal was
-unconditional. It removed its own lock and no harm followed, but a safety review flagged it - and
-it was right to: the same two commands would have deleted ANOTHER live lander's lock in exactly
-the same way. The guard only guards while it is joined to the thing it guards.
+It reads the holder file, removes the lock only if that file holds this run's token, and prints
+what it did on its first line: RELEASED, NOT_MINE, ALREADY_GONE or STILL_HELD. Report that word
+lowercased as 'status' and every other line it printed as 'notes'. You are reporting its answer,
+not forming one.
 
-If it prints NOT_MINE, say so and leave the lock alone. That is a correct outcome, not a failure
-to clean up: it means something else holds it and will give it back itself.
+THE TOKEN IS ALREADY IN THAT COMMAND. Do not ask anybody for one and do not stop for want of one.
+This paragraph used to read "substitute the token the lock step reported", and on 2026-09-09 a
+release step read that as an instruction to go and find one, concluded it had been given nothing,
+declined to touch the lock and returned that refusal as its answer. The run had merged, deployed
+and reported success; the lock sat there for 25 minutes with two pull requests queued behind it.
+There is nothing to substitute - the value is in the command.
 
-rm -rf, NOT rmdir. The holder file lives inside the directory, so rmdir fails with "Directory
-not empty" and the lock is never given back.
+DO NOT LOOK AFTERWARDS TO SEE WHETHER THE LOCK IS GONE. You cannot verify a release by re-reading
+the lock afterwards - between the removal and the check, another lander taking the lock is the
+system working, not a fault, and a second look cannot tell that apart from a removal that failed.
+Three review rounds were spent on mappings built over that gap and each produced a confidently
+wrong instruction in one case or another: the worst of them told a person to clear by hand a live
+lock belonging to the next lander. The script removes and reports in one process for exactly this
+reason, and its output is the whole result.
 
-Then confirm it is gone:
-  [ -d ${MERGE_LOCK} ] && echo STILL_HELD || echo RELEASED
+DO NOT TAKE IT APART INTO A cat AND AN rm either, however obvious the two lines look. On
+2026-09-09 a release step ran the read and the removal as two commands, so the comparison never
+happened and the removal was unconditional - the same two commands would have deleted another
+live lander's lock in precisely the same way. The guard only guards while it is joined to the
+thing it guards, and here they are joined inside one process that nothing can get between.
 
-Say which you saw. Change nothing else.
+NOT_MINE IS A CORRECT OUTCOME, not a failure to clean up. It says the holder file does not hold
+this run's token, so nothing was removed and nothing should be - whoever holds it gives it back
+themselves. ALREADY_GONE likewise: there is nothing to release. Report what it printed and stop.
+Change nothing else.
 ${LAW}`
 }
 
@@ -879,6 +903,7 @@ const skipped = []
 const matchedPreflight = new Set()
 let masterBroken = false
 let deployed = 'not_needed'
+let lockState = `LEAKED - the release step never reported. Read ${MERGE_LOCK}/holder before touching anything.`
 
 try {
   // Drained rather than surveyed once: a lane can label a PR while this run is working, and
@@ -1071,7 +1096,24 @@ try {
 } finally {
   // However this ended. A run that merged and then died before releasing held every other
   // lane up for twenty minutes with nothing behind it.
-  await agent(releasePrompt(lock?.token), { label: 'release', phase: 'Deploy', model: 'haiku', effort: 'low' })
+  if (!lock?.token || !TOKEN_SHAPE.test(lock.token)) {
+    lockState = `LEAKED - ${MERGE_LOCK} is held under a token this run cannot quote back, so no removal was even asked for. Read ${MERGE_LOCK}/holder, and leave it alone unless it names a run that has finished.`
+    log(lockState)
+  } else {
+    const released = await agent(releasePrompt(lock.token), { label: 'release', phase: 'Deploy', model: 'haiku', effort: 'low', schema: RELEASE })
+    if (released && released.status === 'released') {
+      lockState = 'released'
+    } else if (released && released.status === 'not_mine') {
+      lockState = `not_mine - ${MERGE_LOCK}/holder did not hold ${lock.token}, so nothing was removed and nothing should be`
+      log(`${lockState}.\n    ${released.notes || 'the script reported NOT_MINE and says what the holder file read instead'}`)
+    } else if (released && released.status === 'already_gone') {
+      lockState = `already_gone - ${MERGE_LOCK} was not there to release`
+      log(`${lockState}. Something removed this run's lock while it was working, so another lander may have been running beside it.\n    ${released.notes || ''}`)
+    } else {
+      lockState = `LEAKED - ${MERGE_LOCK} still held ${lock.token} after the release step, or the step answered nothing. Check ${MERGE_LOCK}/holder still reads ${lock.token} before removing it - if it reads anything else, another lander has it and it is not yours.`
+      log(`${lockState}\n    ${(released && released.notes) || 'the release agent returned nothing'}`)
+    }
+  }
 }
 
 if (PREFLIGHTED) {
@@ -1086,4 +1128,4 @@ if (PREFLIGHTED) {
 }
 
 log(`landed ${landed.length}, stopped ${stopped.length}, deploy ${deployed}`)
-return { landed, stopped, skipped, deployed, masterBroken }
+return { landed, stopped, skipped, deployed, masterBroken, lock: lockState }
