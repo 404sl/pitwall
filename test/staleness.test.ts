@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { classify, hasLiveStructuralBlocker } from "../src/classify.ts";
 import type { ClassifyContext, UnclassifiedIssue } from "../src/classify.ts";
 import { preconditionProbe } from "../src/probes.ts";
-import { assess, isAssessable, lastNoteAt, noteBlocks, unresolvedCount } from "../src/staleness.ts";
+import { assess, isAssessable, lastNoteAt, noteBlocks, unresolvedCount, unresolvedOf } from "../src/staleness.ts";
 import type { ParkedRecord, PullState, StalenessContext } from "../src/staleness.ts";
 
 const CHECKED_AT = new Date("2026-09-08T09:00:00Z");
@@ -791,4 +791,28 @@ test("the count a reader is shown is the count the failure recorded", async () =
     "a timestamp that could not be established adds nothing to the references a reader is shown",
   );
   assert.equal(unresolvedCount("no pull request host is configured, so pull requests could not be looked up"), 0);
+  assert.deepEqual(
+    errors.flatMap((error) => unresolvedOf(error.message) ?? []),
+    [{ kind: "reference", count: 3 }],
+  );
+});
+
+test("a failure names its own kind, so a reader is never told the wrong one", async () => {
+  const { errors } = await assess(
+    aRecord({
+      id: "mw-4",
+      classification: "yours:access",
+      labels: ["needs-access"],
+      description: "npm whoami is a 401, so nothing can be published. Waiting on #141 too.",
+    }),
+    aContext({ idPrefix: "mw", probe: async () => undefined, pullFacts: async () => undefined }),
+  );
+  assert.deepEqual(
+    errors.flatMap((error) => unresolvedOf(error.message) ?? []).sort((a, b) => a.kind.localeCompare(b.kind)),
+    [
+      { kind: "precondition", count: 1 },
+      { kind: "reference", count: 1 },
+    ],
+    "the noun the message builds is the noun the console reads back",
+  );
 });

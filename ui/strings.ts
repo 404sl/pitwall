@@ -179,8 +179,16 @@ export const strings = {
         "Recorded in the snapshot. Closed work is not re-checked, so this is not a claim about the issue as it stands.",
       neverChecked: "Nothing has checked whether this is still true.",
       noEvidence: "Checked; nothing has changed that this check can see.",
-      unresolved: "{count} references could not be checked; they are recorded under Problems.",
-      unresolvedOne: "1 reference could not be checked; it is recorded under Problems.",
+      unresolved: {
+        reference: {
+          one: "1 reference could not be checked; it is recorded under Problems.",
+          many: "{count} references could not be checked; they are recorded under Problems.",
+        },
+        precondition: {
+          one: "1 precondition could not be run; it is recorded under Problems.",
+          many: "{count} preconditions could not be run; they are recorded under Problems.",
+        },
+      },
       method:
         "This check reads the issue's own text: notes recorded after the parking label, issues and pull requests it names, and a short list of testable preconditions. It cannot see anything outside that.",
       evidence: "Evidence",

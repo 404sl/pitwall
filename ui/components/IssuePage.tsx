@@ -268,13 +268,13 @@ function Staleness({ staleness, closed }: { staleness: StalenessView; closed: bo
       {staleness.checked && staleness.evidence.length === 0 ? (
         <p className="pw-empty">{strings.issue.stale.noEvidence}</p>
       ) : null}
-      {staleness.unresolved === 0 ? null : (
-        <p className="pw-empty pw-empty--method">
-          {staleness.unresolved === 1
-            ? strings.issue.stale.unresolvedOne
-            : fill(strings.issue.stale.unresolved, { count: String(staleness.unresolved) })}
+      {staleness.unresolved.map((named) => (
+        <p className="pw-empty pw-empty--method" key={named.kind}>
+          {named.count === 1
+            ? strings.issue.stale.unresolved[named.kind].one
+            : fill(strings.issue.stale.unresolved[named.kind].many, { count: String(named.count) })}
         </p>
-      )}
+      ))}
       <p className="pw-empty pw-empty--method">{strings.issue.stale.method}</p>
     </>
   );

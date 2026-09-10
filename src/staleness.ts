@@ -66,15 +66,39 @@ export function stalenessSource(id: string): string {
   return `${STALENESS_SOURCE} ${id}`;
 }
 
+const UNRESOLVED_VERB = {
+  reference: "checked",
+  precondition: "run",
+} as const;
+
+export type UnresolvedKind = keyof typeof UNRESOLVED_VERB;
+
+export interface Unresolved {
+  kind: UnresolvedKind;
+  count: number;
+}
+
+export const UNRESOLVED_KINDS = Object.keys(UNRESOLVED_VERB) as readonly UnresolvedKind[];
+
+const COULD_NOT = new RegExp(`^\\d+ (${UNRESOLVED_KINDS.join("|")})s? could not be `);
+
 export function unresolvedCount(message: string): number {
   const leading = /^(\d+) /.exec(message);
   return leading === null ? 0 : Number(leading[1]);
 }
 
-function couldNotCheck(count: number, noun: string, verb: string, named: string[]): Failure {
+export function unresolvedOf(message: string): Unresolved | undefined {
+  const named = COULD_NOT.exec(message);
+  return named === null
+    ? undefined
+    : { kind: named[1] as UnresolvedKind, count: unresolvedCount(message) };
+}
+
+function couldNotCheck(kind: UnresolvedKind, named: string[]): Failure {
+  const count = named.length;
   return {
     scope: "issue",
-    message: `${count} ${count === 1 ? noun : `${noun}s`} could not be ${verb}: ${named.join(", ")}`,
+    message: `${count} ${count === 1 ? kind : `${kind}s`} could not be ${UNRESOLVED_VERB[kind]}: ${named.join(", ")}`,
   };
 }
 
@@ -343,7 +367,7 @@ async function referencedPullMerged(
   const failures =
     unresolved.length === 0
       ? []
-      : [couldNotCheck(unresolved.length, "reference", "checked", unresolved.map((entry) => entry.reference.text))];
+      : [couldNotCheck("reference", unresolved.map((entry) => entry.reference.text))];
   return { ran: resolved.length > 0, fired: false, evidence, failures };
 }
 
@@ -390,7 +414,7 @@ async function preconditionNowHolds(
       evidence.push(`the recorded reason rests on \`${precondition.phrase}\`, which still fails`);
     }
   }
-  const failures = unrunnable.length === 0 ? [] : [couldNotCheck(unrunnable.length, "precondition", "run", unrunnable)];
+  const failures = unrunnable.length === 0 ? [] : [couldNotCheck("precondition", unrunnable)];
   return { ran, fired, evidence, failures };
 }
 
