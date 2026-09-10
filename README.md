@@ -119,7 +119,7 @@ collection and closed at this one — and delivers it by running a command you c
 Until you configure one, notices are computed and nothing is sent.
 
 First, `notify` in the workspace's `.pitwall.json`, an array of words whose first is the
-program to run:
+program to run, in a workspace you have listed yourself:
 
 ```json
 {
@@ -128,12 +128,22 @@ program to run:
 }
 ```
 
-A relative path resolves against the workspace root, and the array is handed to the program
-directly rather than to a shell — write `["sh", "-c", "…"]` if you want one. The notice
-arrives as one JSON object on standard input, never on the command line, because it carries
-issue titles and a session ref and a command line is readable by anyone on the machine.
-Exit 0 means delivered. Any other exit means it was not, and what the command wrote on
-standard error becomes the recorded reason.
+`notify` is read only for a workspace named in `roots` in `~/.config/pitwall/config.json`.
+Run Pitwall from a directory whose children are workspaces and it finds them by scanning
+instead, which is enough to read a board and is not enough to run a program: a workspace file
+is committed, so a repository you merely cloned could otherwise name a command that runs on
+your machine at the next `snapshot`. A workspace found by scanning holds its notices and says
+so, naming the file to list it in. `sessionRef` in a workspace file is read on the same
+terms. `PITWALL_SESSION_REF` is not, because the environment of the run is yours.
+
+A relative path with a separator in it, like `script/notify-session.sh`, resolves against the
+workspace root; a bare name with no separator is looked up on `PATH` like any other program.
+The array is handed to the program directly rather than to a shell — write `["sh", "-c", "…"]`
+if you want one. The notice arrives as one JSON object on standard input, never on the command
+line, because it carries issue titles and a session ref and a command line is readable by
+anyone on the machine. Exit 0 means delivered, so read standard input before exiting 0: a
+command that exits 0 without reading is taken at its word. Any other exit means the notice was
+not delivered, and what the command wrote on standard error becomes the recorded reason.
 
 The object carries `issueId`, `title`, `origin` — the `session` that asked and the `ref`
 that addresses it, which is the one to deliver to, because session names are neither unique
@@ -153,7 +163,10 @@ Where that ref is unknown, every notice is held rather than sent, because with n
 compare against any of them might be the collecting session's own work coming back at it. A
 notice that was not delivered — held, refused, or handed to a command that failed — is
 appended to its own issue with the reason, so what did not arrive is readable afterwards
-rather than lost. Silence is not one of the outcomes.
+rather than lost. `snapshot` writes a line to standard error for each of them as well, and
+where the tracker refused the note too — the one case where the reason would otherwise be
+written down nowhere — the notice is reported as an error on the board, beside everything
+else the collection could not do. Silence is not one of the outcomes.
 
 ## How it is put together
 

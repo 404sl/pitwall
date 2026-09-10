@@ -4,6 +4,7 @@ import { realpathSync } from "node:fs";
 import { SCHEMA_VERSION } from "@404sl/pitwall-schema";
 import { diagnose, renderDoctor } from "./doctor.js";
 import { DEFAULT_PORT, HOST, consoleCollector, createConsoleServer, listen, parseServeArgs } from "./serve.js";
+import { undeliveredReport } from "./notify.js";
 import { emitSnapshot } from "./snapshot.js";
 import { readSnapshot, readSnapshotFrom, snapshotPath } from "./state.js";
 import { missingSnapshotMessage, parseStatusArgs, renderStatus, terminalWidth, wantsColor } from "./status.js";
@@ -111,6 +112,9 @@ if (isEntry) {
     emitSnapshot().then(
       (result) => {
         process.stdout.write(`${JSON.stringify(result.snapshot, null, 2)}\n`);
+        for (const line of undeliveredReport(result.delivered)) {
+          process.stderr.write(`pitwall snapshot: ${line}\n`);
+        }
         if (!result.read) {
           process.stderr.write(
             `pitwall snapshot: nothing could be read, so ${snapshotPath()} was left as it was\n`,

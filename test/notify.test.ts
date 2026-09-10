@@ -4,7 +4,9 @@ import { Issue, Project, type Origin, type PullRequest } from "@404sl/pitwall-sc
 import type { ClosedIssue } from "../src/beads.ts";
 import {
   deliver,
+  lostNotices,
   noticesFor,
+  undeliveredReport,
   type Delivery,
   type Noter,
   type Notice,
@@ -218,4 +220,48 @@ test("an issue that was already closed at the previous collection is not announc
     }),
     [],
   );
+});
+
+test("a notice that could not even be recorded on its issue is reported, not swallowed", async () => {
+  const notices = noticesFor({
+    previous: before([open("mw-1")], [PULL]),
+    issues: [],
+    closed: [closed("mw-1", ASKED)],
+  });
+  const { sender } = recorder({ delivered: false, reason: "no session answers to c1796a" });
+  const delivered = await deliver(notices, {
+    sender,
+    note: () => Promise.reject(new Error("bd update mw-1 --append-notes: no beads database found")),
+  });
+  assert.equal(delivered[0]?.error?.source, "mw-1");
+  const reported = undeliveredReport(delivered);
+  assert.equal(reported.length, 1);
+  assert.match(reported[0] ?? "", /mw-1 notice for dev-loop \(c1796a\) was not delivered/);
+  assert.match(reported[0] ?? "", /no session answers to c1796a/);
+  assert.match(reported[0] ?? "", /could not be recorded on the issue either: bd update mw-1/);
+  const lost = lostNotices(delivered);
+  assert.equal(lost.length, 1);
+  assert.equal(lost[0]?.source, "mw-1");
+  assert.equal(lost[0]?.message, reported[0]);
+  assert.equal(lost[0]?.at, delivered[0]?.error?.at);
+});
+
+test("a notice that was held but recorded is reported once, and a delivered one not at all", async () => {
+  const notices = noticesFor({
+    previous: before([open("mw-1"), open("mw-2")]),
+    issues: [],
+    closed: [closed("mw-1", ASKED), closed("mw-2", ALSO_ASKED)],
+  });
+  const { note } = noteRecorder();
+  const held = await deliver([notices[0] as Notice], {
+    sender: () => Promise.resolve({ delivered: false, reason: "PITWALL_SESSION_REF is not set" }),
+    note,
+  });
+  const sent = await deliver([notices[1] as Notice], { sender: recorder().sender, note });
+  assert.deepEqual(lostNotices([...held, ...sent]), []);
+  const reported = undeliveredReport([...held, ...sent]);
+  assert.equal(reported.length, 1);
+  assert.match(reported[0] ?? "", /mw-1 notice for dev-loop \(c1796a\) was not delivered/);
+  assert.match(reported[0] ?? "", /PITWALL_SESSION_REF is not set/);
+  assert.match(reported[0] ?? "", /the reason is recorded on the issue/);
 });

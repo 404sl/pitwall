@@ -12,7 +12,12 @@ import { noteAppender, readIssues, type ClosedIssue, type IssueText } from "./be
 import { KEPT_SOURCE, PARTIAL_SOURCE } from "./board.js";
 import { recordOnce } from "./errors.js";
 import { hasLiveStructuralBlocker, type ClassifyContext } from "./classify.js";
-import { collectProjects, historyLimits, type RootsOptions } from "./config.js";
+import {
+  collectProjects,
+  historyLimits,
+  type ResolvedRoots,
+  type RootsOptions,
+} from "./config.js";
 import { recordSnapshot, type HistoryMetrics } from "./history.js";
 import { deliver, noticesFor, type Delivered, type Noter, type Sender } from "./notify.js";
 import { issueMatcher, readPipeline } from "./pipeline.js";
@@ -291,6 +296,7 @@ interface Assembled {
   snapshot: Snapshot;
   code: number;
   gathered: Gathered[];
+  roots: ResolvedRoots;
 }
 
 async function assemble(options: SnapshotOptions): Promise<Assembled> {
@@ -307,18 +313,21 @@ async function assemble(options: SnapshotOptions): Promise<Assembled> {
     }),
     code: everyProjectFailed(gathered) ? 1 : 0,
     gathered,
+    roots,
   };
 }
 
 async function announce(
   gathered: readonly Gathered[],
   previous: Snapshot | undefined,
+  roots: ResolvedRoots,
   options: SnapshotOptions,
 ): Promise<Delivered[]> {
   const delivered: Delivered[] = [];
+  const trust = { source: roots.source, configPath: roots.configPath };
   for (const entry of gathered) {
     const root = entry.project.root;
-    const sessionRef = options.sessionRef ?? sessionRefOf(root, { env: options.env });
+    const sessionRef = options.sessionRef ?? sessionRefOf(root, { ...trust, env: options.env });
     const notices = noticesFor({
       previous: previous?.projects.find((project) => project.id === entry.project.id),
       issues: entry.project.issues,
@@ -330,7 +339,12 @@ async function announce(
     }
     const sender =
       options.sender ??
-      workspaceSender(root, { env: options.env, timeoutMs: options.timeoutMs, sessionRef });
+      workspaceSender(root, {
+        ...trust,
+        env: options.env,
+        timeoutMs: options.timeoutMs,
+        sessionRef,
+      });
     const note =
       options.note ?? noteAppender(root, { env: options.env, timeoutMs: options.timeoutMs });
     delivered.push(...(await deliver(notices, { sender, note })));
@@ -358,7 +372,7 @@ function withHistory(project: Project, derived: HistoryMetrics | undefined): Pro
 
 export async function emitSnapshot(options: SnapshotOptions = {}): Promise<SnapshotResult> {
   const previous = readSnapshot(options).snapshot;
-  const { snapshot, code, gathered } = await assemble(options);
+  const { snapshot, code, gathered, roots } = await assemble(options);
   if (!readSomething(gathered)) {
     return { snapshot, path: undefined, code, read: false, delivered: [] };
   }
@@ -382,6 +396,6 @@ export async function emitSnapshot(options: SnapshotOptions = {}): Promise<Snaps
     path,
     code,
     read: true,
-    delivered: await announce(gathered, previous, options),
+    delivered: await announce(gathered, previous, roots, options),
   };
 }

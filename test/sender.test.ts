@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execPath } from "node:process";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { Origin } from "@404sl/pitwall-schema";
@@ -13,6 +13,8 @@ import {
   sessionRefOf,
   workspaceSender,
 } from "../src/sender.ts";
+
+const LISTED = { source: "config", configPath: "/nowhere/config.json" } as const;
 
 const ASKED: Origin = { session: "dev-loop", ref: "c1796a" };
 
@@ -87,16 +89,19 @@ test("a command that never answers is given up on", async () => {
 
 test(`${SESSION_REF_VAR} names the collecting session, the workspace file is the fallback`, () => {
   const configured = root({ [SESSION_REF_FIELD]: "from-file" });
-  assert.equal(sessionRefOf(configured, { env: {} }), "from-file");
-  assert.equal(sessionRefOf(configured, { env: { [SESSION_REF_VAR]: "from-env" } }), "from-env");
-  assert.equal(sessionRefOf(configured, { env: { [SESSION_REF_VAR]: "" } }), "from-file");
-  assert.equal(sessionRefOf(root({}), { env: {} }), undefined);
-  assert.equal(sessionRefOf(root(undefined), { env: {} }), undefined);
+  assert.equal(sessionRefOf(configured, { ...LISTED, env: {} }), "from-file");
+  assert.equal(
+    sessionRefOf(configured, { ...LISTED, env: { [SESSION_REF_VAR]: "from-env" } }),
+    "from-env",
+  );
+  assert.equal(sessionRefOf(configured, { ...LISTED, env: { [SESSION_REF_VAR]: "" } }), "from-file");
+  assert.equal(sessionRefOf(root({}), { ...LISTED, env: {} }), undefined);
+  assert.equal(sessionRefOf(root(undefined), { ...LISTED, env: {} }), undefined);
 });
 
 test("with no ref for the collecting session every notice is held and says why", async () => {
   const dir = root({ notify: ["true"] });
-  const delivery = await workspaceSender(dir, { env: {} })(NOTICE);
+  const delivery = await workspaceSender(dir, { ...LISTED, env: {} })(NOTICE);
   assert.equal(delivery.delivered, false);
   const reason = delivery.delivered ? "" : delivery.reason;
   assert.match(reason, new RegExp(`${SESSION_REF_VAR} is not set`));
@@ -105,14 +110,14 @@ test("with no ref for the collecting session every notice is held and says why",
 
 test("a workspace that configures no command holds its notices and names the field", async () => {
   const dir = root({ idPrefix: "mw" });
-  const delivery = await workspaceSender(dir, { env: {}, sessionRef: "9f31bd" })(NOTICE);
+  const delivery = await workspaceSender(dir, { ...LISTED, env: {}, sessionRef: "9f31bd" })(NOTICE);
   assert.equal(delivery.delivered, false);
   assert.match(delivery.delivered ? "" : delivery.reason, /no notify command is configured/);
 });
 
 test("a notify field that is not a command is refused with a reason", async () => {
   const dir = root({ notify: "say-something" });
-  const delivery = await workspaceSender(dir, { env: {}, sessionRef: "9f31bd" })(NOTICE);
+  const delivery = await workspaceSender(dir, { ...LISTED, env: {}, sessionRef: "9f31bd" })(NOTICE);
   assert.equal(delivery.delivered, false);
   assert.match(delivery.delivered ? "" : delivery.reason, /is not a command/);
 });
@@ -130,7 +135,44 @@ test("a configured notifier runs from the workspace root so a relative path reso
     join(dir, ".pitwall.json"),
     JSON.stringify({ notify: [execPath, "script/notify.mjs"] }),
   );
-  const delivery = await workspaceSender(dir, { env: {}, sessionRef: "9f31bd" })(NOTICE);
+  const delivery = await workspaceSender(dir, { ...LISTED, env: {}, sessionRef: "9f31bd" })(NOTICE);
   assert.deepEqual(delivery, { delivered: true });
   assert.equal(JSON.parse(readFileSync(log, "utf8")).issueId, "mw-1");
+});
+
+test("a workspace nobody listed never runs the command its own file names", async () => {
+  const dir = root(undefined);
+  const log = join(dir, "ran.txt");
+  writeFileSync(
+    join(dir, "notify.mjs"),
+    `import { writeFileSync } from "node:fs";
+     writeFileSync(${JSON.stringify(log)}, "ran");`,
+  );
+  writeFileSync(
+    join(dir, ".pitwall.json"),
+    JSON.stringify({ notify: [execPath, join(dir, "notify.mjs")] }),
+  );
+  const scanned = { source: "scan", configPath: "/home/someone/.config/pitwall/config.json" } as const;
+  const delivery = await workspaceSender(dir, { ...scanned, env: {}, sessionRef: "9f31bd" })(NOTICE);
+  assert.equal(delivery.delivered, false);
+  const reason = delivery.delivered ? "" : delivery.reason;
+  assert.match(reason, /was found by scanning for workspaces/);
+  assert.match(reason, new RegExp(scanned.configPath));
+  assert.equal(existsSync(log), false);
+});
+
+test("a root of unstated provenance is treated as scanned, not as listed", async () => {
+  const dir = root({ notify: ["true"] });
+  const delivery = await workspaceSender(dir, { env: {}, sessionRef: "9f31bd" })(NOTICE);
+  assert.equal(delivery.delivered, false);
+  assert.match(delivery.delivered ? "" : delivery.reason, /was found by scanning for workspaces/);
+});
+
+test(`a scanned workspace cannot name the collecting session either, only ${SESSION_REF_VAR} can`, () => {
+  const dir = root({ [SESSION_REF_FIELD]: "from-file" });
+  assert.equal(sessionRefOf(dir, { source: "scan", env: {} }), undefined);
+  assert.equal(
+    sessionRefOf(dir, { source: "scan", env: { [SESSION_REF_VAR]: "from-env" } }),
+    "from-env",
+  );
 });

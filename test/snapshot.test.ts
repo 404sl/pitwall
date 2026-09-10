@@ -381,6 +381,62 @@ test("with no ref for this session a notice is computed, held and recorded on th
   assert.match(recorded, /mw-1\.1 Completion notice/);
 });
 
+test("a workspace found by scanning cannot run the command its own file names", async () => {
+  const place = withConfig("{}");
+  rmSync(place.configPath);
+  const root = join(place.home, "work", "scanned");
+  mkdirSync(root, { recursive: true });
+  cpSync(join(TRACKER, "bd-output"), join(root, "bd-output"), { recursive: true });
+  const log = join(root, "delivered.jsonl");
+  writeFileSync(
+    join(root, "notify.mjs"),
+    `import { appendFileSync, readFileSync } from "node:fs";
+     appendFileSync(${JSON.stringify(log)}, readFileSync(0, "utf8"));`,
+  );
+  writeFileSync(
+    join(root, ".pitwall.json"),
+    JSON.stringify({ idPrefix: "mw", notify: [execPath, join(root, "notify.mjs")] }),
+  );
+  const notes = join(root, "notes.log");
+  const env = { ...place.env, [SESSION_REF_VAR]: "9f31bd" };
+  await emitSnapshot({ ...options(place), env });
+  const result = await emitSnapshot({
+    ...options(place),
+    env: { ...env, BD_LIST_FIXTURE: "landed", BD_NOTES_LOG: notes },
+  });
+  assert.deepEqual(
+    result.delivered.map((entry) => [entry.notice.issueId, entry.delivery.delivered]),
+    [
+      ["mw-1", false],
+      ["mw-1.1", false],
+    ],
+  );
+  assert.equal(existsSync(log), false);
+  const held = result.delivered[0]?.delivery;
+  const reason = held === undefined || held.delivered ? "" : held.reason;
+  assert.match(reason, /was found by scanning for workspaces/);
+  assert.match(reason, new RegExp(place.configPath));
+  assert.match(readFileSync(notes, "utf8"), /was found by scanning for workspaces/);
+});
+
+test("a notice the tracker would not record reaches the board as an error", async () => {
+  const place = withConfig("{}");
+  notifyingRoot(place);
+  await emitSnapshot({ ...options(place), env: place.env });
+  const collect = consoleCollector({
+    ...options(place),
+    env: { ...place.env, BD_LIST_FIXTURE: "landed" },
+  });
+  const { errors } = await collect();
+  const lost = errors.filter((error) => /notice for mw-planning-session/.test(error.message));
+  assert.deepEqual(
+    lost.map((error) => error.source),
+    ["mw-1", "mw-1.1"],
+  );
+  assert.match(lost[0]?.message ?? "", /was not delivered/);
+  assert.match(lost[0]?.message ?? "", /could not be recorded on the issue either/);
+});
+
 function pipelineRoot(remote: string): string {
   const root = mkdtempSync(join(tmpdir(), "pitwall-pipeline-snapshot-"));
   cpSync(join(TRACKER, "bd-output"), join(root, "bd-output"), { recursive: true });

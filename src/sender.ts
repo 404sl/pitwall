@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { WORKSPACE_FILES, workspaceFile } from "./autofix.js";
+import { configPath, type RootsSource } from "./config.js";
 import type { Delivery, Sender } from "./notify.js";
 
 export const SESSION_REF_VAR = "PITWALL_SESSION_REF";
@@ -15,6 +16,8 @@ export interface TransportOptions {
   env?: Record<string, string | undefined>;
   timeoutMs?: number;
   sessionRef?: string;
+  source?: RootsSource;
+  configPath?: string;
 }
 
 export interface CommandOptions {
@@ -39,10 +42,21 @@ function workspaceOf(root: string): Record<string, unknown> {
   return parsed as Record<string, unknown>;
 }
 
+function unlisted(root: string, options: TransportOptions): string | undefined {
+  if (options.source === "config") {
+    return undefined;
+  }
+  const listed = options.configPath ?? configPath({ env: options.env });
+  return `${resolve(root)} was found by scanning for workspaces, not listed in ${listed}, so nothing its workspace file names is run here`;
+}
+
 export function sessionRefOf(root: string, options: TransportOptions = {}): string | undefined {
   const named = (options.env ?? process.env)[SESSION_REF_VAR];
   if (typeof named === "string" && named !== "") {
     return named;
+  }
+  if (unlisted(root, options) !== undefined) {
+    return undefined;
   }
   let configured: unknown;
   try {
@@ -147,6 +161,10 @@ function holding(reason: string): Sender {
 }
 
 export function workspaceSender(root: string, options: TransportOptions = {}): Sender {
+  const scanned = unlisted(root, options);
+  if (scanned !== undefined) {
+    return holding(`${scanned}, and every notice for it is held`);
+  }
   if (options.sessionRef === undefined || options.sessionRef === "") {
     const where = `${SESSION_REF_VAR} is not set and the workspace file in ${resolve(root)} names no ${SESSION_REF_FIELD}`;
     return holding(

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -140,4 +140,50 @@ test("a reader that closes the pipe first leaves quietly rather than reporting E
   const { code, stderr } = await readerThatLeaves(["status", "--from", snapshotFile()]);
   assert.doesNotMatch(stderr, /EPIPE/, stderr);
   assert.equal(code, 0);
+});
+
+const FIXTURES = fileURLToPath(new URL("./fixtures", import.meta.url));
+
+function collectingEnv(): Record<string, string> {
+  const home = mkdtempSync(join(tmpdir(), "pitwall-cli-notices-"));
+  const root = join(home, "tracker");
+  const configPath = join(home, "config.json");
+  mkdirSync(root, { recursive: true });
+  cpSync(join(FIXTURES, "bd", "tracker", "bd-output"), join(root, "bd-output"), {
+    recursive: true,
+  });
+  writeFileSync(join(root, ".pitwall.json"), JSON.stringify({ idPrefix: "mw" }));
+  writeFileSync(configPath, JSON.stringify({ roots: [root] }));
+  return {
+    PATH: `${join(FIXTURES, "bd", "ok")}:/usr/bin:/bin`,
+    HOME: home,
+    XDG_STATE_HOME: join(home, "state"),
+    PITWALL_CONFIG: configPath,
+  };
+}
+
+function snapshotRun(env: Record<string, string>): Promise<{ code: number | null; stderr: string }> {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [TSX, CLI, "snapshot"], {
+      env,
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    let stderr = "";
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk: string) => {
+      stderr += chunk;
+    });
+    child.on("close", (code) => resolve({ code, stderr }));
+  });
+}
+
+test("a notice that snapshot could neither deliver nor record is reported on standard error", async () => {
+  const env = collectingEnv();
+  const first = await snapshotRun(env);
+  assert.equal(first.code, 0, first.stderr);
+  const { code, stderr } = await snapshotRun({ ...env, BD_LIST_FIXTURE: "landed" });
+  assert.equal(code, 0, stderr);
+  assert.match(stderr, /pitwall snapshot: mw-1 notice for mw-planning-session \(c1796a\)/);
+  assert.match(stderr, /was not delivered/);
+  assert.match(stderr, /could not be recorded on the issue either/);
 });

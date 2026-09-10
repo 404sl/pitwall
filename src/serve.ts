@@ -7,6 +7,7 @@ import type { CollectionError, Issue, Project, Snapshot } from "@404sl/pitwall-s
 import { REFRESH_SOURCE, stalenessErrors } from "./board.js";
 import { collectionFailed, readIssue } from "./beads.js";
 import { collectionError } from "./errors.js";
+import { lostNotices } from "./notify.js";
 import { createUpdateCheck, type UpdateCheck } from "./registry.js";
 import { emitSnapshot, type SnapshotOptions } from "./snapshot.js";
 import { readSnapshot, type StateOptions, type StoredSnapshot } from "./state.js";
@@ -41,10 +42,14 @@ export interface ServeOptions extends StateOptions {
 
 export function consoleCollector(options: SnapshotOptions = {}): Collector {
   return async () => {
-    const { snapshot, read } = await emitSnapshot(options);
+    const { snapshot, read, delivered } = await emitSnapshot(options);
     return {
       read,
-      errors: [...snapshot.errors, ...snapshot.projects.flatMap((project) => project.errors)],
+      errors: [
+        ...snapshot.errors,
+        ...snapshot.projects.flatMap((project) => project.errors),
+        ...lostNotices(delivered),
+      ],
     };
   };
 }
