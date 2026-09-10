@@ -202,13 +202,15 @@ const LAND = {
 
 const VERSION = {
   type: 'object',
-  required: ['status', 'masterVersion', 'branchVersion', 'touchesPlugin', 'notes'],
+  required: ['status', 'masterVersion', 'branchVersion', 'touchesPlugin', 'labelled', 'open', 'notes'],
   additionalProperties: false,
   properties: {
     status: { enum: ['read', 'no_manifest', 'unreadable'], description: "'read' only when both git show calls printed a manifest you could copy a version string out of" },
     masterVersion: { type: 'string', description: `the "version" string in origin/master's ${PLUGIN_MANIFEST}, verbatim. An empty string when you could not read one.` },
     branchVersion: { type: 'string', description: `the "version" string in the branch's ${PLUGIN_MANIFEST}, verbatim. An empty string when you could not read one.` },
     touchesPlugin: { type: 'boolean', description: 'true when the branch changes any file under plugins/ or .claude-plugin/ - that is what the marketplace serves' },
+    labelled: { type: 'boolean', description: `true when gh pr view printed ${LABEL} among the pull request's labels just now` },
+    open: { type: 'boolean', description: "true when gh pr view printed state OPEN and isDraft false - a closed, merged or draft pull request is not one this run is being asked to merge" },
     notes: { type: 'string' }
   }
 }
@@ -508,11 +510,12 @@ function versionVerdict(read) {
   if (!read) {
     return { why: 'version_unreadable', detail: 'the version step answered nothing, and a number nobody read is not a number that is ahead' }
   }
+  if (read.labelled === false || read.open === false) return null
   if (read.status === 'no_manifest') return null
   if (read.status !== 'read') {
     return {
       why: 'version_unreadable',
-      detail: `origin/master's ${PLUGIN_MANIFEST} could not be read - ${trimmed(read.notes) || `the step reported only '${read.status}'`}`
+      detail: `the version step could not read what it needs - ${trimmed(read.notes) || `it reported only '${read.status}'`}`
     }
   }
   if (!read.touchesPlugin) return null
@@ -526,6 +529,12 @@ function versionVerdict(read) {
     }
   }
   if (!ahead) {
+    if (read.labelled !== true || read.open !== true) {
+      return {
+        why: 'version_unreadable',
+        detail: `the branch declares devloop plugin version ${branch} and origin/master holds ${master}, which is not strictly greater - but the step did not report whether the pull request still carries ${LABEL} and is still open, and a refusal that un-queues a pull request must not act on a queue state nobody read`
+      }
+    }
     return {
       why: 'version_not_ahead',
       detail: `the branch declares devloop plugin version ${branch} and origin/master holds ${master}, which is not strictly greater. Bump ${PLUGIN_MANIFEST} and ${MARKETPLACE_MANIFEST} above ${master} and push again.`
@@ -552,6 +561,7 @@ number read once at the top of the run is stale by the second merge.
   cd ${path} && git show origin/master:${PLUGIN_MANIFEST}
   cd ${path} && git show origin/${pr.branch}:${PLUGIN_MANIFEST}
   cd ${path} && git diff --name-only origin/master...origin/${pr.branch}
+  gh pr view ${pr.number} --repo ${pr.slug} --json labels,state,isDraft
 
 git show prints a file as it is at a ref and touches nothing. Do not check anything out, do not
 switch, do not reset, and do not stash.
@@ -580,9 +590,16 @@ output means 'no_manifest'. Do not reach for 'no_manifest' because some other co
 do not report 'unreadable' for a repository that simply has no plugin in it - most of them do not,
 and the pull request is refused either way on a verdict that was never about the version.
 
-touchesPlugin is true when that last command lists ANY path under plugins/ or .claude-plugin/.
+touchesPlugin is true when the git diff lists ANY path under plugins/ or .claude-plugin/.
 Those are the files the marketplace serves, so a branch changing one of them ships under whatever
 number it declares. It is false when the diff lists none of them.
+
+labelled and open come from gh pr view, and they say whether this pull request is still the thing
+the run was asked to merge. labelled is true when ${LABEL} is among the labels it printed. open is
+true when state is OPEN and isDraft is false. Report what that command printed and nothing else -
+if it printed no answer at all, report status 'unreadable' and say so in notes, because a refusal
+decided here takes a pull request out of the queue and reopens somebody's tracker issue, and
+neither is safe to do to a pull request that is no longer in the queue to refuse.
 
 ${LAW}`
 }
@@ -1350,6 +1367,12 @@ try {
         stopped.push({ ...pr, why: stale.why, detail: stale.detail })
         log(`STOPPED ${keyOf(pr)} - ${stale.why}\n    ${stale.detail}`)
         continue
+      }
+      if (declared && (declared.labelled === false || declared.open === false)) {
+        log(`${keyOf(pr)} - the version step reports it is no longer the pull request this run was asked to merge (${LABEL} ${declared.labelled === false ? 'is gone' : 'still on'}, ${declared.open === false ? 'closed, merged or draft' : 'open'}), so no version verdict is taken on it and land-one.sh decides in shell`)
+      }
+      if (declared && declared.status === 'read' && !declared.touchesPlugin) {
+        log(`${keyOf(pr)} - declares devloop plugin version ${trimmed(declared.branchVersion) || '(none)'} against origin/master's ${trimmed(declared.masterVersion) || '(none)'}, and its diff lists no path under plugins/ or .claude-plugin/, so the versions are not compared`)
       }
       if (declared.status === 'no_manifest') {
         log(`${keyOf(pr)} - origin/master carries no ${PLUGIN_MANIFEST}, so this repository has no published plugin version to walk backwards`)

@@ -554,6 +554,9 @@ async function runTrain(only, suffix, depth) {
       )
       return { stopped: stale.why, notes: stale.detail }
     }
+    if (declared && declared.status === 'read' && !declared.touchesPlugin) {
+      log(`#${built.trainPr} declares devloop plugin version ${trimmed(declared.branchVersion) || '(none)'} against origin/master's ${trimmed(declared.masterVersion) || '(none)'}, and its diff lists no path under plugins/ or .claude-plugin/, so the versions are not compared`)
+    }
 
     const merged = await agent(mergePrompt(built.trainPr, built.trainBranch, included), {
       schema: MERGED, phase: 'Merge', label: `merge:#${built.trainPr}`,

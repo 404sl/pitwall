@@ -26,6 +26,8 @@ type Declared = {
   masterVersion: string;
   branchVersion: string;
   touchesPlugin: boolean;
+  labelled?: boolean;
+  open?: boolean;
   notes: string;
 };
 
@@ -35,6 +37,8 @@ function declared(over: Partial<Declared> = {}): Declared {
     masterVersion: "0.1.21",
     branchVersion: "0.1.22",
     touchesPlugin: true,
+    labelled: true,
+    open: true,
     notes: "",
     ...over,
   };
@@ -46,12 +50,12 @@ type Result = {
   skipped: { number?: number; why?: string }[];
 };
 
-function lander(reply: Declared | null) {
+function lander(reply: Declared | null, land: unknown = { status: "merged", mergeSha: SHA, masterGreen: true, notes: "" }) {
   return runScript("land.js", ARGS, (call: Call, n: number) => {
     if (n === 1) return { status: "taken", token: "lander-1788964650-29574", holder: "lander-1788964650-29574" };
     if (call.label.startsWith("survey")) return n === 2 ? { prs: [PR] } : { prs: [] };
     if (call.label.startsWith("version:")) return reply;
-    if (call.label.startsWith("land:")) return { status: "merged", mergeSha: SHA, masterGreen: true, notes: "" };
+    if (call.label.startsWith("land:")) return land;
     return { status: "released" };
   }) as { calls: Call[]; logs: string[]; done: Promise<Result> };
 }
@@ -121,7 +125,7 @@ test("land.js compares the numbers rather than the strings, so 0.1.9 does not ou
 });
 
 test("land.js lands a branch that changes nothing the plugin ships, whatever the version says", async () => {
-  const { calls, done } = lander(declared({ masterVersion: "0.1.21", branchVersion: "0.1.21", touchesPlugin: false }));
+  const { calls, logs, done } = lander(declared({ masterVersion: "0.1.21", branchVersion: "0.1.21", touchesPlugin: false }));
   const out = await done;
 
   assert.equal(
@@ -130,6 +134,10 @@ test("land.js lands a branch that changes nothing the plugin ships, whatever the
     `a branch touching no plugin file was refused, which would block every change to src/ and test/. Steps: ${labels(calls)}`,
   );
   assert.equal(out.landed.length, 1);
+  assert.ok(
+    logs.some((l) => l.includes("0.1.21") && /plugins\/ or \.claude-plugin\//.test(l)),
+    `the one route past this guard is a wrong touchesPlugin, and the skip left nothing in the run log to notice it by: ${logs.join("\n")}`,
+  );
 });
 
 test("land.js refuses rather than merges when master's version cannot be read", async () => {
@@ -292,4 +300,88 @@ test("the version step is told to decide 'no manifest' from a probe, not from a 
     );
     assert.match(step.prompt, /ls-tree printed NOTHING/);
   }
+});
+
+test("land.js does not un-queue a pull request whose label was pulled back while it waited for its turn", async () => {
+  const { calls, done } = lander(
+    declared({ masterVersion: "0.1.21", branchVersion: "0.1.17", labelled: false }),
+    { status: "blocked", notes: "land-one.sh exit 7 - 404sl/pitwall#80 no longer carries lane-verified" },
+  );
+  const out = await done;
+
+  assert.equal(
+    calls.filter((c) => c.label.startsWith("retire:")).length,
+    0,
+    `a pull request a lane had pulled back for rework was un-queued on its version, which appends a ` +
+      `finding to an issue that lane holds in_progress and reopens it for a second lane. Steps: ${labels(calls)}`,
+  );
+  assert.equal(
+    calls.filter((c) => c.label.startsWith("land:")).length,
+    1,
+    `the version step decided it instead of falling through to land-one.sh, whose shell check is the ` +
+      `authority on whether the label is still there: ${labels(calls)}`,
+  );
+  assert.deepEqual(
+    out.stopped.filter((s) => s.why === "version_not_ahead"),
+    [],
+    `refused on a number it was no longer in the queue to declare: ${JSON.stringify(out.stopped)}`,
+  );
+  assert.ok(
+    out.skipped.some((s) => s.number === 80 && /still labelled/.test(s.why || "")),
+    `it was neither deferred nor left alone: ${JSON.stringify({ stopped: out.stopped, skipped: out.skipped })}`,
+  );
+});
+
+test("land.js does not un-queue a closed or draft pull request on its version either", async () => {
+  const { calls, done } = lander(
+    declared({ masterVersion: "0.1.21", branchVersion: "0.1.17", open: false }),
+    { status: "blocked", notes: "land-one.sh exit 7" },
+  );
+  const out = await done;
+
+  assert.equal(calls.filter((c) => c.label.startsWith("retire:")).length, 0, `a closed pull request was un-queued: ${labels(calls)}`);
+  assert.deepEqual(out.stopped.filter((s) => s.why === "version_not_ahead"), [], JSON.stringify(out.stopped));
+});
+
+test("land.js refuses but keeps queued a branch whose version is behind when the queue state was not read", async () => {
+  const reply = declared({ masterVersion: "0.1.21", branchVersion: "0.1.17" });
+  delete reply.labelled;
+  delete reply.open;
+  const { calls, done } = lander(reply);
+  const out = await done;
+
+  assert.equal(calls.filter((c) => c.label.startsWith("land:")).length, 0, `the merge ran anyway: ${labels(calls)}`);
+  assert.equal(
+    calls.filter((c) => c.label.startsWith("retire:")).length,
+    0,
+    `a step that reported no queue state un-queued a pull request anyway: ${labels(calls)}`,
+  );
+  assert.equal(out.stopped[0]?.why, "version_unreadable");
+  assert.match(out.stopped[0]?.detail || "", /0\.1\.17/);
+  assert.match(out.stopped[0]?.detail || "", /lane-verified/);
+});
+
+test("the land.js version step reads the label and the state of the pull request it is about to merge", async () => {
+  const { calls, done } = lander(declared());
+  await done;
+
+  const step = calls.find((c) => c.label.startsWith("version:"));
+  assert.ok(step, `no version step ran: ${labels(calls)}`);
+  assert.match(step.prompt, /gh pr view 80 --repo 404sl\/pitwall --json labels,state,isDraft/);
+  assert.deepEqual(
+    (step.schema?.required || []).filter((f: string) => f === "labelled" || f === "open"),
+    ["labelled", "open"],
+    "the queue state is optional in the schema, so a step that skips it takes a refusal with it",
+  );
+});
+
+test("land-train.js logs the versions it did not compare when the train ships no plugin file", async () => {
+  const { calls, logs, done } = train(declared({ masterVersion: "0.1.21", branchVersion: "0.1.21", touchesPlugin: false }));
+  await done;
+
+  assert.equal(calls.filter((c) => c.label.startsWith("merge:")).length, 1, `a train touching no plugin file was refused: ${labels(calls)}`);
+  assert.ok(
+    logs.some((l) => l.includes("0.1.21") && /plugins\/ or \.claude-plugin\//.test(l)),
+    `the skip left nothing in the run log: ${logs.join("\n")}`,
+  );
 });
