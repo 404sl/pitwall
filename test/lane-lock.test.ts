@@ -469,6 +469,12 @@ test("a rework's release step is one command and carries no backtick", async () 
   await done;
   const prompt = reworkRelease(calls).prompt;
   assert.equal(prompt.includes("`"), false, "a backtick in the prompt closes its template literal early");
+  assert.equal(
+    calls[0]?.prompt.includes("`"),
+    false,
+    "a backtick in the brief that takes the lane lock closes its template literal early - the file " +
+      "stays valid JavaScript and becomes a different program, so node --check and CI both pass",
+  );
   assert.equal((prompt.match(/release-lane\.sh/g) || []).length, 1, "the release command is written more than once");
   assert.equal(/\brmdir\b|\brm -/.test(prompt), false, "the release step is told to remove something by hand");
 });
