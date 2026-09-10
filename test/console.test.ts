@@ -4,7 +4,9 @@ import { register } from "node:module";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { Classification, SCHEMA_VERSION, isYours, parseSnapshot } from "@404sl/pitwall-schema";
+import type { CollectionError } from "@404sl/pitwall-schema";
 import {
+  PARTIAL_SOURCE,
   REFRESH_SOURCE,
   SNAPSHOT_STALE_AFTER_MS,
   blockedSummary,
@@ -33,13 +35,13 @@ function headerMarkup(
   projectCount: number,
   generatedAt: string,
   update?: string,
-  refreshFailed?: boolean,
+  refreshFailure?: CollectionError,
 ): string {
   const realNow = Date.now;
   Date.now = () => HEADER_NOW;
   try {
     return renderToStaticMarkup(
-      createElement(Header, { projectCount, generatedAt, version: VERSION, update, refreshFailed }),
+      createElement(Header, { projectCount, generatedAt, version: VERSION, update, refreshFailure }),
     );
   } finally {
     Date.now = realNow;
@@ -548,7 +550,11 @@ test("the rendered header stays grey below the staleness threshold and goes loud
 });
 
 test("a refresh that has just failed reads differently from a snapshot that is merely stale", () => {
-  const failed = headerMarkup(3, new Date(HEADER_NOW - 2 * 60_000).toISOString(), undefined, true);
+  const failed = headerMarkup(3, new Date(HEADER_NOW - 2 * 60_000).toISOString(), undefined, {
+    source: REFRESH_SOURCE,
+    message: "No project could be read.",
+    at: GENERATED_AT,
+  });
   assert.match(failed, /<header class="pw-header pw-header--stale">/);
   assert.match(failed, /<span class="pw-header__age">2m old<\/span>/);
   assert.match(failed, /<span aria-hidden="true"> · refresh failed<\/span>/);
@@ -561,6 +567,18 @@ test("a refresh that has just failed reads differently from a snapshot that is m
   const stale = headerAged(SNAPSHOT_STALE_AFTER_MS);
   assert.doesNotMatch(stale, /refresh failed/);
   assert.match(stale, /<span aria-hidden="true"> · stale<\/span>/);
+});
+
+test("a partly collected board is flagged without telling anybody it stopped updating", () => {
+  const message = "1 of 2 projects could not be read: brochure (issues kept from the last snapshot).";
+  const partial = headerMarkup(2, new Date(HEADER_NOW - 2 * 60_000).toISOString(), undefined, {
+    source: PARTIAL_SOURCE,
+    message,
+    at: GENERATED_AT,
+  });
+  assert.match(partial, /<span aria-hidden="true"> · refresh failed<\/span>/);
+  assert.match(partial, new RegExp(`<span class="pw-sr">${message.replace(/[.()]/g, "\\$&")}</span>`));
+  assert.doesNotMatch(partial, /is not being updated/);
 });
 
 test("a board carrying a re-collection failure flags it and lists it under problems", () => {

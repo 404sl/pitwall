@@ -219,12 +219,11 @@ function keeping(project: Project, held: Project, at: string, day: Date): Projec
   });
 }
 
-type Fate = "kept" | "missing" | "degraded";
+type Fate = "kept" | "missing";
 
 const FATES: Record<Fate, string> = {
   kept: "issues kept from the last snapshot",
   missing: "issues missing from this board",
-  degraded: "issues read, the rest of the project was not",
 };
 
 interface Fated {
@@ -246,8 +245,8 @@ function keptBoard(
   previous: Snapshot | undefined,
   gathered: readonly Gathered[],
 ): Snapshot {
-  const unread = new Map(
-    gathered.filter((entry) => entry.unreadable).map((entry) => [entry.project.id, entry]),
+  const unread = new Set(
+    gathered.filter((entry) => !entry.issuesRead).map((entry) => entry.project.id),
   );
   if (unread.size === 0) {
     return snapshot;
@@ -256,12 +255,7 @@ function keptBoard(
   const held = new Map((previous?.projects ?? []).map((project) => [project.id, project]));
   const fated: Fated[] = [];
   const projects = snapshot.projects.map((project) => {
-    const entry = unread.get(project.id);
-    if (entry === undefined) {
-      return project;
-    }
-    if (entry.issuesRead) {
-      fated.push({ name: project.name, fate: "degraded" });
+    if (!unread.has(project.id)) {
       return project;
     }
     const before = held.get(project.id);

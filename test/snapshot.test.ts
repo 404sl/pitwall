@@ -728,9 +728,21 @@ test("a project whose issues were read keeps them even though the rest of it fai
     [join(file, `${id}-slots`)],
     "the project reports the lane read it could not do",
   );
+  const board = buildBoard(stored);
   assert.equal(
-    buildBoard(stored).refreshFailure?.message,
-    `1 of 2 projects could not be read: ${id} (issues read, the rest of the project was not).`,
+    board.refreshFailure,
+    undefined,
+    "a project whose tracker answered is current, and must not flag the board",
+  );
+  assert.equal(
+    stored.errors.some((error) => error.source === PARTIAL_SOURCE),
+    false,
+    "a lane that could not be read is not a collection that could not be read",
+  );
+  assert.deepEqual(
+    board.ready.filter((row) => row.projectId === id).map((row) => row.id),
+    ["mw-5"],
+    "the issues the tracker answered with are on the board as read now",
   );
 });
 
@@ -762,8 +774,9 @@ test("a tracker that answered with nothing is not a tracker that could not be re
     "nothing is carried into a project whose tracker answered",
   );
   assert.equal(
-    buildBoard(stored).refreshFailure?.message,
-    `1 of 2 projects could not be read: ${id} (issues read, the rest of the project was not).`,
+    buildBoard(stored).refreshFailure,
+    undefined,
+    "every tracker answered, so nothing on this board is stale",
   );
 });
 
