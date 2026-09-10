@@ -91,6 +91,29 @@ is a lane, whichever issue it belongs to; a lander is not. When a task in flight
 attributed the answer is `UNKNOWN`, and the gate announces that it cannot tell rather than going
 quiet - silence on this line means idle, and it has to keep meaning that.
 
+**A `RUNNING` verdict held that same gate shut and printed nothing, which is the same blindness
+one step over.** A task output file is created empty at dispatch and written when the run ends, so
+a run that never writes one reads `RUNNING` for as long as the file sits there. Of 20 land runs on
+one machine 2 did exactly that, still "in flight" by this scan four hours after recording a
+terminal result. Nothing consulted an age, so such a task shuts the READY TO LAND event
+permanently and silently, and `triage-scan.sh`'s own LANDER IDLE finding is dropped
+unconditionally, so there is no second path by which the supervisor would hear about it.
+
+The verdict does not soften, and that is deliberate: a lane waiting on a CI run writes nothing for
+the forty minutes `slot.sh --gc` already allows for, so reading silence as "no lanes running"
+would restore the false dead this release exists to remove. Only the silence goes.
+`lane-running.sh` now says how long the newest write in the running workflow's own directory has
+been silent - its journal and its agent transcripts together, because the journal only moves at
+phase boundaries and a healthy fix phase would otherwise read as silent - whenever that is past
+`--stale-minutes`, default 20, which is the window `lanes.sh` uses under the same name.
+`queue-watch.sh` announces it in the shape of the cannot-tell event above, deduplicated per ready
+set and held behind the merge lock, naming the task, the workflow and the silence. The gate stays
+shut in every case; what changes is that it no longer stays shut without saying so.
+
+A task whose output file is EMPTY in one scanned directory also no longer counts as in flight when
+another scanned directory holds a WRITTEN copy of the same id. Emptiness was judged per file and
+the first copy seen won, so a written copy could lose to an empty one.
+
 **`lanes.sh` was answering about whichever workspace the default prefix names.** It built the
 registry path from `LOCK_PREFIX` falling back to `devloop` instead of this workspace's
 `lockPrefix`, and reported "no slot registry at /tmp/devloop-slots - no lanes have ever been

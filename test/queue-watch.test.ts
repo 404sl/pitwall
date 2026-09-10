@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -72,18 +72,26 @@ function workspace(flight: Flight): Workspace {
   return { root, wf, tasks };
 }
 
-function lanesBusy(space: Workspace): string {
+function shellFunction(name: string): string {
   const source = readFileSync(join(SKILL, "queue-watch.sh"), "utf8");
-  const start = source.indexOf("lanes_busy() {");
-  assert.notEqual(start, -1, "lanes_busy moved - update this test rather than deleting it");
+  const start = source.indexOf(`${name}() {`);
+  assert.notEqual(start, -1, `${name} moved - update this test rather than deleting it`);
   const end = source.indexOf("\n}\n", start);
-  assert.notEqual(end, -1, "could not find the end of lanes_busy");
-  const driver = [
-    `skill=${JSON.stringify(SKILL)}`,
-    source.slice(start, end + 2),
-    "lanes_busy",
-    "",
-  ].join("\n");
+  assert.notEqual(end, -1, `could not find the end of ${name}`);
+  return source.slice(start, end + 2);
+}
+
+function silence(space: Workspace, minutesAgo: number): void {
+  const when = new Date(Date.now() - minutesAgo * 60_000);
+  utimesSync(
+    join(space.wf, "session-1", "subagents", "workflows", "wf_aaa", "journal.jsonl"),
+    when,
+    when,
+  );
+}
+
+function run(space: Workspace, lines: readonly string[]): string {
+  const driver = [...lines, ""].join("\n");
   const ran = spawnSync("bash", ["-c", driver], {
     encoding: "utf8",
     cwd: space.root,
@@ -95,6 +103,25 @@ function lanesBusy(space: Workspace): string {
     },
   });
   return `${ran.stdout ?? ""}`.trim();
+}
+
+function lanesBusy(space: Workspace): string {
+  return run(space, [`skill=${JSON.stringify(SKILL)}`, shellFunction("lanes_busy"), "lanes_busy"]);
+}
+
+function landGate(space: Workspace, ready: string): string {
+  return run(space, [
+    `skill=${JSON.stringify(SKILL)}`,
+    `PFX=pitwall-queue-watch-test-${process.pid}`,
+    'prev_ready=""',
+    'prev_blind=""',
+    'prev_silent=""',
+    shellFunction("lanes_busy"),
+    shellFunction("silent_lanes"),
+    shellFunction("lander_running"),
+    shellFunction("land_gate"),
+    `land_gate ${JSON.stringify(ready)} "$(lanes_busy)"`,
+  ]);
 }
 
 test("the supervisor's land gate is not 0 while a lane is in flight", () => {
@@ -111,4 +138,29 @@ test("the supervisor's land gate is 0 when only a lander is in flight", () => {
 
 test("the supervisor's land gate is 0 when every run has written its result", () => {
   assert.equal(lanesBusy(workspace("nothing")), "0");
+});
+
+test("the land gate says so when the lane holding it shut has gone silent", () => {
+  const space = workspace("lane");
+  silence(space, 720);
+  const out = landGate(space, "site#61");
+  assert.match(out, /gone silent - site#61/);
+  assert.match(out, /journal silent 7[0-9][0-9]m/);
+  assert.match(out, /w111/);
+  assert.match(out, /wf_aaa/);
+  assert.match(out, /gate stays shut/);
+});
+
+test("the land gate stays quiet while the lane holding it shut is still writing", () => {
+  assert.equal(landGate(workspace("lane"), "site#61"), "");
+});
+
+test("the land gate announces work ready to land when no lane is running", () => {
+  assert.match(landGate(workspace("nothing"), "site#61"), /^QUEUE: ready to land, no lanes running - site#61$/);
+});
+
+test("the land gate announces that it cannot tell whether a lane is running", () => {
+  const out = landGate(workspace("unattributable"), "site#61");
+  assert.match(out, /cannot be established - site#61/);
+  assert.match(out, /not 'no lanes running'/);
 });

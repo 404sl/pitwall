@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -324,4 +324,53 @@ test("--any --quiet prints one machine-readable verdict", () => {
   assert.equal(running.out.trim(), "RUNNING");
   const idle = askAny(workspace([{ task: "w111", result: "done\n" }]), ["--quiet"]);
   assert.equal(idle.out.trim(), "NOT-RUNNING");
+});
+
+function silence(space: Workspace, run: string, minutesAgo: number): void {
+  const when = new Date(Date.now() - minutesAgo * 60_000);
+  utimesSync(join(space.wf, "session-1", "subagents", "workflows", run, "journal.jsonl"), when, when);
+}
+
+test("a RUNNING lane whose journal stopped moving is still RUNNING, and says for how long", () => {
+  const space = workspace([{ task: "w111", run: "wf_aaa", labels: ["fix:pitwall-90b"] }]);
+  silence(space, "wf_aaa", 720);
+  const { status, out } = ask(space, "pitwall-90b");
+  assert.equal(status, 0, out);
+  assert.match(out, /^RUNNING/);
+  assert.match(out, /journal silent 7[0-9][0-9]m/);
+  assert.match(out, /w111/);
+  assert.match(out, /wf_aaa/);
+});
+
+test("--any reports that silence too, so nothing holds the land gate shut without saying so", () => {
+  const space = workspace([{ task: "w111", run: "wf_aaa", labels: ["fix:pitwall-90b"] }]);
+  silence(space, "wf_aaa", 720);
+  const { status, out } = askAny(space);
+  assert.equal(status, 0, out);
+  assert.match(out, /^RUNNING/);
+  assert.match(out, /journal silent 7[0-9][0-9]m/);
+});
+
+test("a lane still writing to its journal is not reported as silent", () => {
+  const space = workspace([{ task: "w111", run: "wf_aaa", labels: ["fix:pitwall-90b"] }]);
+  const { status, out } = askAny(space);
+  assert.equal(status, 0, out);
+  assert.doesNotMatch(out, /journal silent/);
+});
+
+test("--stale-minutes is the window the silence is measured against", () => {
+  const space = workspace([{ task: "w111", run: "wf_aaa", labels: ["fix:pitwall-90b"] }]);
+  silence(space, "wf_aaa", 30);
+  assert.match(askAny(space).out, /journal silent 30m/);
+  assert.doesNotMatch(askAny(space, ["--stale-minutes", "45"]).out, /journal silent/);
+});
+
+test("a result written in one task directory cancels an empty copy of it in another", () => {
+  const space = workspace([{ task: "w111", run: "wf_aaa", labels: ["fix:pitwall-90b"] }]);
+  const second = join(space.root, "tasks-2");
+  mkdirSync(second, { recursive: true });
+  writeFileSync(join(second, "w111.output"), "pitwall-90b landed\n");
+  const { status, out } = ask(space, "pitwall-90b", [], `${space.tasks} ${second}`);
+  assert.equal(status, 1, out);
+  assert.match(out, /^NOT-RUNNING/);
 });

@@ -6,8 +6,8 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 usage() {
   cat <<'EOF'
-lane-running.sh <issue-id> [--quiet]
-lane-running.sh --any [--quiet]
+lane-running.sh <issue-id> [--quiet] [--stale-minutes N]
+lane-running.sh --any [--quiet] [--stale-minutes N]
 
 Is a lane for this issue running RIGHT NOW? Answered from the only signal that can
 say so: the harness creates a task output file empty at dispatch and writes it when
@@ -31,6 +31,14 @@ and never the slot registry: a claim proves a lane started, is missed at both en
 and a lane dispatched by hand never reaches it at all. Any in-flight workflow whose
 journal labels a phase is a lane, whichever issue it belongs to; a lander is not.
 
+A RUNNING whose journal has stopped being written to is STILL RUNNING, and the line
+says how long it has been silent. A lane waiting on a CI run writes nothing for half an
+hour at a time, so silence is not death and the verdict must not soften - but a task
+dispatched and then orphaned never writes its output file either, and that reads RUNNING
+for as long as the file sits there. The age is what lets a caller say so out loud instead
+of waiting on it forever. --stale-minutes sets the window, default 20, which is the one
+lanes.sh uses under the same name.
+
   RUNNING       a task for this issue is in flight - exit 0
   NOT-RUNNING   nothing in flight is this issue's - exit 1
   UNKNOWN       the scan could not establish it - exit 2, never read as dead
@@ -45,10 +53,12 @@ EOF
 ID=""
 QUIET=0
 ANY=0
+STALE=20
 while [ $# -gt 0 ]; do
   case "$1" in
     --quiet) QUIET=1; shift ;;
     --any) ANY=1; shift ;;
+    --stale-minutes) STALE="${2:-20}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     -*) echo "unknown argument: $1" >&2; usage >&2; exit 6 ;;
     *)
@@ -129,26 +139,54 @@ journal_for() {
   return 1
 }
 
+NOW=$(date +%s)
+
+mtime_of() {
+  stat -c %Y "$1" 2>/dev/null && return 0
+  stat -f %m "$1" 2>/dev/null
+}
+
+silent_minutes() {
+  local journal="$1" dir newest=0 m f
+  [ -n "$journal" ] || return 1
+  dir="$(dirname "$journal")"
+  for f in "$dir"/*.jsonl; do
+    [ -f "$f" ] || continue
+    m="$(mtime_of "$f")"
+    case "$m" in ''|*[!0-9]*) continue ;; esac
+    [ "$m" -gt "$newest" ] && newest="$m"
+  done
+  [ "$newest" = 0 ] && return 1
+  printf '%s' $(( (NOW - newest) / 60 ))
+}
+
 scanned=0
 finished=0
-inflight=""
+written=""
+empty=""
 
 for dir in $(task_dirs); do
   [ -d "$dir" ] || continue
   scanned=$((scanned + 1))
   for f in "$dir"/*.output; do
     [ -e "$f" ] || continue
+    task="$(basename "$f" .output)"
     if [ -s "$f" ]; then
       if [ "$ANY" = 0 ] && grep -Eq "$MENTIONS" "$f" 2>/dev/null; then
         finished=$((finished + 1))
       fi
+      case " $written " in *" $task "*) ;; *) written="$written $task" ;; esac
       continue
     fi
-    task="$(basename "$f" .output)"
     case "$task" in w*) ;; *) continue ;; esac
-    case " $inflight " in *" $task "*) continue ;; esac
-    inflight="$inflight $task"
+    case " $empty " in *" $task "*) ;; *) empty="$empty $task" ;; esac
   done
+done
+
+inflight=""
+for task in $empty; do
+  case " $written " in *" $task "*) continue ;; esac
+  inflight="$inflight $task"
 done
 
 records=""
@@ -211,14 +249,27 @@ done
 
 if [ -n "$running" ]; then
   if [ "$QUIET" = 1 ]; then echo "RUNNING"; exit 0; fi
+  silent=0
   for pair in $running; do
+    journal="$(journal_for "${pair#*:}")" || journal=""
+    age="$(silent_minutes "$journal")" || age=""
+    silence=""
+    if [ -n "$age" ] && [ "$age" -gt "$STALE" ]; then
+      silence=", journal silent ${age}m"
+      silent=1
+    fi
     if [ "$ANY" = 1 ]; then
-      journal="$(journal_for "${pair#*:}")" || journal=""
-      echo "RUNNING  $(lane_ids "$journal") - task ${pair%%:*}, workflow ${pair#*:}, result not written."
+      echo "RUNNING  $(lane_ids "$journal") - task ${pair%%:*}, workflow ${pair#*:}, result not written${silence}."
     else
-      echo "RUNNING  ${ID} - task ${pair%%:*}, workflow ${pair#*:}, result not written."
+      echo "RUNNING  ${ID} - task ${pair%%:*}, workflow ${pair#*:}, result not written${silence}."
     fi
   done
+  if [ "$silent" = 1 ]; then
+    echo "  A journal that has stopped moving is not a lane that has stopped - one waiting on a CI"
+    echo "  run writes nothing for half an hour - so the verdict stays RUNNING. It can also be a"
+    echo "  task that was dispatched and orphaned, which reads this way forever. Read it, and only"
+    echo "  then kill-lane.sh it."
+  fi
   if [ "$ANY" = 1 ]; then
     echo "  A lane still writing is a passenger a train started now would leave behind."
   else
