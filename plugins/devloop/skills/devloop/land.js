@@ -510,7 +510,6 @@ function versionVerdict(read) {
   if (!read) {
     return { why: 'version_unreadable', detail: 'the version step answered nothing, and a number nobody read is not a number that is ahead' }
   }
-  if (read.labelled === false || read.open === false) return null
   if (read.status === 'no_manifest') return null
   if (read.status !== 'read') {
     return {
@@ -518,6 +517,7 @@ function versionVerdict(read) {
       detail: `the version step could not read what it needs - ${trimmed(read.notes) || `it reported only '${read.status}'`}`
     }
   }
+  if (read.labelled === false || read.open === false) return null
   if (!read.touchesPlugin) return null
   const branch = trimmed(read.branchVersion)
   const master = trimmed(read.masterVersion)
@@ -568,17 +568,17 @@ switch, do not reset, and do not stash.
 
 REPORT, DO NOT JUDGE. Whether this may merge is decided from what you report, not by you:
 
-  status 'read'         FETCHED printed, ls-tree printed the path, and both git show calls printed
-                        a manifest. Copy the "version" string out of each into masterVersion and
-                        branchVersion, verbatim - do not normalise them, pad them, or correct one
-                        to look like the other.
+  status 'read'         FETCHED printed, ls-tree printed the path, both git show calls printed a
+                        manifest, and gh pr view printed an answer. Copy the "version" string out
+                        of each manifest into masterVersion and branchVersion, verbatim - do not
+                        normalise them, pad them, or correct one to look like the other.
   status 'no_manifest'  ls-tree printed NOTHING. ${PLUGIN_MANIFEST} is not in master's tree, so
                         this repository ships no plugin and has no published number to walk
                         backwards. Skip the two git show calls - there is nothing there to read,
                         and their error is the expected result rather than a problem.
   status 'unreadable'   FETCHED did not print, or ls-tree printed the path and a git show then
-                        failed anyway, or the manifest it printed carries no "version" string.
-                        Say which in notes.
+                        failed anyway, or the manifest it printed carries no "version" string, or
+                        gh pr view printed no answer. Say which in notes.
 
 AN UNREADABLE MASTER IS NOT A CLEAR ROAD. If the fetch did not work, or the manifest is in the
 tree and you still cannot get a number out of it, report 'unreadable' and say why. Guessing a

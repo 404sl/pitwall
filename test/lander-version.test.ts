@@ -385,3 +385,21 @@ test("land-train.js logs the versions it did not compare when the train ships no
     `the skip left nothing in the run log: ${logs.join("\n")}`,
   );
 });
+
+test("land.js refuses an unreadable master even when the step also reports the label gone", async () => {
+  const { calls, done } = lander(
+    declared({ status: "unreadable", masterVersion: "", labelled: false, open: false, notes: "git fetch origin exited 128" }),
+    { status: "merged", mergeSha: SHA, masterGreen: true, notes: "" },
+  );
+  const out = await done;
+
+  assert.equal(
+    calls.filter((c) => c.label.startsWith("land:")).length,
+    0,
+    `a step that could read neither the manifest nor the pull request let the merge through, and ` +
+      `land-one.sh checks the label and the checks but never a version: ${labels(calls)}`,
+  );
+  assert.equal(calls.filter((c) => c.label.startsWith("retire:")).length, 0, `it was un-queued on ignorance: ${labels(calls)}`);
+  assert.equal(out.stopped[0]?.why, "version_unreadable");
+  assert.match(out.stopped[0]?.detail || "", /git fetch origin exited 128/);
+});

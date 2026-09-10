@@ -62,13 +62,15 @@ moment of the merge.
   uses closes the release pull request and deletes its branch, so a refusal does not leave a branch
   on the remote that reads like open work. The pull requests it carried keep their labels and go back
   to the queue.
-- **Twenty-three tests hold it**, stubbing the agent for both landers: equal, lower, string-ordered
+- **Twenty-four tests hold it**, stubbing the agent for both landers: equal, lower, string-ordered
   (`0.1.9` against `0.1.21`), strictly greater, plugin-untouched, unreadable, unparseable, a step
   that answers nothing, a repository with no manifest, two pull requests in one run where the second
   is refused against the version the first just published, and which of the two refusals un-queues.
-  Three more cover the queue state a refusal rests on - a label pulled back, a closed or draft pull
-  request, and a step that reported neither - and two read the run log, since a skipped comparison
-  that says nothing is indistinguishable from one that never happened. Two read the prompt itself,
+  Four more cover the queue state a refusal rests on - a label pulled back, a closed or draft pull
+  request, a step that reported neither, and a step that could read neither the manifest nor the
+  pull request, which refuses rather than deferring because `land-one.sh` checks the label and the
+  checks and never a version - and two read the run log, since a skipped comparison that says
+  nothing is indistinguishable from one that never happened. Two read the prompt itself,
   because the difference between "no plugin here" and "could not read it" is the one thing a stub
   cannot check.
 
