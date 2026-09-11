@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.1.35
+
+**The compliance gate could not pass a commit in this repository, because this repository's own
+directory layout matches its leakage and authorship patterns.** The manifest directory and the
+plugin's own source tree are named after the pipeline, so naming any file a plugin change touched
+tripped the bare-noun leakage pattern, and naming either manifest tripped the authorship pattern
+on the vendor name inside the dot-directory. A commit message that did the ordinary thing - say
+which files it changed - therefore could not pass, and the only compliant message was one that
+refused to name its own subject. It refused a green pull request on exactly three lines, all
+paths, and the run could not be rescued by rework because amending a pushed merge commit is
+refused to a lane by design.
+
+The reasoning that the repository had a convention of avoiding those literals was checked and is
+false: across the last 40 commits on `master` the bare noun appears 8 times and the manifest
+directory 3 times. The owner had also already settled the authorship half on 2026-09-09 - the rule
+is about AUTHORSHIP, trailers and generated-with footers, and does not forbid the literal when it
+is a path or a filename.
+
+The fix is the neutralising `sed`, not the patterns: widening either pattern would weaken a check
+that has caught real violations. Three path forms are now neutralised before the test, the same
+shape the script already used for `CLAUDE.md` and `AGENTS.md`, and anchored as paths so they
+cannot launder prose. A bare pipeline noun outside a path is still caught - that IS the leakage
+the pattern is for.
+
+Five tests, one failing before: a message naming all three manifest and skill paths is compliant,
+and a generated-with footer, an authorship trailer, a scratch checkout path and a bare pipeline
+noun in prose each still leave nothing labelled.
+
 ## 0.1.33
 
 **A lane waited two hours on a pull request whose checks GitHub was never going to schedule.**
