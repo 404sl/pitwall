@@ -34,6 +34,11 @@ interface Second {
   rollup: string;
   body: string;
   listFails?: boolean;
+  omitPath?: boolean;
+  editFails?: boolean;
+  labelMissing?: boolean;
+  labelCreateFails?: boolean;
+  labelListFails?: boolean;
 }
 
 function git(dir: string, ...args: string[]): string {
@@ -47,21 +52,22 @@ function executable(path: string, body: string): void {
   chmodSync(path, 0o755);
 }
 
-function harness(seededNotes: string, second?: Second): Harness {
+function harness(seededNotes: string, second?: Second, detached?: boolean): Harness {
   const root = mkdtempSync(join(tmpdir(), "pitwall-handoff-"));
-  const repo = join(root, "repo");
+  const repo = detached ? join(mkdtempSync(join(tmpdir(), "pitwall-lane-")), "repo") : join(root, "repo");
   const bin = join(root, "bin");
   mkdirSync(join(root, ".beads"));
   mkdirSync(repo);
   mkdirSync(bin);
 
   const config = join(root, ".pitwall.json");
-  const repos = second
-    ? {
-        site: { path: "repo", slug: "acme/thing" },
-        docs: { path: "other", slug: "acme/other" },
-      }
-    : {};
+  const repos: Record<string, Record<string, string>> = {
+    site: { path: "repo", slug: "acme/thing" },
+  };
+  if (second) {
+    if (second.omitPath) repos["other"] = { slug: "acme/other" };
+    else repos["docs"] = { path: "other", slug: "acme/other" };
+  }
   writeFileSync(
     config,
     JSON.stringify({ root, lockPrefix: `pwhandoff${process.pid}`, repos }),
@@ -116,17 +122,39 @@ function harness(seededNotes: string, second?: Second): Harness {
       'case "$*" in',
       ...(second
         ? [
-            `  "pr list --repo acme/thing"*) printf '[{"number":14}]\\n' ;;`,
-            second.listFails
-              ? `  "pr list --repo acme/other"*) echo "gh: could not read acme/other" >&2; exit 1 ;;`
-              : `  "pr list --repo acme/other"*) printf '%s\\n' '${second.list}' ;;`,
+            `  "pr list --repo acme/other"*)${
+              second.listFails
+                ? ` echo "gh: could not read acme/other" >&2; exit 1 ;;`
+                : ` printf '%s\\n' '${second.list}' ;;`
+            }`,
             `  *"--repo acme/other"*statusCheckRollup*) printf '{"statusCheckRollup":%s,"headRefOid":"%s"}\\n' '${second.rollup}' '${otherHead}' ;;`,
             `  *"--repo acme/other --json title,body"*) printf '%s\\n' '${second.body}' ;;`,
+            `  "label list --repo acme/other"*)${
+              second.labelListFails
+                ? ` echo "gh: HTTP 403 on acme/other labels" >&2; exit 1 ;;`
+                : second.labelMissing
+                  ? ` printf '[]\\n' ;;`
+                  : ` printf '[{"name":"lane-verified"}]\\n' ;;`
+            }`,
+            `  "label create"*"--repo acme/other"*)${
+              second.labelCreateFails
+                ? ` echo "gh: HTTP 403 creating a label on acme/other" >&2; exit 1 ;;`
+                : ` : ;;`
+            }`,
+            ...(second.editFails
+              ? [
+                  `  "pr edit 7 --repo acme/other"*) echo "gh: could not add label: HTTP 403" >&2; exit 1 ;;`,
+                  `  *"--repo acme/other"*"--json labels"*) printf '{"labels":[]}\\n' ;;`,
+                ]
+              : []),
           ]
         : []),
+      `  "pr list --repo acme/thing"*) printf '[{"number":14}]\\n' ;;`,
       `  *statusCheckRollup*) printf '{"statusCheckRollup":[{"name":"ci","conclusion":"SUCCESS"}],"headRefOid":"${head}"}\\n' ;;`,
       `  *"--json title,body"*) printf '{"title":"Fix the thing","body":"It was broken. Now it is not."}\\n' ;;`,
       `  *"--json labels"*) printf '{"labels":[{"name":"lane-verified"}]}\\n' ;;`,
+      `  "label list"*) printf '[{"name":"lane-verified"}]\\n' ;;`,
+      `  "label create"*) : ;;`,
       "  *\"pr edit\"*) : ;;",
       '  *) echo "gh stub: unhandled $*" >&2; exit 1 ;;',
       "esac",
@@ -168,7 +196,12 @@ interface Ran {
   calls: string;
 }
 
-function handoff(box: Harness, args: string[], record: boolean): Ran {
+function handoff(
+  box: Harness,
+  args: string[],
+  record: boolean,
+  env: Record<string, string> = {},
+): Ran {
   const ran = spawnSync("bash", [SCRIPT, ...args], {
     encoding: "utf8",
     env: {
@@ -178,6 +211,7 @@ function handoff(box: Harness, args: string[], record: boolean): Ran {
       BEADS_DIR: "",
       BD_NOTES: box.notesFile,
       BD_RECORD: record ? "1" : "0",
+      ...env,
     },
   });
   let calls = "";
@@ -296,7 +330,7 @@ test("a repository whose open pull requests cannot be read is refused, not read 
   const box = harness("", { list: "[]", rollup: READY, body: CLEAN, listFails: true });
   const ran = handoff(box, [...required(box), "--issue", "acme-1", "--note-file", box.notePath], true);
 
-  assert.equal(ran.status, 6, ran.stdout + ran.stderr);
+  assert.equal(ran.status, 7, ran.stdout + ran.stderr);
   assert.match(ran.stderr, /could not list the open pull requests of acme\/other/);
   assert.equal(ran.labelled, false, "the pull request was labelled on an unreadable survey");
 });
@@ -309,4 +343,96 @@ test("a repository the config names with no pull request on the branch is not la
   assert.match(ran.stdout, /handed off: acme\/thing#14/);
   assert.doesNotMatch(ran.stdout, /also labelled/);
   assert.doesNotMatch(ran.calls, /pr edit \d+ --repo acme\/other/);
+});
+
+test("a sibling that cannot be given the label leaves NOTHING labelled", () => {
+  const box = harness("", {
+    list: '[{"number":7}]',
+    rollup: READY,
+    body: CLEAN,
+    labelMissing: true,
+    labelCreateFails: true,
+  });
+  const ran = handoff(box, [...required(box), "--issue", "acme-1", "--note-file", box.notePath], true);
+
+  assert.equal(ran.status, 7, ran.stdout + ran.stderr);
+  assert.match(ran.stderr, /acme\/other has no lane-verified label and one could not be created/);
+  assert.match(ran.stderr, /gh said: gh: HTTP 403 creating a label on acme\/other/);
+  assert.equal(ran.labelled, false, "a pull request was labelled before the set could all carry it");
+});
+
+test("a sibling whose labels cannot be read leaves NOTHING labelled", () => {
+  const box = harness("", {
+    list: '[{"number":7}]',
+    rollup: READY,
+    body: CLEAN,
+    labelListFails: true,
+  });
+  const ran = handoff(box, [...required(box), "--issue", "acme-1", "--note-file", box.notePath], true);
+
+  assert.equal(ran.status, 7, ran.stdout + ran.stderr);
+  assert.match(ran.stderr, /could not read the labels of acme\/other/);
+  assert.equal(ran.labelled, false, "a pull request was labelled on an unreadable label list");
+});
+
+test("a label missing from a sibling is created before any pull request is labelled", () => {
+  const box = harness("", { list: '[{"number":7}]', rollup: READY, body: CLEAN, labelMissing: true });
+  const ran = handoff(box, [...required(box), "--issue", "acme-1", "--note-file", box.notePath], true);
+
+  assert.equal(ran.status, 0, ran.stdout + ran.stderr);
+  assert.match(ran.stdout, /created the lane-verified label in acme\/other/);
+  assert.ok(
+    ran.calls.indexOf("label create") < ran.calls.indexOf("pr edit"),
+    `the label was created after the first pull request was labelled:\n${ran.calls}`,
+  );
+});
+
+test("a label that will not stick on a sibling names the pull requests that DO carry it", () => {
+  const box = harness("", { list: '[{"number":7}]', rollup: READY, body: CLEAN, editFails: true });
+  const ran = handoff(box, [...required(box), "--issue", "acme-1", "--note-file", box.notePath], true);
+
+  assert.equal(ran.status, 8, ran.stdout + ran.stderr);
+  assert.match(ran.stdout, /half-labelled: the label did not stick on acme\/other#7/);
+  assert.match(ran.stdout, /gh said: gh: could not add label: HTTP 403/);
+  assert.match(ran.stdout, /CARRYING lane-verified now: acme\/thing#14/);
+  assert.match(ran.stdout, /NOT carrying it: acme\/other#7/);
+  assert.match(ran.stdout, /RE-RUN this command/);
+  assert.doesNotMatch(ran.stdout, /^handed off: /m);
+});
+
+test("a handoff that cannot find the workspace config refuses instead of labelling the one it was told about", () => {
+  const box = harness("", { list: '[{"number":7}]', rollup: READY, body: CLEAN }, true);
+  const ran = handoff(
+    box,
+    [...required(box), "--issue", "acme-1", "--note-file", box.notePath],
+    true,
+    { PITWALL_CONFIG: "", DEVLOOP_CONFIG: "" },
+  );
+
+  assert.equal(ran.status, 7, ran.stdout + ran.stderr);
+  assert.match(ran.stderr, /the workspace config could not be read/);
+  assert.match(ran.stderr, /no \.pitwall\.json or \.autofix\.json found/);
+  assert.equal(ran.labelled, false, "the named pull request was labelled with the set unknown");
+});
+
+test("a workspace config naming no repositories refuses instead of labelling the one it was told about", () => {
+  const box = harness("", { list: '[{"number":7}]', rollup: READY, body: CLEAN });
+  writeFileSync(
+    box.config,
+    JSON.stringify({ root: box.root, lockPrefix: `pwhandoff${process.pid}`, repos: {} }),
+  );
+  const ran = handoff(box, [...required(box), "--issue", "acme-1", "--note-file", box.notePath], true);
+
+  assert.equal(ran.status, 7, ran.stdout + ran.stderr);
+  assert.match(ran.stderr, /names no repositories/);
+  assert.equal(ran.labelled, false, "the named pull request was labelled with the set unknown");
+});
+
+test("a configured repository with no path of its own is read under its name", () => {
+  const box = harness("", { list: '[{"number":7}]', rollup: READY, body: CLEAN, omitPath: true });
+  const ran = handoff(box, [...required(box), "--issue", "acme-1", "--note-file", box.notePath], true);
+
+  assert.equal(ran.status, 0, ran.stdout + ran.stderr);
+  assert.match(ran.stdout, /also labelled lane-verified on lane\/x: acme\/other#7/);
+  assert.match(ran.calls, /pr edit 7 --repo acme\/other/);
 });

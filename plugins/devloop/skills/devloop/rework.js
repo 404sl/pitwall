@@ -410,14 +410,26 @@ WHEN IT IS GREEN, hand off with the script rather than by hand:
 It reads the title, body and commit messages back from GitHub and git, runs the compliance check
 over them, refuses to label anything whose rollup is empty or stale, applies lane-verified, reads
 the label back, removes the worktree, appends your tracker note with --append-notes, and drops
-the lane lock last.
+the lane lock last. It does that for EVERY open pull request whose head is this branch across the
+repositories the workspace config names, not only the one you pass - so run it once, not once per
+repository.
 
-Exit 2 means non-compliant and NOTHING was labelled: it prints the offending lines, you judge
-them, you fix the text, you re-run. A product or vendor name that is the subject of the change is
-fine and the script cannot tell the difference - that judgement is yours.
+Exit 2 means non-compliant and NOTHING was labelled anywhere: it prints the offending lines
+against the pull request they came from, you judge them, you fix the text, you re-run. A product
+or vendor name that is the subject of the change is fine and the script cannot tell the difference
+- that judgement is yours. Exit 4 is the same promise for a pull request that is not green.
 
 Exit 5 means the label IS on and the worktree is gone, but the tracker note could not be
 confirmed. Do not re-run it - repair only the note, the way its message says.
+
+Exit 7 is NOT bad arguments: the set of pull requests on the branch could not be established -
+the workspace config could not be read, or a repository's pull requests or labels would not list,
+or the label could not be created in one of them. Nothing was labelled anywhere. Fix what it names
+and re-run it; labelling the half you know about by hand is the failure it is refusing to cause.
+
+Exit 8 means labelling began and stopped part-way, and it prints which pull requests carry the
+label and which do not. Adding a label is idempotent and it stops before the worktree and the
+note, so re-run it once the cause it quotes is gone. Never remove a label to tidy that up.
 
 THE TRACKER NOTE must say the branch was brought up to master, name the files that were resolved,
 and say what was kept from each side. Append it, never replace: the notes field has no history and

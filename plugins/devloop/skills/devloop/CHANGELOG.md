@@ -24,13 +24,39 @@ stayed green.
   labels nothing anywhere, so exit 2 and exit 4 are now assertions about the whole branch.
 - **A repository whose pull requests cannot be listed is a refusal, not an empty answer.** The
   same rule the body read already followed, for the reason the release train's own notes give:
-  an empty list must not be able to hide work that went nowhere. A configured repository with no
-  slug, and a config naming no repositories at all, are reported on stdout rather than passed over
-  in silence.
+  an empty list must not be able to hide work that went nowhere. Anything that leaves the set of
+  pull requests on the branch unknown refuses with nothing labelled - a config that cannot be
+  read or names no repositories, a repository whose slug cannot be found, a checkout that is not
+  there or has no `origin/<branch>`.
 - **The worktree sweep follows the same set.** Collapsing two invocations into one would otherwise
   have left the second repository's worktree checked out on the branch, which is what the
   lander's branch deletion trips on. The refusal to remove a main checkout is applied per
   repository.
+- **The label is proved to exist in every repository before the first pull request is labelled.**
+  `--add-label` fails where the label is absent, and labelling a set one pull request at a time
+  means the first succeeding and the second failing leaves exactly the orphan this release is
+  about: one half mergeable, the other invisible to the lander. The label cannot be taken off
+  again to repair that - a labelled pull request belongs to the lander, which may already be
+  mid-attempt holding the merge lock - so every repository in the set is asked for its labels and
+  given the label if it has none, and one that cannot carry it refuses the whole handoff with
+  nothing labelled. `gh label list` is asked with `--search` and `--limit`, because its default
+  first thirty labels make a label further down the list look absent.
+- **Labelling that stops part-way anyway says which pull requests carry the label**, under its own
+  exit code rather than as a bare "the label did not stick", and gh's reason is no longer
+  discarded. Adding a label is idempotent and the handoff stops before the worktree removal and
+  the tracker note, so the remedy is to fix what gh reported and re-run - never to label the
+  remainder by hand, and never to take a label off.
+- **A repository configured without a `path` is read under its own name**, which is what
+  `config.sh --check` has always blessed. It resolved to the workspace root instead, so every
+  handoff in such a workspace failed on a missing `origin/<branch>` - and had that root been a
+  checkout carrying the branch, compliance would have been graded against the wrong repository's
+  commit messages.
+- **Two new exit codes rather than one overloaded one.** 6 is bad arguments again; 7 is a set of
+  pull requests that could not be established, with nothing labelled; 8 is labelling that began
+  and stopped. A lane reads what a code means from the prose in `task.js` and `rework.js`, and
+  both now describe 7 and 8 and what to do about them: a survey failure reported as "bad
+  arguments" leads a lane to do the handoff by hand, which skips the compliance gate, and
+  `task.js` already records that having happened.
 - This closes the first half of the family only. The release train acting on one repository per
   run, and being unable to report that it ignored the others, is a different file and a separate
   issue.

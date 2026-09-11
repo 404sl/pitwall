@@ -31,7 +31,15 @@
 #                    failing check). Nothing was labelled anywhere.
 #   5  note-unconfirmed  labelled and cleaned up, but the tracker note could not be confirmed.
 #                    Do not re-run - repair the note only.
-#   6  usage, or a repository's pull requests could not be read at all
+#   6  usage         bad arguments. Nothing was read and nothing was labelled.
+#   7  not-surveyed  the set of pull requests on the branch could not be established, or the
+#                    label could not be prepared in one of the repositories holding them, or
+#                    one of their texts could not be read. Nothing was labelled anywhere.
+#                    Fix what it names, then re-run.
+#   8  half-labelled labelling began and could not be finished. It prints which pull requests
+#                    carry the label and which do not. Adding a label is idempotent and this
+#                    exits before the worktree removal and the tracker note, so re-run it once
+#                    the cause is gone rather than labelling the rest by hand.
 
 set -u
 
@@ -185,7 +193,7 @@ check_one() {
     echo "lane-handoff.sh: read an EMPTY body for $_slug#$_pr - refusing to report compliance." >&2
     echo "                 gh may have failed, the token may be expired, or the pull request" >&2
     echo "                 may not exist. An empty read is not a clean read." >&2
-    return 6
+    return 7
   fi
   msgs=$(git -C "$_path" log "origin/master..origin/${BRANCH}" --format=%B 2>/dev/null)
   trailers=$(git -C "$_path" log "origin/master..origin/${BRANCH}" --format='%an <%ae>%n%(trailers)' 2>/dev/null)
@@ -232,34 +240,73 @@ print(('BAD:'+','.join(bad) if bad else 'GREEN')+'|'+(d.get('headRefOid') or '')
   return 0
 }
 
-CONFIGURED=$(bash "$SKILL_DIR/config.sh" repos 2>/dev/null | python3 -c "
+# A path MAY BE OMITTED and then it is the repository's key, which is what config.sh's own
+# --check validator blesses. Defaulting it to the empty string instead resolved every such
+# repository to the workspace ROOT: the -d test below passes, the origin/<branch> check then
+# fails, and every handoff in that workspace hard-fails. Worse than the exit - had the root
+# been a checkout carrying the branch, compliance would have been graded against the wrong
+# repository's commit messages.
+cfg_err_file=$(mktemp "${TMPDIR:-/tmp}/lane-handoff-cfg.XXXXXX")
+CONFIGURED=$(bash "$SKILL_DIR/config.sh" repos 2>"$cfg_err_file" | python3 -c "
 import json,sys
 try: repos=json.load(sys.stdin)
 except Exception: raise SystemExit(1)
 if not isinstance(repos,dict): raise SystemExit(1)
 for name in sorted(repos):
     r=repos[name] or {}
-    print('%s|%s|%s' % (name, r.get('path') or '', r.get('slug') or ''))
+    print('%s|%s|%s' % (name, r.get('path') or name, r.get('slug') or ''))
 " 2>/dev/null)
+CFG_CODE=$?
+CFG_ERR=$(cat "$cfg_err_file")
+rm -f "$cfg_err_file"
 
 TRIPLES="${REPO_PATH}${TAB}${SLUG}${TAB}${PR}"
 SEEN="${SLUG}#${PR}"
 SWEPT_LIST=""
 SWEPT_PATHS=""
 
+# AN UNENUMERABLE CONFIG IS A REFUSAL, NOT A WARNING. This used to print "check the other
+# repositories by hand" and carry on labelling the one pull request it was told about, which is
+# exactly the defect this script was changed to remove - and the remedy it printed is the one
+# the issue names as the trap, because a supervisor reading two repositories per ticket by hand
+# is the cost that made this worth fixing. It was inconsistent as well: ONE repository that
+# could not be listed refused with nothing labelled while ALL of them unreadable - strictly less
+# information - passed at exit 0. config.sh finds the config by walking up from the working
+# directory, and this script cd's into --repo-path first, so a handoff run from a lane worktree
+# outside the workspace reaches this path rather than a theoretical one.
+if [ "$CFG_CODE" != 0 ]; then
+  echo "lane-handoff.sh: the workspace config could not be read, so the pull requests on" >&2
+  echo "                 ${BRANCH} cannot be enumerated and a second one cannot be ruled out." >&2
+  echo "                 Nothing was labelled. Re-run from a checkout inside the workspace, or" >&2
+  echo "                 point PITWALL_CONFIG at the config file." >&2
+  [ -n "$CFG_ERR" ] && printf '                 %s\n' "$CFG_ERR" >&2
+  exit 7
+fi
 if [ -z "$CONFIGURED" ]; then
-  echo "not swept: the workspace config names no repositories, so a second pull request on"
-  echo "  ${BRANCH} cannot be ruled out from here. Check the other repositories by hand."
-else
-  while IFS="|" read -r rname rpath rslug; do
-    [ -n "$rname" ] || continue
-    if [ -z "$rslug" ]; then
-      echo "not swept: ${rname} has no slug in the workspace config, so a pull request of its own"
-      echo "  on ${BRANCH} cannot be ruled out. Add slug: \"owner/name\" to it."
-      continue
-    fi
-    found=$(gh pr list --repo "$rslug" --head "$BRANCH" --state open --json number 2>/dev/null \
-      | python3 -c "
+  echo "lane-handoff.sh: the workspace config names no repositories, so the pull requests on" >&2
+  echo "                 ${BRANCH} cannot be enumerated and a second one cannot be ruled out." >&2
+  echo "                 Nothing was labelled. Add the repositories to the config - including" >&2
+  echo "                 ${SLUG} - then re-run." >&2
+  exit 7
+fi
+
+while IFS="|" read -r rname rpath rslug; do
+  [ -n "$rname" ] || continue
+  rdir="$CFG_ROOT/$rpath"
+  if [ -z "$rslug" ]; then
+    rslug=$(git -C "$rdir" remote get-url origin 2>/dev/null \
+            | sed -e 's#\.git$##' -e 's#^git@github\.com:##' -e 's#^https://github\.com/##')
+    case "$rslug" in */*) ;; *) rslug="" ;; esac
+  fi
+  if [ -z "$rslug" ]; then
+    echo "lane-handoff.sh: ${rname} has no slug in the workspace config and none could be" >&2
+    echo "                 derived from ${rdir}, so a pull request of its own on ${BRANCH}" >&2
+    echo "                 cannot be ruled out. Nothing was labelled. Add slug: \"owner/name\"" >&2
+    echo "                 to it, then re-run." >&2
+    exit 7
+  fi
+  found=$(gh pr list --repo "$rslug" --head "$BRANCH" --state open --json number 2>/dev/null \
+    | python3 -c "
 import json,sys
 try: prs=json.load(sys.stdin)
 except Exception: raise SystemExit(1)
@@ -267,38 +314,37 @@ for p in prs:
     n=p.get('number')
     if n: print(n)
 " 2>/dev/null)
-    if [ $? != 0 ]; then
-      echo "lane-handoff.sh: could not list the open pull requests of ${rslug} on ${BRANCH}." >&2
-      echo "                 Nothing was labelled. An empty read is not a clean read, and a" >&2
-      echo "                 second repository's pull request is exactly what hides in one." >&2
-      exit 6
+  if [ $? != 0 ]; then
+    echo "lane-handoff.sh: could not list the open pull requests of ${rslug} on ${BRANCH}." >&2
+    echo "                 Nothing was labelled. An empty read is not a clean read, and a" >&2
+    echo "                 second repository's pull request is exactly what hides in one." >&2
+    exit 7
+  fi
+  for num in $found; do
+    case " $SEEN " in *" ${rslug}#${num} "*) continue ;; esac
+    if [ "$rslug" = "$SLUG" ]; then rp="$REPO_PATH"; else rp="$rdir"; fi
+    if [ ! -d "$rp" ]; then
+      echo "lane-handoff.sh: ${rslug}#${num} is open on ${BRANCH} and ${rp} is not a checkout" >&2
+      echo "                 here, so its commit messages cannot be read. Nothing was labelled." >&2
+      exit 7
     fi
-    for num in $found; do
-      case " $SEEN " in *" ${rslug}#${num} "*) continue ;; esac
-      if [ "$rslug" = "$SLUG" ]; then rp="$REPO_PATH"; else rp="$CFG_ROOT/$rpath"; fi
-      if [ ! -d "$rp" ]; then
-        echo "lane-handoff.sh: ${rslug}#${num} is open on ${BRANCH} and ${rp} is not a checkout" >&2
-        echo "                 here, so its commit messages cannot be read. Nothing was labelled." >&2
-        exit 6
-      fi
-      git -C "$rp" fetch origin --quiet 2>/dev/null
-      if ! git -C "$rp" rev-parse --verify --quiet "origin/${BRANCH}" >/dev/null; then
-        echo "lane-handoff.sh: ${rslug}#${num} is open on ${BRANCH} but ${rp} has no" >&2
-        echo "                 origin/${BRANCH}, so its commit messages cannot be read." >&2
-        echo "                 Nothing was labelled." >&2
-        exit 6
-      fi
-      SEEN="$SEEN ${rslug}#${num}"
-      SWEPT_LIST="$SWEPT_LIST ${rslug}#${num}"
-      SWEPT_PATHS="${SWEPT_PATHS}${rp}
+    git -C "$rp" fetch origin --quiet 2>/dev/null
+    if ! git -C "$rp" rev-parse --verify --quiet "origin/${BRANCH}" >/dev/null; then
+      echo "lane-handoff.sh: ${rslug}#${num} is open on ${BRANCH} but ${rp} has no" >&2
+      echo "                 origin/${BRANCH}, so its commit messages cannot be read." >&2
+      echo "                 Nothing was labelled." >&2
+      exit 7
+    fi
+    SEEN="$SEEN ${rslug}#${num}"
+    SWEPT_LIST="$SWEPT_LIST ${rslug}#${num}"
+    SWEPT_PATHS="${SWEPT_PATHS}${rp}
 "
-      TRIPLES="${TRIPLES}
+    TRIPLES="${TRIPLES}
 ${rp}${TAB}${rslug}${TAB}${num}"
-    done
-  done <<EOF
+  done
+done <<EOF
 $CONFIGURED
 EOF
-fi
 
 FAILED=0
 FAIL_CODE=0
@@ -332,23 +378,90 @@ if [ "$CHECK_ONLY" = "1" ]; then
   exit 0
 fi
 
-# 3. Label, then read it back. Setting it is not the same as it being set.
+# 3. THE LABEL MUST EXIST IN EVERY REPOSITORY BEFORE THE FIRST ONE IS LABELLED. `--add-label`
+#    fails when the label is absent from that repository, and the labelling below walks a set of
+#    pull requests: the first succeeding and the second failing leaves a mergeable half of a
+#    two-repo ticket, which is the defect this script exists to remove rather than a smaller
+#    version of it. The label cannot be taken off again to repair that - once on, a pull request
+#    belongs to the lander, which may already be mid-attempt holding the merge lock - so the
+#    check that can be made before any of it is made here, and a repository that cannot carry
+#    the label refuses the whole handoff with nothing labelled.
+#
+#    The label exists in every repository of this workspace today, so the trigger is the repository
+#    added to a config tomorrow, any other workspace this is installed into, and a transient
+#    failure or rate limit against either call.
+preflight_err_file=$(mktemp "${TMPDIR:-/tmp}/lane-handoff-label.XXXXXX")
+for pslug in $(printf '%s\n' "$TRIPLES" | cut -f2 | sort -u); do
+  [ -n "$pslug" ] || continue
+  # --search AND --limit, because `gh label list` answers with the first 30 labels by default and
+  # a label absent from that page reads exactly like a label absent from the repository.
+  have=$(gh label list --repo "$pslug" --search "$LABEL" --limit 100 --json name 2>"$preflight_err_file" \
+    | python3 -c "
+import json,sys
+try: labels=json.load(sys.stdin)
+except Exception: raise SystemExit(1)
+print('YES' if any((l or {}).get('name') == sys.argv[1] for l in labels) else 'NO')
+" "$LABEL" 2>/dev/null)
+  if [ "$have" != "YES" ] && [ "$have" != "NO" ]; then
+    echo "lane-handoff.sh: could not read the labels of ${pslug}, so whether it can carry" >&2
+    echo "                 ${LABEL} is unknown. Nothing was labelled." >&2
+    perr=$(cat "$preflight_err_file"); [ -n "$perr" ] && printf '                 gh said: %s\n' "$perr" >&2
+    rm -f "$preflight_err_file"
+    exit 7
+  fi
+  if [ "$have" = "NO" ]; then
+    if ! gh label create "$LABEL" --repo "$pslug" \
+         --description "Reviewed and green: ready for the serial lander" \
+         --color 0E8A16 >/dev/null 2>"$preflight_err_file"; then
+      perr=$(cat "$preflight_err_file")
+      case "$perr" in
+        *"already exists"*) ;;
+        *)
+          echo "lane-handoff.sh: ${pslug} has no ${LABEL} label and one could not be created," >&2
+          echo "                 so labelling it would fail part-way through the branch." >&2
+          echo "                 Nothing was labelled." >&2
+          [ -n "$perr" ] && printf '                 gh said: %s\n' "$perr" >&2
+          rm -f "$preflight_err_file"
+          exit 7 ;;
+      esac
+    fi
+    echo "created the ${LABEL} label in ${pslug} - it had none"
+  fi
+done
+
+# 4. Label, then read it back. Setting it is not the same as it being set.
 labels=""
+LABELLED=""
 while IFS="$TAB" read -r cpath cslug cpr; do
   [ -n "$cpr" ] || continue
-  gh pr edit "$cpr" --repo "$cslug" --add-label "$LABEL" >/dev/null 2>/dev/null
+  # KEEP gh's REASON. This discarded stderr, so a 403, a rate limit or a missing label all read
+  # as the same bare "the label did not stick" with nothing to act on.
+  edit_err=""
+  gh pr edit "$cpr" --repo "$cslug" --add-label "$LABEL" >/dev/null 2>"$preflight_err_file" \
+    || edit_err=$(cat "$preflight_err_file")
   back=$(gh pr view "$cpr" --repo "$cslug" --json labels 2>/dev/null \
     | python3 -c "import json,sys; print(','.join(l['name'] for l in json.load(sys.stdin).get('labels') or []))" 2>/dev/null)
   case ",$back," in
-    *,"$LABEL",*) ;;
-    *) echo "not-green: the label did not stick on ${cslug}#${cpr} - read back: ${back:-none}"; exit 4 ;;
+    *,"$LABEL",*) LABELLED="$LABELLED ${cslug}#${cpr}" ;;
+    *)
+      echo "half-labelled: the label did not stick on ${cslug}#${cpr} - read back: ${back:-none}"
+      [ -n "$edit_err" ] && echo "  gh said: ${edit_err}"
+      echo "  CARRYING ${LABEL} now:${LABELLED:- nothing}"
+      echo "  NOT carrying it: ${cslug}#${cpr}, and anything after it in: ${SEEN}"
+      echo "  The lander reads only the label, so a pull request left out of that first list is"
+      echo "  invisible to it and its half of the ticket closes on the half that landed."
+      echo "  Adding a label is idempotent and nothing has been cleaned up or recorded yet, so fix"
+      echo "  what gh reported and RE-RUN this command rather than labelling the rest by hand."
+      rm -f "$preflight_err_file"
+      exit 8 ;;
   esac
   if [ "$cslug" = "$SLUG" ] && [ "$cpr" = "$PR" ]; then labels="$back"; fi
 done <<EOF
 $TRIPLES
 EOF
+rm -f "$preflight_err_file"
 
-# 4. Remove the lane's worktree so the lander's --delete-branch does not trip on a checked-out
+# 5. Remove the lane's worktree so the lander's --delete-branch does not trip on a checked-out
 #    branch. Only this lane's own - never a sweep.
 #
 # IF --worktree WAS NOT PASSED, FIND IT. Three lanes on 2026-08-28 reported "no worktree in use"
@@ -432,7 +545,7 @@ done <<EOF
 $SWEPT_PATHS
 EOF
 
-# 5. Record it. --append-notes, never --notes: the field has no history and an overwrite is
+# 6. Record it. --append-notes, never --notes: the field has no history and an overwrite is
 #    simply gone. Text comes from a file so nothing expands.
 NOTE_VERDICT=""
 if [ -n "$ISSUE" ] && [ -n "$NOTE_FILE" ]; then
@@ -479,7 +592,7 @@ print('%s|%d|%s' % (d.get('status'), len(notes), 'APPENDED' if ok else 'MISSING'
   esac
 fi
 
-# 6. Give the lane back last, so a crash before this leaves the slot held rather than handing it
+# 7. Give the lane back last, so a crash before this leaves the slot held rather than handing it
 #    to a dispatch that lands on top of a run still finishing.
 if [ -n "$LOCK" ]; then
   lane="${LOCK%/}"
