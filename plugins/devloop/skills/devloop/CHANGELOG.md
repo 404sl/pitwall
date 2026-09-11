@@ -32,15 +32,18 @@ worked.
   without removing a false one, because a lane waiting on CI writes nothing for half an hour at a
   time - the defect was which run it looked at, not how patient it was.
 - **The event names what it judged.** The reported line carries the task and the workflow as before
-  and now says it is the newest of N runs for that issue, and the trailer says an earlier dispatch
-  was not judged - so a reader who runs `lane-running.sh --any` and sees three lines can check the
-  same one the monitor checked instead of the oldest.
+  and, where an issue was dispatched more than once, says it is the newest of N runs for that issue;
+  only then does the event carry a trailer reading that annotation and saying the earlier dispatches
+  were not judged. A reader who runs `lane-running.sh --any` and sees three lines can therefore check
+  the same one the monitor checked instead of the oldest, and a single-dispatch event reads exactly as
+  it did before.
 - **A line whose labels carry no issue id is judged alone.** `lane_ids` prints `no id in its labels`
   for those, and keying them together would let one such run silence the alarm for another.
 
-Three tests drive `land_gate` over a workspace with three dispatches for one issue: the newest
+Four tests drive `land_gate`: over a workspace with three dispatches for one issue the newest
 writing reports nothing, the newest silent past the window reports that run and neither of the
-others, and two id-less runs do not suppress each other. The first two fail before this change.
+others, and two id-less runs do not suppress each other; over a workspace with one dispatch, a
+silent lane is reported with no annotation and no trailer. The first two fail before this change.
 
 ## 0.1.26
 

@@ -225,6 +225,15 @@ test("the land gate says so when the lane holding it shut has gone silent", () =
   assert.match(out, /gate stays shut/);
 });
 
+test("a lane dispatched once and gone silent is reported without a withheld-dispatch trailer", () => {
+  const space = workspace("lane");
+  silence(space, 92);
+  const out = landGate(space, "site#61");
+  assert.match(out, /journal silent 9[0-9]m/);
+  assert.doesNotMatch(out, /newest of/);
+  assert.doesNotMatch(out, /earlier dispatch/);
+});
+
 test("the land gate stays quiet while the lane holding it shut is still writing", () => {
   assert.equal(landGate(workspace("lane"), "site#61"), "");
 });
@@ -259,7 +268,8 @@ test("an issue whose newest run is also silent is reported, naming that run and 
   assert.match(out, /gone silent - site#80/);
   assert.match(out, /task w333, workflow wf_92bb050e/);
   assert.match(out, /journal silent (29|30|31)m/);
-  assert.match(out, /newest of 3 runs for this issue/);
+  assert.match(out, /, newest of 3$/m);
+  assert.match(out, /An earlier dispatch says nothing about the issue/);
   assert.doesNotMatch(out, /wf_f80fcf95/);
   assert.doesNotMatch(out, /wf_12c0c01f/);
   assert.equal(out.split("\n").filter((line) => line.includes("task w")).length, 1);

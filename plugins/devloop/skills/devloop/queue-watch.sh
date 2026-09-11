@@ -98,7 +98,7 @@ silent_lanes() {
         if (!(key in newest)) continue
         text = newest[key]
         sub(/\.$/, "", text)
-        if (runs[key] > 1) text = text ", newest of " runs[key] " runs for this issue"
+        if (runs[key] > 1) text = text ", newest of " runs[key]
         print "  " text
       }
     }
@@ -178,8 +178,12 @@ land_gate() {
   echo "  Still RUNNING, and the gate stays shut - a lane waiting on a CI run writes nothing for"
   echo "  half an hour at a time. But a task orphaned at dispatch reads the same way forever, so"
   echo "  read the lane before the next train: kill-lane.sh --slot N --id <id> if it is dead."
-  echo "  Each run named is the newest writer for its issue. An earlier dispatch for the same issue"
-  echo "  says nothing about it and was not judged - check the same run this did, not the oldest."
+  case "$silent" in
+    *", newest of "*)
+      echo "  A 'newest of N' line is an issue dispatched N times, of which only that run was judged."
+      echo "  An earlier dispatch says nothing about the issue - read the run named, not the oldest."
+      ;;
+  esac
   prev_silent=$ready
 }
 

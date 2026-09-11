@@ -324,8 +324,8 @@ announcing that nothing is running. A `RUNNING` whose workflow directory has not
 for longer than `--stale-minutes` (default 20, the window `lanes.sh` uses) is announced as well,
 naming the task, the workflow and how long it has been silent. An issue re-dispatched after a
 supervisor stop or a launch crash leaves every abandoned run reading `RUNNING` for ever, so the
-event judges only the newest-writing run for each issue and says which one of how many it judged.
-An earlier dispatch for the same issue is not evidence about that issue. It stays `RUNNING` and the gate
+event judges only the newest-writing run for each issue and says which one of how many it
+judged - an earlier dispatch is not evidence about that issue. It stays `RUNNING` and the gate
 stays shut - a lane waiting on CI writes nothing for half an hour - but a task orphaned at
 dispatch reads `RUNNING` for as long as its empty output file exists, and that used to hold the
 event shut in silence. The gate used to count `lanes.sh` rows through a pattern fixed to one
