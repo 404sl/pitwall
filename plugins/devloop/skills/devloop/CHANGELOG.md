@@ -97,8 +97,9 @@ a hostile issue title cannot execute from the printed recipe, and the names deri
 with an explicit pair winning. Two source tests read the briefs: one fails on any bd write that does
 not name the actor, the other on any hand-back assigned straight to the planning session rather than
 to the session that asked. Seven of the original eight routing tests fail before the change and the
-actor test fails on 17 lines of it - twelve in task.js, three in land.js, two in land-train.js; the
-eight tests added for the rework all fail before it too.
+actor test fails on 17 lines of it - twelve in task.js, three in land.js, two in land-train.js. Nine
+tests were added for the rework and eight of them fail before it; the ninth is the first coverage
+`dispatchable.sh` has had at all and passes either way.
 
 ## 0.1.23
 
