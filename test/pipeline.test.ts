@@ -144,6 +144,15 @@ test("a check that failed outranks one that is still running", () => {
   assert.equal(rollupChecks(undefined), "none");
 });
 
+test("a draft pull request is reported as a draft and the rest as ready", async () => {
+  const pulls = byNumber((await collected()).pipeline);
+  assert.equal(pulls.get(104)?.draft, true);
+  assert.equal(pulls.get(101)?.draft, false);
+  assert.equal(pulls.get(102)?.draft, false);
+  assert.equal(pulls.get(103)?.draft, false);
+  assert.equal(pulls.get(105)?.draft, false);
+});
+
 test("a pull request is linked to its issue by its branch name or by its body", async () => {
   const pulls = byNumber((await collected()).pipeline);
   assert.equal(pulls.get(101)?.issueId, "mw-12");
@@ -191,7 +200,7 @@ test("the command carries the slug derived from the remote", async () => {
   const asked = readFileSync(log, "utf8").trim().split("\n");
   assert.equal(
     asked[0],
-    "pr list --repo acme/site --state open --limit 200 --json number,title,labels,headRefName,url,statusCheckRollup,body",
+    "pr list --repo acme/site --state open --limit 200 --json number,title,labels,headRefName,url,statusCheckRollup,body,isDraft",
   );
   assert.equal(asked.length, 1);
 });
@@ -221,6 +230,7 @@ test("a listing that came back at the limit is reported rather than read as ever
   );
   const read = await collected(HTTPS_REMOTE, "ok", { GH_OUTPUT: dir });
   assert.equal(read.pipeline.length, LIST_LIMIT);
+  assert.equal(read.pipeline[0]?.draft, false);
   assert.equal(read.errors.length, 1);
   assert.match(read.errors[0]?.source ?? "", /^gh pr list --repo acme\/site/);
   assert.match(read.errors[0]?.message ?? "", new RegExp(`${LIST_LIMIT} pull request limit`));
@@ -235,7 +245,7 @@ test("gh that is not installed is an error naming the command, not an empty pipe
   assert.equal(read.errors.length, 1);
   assert.equal(
     read.errors[0]?.source,
-    "gh pr list --repo acme/site --state open --limit 200 --json number,title,labels,headRefName,url,statusCheckRollup,body",
+    "gh pr list --repo acme/site --state open --limit 200 --json number,title,labels,headRefName,url,statusCheckRollup,body,isDraft",
   );
   assert.match(read.errors[0]?.message ?? "", /gh pr list --repo acme\/site/);
   assert.match(read.errors[0]?.message ?? "", /ENOENT/);
