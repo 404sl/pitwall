@@ -1,7 +1,7 @@
 export const meta = {
   name: 'land-train',
-  description: 'Land every ready pull request as one release train: build it, test it once, merge, deploy, close',
-  whenToUse: 'When lane-verified pull requests are queued and the merge lock is free. If this run ends with stopped=merge_refused, the supervisor must run `gh pr view <trainPr> --repo <slug> --json labels,statusCheckRollup` in ITS OWN transcript and then RESUME with resumeFromRunId - the merge agent checking the PR itself does not count, and rerunning from scratch cuts a second release branch for the same PRs.',
+  description: 'Land one repository\'s ready pull requests as one release train: build it, test it once, merge, deploy, close',
+  whenToUse: 'When lane-verified pull requests are queued and the merge lock is free. A train covers ONE repository per run and args.repo is REQUIRED - it names which, it is refused rather than guessed, and the result reports every other configured repository with the relaunch to run for it. If this run ends with stopped=merge_refused, the supervisor must run `gh pr view <trainPr> --repo <slug> --json labels,statusCheckRollup` in ITS OWN transcript and then RESUME with resumeFromRunId - the merge agent checking the PR itself does not count, and rerunning from scratch cuts a second release branch for the same PRs.',
   phases: [
     { title: 'Lock', detail: 'take the merge lock, or stand down' },
     { title: 'Build', detail: 'squash the ready branches onto one branch cut from master' },
@@ -71,7 +71,17 @@ const REPOS = input.repos
       docs: { path: 'docs', slug: 'your-org/your-docs', deploys: false },
     }
 
-const REPO_KEY = (args && args.repo) || 'site'
+const REPO_KEY = trimmed(input.repo)
+if (!REPO_KEY) {
+  return {
+    status: 'error',
+    notes: `no repo was supplied. A train runs against ONE repository per run, and this will not ` +
+           `choose which one for you: it used to fall back to 'site' silently, so a workspace ` +
+           `landing across two repositories lost the smaller one every train under a result that ` +
+           `named no repository at all. Pass repo: "<key>" - one of ${Object.keys(REPOS).join(', ')} - ` +
+           `and run the train again per repository.`
+  }
+}
 const REPO = REPOS[REPO_KEY]
 if (!REPO) {
   return { status: 'error', notes: `unknown repo ${REPO_KEY} - expected one of ${Object.keys(REPOS).join(', ')}` }
@@ -144,6 +154,26 @@ const VERSION = {
     branchVersion: { type: 'string', description: `the "version" string in the train branch's ${PLUGIN_MANIFEST}, verbatim. An empty string when you could not read one.` },
     touchesPlugin: { type: 'boolean', description: 'true when the train changes any file under plugins/ or .claude-plugin/ - that is what the marketplace serves' },
     notes: { type: 'string' },
+  },
+}
+
+const LEFT_BEHIND = {
+  type: 'object',
+  required: ['repos'],
+  properties: {
+    repos: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['repo', 'status'],
+        properties: {
+          repo: { type: 'string', description: 'the repository KEY from the left column of the list you were given, not its owner/name' },
+          status: { type: 'string', enum: ['read', 'unreadable'], description: "'read' only when the list command printed something you could read pull request numbers out of - an empty list counts" },
+          labelled: { type: 'array', items: { type: 'number' }, description: 'every open labelled pull request number it printed, empty when it printed none' },
+          notes: { type: 'string' },
+        },
+      },
+    },
   },
 }
 
@@ -503,6 +533,41 @@ that looks nothing like devloop/<id> means you read another repository's pull re
 answer is to retry with --repo, not to report the issue as unidentifiable.`
 }
 
+function leftBehindPrompt() {
+  const lines = Object.entries(REPOS)
+    .filter(([, r]) => r.slug)
+    .map(([name, r]) => `  ${name}  ${r.slug}`)
+    .join('\n')
+  return `This train ran for ONE repository, ${REPO_KEY} (${SLUG}). Say what is still labelled and
+open in every configured repository, so the run can report what it never looked at.
+
+Here is every repository this workspace configures, as KEY then owner/name:
+${lines}
+
+For each line, run exactly this and nothing else:
+
+  gh pr list --repo <that repository's owner/name> --state open --label lane-verified --json number
+
+RETURN ONE ENTRY PER LINE ABOVE, INCLUDING ${REPO_KEY} ITSELF, and use the KEY from the left column
+as 'repo' - not the owner/name, and not a name of your own. A repository you leave out is one the
+result cannot account for, and the whole point of this step is that a missing entry and a zero are
+the same thing to whoever reads the result and different things in fact.
+
+Report the numbers it printed as 'labelled' and status 'read'. AN EMPTY LIST IS AN ANSWER: report
+'read' with an empty 'labelled'.
+
+If a command fails, or prints something you cannot read numbers out of, report status 'unreadable'
+for that repository and say why in notes. DO NOT report 'read' with an empty list for a command
+that did not work. This step exists because a train that had silently ignored a second repository
+returned an empty list of rejections, and a supervisor read that as a clean run while a labelled,
+green, reviewed pull request sat untouched.
+
+CHANGE NOTHING. Do not merge, do not label, do not unlabel, do not comment, do not close, do not
+rebase, and do not touch any working tree. This step reads and reports.
+
+Never use 2>&1 - it makes some commands fail outright. Use absolute paths, never relative ones.`
+}
+
 phase('Lock')
 const lock = await agent(
   `Take the serial merge lock so only one lander runs at a time:
@@ -563,6 +628,7 @@ const skipped = new Set()
 let lastSha = null
 let outcome = { stopped: null }
 let stranded = []
+const perRepo = {}
 let released = null
 let lockState = `LEAKED - the release step never reported. Read ${MERGE_LOCK}/holder before touching anything.`
 
@@ -706,6 +772,51 @@ case this step is trying to stop.`,
     { model: 'haiku', effort: 'low', phase: 'Close', label: 'strand-notice' },
   )
 }
+
+const survey = await agent(leftBehindPrompt(), {
+  schema: LEFT_BEHIND, model: 'haiku', effort: 'low', phase: 'Close', label: 'left-behind',
+})
+const answered = new Map()
+for (const entry of (survey && Array.isArray(survey.repos)) ? survey.repos : []) {
+  const key = trimmed(entry && entry.repo)
+  if (key && REPOS[key]) answered.set(key, entry)
+}
+for (const [name, r] of Object.entries(REPOS)) {
+  const mine = name === REPO_KEY
+  const taken = mine ? landed.length : 0
+  const entry = answered.get(name)
+  const unsurveyed = (why) => ({ slug: r.slug || null, train: mine, surveyed: null, taken, left: null, leftPrs: [], relaunch: null, why })
+  if (!r.slug) {
+    perRepo[name] = unsurveyed('no slug is configured for this repository, so nothing could be surveyed in it')
+    continue
+  }
+  if (!entry) {
+    perRepo[name] = unsurveyed('the survey step reported nothing for this repository, so what is labelled in it is unknown')
+    continue
+  }
+  if (entry.status !== 'read' || !Array.isArray(entry.labelled)) {
+    perRepo[name] = unsurveyed(`the survey step could not read this repository: ${trimmed(entry.notes) || 'it reported ' + (trimmed(entry.status) || 'nothing') + ' and said no more'}`)
+    continue
+  }
+  const left = entry.labelled.filter((n) => Number.isInteger(n) && !landed.includes(n))
+  perRepo[name] = {
+    slug: r.slug,
+    train: mine,
+    surveyed: taken + left.length,
+    taken,
+    left: left.length,
+    leftPrs: left,
+    relaunch: (!mine && left.length) ? `run again with repo: ${name}` : null,
+    why: null,
+  }
+}
+for (const [name, a] of Object.entries(perRepo)) {
+  if (a.surveyed === null) {
+    log(`${name} was NOT surveyed - ${a.why}`)
+  } else if (a.relaunch) {
+    log(`${name}: ${a.left} labelled pull request${a.left === 1 ? '' : 's'} left (${a.leftPrs.map((n) => `${a.slug}#${n}`).join(', ')}) - ${a.relaunch}`)
+  }
+}
 } finally {
 if (!token || !TOKEN_SHAPE.test(token)) {
   lockState = `LEAKED - ${MERGE_LOCK} is held under a token this run cannot quote back, so no removal was even asked for. Read ${MERGE_LOCK}/holder, and leave it alone unless it names a run that has finished.`
@@ -759,6 +870,9 @@ if (released && released.status === 'released') {
 }
 
 return {
+  repo: REPO_KEY,
+  slug: SLUG,
+  repos: perRepo,
   landed,
   rejected,
   flakes,

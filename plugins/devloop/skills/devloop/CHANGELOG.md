@@ -1,5 +1,60 @@
 # Changelog
 
+## 0.1.29
+
+**A release train acted on one repository and its result could not say so.** `land-train.js` took
+one `repo` key on the way in, resolved the path and the slug once, and every later step used those
+single values - so a workspace landing across two repositories lost the smaller one every train.
+The run that reported it returned `landed:[1287], rejected:[], stranded:[], notes:null` while a
+labelled, green, reviewed pull request in the second repository sat untouched, and a supervisor who
+had not personally opened it read that as a clean run. Since the train only ever examines one
+repository, `rejected` and `stranded` being empty for every other one is guaranteed rather than
+informative: the result could not tell "nothing was labelled there" from "nothing looked".
+
+The file already held the argument. Beside `stranded` in its own return: *an empty rejected list
+must not be able to hide work that went nowhere*, written after a train silently dropped #739
+twice. That was applied to a branch the train DROPPED and never carried to a repository the train
+never OPENED.
+
+- **`repo` is required and is refused rather than guessed.** It used to read
+  `(args && args.repo) || 'site'`, so omitting it did not error - it silently selected one
+  repository, which is why the missing pull request was invisible rather than merely unreported.
+  The run looked like "the train" instead of "the train, for one of several". This is where
+  `lanes.sh`, `lock-check.sh` and `dupes.sh` landed on the same guess-versus-refuse question.
+- **The result names the repository and its slug,** at the top level, because a choice made going
+  in and unnamed coming out is silent at both ends.
+- **Every configured repository is surveyed for labelled pull requests before the lock is given
+  back,** and the result carries `surveyed`, `taken` and `left` per repository WITH EXPLICIT
+  ZEROES - a repository that yielded nothing says so rather than being absent from the structure.
+  An absent key and a zero are the same thing to a reader and different things in fact, which is
+  the `errors[]` argument applied to the train's own output.
+- **A repository that could not be surveyed is `null`, not zero.** No slug configured, a `gh`
+  command that failed, or a repository the survey left out of its answer all come back with
+  `surveyed: null` and a `why`. A failed read reported as a clean zero is the defect one layer
+  down from the one this entry is about.
+- **What is left carries the exact relaunch rather than a complaint.** `docs: 1 labelled pull
+  request left (404sl/pitwall-site#185) - run again with repo: docs`. Running a second train is the
+  right answer and hand-merging is not: a hand-merge ships the content and skips the release
+  branch, the close step and this accounting. `args.repo` existed and nobody knew, which is the
+  measure of how discoverable it was - `whenToUse` now says a train covers one repository and that
+  the key is required.
+
+**The survey runs after the merge and the close, not at the top.** The halves of a two-repo ticket
+do not arrive together - the reported one arrived minutes after the first, which is what made the
+loss hard to see - so a survey taken before the train was built would miss exactly the case it
+exists for. A train that built nothing surveys too: that is the run most likely to be the one where
+another repository holds the only work in the workspace.
+
+Eleven tests drive the script as a function body: a train with no `repo` returns an error and takes
+no lock, a labelled pull request in a second configured repository appears in the result with its
+relaunch, the survey is ordered before the release, every configured key is present with numeric
+counts, and an unreadable, an omitted and a slugless repository each come back unknown rather than
+clean. All eleven fail against the previous revision.
+
+**Not changed here:** the lock diagnostics in this file name `/tmp/devloop-merge.lock` literally,
+but so does the `mkdir` that takes it, so they describe the lock the run actually holds. Making
+that path configurable belongs to the ticket that owns it.
+
 ## 0.1.36
 
 **The fix brief told a lane the slug for its run was named above, and named only the path.** Rule

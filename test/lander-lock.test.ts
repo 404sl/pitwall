@@ -30,6 +30,7 @@ function heldLock(token: string | null) {
 const LAND_ARGS = {
   skillDir: "/skill",
   root: "/root",
+  repo: "site",
   repos: { site: { path: "cli", slug: "owner/name" } },
 };
 
