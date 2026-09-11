@@ -649,6 +649,52 @@ test("a bead that closed carrying an external-ref closes the issue it came from"
   assert.deepEqual(upstreamReport(result.upstream), []);
 });
 
+test("a run killed while it is closing upstream leaves the closure for the next run", async () => {
+  const place = workspace([pipelineRoot("https://github.com/acme/site.git")]);
+  const env = { ...place.env, PATH: PATH_WITH_GH, GH_OUTPUT: RECORDED };
+  const first = await emitSnapshot({ ...options(place), env });
+  const source = fileURLToPath(new URL("../src/snapshot.ts", import.meta.url));
+  const probe = [
+    `const { emitSnapshot } = await import(${JSON.stringify(source)});`,
+    `await emitSnapshot({`,
+    `  env: ${JSON.stringify({ ...env, BD_LIST_FIXTURE: "shipped" })},`,
+    `  home: ${JSON.stringify(place.home)},`,
+    `  cwd: ${JSON.stringify(join(place.home, "work", "here"))},`,
+    `  lockRoot: ${JSON.stringify(mkdtempSync(join(tmpdir(), "pitwall-killed-lock-")))},`,
+    `  sender: () => Promise.resolve({ delivered: true }),`,
+    `  note: () => Promise.reject(new Error("no note should be needed")),`,
+    `  closer: () => { process.kill(process.pid, "SIGKILL"); return new Promise(() => {}); },`,
+    `});`,
+  ].join("\n");
+  const killed = spawnSync(
+    process.execPath,
+    ["--import", "tsx", "--input-type=module", "-e", probe],
+    { encoding: "utf8" },
+  );
+  assert.equal(killed.signal, "SIGKILL", `the closing run was not killed: ${killed.stderr}`);
+  const onDisk = readSnapshot({ env: place.env, home: place.home }).snapshot;
+  assert.equal(
+    onDisk?.generatedAt,
+    first.snapshot.generatedAt,
+    "the killed run wrote its snapshot before its upstream closures went out",
+  );
+  const asked: Closure[] = [];
+  await emitSnapshot({
+    ...options(place),
+    env: { ...env, BD_LIST_FIXTURE: "shipped" },
+    sender: () => Promise.resolve({ delivered: true as const }),
+    note: () => Promise.reject(new Error("no note should be needed")),
+    closer: (closure: Closure) => {
+      asked.push(closure);
+      return Promise.resolve({ closed: true as const });
+    },
+  });
+  assert.deepEqual(
+    asked.map((closure) => [closure.issueId, closure.issue.url]),
+    [["mw-1", "https://github.com/acme/site/issues/7"]],
+  );
+});
+
 test("a workspace found by scanning closes nothing on GitHub", async () => {
   const place = withConfig("{}");
   rmSync(place.configPath);
