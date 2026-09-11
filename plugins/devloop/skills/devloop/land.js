@@ -59,6 +59,8 @@ const MERGE_LOCK = `/tmp/${LOCK_PREFIX}-merge.lock`
 const TOKEN_SHAPE = /^[A-Za-z0-9._-]+$/
 const trimmed = (v) => String(v || '').trim()
 const ID_PREFIX = input.idPrefix || 'sr'
+const PROJECT = String(ROOT).replace(/\/+$/, '').split('/').pop() || 'project'
+const SESSION = input.session || `${PROJECT}-devloop`
 const LABEL = 'lane-verified'
 const PLUGIN_MANIFEST = 'plugins/devloop/.claude-plugin/plugin.json'
 const MARKETPLACE_MANIFEST = '.claude-plugin/marketplace.json'
@@ -1073,14 +1075,14 @@ FOR EACH ONE, three things, in this order:
 
 1. Append the finding to its tracker issue, if it named one. Write the text to a file first and
    pass it with --append-notes, never --notes and never an inline double-quoted string:
-     cd ${ROOT} && bd update <id> --append-notes "$(cat <file>)"
+     cd ${ROOT} && bd --actor ${SESSION} update <id> --append-notes "$(cat <file>)"
    --notes overwrites the whole field and has already destroyed a decision somebody recorded.
    Include: that the pull request was attempted and not landed, the reason above in full, that
    the label was removed, and that the branch was left untouched. Somebody reworking this needs
    the diagnosis more than they need the verdict.
 
 2. Set the issue back to open, so the queue offers it again:
-     cd ${ROOT} && bd update <id> --status open
+     cd ${ROOT} && bd --actor ${SESSION} update <id> --status open
    An issue left in_progress behind a dead pull request is invisible to the queue and stalls
    forever. That has stranded work here before.
 
@@ -1159,7 +1161,7 @@ function closePrompt(landed, deployed) {
   return `Close the tracker issues for work that is now merged and deployed, and only those.
 
 From ${ROOT} - the tracker is at the root, not inside any repository:
-${landed.filter((l) => l.issue).map((l) => `  bd close ${l.issue} --reason "Landed in ${l.slug}#${l.number}${DEPLOYS.has(l.repo) ? ' and deployed' : ' - NOT deployed, see below'}"`).join('\n')}
+${landed.filter((l) => l.issue).map((l) => `  bd --actor ${SESSION} close ${l.issue} --reason "Landed in ${l.slug}#${l.number}${DEPLOYS.has(l.repo) ? ' and deployed' : ' - NOT deployed, see below'}"`).join('\n')}
 
 THAT LIST IS THE WHOLE JOB. Do not survey the tracker for other issues, and do not read pull
 requests this run did not land. On 2026-08-28 this step was handed ONE issue and went looking
@@ -1194,7 +1196,7 @@ meaning does not: "this PR does not finish the ticket", "that acceptance criteri
 "the remaining half is a person's". WHERE A PR SAYS THAT, DO NOT CLOSE THE ISSUE. Append to it
 instead, naming the merge and what is still outstanding:
 
-  BEADS_DIR=${ROOT}/.beads bd update <id> --append-notes "Merged as <repo> #<n>, <sha>, and
+  BEADS_DIR=${ROOT}/.beads bd --actor ${SESSION} update <id> --append-notes "Merged as <repo> #<n>, <sha>, and
   deployed. NOT closed: the PR states <what remains>."
 
 MERGED AND DONE ARE DIFFERENT FACTS AND YOU ONLY KNOW ONE OF THEM. On 2026-08-26 this step

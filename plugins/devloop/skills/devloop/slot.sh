@@ -202,7 +202,7 @@ ID="$1"
 # So refuse here, and name the label. If the question really is answered, take the label off
 # first; that is one command and it leaves the tracker honest.
 if [ -n "$ID" ] && command -v bd >/dev/null 2>&1; then
-  parked="$(bd show "$ID" --json 2>/dev/null | python3 -c '
+  issue="$(bd show "$ID" --json 2>/dev/null | python3 -c '
 import json, sys
 try:
     i = json.load(sys.stdin)
@@ -210,12 +210,31 @@ except Exception:
     sys.exit(0)
 i = i[0] if isinstance(i, list) else i
 labs = {x if isinstance(x, str) else x.get("name", "") for x in (i.get("labels") or [])}
-print(" ".join(sorted(labs & {"needs-decision", "needs-access", "roadmap", "blocked-tooling"})))
+print("parked", " ".join(sorted(labs & {"needs-decision", "needs-access", "roadmap", "blocked-tooling"})))
+print("assignee", i.get("assignee") or "")
 ' 2>/dev/null)"
+  parked="$(printf '%s\n' "$issue" | sed -n 's/^parked //p')"
+  assignee="$(printf '%s\n' "$issue" | sed -n 's/^assignee //p')"
   if [ -n "$parked" ]; then
     echo "$ID is parked: $parked" >&2
     echo "  A lane would bounce on that label without doing anything. If the question is answered," >&2
     echo "  remove it first:  bd label remove $ID $parked" >&2
+    exit 1
+  fi
+
+  SESSION="${PITWALL_SESSION:-$(bash "$(dirname "${BASH_SOURCE[0]}")/config.sh" session 2>/dev/null)}"
+  if [ -n "$issue" ] && [ -n "$SESSION" ] && [ "$assignee" != "$SESSION" ]; then
+    if [ -z "$assignee" ]; then
+      echo "$ID is UNASSIGNED, so it is not dispatchable." >&2
+      echo "  Nothing unassigned may be dispatched: that is IMPORT -> PROMOTE expressed as" >&2
+      echo "  ownership, and it is what stands between a stranger's issue and a lane that" >&2
+      echo "  merges and deploys. A person moves the queue:" >&2
+      echo "    bd --actor <your session> update $ID -a $SESSION" >&2
+    else
+      echo "$ID is assigned to $assignee, not $SESSION - it is somebody else's queue." >&2
+      echo "  Reassign it deliberately if this pipeline should have it:" >&2
+      echo "    bd --actor <your session> update $ID -a $SESSION" >&2
+    fi
     exit 1
   fi
 fi

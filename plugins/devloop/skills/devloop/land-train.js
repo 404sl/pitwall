@@ -46,6 +46,8 @@ if (!SKILL_DIR) {
 }
 
 const ROOT = input.root
+const PROJECT = String(ROOT).replace(/\/+$/, '').split('/').pop() || 'project'
+const SESSION = input.session || `${PROJECT}-devloop`
 
 // FOUR REPOSITORIES CARRY lane-verified PULL REQUESTS, NOT ONE. An earlier version of this file
 // hardcoded site, which silently stranded every extension change - #118 sat labelled and green
@@ -438,8 +440,8 @@ the workspace root - not from inside a repository.
 For each pull request, find its issue (the branch is devloop/<issue-id>, and the issue is also
 named in the pull request body), then:
 
-  bd update <id> --append-notes "<what landed, and the merge sha>"
-  bd close <id>
+  bd --actor ${SESSION} update <id> --append-notes "<what landed, and the merge sha>"
+  bd --actor ${SESSION} close <id>
 
 --append-notes, NEVER --notes. The notes field has no history and an overwrite is simply gone;
 that has already destroyed a recorded decision on this tracker.

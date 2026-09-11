@@ -38,8 +38,15 @@ ROOT="${ROOT:-the workspace root}"
 # with the same prefix collide on the lane locks, and the lane lock is the only thing stopping
 # two lanes from sharing a test database.
 PFX="$(bash "$CFG" lockPrefix 2>/dev/null || echo devloop)"
+SESSION="${PITWALL_SESSION:-$(bash "$CFG" session 2>/dev/null)}"
 
 cd "$ROOT" || exit 1
+
+if [ -z "$SESSION" ]; then
+  echo "queue.sh: no session name resolved. The queue is whatever is assigned to this" >&2
+  echo "          pipeline, so without a name there is no queue to read." >&2
+  exit 1
+fi
 
 PARKED="needs-decision needs-access blocked-tooling watch umbrella roadmap"
 
@@ -62,10 +69,11 @@ bd list --status closed --json 2>/dev/null      > "$AQ/closed.json"
 WANT="${2:-0}"
 [ "$1" = "--next" ] || WANT=0
 
-python3 - "$WANT" "$PFX" "$AQ" <<'PY'
+python3 - "$WANT" "$PFX" "$AQ" "$SESSION" <<'PY'
 import json, sys, os, datetime, subprocess
 
 PFX = sys.argv[2] if len(sys.argv) > 2 else "devloop"
+SESSION = sys.argv[4]
 
 PARKED = {"needs-decision", "needs-access", "blocked-tooling", "watch", "umbrella", "roadmap"}
 
@@ -126,6 +134,8 @@ def eligible(i):
     # id prefix is the fact; the label is only documentation of it.
     if i["id"] in live_children_of:
         return False
+    if (i.get("assignee") or "") != SESSION:
+        return False
     return (i.get("issue_type") != "epic"
             and not parked(i)
             and i["id"] not in blocked_ids)
@@ -133,6 +143,7 @@ def eligible(i):
 ready = sorted([i for i in open_ if eligible(i)],
                key=lambda i: (i.get("priority", 9), i.get("created_at", "")))
 waiting = sorted([i for i in open_ if parked(i)], key=lambda i: i.get("priority", 9))
+nobody = [i for i in open_ + running if not (i.get("assignee") or "")]
 today = datetime.date.today().isoformat()
 closed_today = [i for i in closed if (i.get("updated_at") or "")[:10] == today]
 
@@ -174,7 +185,9 @@ _handed_off = len(running) - len(_working)
 print(f" running now      {len(_working)}")
 if _handed_off:
     print(f" awaiting lander  {_handed_off}  claimed and green, not yet live")
-print(f" ready to start   {len(ready)}")
+print(f" ready to start   {len(ready)}  assigned to {SESSION}")
+if nobody:
+    print(f" unassigned       {len(nobody)}  in nobody's queue, so not dispatchable: {' '.join(i['id'] for i in nobody[:6])}")
 
 # Report the parked issues BY REASON, never as one total.
 #
@@ -295,18 +308,22 @@ if want > 0:
             os.remove(path)
 
     handed = []
+    refused = []
     for i in ready:
         if len(handed) >= want:
             break
-        r = subprocess.run(["bd", "update", i["id"], "--claim"],
+        r = subprocess.run(["bd", "--actor", SESSION, "update", i["id"], "--claim"],
                            capture_output=True, text=True)
         if r.returncode != 0:
+            said = (r.stderr or r.stdout or "").strip().splitlines()
+            refused.append((i["id"], said[-1] if said else f"exit {r.returncode}, no message"))
             continue
         slot = free_slot(set(taken))
         if slot is None:
             # Every lane is busy. Give the claim back rather than handing out a lane that is
             # not there - a caller asking for more than there is should be told so.
-            subprocess.run(["bd", "update", i["id"], "--status", "open"], capture_output=True, text=True)
+            subprocess.run(["bd", "--actor", SESSION, "update", i["id"], "--status", "open"],
+                           capture_output=True, text=True)
             break
         taken[slot] = i["id"]
         with open(os.path.join(SLOTDIR, str(slot)), "w") as f:
@@ -315,4 +332,14 @@ if want > 0:
 
     for issue_id, slot in handed:
         print(f"{issue_id} {slot}")
+
+    if refused:
+        print(f"! {len(refused)} of {len(ready)} ready issues could NOT be claimed as {SESSION}:",
+              file=sys.stderr)
+        for issue_id, why in refused[:5]:
+            print(f"!   {issue_id}: {why}", file=sys.stderr)
+        print("! A refused claim is not a quiet day. Nothing was handed out for these.",
+              file=sys.stderr)
+    if refused and not handed:
+        sys.exit(1)
 PY

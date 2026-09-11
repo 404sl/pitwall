@@ -89,7 +89,20 @@ print(node if isinstance(node, str) else json.dumps(node))
 PY
 }
 
+sessions() {
+  python3 - "$CONFIG" <<'PY'
+import json, os, sys
+cfg = json.load(open(sys.argv[1]))
+s = cfg.get("sessions") or {}
+project = os.path.basename(str(cfg.get("root", "")).rstrip("/")) or "project"
+print(s.get("devloop") or f"{project}-devloop")
+print(s.get("planning") or f"{project}-planning-session")
+PY
+}
+
 case "${1:-}" in
+  session)          sessions | sed -n 1p ;;
+  planning-session) sessions | sed -n 2p ;;
   --check)
     python3 - "$CONFIG" <<'PY'
 import json, os, sys
@@ -170,7 +183,7 @@ PY
       echo "                  reservation decides the lane and is not overridden from here." >&2
       exit 1
     fi
-    python3 - "$CONFIG" "$2" "$SLOT" "$SKILL_DIR" "$SCRIPT_PATH" <<'PY'
+    python3 - "$CONFIG" "$2" "$SLOT" "$SKILL_DIR" "$SCRIPT_PATH" "$(sessions | sed -n 1p)" "$(sessions | sed -n 2p)" <<'PY'
 import json, sys
 cfg = json.load(open(sys.argv[1]))
 print(json.dumps({
@@ -181,6 +194,8 @@ print(json.dumps({
     "root": cfg["root"],
     "idPrefix": cfg.get("idPrefix", "sr"),
     "lockPrefix": cfg.get("lockPrefix", "devloop"),
+    "session": sys.argv[6],
+    "planningSession": sys.argv[7],
     "repos": cfg.get("repos", {}),
 }))
 PY
@@ -200,7 +215,9 @@ PY
       echo "config.sh --land: run-script.sh could not stage land.js - the lander does not start." >&2
       exit 1
     }
-    python3 - "$CONFIG" "$SKILL_DIR" "$SCRIPT_PATH" "$@" <<'PY'
+    SESSION="$(sessions | sed -n 1p)"
+    PLANNING="$(sessions | sed -n 2p)"
+    python3 - "$CONFIG" "$SKILL_DIR" "$SCRIPT_PATH" "$SESSION" "$PLANNING" "$@" <<'PY'
 import json, sys
 cfg = json.load(open(sys.argv[1]))
 repos = cfg.get("repos", {})
@@ -210,13 +227,15 @@ out = {
         "root": cfg["root"],
     "idPrefix": cfg.get("idPrefix", "sr"),
     "lockPrefix": cfg.get("lockPrefix", "devloop"),
+    "session": sys.argv[4],
+    "planningSession": sys.argv[5],
     "deployEvery": cfg.get("deployEvery", 3),
     "repos": repos,
 }
 slugs = {name: (r or {}).get("slug") for name, r in repos.items()}
 known = sorted({s for s in slugs.values() if s})
 pre = []
-for a in sys.argv[4:]:
+for a in sys.argv[6:]:
     a = a.strip()
     if not a:
         continue

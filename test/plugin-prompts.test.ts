@@ -39,6 +39,28 @@ test("the rules a run is given carry no backticks", () => {
   );
 });
 
+test("every bd write a run is told to make names the actor", () => {
+  const offenders: string[] = [];
+  for (const file of ["task.js", "land.js", "land-train.js", "rework.js"]) {
+    const lines = readFileSync(join(SKILL, file), "utf8").split("\n");
+    lines.forEach((line, index) => {
+      const text = line.trim();
+      if (!/^(?:\d+\.\s*)?(?:cd [^&]*&&\s*)?(?:[A-Z_]+=\S+\s+)?bd\s/.test(text)) return;
+      if (text.includes("--actor")) return;
+      if (!/\bbd\s+(?:\S+\s+)*?(update|create|close|label)\b/.test(text)) return;
+      offenders.push(`${file}:${index + 1} ${text}`);
+    });
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    "a bd write with no --actor falls through to git user.name: on an issue this pipeline owns " +
+      "the claim is refused, and on an unassigned one the write silently stamps a person as the " +
+      "assignee, which takes the issue out of the queue for good. The flag has to appear in the " +
+      `TEXT a run is handed, not only in the script that renders it:\n${offenders.join("\n")}`,
+  );
+});
+
 test("every workflow script is present in the plugin", () => {
   for (const file of ["task.js", "land.js", "rework.js", "land-train.js", "config.sh", "lock-check.sh", "lane-running.sh"]) {
     const path = join(SKILL, file);

@@ -1,5 +1,51 @@
 # Changelog
 
+## 0.1.34
+
+**The pipeline took any ready ticket; now it takes only what is assigned to it.** Routing is the
+assignee, and three separate holes had to close together for that to be true rather than decorative.
+
+- **Dispatch filters on the assignee.** `dispatchable.sh` asks bd for this session's queue and
+  filters the JSON on `assignee` as well; `queue.sh` applies the same rule to its ready list; and
+  `slot.sh` refuses a lane for anything that is not this session's, so a hand-dispatch by id is
+  gated on the same fact as a listing. Unassigned is refused by name rather than filtered away in
+  silence - it is IMPORT -> PROMOTE expressed as ownership, and it is the only thing between a
+  stranger's issue and a lane that merges and deploys.
+- **Every bd write carries `--actor <session>`, in the scripts and in the prompt text.** bd resolves
+  its actor from `--actor`, then `BEADS_ACTOR`, then `git user.name`, and a run inherits no export
+  from the session that dispatched it - so the flag is the mechanism and the variable is a
+  convenience for a person at a terminal. Measured 2026-09-11: without it a claim on an issue this
+  pipeline owns is refused (exit 1, "already claimed by <name>"), and a write on an UNASSIGNED issue
+  succeeds silently and stamps `git user.name` into the assignee, which takes the issue out of the
+  queue for good. That quiet path is how 37 issues came to be assigned to a person.
+- **`queue.sh --next` no longer discards a refused claim.** Its only claim site captured bd's
+  non-zero exit and continued, so with every open issue assigned and no actor it would hand out
+  nothing, report no error, and present 97 ready issues as a quiet day. It now names what it could
+  not claim and exits non-zero when a refusal is the reason nothing was handed out.
+- **Handing a ticket back is a reassignment AND a label.** The briefs set the assignee to the session
+  that asked - `metadata.origin.session`, walking up the id prefix, else the planning session - and
+  still apply `needs-decision` / `needs-access`. The assignee moves the queue; the label still says
+  why it stopped, and classification is still derived from the label. A split child that needs a
+  person moves to the planning session the same way, and `issues-watch.sh` prints the import command
+  assigned there, never to a lane.
+- **The session names are derived in one place.** `config.sh session` and `config.sh
+  planning-session`, defaulting to the workspace directory plus `-devloop` / `-planning-session`,
+  overridable per workspace with `"sessions": { "devloop": ..., "planning": ... }`, and carried into
+  `task.js` and `land.js` through the args object. The default is the DIRECTORY and not `idPrefix`:
+  session-replay has `idPrefix` `sr` and sessions named `session-replay-devloop`, so deriving from
+  `idPrefix` would have matched nothing and starved that pipeline while reporting nothing at all.
+
+UPGRADING A WORKSPACE THAT HAS NEVER ASSIGNED ITS BACKLOG: dispatch now refuses, loudly, naming the
+command - `bd --actor <session> update <id> -a <session>`. That is deliberate. The alternative to a
+visible refusal is a queue that reads as empty, which is the failure this whole change is about.
+
+Tests: eight drive `queue.sh`, `slot.sh` and `config.sh` against a stub bd - only assigned issues are
+handed out, an unassigned one is never even claimed, every claim carries the actor, a run whose claims
+are all refused fails and says so, the unassigned are reported, and the names derive from the
+workspace with an explicit pair winning. A source test reads the briefs and fails on any bd write
+that does not name the actor. Seven of the eight routing tests fail before the change, and the source
+test fails on 17 lines of it - twelve in task.js, three in land.js, two in land-train.js.
+
 ## 0.1.23
 
 **A rework gave its lane back only when it handed off.** `rework.js` takes the lane lock in its

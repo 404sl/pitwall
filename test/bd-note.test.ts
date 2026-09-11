@@ -23,6 +23,7 @@ interface Harness {
   bin: string;
   config: string;
   notesFile: string;
+  actorsFile: string;
 }
 
 function executable(path: string, body: string): void {
@@ -40,11 +41,14 @@ function harness(seededNotes: string, frozenNow?: string): Harness {
 
   const notesFile = join(root, "notes.txt");
   writeFileSync(notesFile, seededNotes);
+  const actorsFile = join(root, "actors.txt");
+  writeFileSync(actorsFile, "");
 
   executable(
     join(bin, "bd"),
     [
       "#!/bin/sh",
+      'if [ "$1" = "--actor" ]; then printf \'%s\\n\' "$2" >> "$BD_ACTORS"; shift 2; fi',
       'case "$1" in',
       "  update)",
       '    [ "${BD_RECORD:-0}" = "1" ] && printf \'%s\\n\' "$4" >> "$BD_NOTES"',
@@ -63,7 +67,7 @@ function harness(seededNotes: string, frozenNow?: string): Harness {
     executable(join(bin, "date"), ["#!/bin/sh", `printf '%s\\n' "${frozenNow}"`, ""].join("\n"));
   }
 
-  return { root, bin, config, notesFile };
+  return { root, bin, config, notesFile, actorsFile };
 }
 
 interface Ran {
@@ -84,6 +88,7 @@ function append(
     PITWALL_CONFIG: box.config,
     BEADS_DIR: "",
     BD_NOTES: box.notesFile,
+    BD_ACTORS: box.actorsFile,
     BD_RECORD: record ? "1" : "0",
   };
   if (writer === undefined) {
@@ -115,6 +120,20 @@ test("a note carries the date it was written and the session that wrote it", () 
   const written = Date.parse((added[1] ?? "").split(" ")[0] ?? "");
   assert.ok(!Number.isNaN(written), "the stamp does not parse as a date");
   assert.ok(Math.abs(Date.now() - written) < 60_000, "the stamp is not the time of writing");
+});
+
+test("the write names the session as bd's actor, not whatever the shell resolves to", () => {
+  const box = harness("");
+  const ran = append(box, ["acme-1", NOTE], "lane-acme-1");
+
+  assert.equal(ran.status, 0, ran.stdout + ran.stderr);
+  const actors = readFileSync(box.actorsFile, "utf8").split("\n").filter(Boolean);
+  assert.deepEqual(
+    [...new Set(actors)],
+    ["lane-acme-1"],
+    "every bd write must carry --actor <session>: without it bd falls through to git user.name, " +
+      "which stamps a person onto the issue and takes it out of the pipeline's queue",
+  );
 });
 
 test("notes already in the field keep their bytes and stay unstamped", () => {

@@ -20,6 +20,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CFG="$HERE/config.sh"
 ROOT="${DEVLOOP_ROOT:-$(bash "$CFG" root 2>/dev/null)}"
 [ -n "$ROOT" ] || { echo "issues-watch.sh: no workspace resolved - refusing to guess." >&2; exit 6; }
+PLANNING="${PITWALL_PLANNING_SESSION:-$(bash "$CFG" planning-session 2>/dev/null)}"
 
 PEEK=0; LOOP=0; EVERY=300
 while [ $# -gt 0 ]; do
@@ -86,6 +87,8 @@ report_once() {
       echo "  $title"
       echo "  $url"
       echo "  $verdict"
+      echo "  import it to ${PLANNING:-the planning session}, never to a lane:"
+      echo "    bd --actor ${PLANNING:-<your session>} create \"<title>\" -a ${PLANNING:-<the planning session>} --external-ref $slug#$num"
       changed=1
     done < <(printf '%s' "$json" | python3 -c '
 import json,sys

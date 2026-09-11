@@ -61,6 +61,11 @@ if (!input.root) {
 }
 const ROOT = input.root
 const ID_PREFIX = input.idPrefix || 'sr'
+const PROJECT = String(ROOT).replace(/\/+$/, '').split('/').pop() || 'project'
+const SESSION = input.session || `${PROJECT}-devloop`
+const PLANNING_SESSION = input.planningSession || `${PROJECT}-planning-session`
+const ASKED_BY = `the session that asked - metadata.origin.session from 'bd show <id> --json', ` +
+  `walking up the id prefix if a child carries none, else ${PLANNING_SESSION}`
 const REPOS = input.repos || {}
 // /tmp is shared across every project on this machine. Two projects dispatching with the same
 // lockPrefix collide on the lane locks - and the lane lock is what stops two lanes sharing a
@@ -327,6 +332,16 @@ NON-NEGOTIABLE RULES. They outrank speed, and they outrank finishing the task.
    Never run 'bd init' anywhere. If you see .beads/config.json deleted or .beads/metadata.json
    appear inside a code repo, that is this mistake - restore it with 'git checkout --' and
    remove the stray file.
+
+   EVERY bd WRITE CARRIES '--actor ${SESSION}', and the flag is the mechanism rather than the
+   environment: bd resolves its actor from --actor, then BEADS_ACTOR, then git user.name - and a
+   run inherits no export from the session that dispatched it, so an exported variable is a
+   convenience for a person at a terminal and nothing else. The commands below already carry it;
+   any bd write of your own must too. Two measured consequences of leaving it off, 2026-09-11:
+   a claim on an issue assigned to ${SESSION} is REFUSED, exit 1, 'already claimed by
+   ${SESSION}'; and a write on an UNASSIGNED issue succeeds silently and stamps a person's name
+   into the assignee, which takes the issue out of this pipeline's queue and no lane ever offers
+   it again. The quiet one is the expensive one.
 11. The repos' git hooks that called 'bd sync' were removed: 1.x has no sync subcommand and
    they failed every commit. Do NOT run 'bd hooks install' to repair them - it also installs
    a prepare-commit-msg hook that appends agent identity trailers to commit messages, which
@@ -764,7 +779,7 @@ ${again ? '' : `Set up the worktree. THE BRANCH MAY ALREADY EXIST, so check befo
   fi
   mkdir -p ${scratch}
 Mark it claimed, from ${ROOT}:
-  bd update ${task.id} -s in_progress
+  bd --actor ${SESSION} update ${task.id} -s in_progress
 
 BRANCH FROM origin/master, NEVER FROM ANOTHER LANE'S BRANCH, and open the pull request against
 master. If the work you need sits in a pull request that has not landed yet, that is a
@@ -873,8 +888,11 @@ code, from ${ROOT}:
   of them needed the owner: eight were engineering calls, one was a dependency, one was a park
   whose condition had been met hours earlier. They found them by browsing.
 
-  bd label add ${task.id} <needs-decision if a choice only a person can make, needs-access if it needs a deploy/dashboard/device they have and you do not>
-  bd update ${task.id} -s open --append-notes "<what you found, the exact decision needed, and the options with your recommendation>"
+  bd --actor ${SESSION} label add ${task.id} <needs-decision if a choice only a person can make, needs-access if it needs a deploy/dashboard/device they have and you do not>
+  bd --actor ${SESSION} update ${task.id} -s open -a <${ASKED_BY}> --append-notes "<what you found, the exact decision needed, and the options with your recommendation>"
+HANDING BACK IS A REASSIGNMENT AND A LABEL, BOTH. The assignee moves the issue into somebody's
+queue; the label still says why it stopped, and classification is still derived from the label.
+An issue parked with the label alone sits in this pipeline's own queue and comes straight back.
 Then return status 'needs_feedback' with that question. Leave the worktree and any branch in
 place. This is a good outcome, not a failure - a wrong guess shipped unattended is worse.
 
@@ -916,7 +934,7 @@ Otherwise:
 1. Confirm the defect in the code before changing anything. If it is not there, is already
    fixed, or the ticket's premise is wrong, that is a real result and often a better one
    than a change. Return 'no_change_needed', and CLOSE the issue yourself, from ${ROOT}:
-     bd close ${task.id} --reason "<what you measured, and why no change was needed>"
+     bd --actor ${SESSION} close ${task.id} --reason "<what you measured, and why no change was needed>"
    Closing matters: an issue left open comes straight back to the front of the queue and
    another agent repeats the investigation. Put the evidence in the close reason, not just
    a verdict - whoever reads it should not have to re-derive it. If part of the ticket does
@@ -1244,7 +1262,7 @@ PR: ${work.prUrl || work.prNumber}
      cd ${repo} && git worktree remove ${wtPath} --force
 
 5. Record where it stands, from ${ROOT}:
-     bd update ${task.id} --append-notes "<what the change does, the PR url, and that it is green and labelled lane-verified awaiting the lander>"
+     bd --actor ${SESSION} update ${task.id} --append-notes "<what the change does, the PR url, and that it is green and labelled lane-verified awaiting the lander>"
 
    LEAVE THE ISSUE OPEN AND in_progress. Do NOT close it - it is not deployed yet, and the
    lander closes it when it is. Use --append-notes, never --notes: --notes overwrites the
@@ -1274,8 +1292,8 @@ happened twice on app-i6yt and app-233a. Writing the QUESTION into the notes is 
 is what they asked for - a bare label with no question cannot be answered.
 
 From ${ROOT}:
-1. bd label add ${task.id} <needs-decision if a choice only a person can make, needs-access if it needs a deploy/dashboard/device they have and you do not>
-2. bd update ${task.id} -s open --append-notes "<what was attempted across the three rounds, what
+1. bd --actor ${SESSION} label add ${task.id} <needs-decision if a choice only a person can make, needs-access if it needs a deploy/dashboard/device they have and you do not>
+2. bd --actor ${SESSION} update ${task.id} -s open -a <${ASKED_BY}> --append-notes "<what was attempted across the three rounds, what
    the reviewer would not accept and why, what you believe the real decision or difficulty
    is, and where the branch and PR are>"
    Write it so somebody can pick this up without reading three transcripts.
@@ -1543,7 +1561,7 @@ ${plan.map((c, i) => `${i + 1}. [${c.repo}] ${c.title}
    ${c.autonomous ? 'can be done unattended' : `needs a person: ${c.whyNotAutonomous}`}`).join('\n')}
 
 For each, from ${ROOT}:
-  bd create "<title>" -t <type> -p ${triage.priority} --parent ${ID} -d "<the scope, written so
+  bd --actor ${SESSION} create "<title>" -t <type> -p ${triage.priority} -a ${SESSION} --parent ${ID} -d "<the scope, written so
   somebody can act on it without reading the parent: what is wrong, where in the code, and
   what done looks like. Carry across the concrete detail the parent already established -
   file and line references, reproductions, ids - rather than pointing at the parent for it.>"
@@ -1554,10 +1572,13 @@ when the parent is a bug; a child that is somebody running a command or reading 
 a task. This line used to read '-t bug' and four separate splits on 2026-08-25/26 dutifully
 created features as bugs, flagged it, and had it corrected afterwards - which is the right
 instinct followed from the wrong instruction, so the instruction is what changed.
-Add 'bd label add <child> needs-decision' (a choice only a person can make) or 'needs-access'
+Add 'bd --actor ${SESSION} label add <child> needs-decision' (a choice only a person can make) or 'needs-access'
 (something only they can run - a deploy, a dashboard, a device) for any child marked as needing
 a person, with a
 note saying exactly what the person must decide or do.
+A CHILD THAT NEEDS A PERSON ALSO MOVES QUEUE: 'bd --actor ${SESSION} update <child> -a ${PLANNING_SESSION}'.
+The label says why it stopped; the assignee says whose it is. A child left assigned here is in
+this pipeline's queue however it is labelled.
 
 CHECK EVERY CHILD'S LABELS AFTER CREATING IT. bd copies the PARENT's labels onto a child,
 and that has gone wrong three different ways: a leaf child inheriting 'umbrella' is treated
@@ -1586,8 +1607,8 @@ happened twice on app-i6yt and app-233a. Writing the QUESTION into the notes is 
 is what they asked for - a bare label with no question cannot be answered.
 
 
-  bd label add ${ID} umbrella
-  bd update ${ID} -s open --append-notes "Split into <the child ids>, <one-line reason>. The work
+  bd --actor ${SESSION} label add ${ID} umbrella
+  bd --actor ${SESSION} update ${ID} -s open --append-notes "Split into <the child ids>, <one-line reason>. The work
   now lives in the children; this stays as the umbrella."
 Use the label, not a type change: bd 0.20.1 has no --type on update, bd edit only touches
 text fields, and import refuses the round trip as a collision. The queue treats 'umbrella'
@@ -1637,8 +1658,8 @@ if (!triage.eligible) {
   const handover = await agent(`Issue ${ID} cannot be done unattended: ${triage.reason}
 
 Hand it to a person, from ${ROOT}:
-  bd label add ${ID} <needs-decision if a choice only a person can make, needs-access if it needs a deploy/dashboard/device they have and you do not>
-  bd update ${ID} -s open --append-notes "<why this needs a person, and the exact question or
+  bd --actor ${SESSION} label add ${ID} <needs-decision if a choice only a person can make, needs-access if it needs a deploy/dashboard/device they have and you do not>
+  bd --actor ${SESSION} update ${ID} -s open -a <${ASKED_BY}> --append-notes "<why this needs a person, and the exact question or
   decision, written so somebody can answer it without re-reading the code>"
 
 Then run bd show ${ID} once more and return its first six lines verbatim as 'verification',

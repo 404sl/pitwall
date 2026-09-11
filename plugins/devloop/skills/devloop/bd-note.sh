@@ -55,6 +55,9 @@ writer=${writer#-}; writer=${writer%-}
 [ -n "$writer" ] || writer=unknown
 stamped=$(printf '\n%s %s\n%s' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$writer" "$note")
 
+actor="${PITWALL_SESSION:-$(bash "$SKILL_DIR/config.sh" session 2>/dev/null)}"
+[ -n "$actor" ] || actor="$writer"
+
 note_landed() {
   bd show "$id" --json 2>/dev/null | python3 -c "
 import json,sys,re
@@ -81,7 +84,7 @@ done
 
 status=1
 for attempt in 1 2 3; do
-  bd update "$id" --append-notes "$stamped" >/dev/null 2>&1
+  bd --actor "$actor" update "$id" --append-notes "$stamped" >/dev/null 2>&1
   sleep 0.3                          # the write is not always readable the instant it returns
   note_landed; rc=$?
   if [ "$rc" -eq 0 ]; then

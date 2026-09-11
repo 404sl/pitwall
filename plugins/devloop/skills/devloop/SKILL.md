@@ -18,6 +18,31 @@ Anything this pipeline files - a split child, a follow-up, a bug found in passin
 `WRITING-TICKETS.md` in this directory. One instruction, the traps, a link to the evidence,
 checkable acceptance. Nothing else.
 
+## Routing: the assignee decides what a lane may pick up
+
+The convention - who asked, whose queue a ticket sits in, and what each of bd's three identity
+fields means - is written once, in the **workspace CLAUDE.md**, under "Who asked for a ticket, and
+whose queue it sits in". Read it there; it is not restated here. What this pipeline does with it:
+
+- `config.sh session` and `config.sh planning-session` are the only place the two names are
+  derived: the workspace directory plus `-devloop` / `-planning-session`. A workspace whose
+  sessions are named otherwise sets `"sessions": { "devloop": ..., "planning": ... }`. The
+  default is the directory rather than `idPrefix` because session-replay has `idPrefix` `sr` and
+  sessions named `session-replay-*`, and `sr-devloop` would have matched nothing.
+- `dispatchable.sh` and `queue.sh` offer only what is assigned to this session, and both list the
+  unassigned ids rather than leaving a blank column where a state should be.
+- `slot.sh` refuses a lane for anything that is not in this session's queue, so a hand-dispatch is
+  gated on the same fact. Unassigned is refused by name: nothing unassigned is dispatchable.
+- Every `bd` write these scripts make, and every one a brief tells a run to make, carries
+  `--actor <session>`. The flag and never an exported variable: a run inherits no export from the
+  session that dispatched it.
+- `queue.sh --next` distinguishes "nothing was ready" from "I could not claim what was ready" and
+  exits non-zero for the second. An empty hand-out with a refused claim behind it is a failure.
+
+A workspace that has never assigned its backlog will therefore be told so, loudly, on its first
+dispatch: assign the queue with `bd --actor <session> update <id> -a <session>`. That is the
+intended upgrade path - the alternative is a queue that quietly reads as empty.
+
 ## Shape
 
 A **supervisor loop** in the session, **one background workflow per issue**, and **one

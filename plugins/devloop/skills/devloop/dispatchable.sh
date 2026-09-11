@@ -53,6 +53,12 @@ elif ! ROOT="$(bash "$HERE/config.sh" root 2>/dev/null)" || [ -z "$ROOT" ]; then
   exit 6
 fi
 LOCK_PREFIX="${LOCK_PREFIX:-$(bash "$HERE/config.sh" lockPrefix 2>/dev/null || echo devloop)}"
+SESSION="${PITWALL_SESSION:-$(bash "$HERE/config.sh" session 2>/dev/null)}"
+if [ -z "$SESSION" ]; then
+  echo "dispatchable.sh: no session name resolved, and dispatch is filtered on the assignee." >&2
+  echo "                 Without it this would offer work nobody assigned to this pipeline." >&2
+  exit 6
+fi
 cd "$ROOT" || { echo "not a directory: $ROOT" >&2; exit 6; }
 
 # VIA FILES, NOT THE ENVIRONMENT. These payloads carry every issue's notes field, and this
@@ -96,13 +102,13 @@ for name,cfg in repos.items():
 # lanes over the same branch.
 cat "/tmp/${LOCK_PREFIX}-slots"/* 2>/dev/null > "$TMP/inlane.txt" || : > "$TMP/inlane.txt"
 
-bd ready --json >"$TMP/ready.json" 2>/dev/null
+bd ready --json -a "$SESSION" >"$TMP/ready.json" 2>/dev/null
 bd list --all --json >"$TMP/every.json" 2>/dev/null
 [ -s "$TMP/every.json" ] || bd list --status open --json >"$TMP/every.json" 2>/dev/null
 
 [ -s "$TMP/ready.json" ] || { echo "bd ready returned nothing - is bd on PATH and this the workspace root?" >&2; exit 6; }
 
-LIMIT="$LIMIT" TMP="$TMP" python3 <<'PY'
+LIMIT="$LIMIT" TMP="$TMP" SESSION="$SESSION" python3 <<'PY'
 import json, os, re, sys
 
 tmp = os.environ["TMP"]
@@ -135,9 +141,13 @@ for i in ids:
     if "." in i:
         parents.add(i.rsplit(".", 1)[0])
 
+session = os.environ["SESSION"]
+
 out = []
 for r in ready:
     labels = set(r.get("labels") or [])
+    if (r.get("assignee") or "") != session:
+        continue
     if labels & park:
         continue
     if r.get("issue_type") == "epic":
@@ -155,7 +165,19 @@ for r in out:
     print("%-14s P%-3s %s" % (r["id"], r.get("priority"), (r.get("title") or "")[:66]))
 
 if not out:
-    print("(nothing dispatchable - every ready issue is parked, an epic, or a parent)")
+    print("(nothing dispatchable for %s - every ready issue of its is parked, an epic, or a parent)" % session)
+
+nobody = [i for i in every
+          if i.get("status") in ("open", "in_progress") and not (i.get("assignee") or "")]
+if nobody:
+    print()
+    print("UNASSIGNED AND THEREFORE INVISIBLE - %d open, listed because blank is not a state:" % len(nobody))
+    for i in nobody[:12]:
+        print("  unassigned    %-14s %s" % (i["id"], (i.get("title") or "")[:58]))
+    if len(nobody) > 12:
+        print("  ... and %d more" % (len(nobody) - 12))
+    print("  Dispatch filters on the assignee, so none of these can be handed to a lane. Put each")
+    print("  in a queue: bd --actor %s update <id> -a %s" % (session, session))
 
 # 4. RESEMBLES SOMETHING ALREADY RUNNING. dupes.sh does this properly and against closed work
 # too, but nothing ran it - a check that lives in its own script only fires when somebody

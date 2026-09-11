@@ -90,6 +90,7 @@ function harness(seededNotes: string): Harness {
     join(bin, "bd"),
     [
       "#!/bin/sh",
+      'if [ "$1" = "--actor" ]; then shift 2; fi',
       'case "$1" in',
       "  update)",
       '    [ "${BD_RECORD:-0}" = "1" ] && printf \'%s\\n\' "$4" >> "$BD_NOTES"',
