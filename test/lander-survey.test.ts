@@ -36,6 +36,11 @@ const ARGS = {
   },
 };
 
+const ASKED = ["devloop/pitwall-abc", "devloop/pitwall-def"].flatMap((branch) => [
+  { slug: "404sl/pitwall", branch },
+  { slug: "404sl/pitwall-site", branch },
+]);
+
 const THE_PR = {
   repo: "site",
   slug: "404sl/pitwall-site",
@@ -60,6 +65,7 @@ function lander(reply: Reply, args: Record<string, unknown> = {}) {
     if (n === 1) return { status: "taken", token: "lander-1788964650-29574", holder: "lander-1788964650-29574" };
     if (call.label === "release") return { status: "released" };
     if (call.label.startsWith("version:")) return NO_PLUGIN;
+    if (call.label === "branch-survey") return { status: "read", asked: ASKED, prs: [] };
     return reply(call, n);
   });
 }
