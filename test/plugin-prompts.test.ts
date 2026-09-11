@@ -302,8 +302,9 @@ test("the handoff brief hands the lane its repository's slug rather than a place
         "pull request in another repository is how the lane-verified label reaches one. The value " +
         `is in the config the repo path already comes from:\n${guesses.join("\n")}`,
     );
-    assert.ok(
-      brief.includes(`--slug ${slug}`),
+    assert.match(
+      brief,
+      new RegExp(`--slug ${slug}\\s+--pr `),
       `the handoff command in the brief for ${repo} does not pass ${slug}, so the script is told ` +
         "to check a pull request in a repository the ticket never touched",
     );
