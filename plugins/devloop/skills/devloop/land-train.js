@@ -815,8 +815,8 @@ for (const [name, r] of Object.entries(REPOS)) {
     relaunch: (!mine && left.length) ? `run again with repo: ${name}` : null,
     why: !(mine && left.length) ? null
       : outcome.stopped
-        ? `this train stopped (${outcome.stopped}) without taking ${many}, and the label stands - the next train for ${name} takes ${many}`
-        : `still labelled and open in ${name} after this train merged - in rejected or stranded above if this run saw ${many}, otherwise labelled after the build surveyed the queue; the label stands either way and the next train for ${name} takes ${many}`,
+        ? `this train stopped (${outcome.stopped}) before taking ${many}; the label stands`
+        : `still labelled and open in ${name} when this train finished - in rejected or stranded above if this run saw ${many}, otherwise labelled after the build surveyed the queue and queued for the next train for ${name}; the label stands either way`,
   }
 }
 for (const [name, a] of Object.entries(perRepo)) {
