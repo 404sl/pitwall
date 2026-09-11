@@ -1255,11 +1255,16 @@ PR: ${work.prUrl || work.prNumber}
    created in one of them, or a checkout named by the config has no origin/<branch> (nothing was
    labelled anywhere), 8 labelling began and stopped part-way.
 
-   EXIT 7 IS NOT 'BAD ARGUMENTS'. Your arguments were fine and nothing was labelled: something
-   it has to read to know the full set of pull requests would not answer. Fix what it names - run
-   it from the main checkout of the repository rather than from your worktree, add the missing
-   slug to the config, or wait out the gh failure it quotes - and re-run it. Do NOT label by hand
-   instead: labelling the half you know about is the defect this script exists to prevent.
+   EXIT 7 IS NOT 'BAD ARGUMENTS'. Your arguments were fine and nothing was labelled: something it
+   has to read or prepare to cover the full set of pull requests would not answer. READ WHICH ONE
+   IT NAMES, because the remedies are different and only one of them is waiting. A config it could
+   not find: run it from the main checkout rather than from your worktree. A repository with no
+   slug and no checkout: add the slug to the config. A repository that would not list its pull
+   requests or labels, with gh's reason quoted: that one may be transient, so re-run it. A
+   repository with no lane-verified label that it could not create one in: that is a permissions
+   answer, not a transient one - somebody with write access there creates the label once, and no
+   number of re-runs will do it. Do NOT label by hand instead, whichever it is: labelling the half
+   you know about is the defect this script exists to prevent.
 
    EXIT 8 MEANS RE-RUN IT, once the cause it quotes is gone. It prints which pull requests carry
    the label and which do not. Adding a label is idempotent and it stops before the worktree

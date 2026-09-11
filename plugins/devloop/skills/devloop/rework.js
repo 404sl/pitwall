@@ -424,8 +424,11 @@ confirmed. Do not re-run it - repair only the note, the way its message says.
 
 Exit 7 is NOT bad arguments: the set of pull requests on the branch could not be established -
 the workspace config could not be read, or a repository's pull requests or labels would not list,
-or the label could not be created in one of them. Nothing was labelled anywhere. Fix what it names
-and re-run it; labelling the half you know about by hand is the failure it is refusing to cause.
+or the label could not be created in one of them. Nothing was labelled anywhere. Fix the one it
+names and re-run it, and note that the last of those is a permissions answer rather than a
+transient one: a repository that has no lane-verified label and will not take one needs somebody
+with write access there to create it once. Labelling the half you know about by hand is the
+failure it is refusing to cause.
 
 Exit 8 means labelling began and stopped part-way, and it prints which pull requests carry the
 label and which do not. Adding a label is idempotent and it stops before the worktree and the

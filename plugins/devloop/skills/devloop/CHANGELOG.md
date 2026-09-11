@@ -40,17 +40,29 @@ stayed green.
   mid-attempt holding the merge lock - so every repository in the set is asked for its labels and
   given the label if it has none, and one that cannot carry it refuses the whole handoff with
   nothing labelled. `gh label list` is asked with `--search` and `--limit`, because its default
-  first thirty labels make a label further down the list look absent.
+  first thirty labels make a label further down the list look absent - and its answer to a search
+  that matches nothing is NO BYTES AT ALL rather than an empty list, so the read keeps gh's exit
+  status and its output apart instead of reading a parse failure as a repository that would not
+  answer. A name that merely contains the label is not the label, so the comparison is exact.
+  WHAT THIS COSTS: creating a label is a write, so a workspace holding a repository that has no
+  `lane-verified` AND a gh identity without write access there now fails every handoff on that
+  branch at exit 7 with nothing labelled, and needs the label created once by hand. The creation is
+  attempted only against repositories that actually hold a pull request in the set, so merely
+  configuring a repository does not put a label in it. All three repositories of this workspace
+  already carry the label, so nothing here changes. `--search` was checked against gh 2.75.1; no
+  older version was available to check.
 - **Labelling that stops part-way anyway says which pull requests carry the label**, under its own
   exit code rather than as a bare "the label did not stick", and gh's reason is no longer
   discarded. Adding a label is idempotent and the handoff stops before the worktree removal and
   the tracker note, so the remedy is to fix what gh reported and re-run - never to label the
   remainder by hand, and never to take a label off.
 - **A repository configured without a `path` is read under its own name**, which is what
-  `config.sh --check` has always blessed. It resolved to the workspace root instead, so every
-  handoff in such a workspace failed on a missing `origin/<branch>` - and had that root been a
-  checkout carrying the branch, compliance would have been graded against the wrong repository's
-  commit messages.
+  `config.sh --check` has always blessed, and an absolute `path` is read as written. Reading the
+  config is new here, so neither is a change in behaviour; both are what the survey had to get
+  right first time, because defaulting the path to nothing resolves such a repository to the
+  workspace ROOT - which fails on a missing `origin/<branch>` at best, and at worst, had that root
+  been a checkout carrying the branch, grades compliance against the wrong repository's commit
+  messages.
 - **Two new exit codes rather than one overloaded one.** 6 is bad arguments again; 7 is a set of
   pull requests that could not be established, with nothing labelled; 8 is labelling that began
   and stopped. A lane reads what a code means from the prose in `task.js` and `rework.js`, and

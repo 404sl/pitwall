@@ -292,7 +292,10 @@ fi
 
 while IFS="|" read -r rname rpath rslug; do
   [ -n "$rname" ] || continue
-  rdir="$CFG_ROOT/$rpath"
+  case "$rpath" in
+    /*) rdir="$rpath" ;;
+    *) rdir="$CFG_ROOT/$rpath" ;;
+  esac
   if [ -z "$rslug" ]; then
     rslug=$(git -C "$rdir" remote get-url origin 2>/dev/null \
             | sed -e 's#\.git$##' -e 's#^git@github\.com:##' -e 's#^https://github\.com/##')
@@ -385,34 +388,34 @@ if [ "$CHECK_ONLY" = "1" ]; then
   exit 0
 fi
 
-# 3. THE LABEL MUST EXIST IN EVERY REPOSITORY BEFORE THE FIRST ONE IS LABELLED. `--add-label`
-#    fails when the label is absent from that repository, and the labelling below walks a set of
-#    pull requests: the first succeeding and the second failing leaves a mergeable half of a
-#    two-repo ticket, which is the defect this script exists to remove rather than a smaller
-#    version of it. The label cannot be taken off again to repair that - once on, a pull request
-#    belongs to the lander, which may already be mid-attempt holding the merge lock - so the
-#    check that can be made before any of it is made here, and a repository that cannot carry
-#    the label refuses the whole handoff with nothing labelled.
-#
-#    The label exists in every repository of this workspace today, so the trigger is the repository
-#    added to a config tomorrow, any other workspace this is installed into, and a transient
-#    failure or rate limit against either call.
+# 3. Prove every repository in the set can carry the label before the first one is labelled.
 preflight_err_file=$(mktemp "${TMPDIR:-/tmp}/lane-handoff-label.XXXXXX")
 for pslug in $(printf '%s\n' "$TRIPLES" | cut -f2 | sort -u); do
   [ -n "$pslug" ] || continue
-  # --search AND --limit, because `gh label list` answers with the first 30 labels by default and
-  # a label absent from that page reads exactly like a label absent from the repository.
-  have=$(gh label list --repo "$pslug" --search "$LABEL" --limit 100 --json name 2>"$preflight_err_file" \
-    | python3 -c "
+  : > "$preflight_err_file"
+  label_json=$(gh label list --repo "$pslug" --search "$LABEL" --limit 100 --json name 2>"$preflight_err_file")
+  label_rc=$?
+  if [ "$label_rc" -ne 0 ]; then
+    echo "lane-handoff.sh: could not read the labels of ${pslug}, so whether it can carry" >&2
+    echo "                 ${LABEL} is unknown. Nothing was labelled." >&2
+    perr=$(cat "$preflight_err_file"); [ -n "$perr" ] && printf '                 gh said: %s\n' "$perr" >&2
+    rm -f "$preflight_err_file"
+    exit 7
+  fi
+  case "$label_json" in
+    *[![:space:]]*)
+      have=$(printf '%s' "$label_json" | python3 -c "
 import json,sys
 try: labels=json.load(sys.stdin)
 except Exception: raise SystemExit(1)
 print('YES' if any((l or {}).get('name') == sys.argv[1] for l in labels) else 'NO')
-" "$LABEL" 2>/dev/null)
+" "$LABEL" 2>/dev/null) ;;
+    *) have=NO ;;
+  esac
   if [ "$have" != "YES" ] && [ "$have" != "NO" ]; then
-    echo "lane-handoff.sh: could not read the labels of ${pslug}, so whether it can carry" >&2
-    echo "                 ${LABEL} is unknown. Nothing was labelled." >&2
-    perr=$(cat "$preflight_err_file"); [ -n "$perr" ] && printf '                 gh said: %s\n' "$perr" >&2
+    echo "lane-handoff.sh: ${pslug} answered its label list in a shape this cannot read, so" >&2
+    echo "                 whether it can carry ${LABEL} is unknown. Nothing was labelled." >&2
+    printf '                 it said: %s\n' "$label_json" >&2
     rm -f "$preflight_err_file"
     exit 7
   fi

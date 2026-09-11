@@ -39,6 +39,8 @@ interface Second {
   labelMissing?: boolean;
   labelCreateFails?: boolean;
   labelListFails?: boolean;
+  labelSimilar?: boolean;
+  labelGarbled?: boolean;
   noSlug?: boolean;
 }
 
@@ -134,9 +136,13 @@ function harness(seededNotes: string, second?: Second, detached?: boolean): Harn
             `  "label list --repo acme/other"*)${
               second.labelListFails
                 ? ` echo "gh: HTTP 403 on acme/other labels" >&2; exit 1 ;;`
-                : second.labelMissing
-                  ? ` printf '[]\\n' ;;`
-                  : ` printf '[{"name":"lane-verified"}]\\n' ;;`
+                : second.labelSimilar
+                  ? ` printf '[{"name":"lane-verified-2025"}]\\n' ;;`
+                  : second.labelGarbled
+                    ? ` printf 'not json at all\\n' ;;`
+                    : second.labelMissing
+                      ? ` : ;;`
+                      : ` printf '[{"name":"lane-verified"}]\\n' ;;`
             }`,
             `  "label create"*"--repo acme/other"*)${
               second.labelCreateFails
@@ -387,6 +393,29 @@ test("a label missing from a sibling is created before any pull request is label
     ran.calls.indexOf("label create") < ran.calls.indexOf("pr edit"),
     `the label was created after the first pull request was labelled:\n${ran.calls}`,
   );
+});
+
+test("a sibling whose only near-match is a different label gets the label created", () => {
+  const box = harness("", { list: '[{"number":7}]', rollup: READY, body: CLEAN, labelSimilar: true });
+  const ran = handoff(box, [...required(box), "--issue", "acme-1", "--note-file", box.notePath], true);
+
+  assert.equal(ran.status, 0, ran.stdout + ran.stderr);
+  assert.match(ran.stdout, /created the lane-verified label in acme\/other/);
+  assert.ok(
+    ran.calls.indexOf("label create") < ran.calls.indexOf("pr edit"),
+    `the label was created after the first pull request was labelled:\n${ran.calls}`,
+  );
+});
+
+test("a sibling whose label list is unreadable shape leaves NOTHING labelled", () => {
+  const box = harness("", { list: '[{"number":7}]', rollup: READY, body: CLEAN, labelGarbled: true });
+  const ran = handoff(box, [...required(box), "--issue", "acme-1", "--note-file", box.notePath], true);
+
+  assert.equal(ran.status, 7, ran.stdout + ran.stderr);
+  assert.match(ran.stderr, /acme\/other answered its label list in a shape this cannot read/);
+  assert.match(ran.stderr, /it said: not json at all/);
+  assert.equal(ran.labelled, false, "a pull request was labelled on an unreadable label list");
+  assert.doesNotMatch(ran.calls, /label create/);
 });
 
 test("a label that will not stick on a sibling names the pull requests that DO carry it", () => {
