@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { PullRequest, type Project } from "@404sl/pitwall-schema";
 import { readWorkspace, WORKSPACE_FILE } from "../src/autofix.ts";
-import { remoteSlugOf, slugOf } from "../src/git.ts";
+import { remoteOf, remoteSlugOf, slugOf } from "../src/git.ts";
 import { LIST_LIMIT, issueMatcher, readPipeline, rollupChecks } from "../src/pipeline.ts";
 
 const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "gh");
@@ -82,6 +82,24 @@ test("the checkout is asked for its remote rather than the configuration", () =>
   assert.equal(remoteSlugOf(checkout(root, "ssh", SSH_REMOTE)), "acme/site");
   assert.equal(remoteSlugOf(checkout(root, "bare")), undefined);
   assert.equal(remoteSlugOf(join(root, "absent")), undefined);
+});
+
+test("a checkout with nothing to say about its origin is not reported as a failure", () => {
+  const root = mkdtempSync(join(tmpdir(), "pitwall-remote-"));
+  assert.deepEqual(remoteOf(checkout(root, "bare")), {});
+  assert.deepEqual(remoteOf(join(root, "absent")), {});
+  assert.deepEqual(remoteOf(checkout(root, "https", HTTPS_REMOTE)), { slug: "acme/site" });
+});
+
+test("a checkout git refuses to read is a failure, not an absent origin", () => {
+  const root = mkdtempSync(join(tmpdir(), "pitwall-remote-"));
+  const dir = join(root, "broken");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, ".git"), `gitdir: ${join(root, "nowhere")}\n`);
+  const read = remoteOf(dir);
+  assert.equal(read.slug, undefined);
+  assert.match(read.failure ?? "", /not a git repository|gitdir/i);
+  assert.equal(remoteSlugOf(dir), undefined);
 });
 
 test("every open pull request reported is one the contract accepts", async () => {

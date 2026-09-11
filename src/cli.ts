@@ -7,6 +7,7 @@ import { DEFAULT_PORT, HOST, consoleAnnouncer, consoleCollector, createConsoleSe
 import { undeliveredReport } from "./notify.js";
 import { emitSnapshot } from "./snapshot.js";
 import { readSnapshot, readSnapshotFrom, snapshotPath } from "./state.js";
+import { upstreamReport } from "./upstream.js";
 import { missingSnapshotMessage, parseStatusArgs, renderStatus, terminalWidth, wantsColor } from "./status.js";
 import { VERSION } from "./version.js";
 
@@ -113,6 +114,9 @@ if (isEntry) {
       (result) => {
         process.stdout.write(`${JSON.stringify(result.snapshot, null, 2)}\n`);
         for (const line of undeliveredReport(result.delivered)) {
+          process.stderr.write(`pitwall snapshot: ${line}\n`);
+        }
+        for (const line of upstreamReport(result.upstream)) {
           process.stderr.write(`pitwall snapshot: ${line}\n`);
         }
         for (const unlisted of result.unlisted) {

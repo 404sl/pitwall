@@ -85,6 +85,7 @@ export interface ReadIssueOptions {
 export interface ClosedIssue extends UnclassifiedIssue {
   closedAt: string | undefined;
   closeReason: string | undefined;
+  externalRef: string | undefined;
 }
 
 export interface IssueText {
@@ -305,6 +306,7 @@ function toIssue(
     origin: originOf(row["metadata"]),
     closedAt: textOf(row["closed_at"]),
     closeReason: textOf(row["close_reason"]),
+    externalRef: textOf(row["external_ref"]),
   };
 }
 

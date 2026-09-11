@@ -24,6 +24,15 @@ import { issueMatcher, readPipeline } from "./pipeline.js";
 import { preconditionProbe, pullLookup } from "./probes.js";
 import { sessionRefOf, unlistedNotifiers, workspaceSender } from "./sender.js";
 import { readSnapshot, writeSnapshot } from "./state.js";
+import {
+  closeUpstream,
+  closuresFor,
+  githubCloser,
+  ownedRepos,
+  upstreamIssueOf,
+  type Closer,
+  type UpstreamRun,
+} from "./upstream.js";
 import { assess, isAssessable, lastNoteAt, type StalenessContext } from "./staleness.js";
 import { VERSION } from "./version.js";
 
@@ -35,6 +44,7 @@ export interface SnapshotOptions extends RootsOptions {
   sender?: Sender;
   sessionRef?: string;
   note?: Noter;
+  closer?: Closer;
 }
 
 export interface SnapshotResult {
@@ -44,6 +54,7 @@ export interface SnapshotResult {
   read: boolean;
   delivered: Delivered[];
   unlisted: CollectionError[];
+  upstream: UpstreamRun;
 }
 
 type GatheredMetrics = Pick<Metrics, "readyCount" | "inboxCount" | "closedToday" | "landedToday">;
@@ -374,6 +385,49 @@ async function announce(
   return delivered;
 }
 
+function entrusted(roots: ResolvedRoots, options: SnapshotOptions): boolean {
+  return roots.source === "config" || options.closer !== undefined;
+}
+
+function mightCarryUpstream(closed: readonly ClosedIssue[]): boolean {
+  return closed.some((issue) => upstreamIssueOf(issue.externalRef) !== undefined);
+}
+
+async function closeUpstreamIssues(
+  gathered: readonly Gathered[],
+  previous: Snapshot | undefined,
+  roots: ResolvedRoots,
+  options: SnapshotOptions,
+): Promise<UpstreamRun> {
+  const run: UpstreamRun = { reported: [], left: [] };
+  if (!entrusted(roots, options)) {
+    return run;
+  }
+  for (const entry of gathered) {
+    if (!mightCarryUpstream(entry.closed)) {
+      continue;
+    }
+    const owned = ownedRepos(entry.project);
+    const work = closuresFor({
+      previous: previous?.projects.find((project) => project.id === entry.project.id),
+      closed: entry.closed,
+      slugs: owned.slugs,
+      unreadable: owned.unreadable,
+    });
+    run.left.push(...work.left);
+    if (work.closures.length === 0) {
+      continue;
+    }
+    const closer =
+      options.closer ?? githubCloser({ env: options.env, timeoutMs: options.timeoutMs });
+    const note =
+      options.note ??
+      noteAppender(entry.project.root, { env: options.env, timeoutMs: options.timeoutMs });
+    run.reported.push(...(await closeUpstream(work.closures, { closer, note })));
+  }
+  return run;
+}
+
 export async function collectSnapshot(options: SnapshotOptions = {}): Promise<Snapshot> {
   return (await assemble(options)).snapshot;
 }
@@ -396,7 +450,15 @@ export async function emitSnapshot(options: SnapshotOptions = {}): Promise<Snaps
   const previous = readSnapshot(options).snapshot;
   const { snapshot, code, gathered, roots } = await assemble(options);
   if (!readSomething(gathered)) {
-    return { snapshot, path: undefined, code, read: false, delivered: [], unlisted: [] };
+    return {
+      snapshot,
+      path: undefined,
+      code,
+      read: false,
+      delivered: [],
+      unlisted: [],
+      upstream: { reported: [], left: [] },
+    };
   }
   const history = await recordSnapshot(snapshot, {
     env: options.env,
@@ -413,12 +475,14 @@ export async function emitSnapshot(options: SnapshotOptions = {}): Promise<Snaps
   });
   const written = keptBoard(recorded, previous, gathered);
   const path = writeSnapshot(written, options);
+  const delivered = await announce(gathered, previous, roots, options);
   return {
     snapshot: written,
     path,
     code,
     read: true,
-    delivered: await announce(gathered, previous, roots, options),
+    delivered,
     unlisted: unlistedReport(roots, options),
+    upstream: await closeUpstreamIssues(gathered, previous, roots, options),
   };
 }
