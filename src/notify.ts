@@ -8,8 +8,10 @@ import {
 } from "@404sl/pitwall-schema";
 import type { ClosedIssue } from "./beads.js";
 import { collectionError } from "./errors.js";
+import { elapsed } from "./format.js";
 
 export interface Notice {
+  kind: "completion";
   issueId: string;
   title: string;
   origin: Origin;
@@ -17,9 +19,48 @@ export interface Notice {
   text: string;
 }
 
+export type CollectionNoticeKind = "collection-failed" | "collection-recovered";
+
+export interface CollectionNotice {
+  kind: CollectionNoticeKind;
+  since: string;
+  forMs: number;
+  text: string;
+}
+
+export type AnyNotice = Notice | CollectionNotice;
+
 export type Delivery = { delivered: true } | { delivered: false; reason: string };
 
 export type Sender = (notice: Notice) => Promise<Delivery>;
+
+export type Transport = (notice: AnyNotice) => Promise<Delivery>;
+
+export interface Outage {
+  since: string;
+  forMs: number;
+  cause?: string;
+}
+
+export function collectionFailedNotice(outage: Outage): CollectionNotice {
+  const why =
+    outage.cause === undefined || outage.cause === "" ? "" : ` Last cause: ${outage.cause}`;
+  return {
+    kind: "collection-failed",
+    since: outage.since,
+    forMs: outage.forMs,
+    text: `Collection has failed for ${elapsed(outage.forMs)}, every attempt since ${outage.since}. The board is not current.${why}`,
+  };
+}
+
+export function collectionRecoveredNotice(outage: Outage): CollectionNotice {
+  return {
+    kind: "collection-recovered",
+    since: outage.since,
+    forMs: outage.forMs,
+    text: `Collection recovered after ${elapsed(outage.forMs)} of failing from ${outage.since}. The board is current again.`,
+  };
+}
 
 export type Noter = (issueId: string, text: string) => Promise<void>;
 
@@ -76,6 +117,7 @@ export function noticesFor(options: NoticesOptions): Notice[] {
     }
     const pull = pullOf(previous, issue.id);
     notices.push({
+      kind: "completion",
       issueId: issue.id,
       title: issue.title,
       origin,

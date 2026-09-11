@@ -155,7 +155,7 @@ anyone on the machine. Exit 0 means delivered, so read standard input before exi
 command that exits 0 without reading is taken at its word. Any other exit means the notice was
 not delivered, and what the command wrote on standard error becomes the recorded reason.
 
-The object carries `issueId`, `title`, `origin` — the `session` that asked and the `ref`
+The object carries `kind`, which is `completion` for these, `issueId`, `title`, `origin` — the `session` that asked and the `ref`
 that addresses it, which is the one to deliver to, because session names are neither unique
 nor stable — `text`, the line to deliver, and `pull` only where a pull request was open for
 the issue at the previous collection, as the snapshot records it. A notice is computed only
@@ -178,6 +178,35 @@ them as well, and
 where the tracker refused the note too — the one case where the reason would otherwise be
 written down nowhere — the notice is reported as an error on the board, beside everything
 else the collection could not do. Silence is not one of the outcomes.
+
+## When the collection itself stops
+
+A board that cannot be collected says so on the screen, which reaches whoever is looking at
+it. Nobody need be: re-collection failing every minute for eighteen hours is one event that
+nobody sees until the morning, and the board it leaves behind is a day old and looks
+current enough to trust. That is the one thing worth reaching somebody over, and the only
+one — everything else the console knows belongs on the board.
+
+`pitwall serve` counts how long re-collection has been failing without a break. Past fifteen
+minutes it delivers one notice, and one more when the next collection succeeds: not one per
+attempt, and never a stop with no resume, because a resume nobody hears trains people to
+ignore both. Two notices an outage, whether it lasts sixteen minutes or eighteen hours.
+
+They go through the same `notify` command a completion notice goes through — the first
+workspace listed in `roots` that names one. A workspace found by scanning is never run, for
+the reason above. `PITWALL_SESSION_REF` does not apply: an outage is nobody's own work coming
+back at them, so a console with no session ref still says when the board has stopped moving.
+
+The object carries `kind` — `collection-failed` or `collection-recovered`, against
+`completion` for the notices above, so one command can tell the three apart without reading
+the rest — `since`, the first failure of the run of them, `forMs`, how long it had been
+failing when the notice was written, and `text`, the line to deliver. It carries no `origin`
+and no `issueId`: an outage belongs to no issue and no session asked for it, so the command
+decides who hears, and one written to read `origin` must check `kind` first.
+
+Where there is nothing to deliver through, the notice is not dropped quietly: what it said
+and why nobody was told becomes a row on the board against `pitwall serve: outbound notice`,
+beside everything else the console could not do.
 
 ## How it is put together
 
