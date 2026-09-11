@@ -156,7 +156,7 @@ which child that is rather than the epic's prose, which named the wrong one.
 
 So before `slot.sh <id>`: check it is not an epic, then read the description and the notes, and
 ask whether anything there names another issue, a sequence, or an unanswered question. If it does, RECORD IT AS AN EDGE
-(`bd dep add <this> <blocker>`) or as a park label, then move on to the next candidate. The
+(`bd --actor <your session> dep add <this> <blocker>`) or as a park label, then move on to the next candidate. The
 edge is what stops it happening again - a note explaining the ordering is exactly what the
 queue could not read the first time.
 
@@ -497,7 +497,7 @@ for it. Unattended, that drains the queue into permanent claims within a few tic
 launching, if a workflow returns an `error` result, release its issue yourself:
 
 ```bash
-bd update <id> -s open
+bd --actor <your session> update <id> -s open
 ```
 
 `args` must be an actual JSON object in the tool call, not a JSON-encoded string. The script
@@ -614,6 +614,21 @@ and leaves the branch and PR alone:
 - three review rounds did not converge
 
 A question written onto the issue is a success. A guess merged unattended is not.
+
+**Answering one takes two commands, because a hand-back moves the queue as well as labelling it.**
+A run stopping sets the assignee to the session that asked and applies the label. The label says
+why it stopped; the assignee says whose it is. So removing the label is necessary and no longer
+sufficient - the issue is in the asker's queue, and dispatch filters on the assignee:
+
+```bash
+bd --actor <your session> label remove <id> needs-decision
+bd --actor <your session> update <id> -a "$(bash <skill>/config.sh session)"
+```
+
+Take the name from `config.sh session` rather than typing it: that is the one place it is derived,
+and a name typed from memory is a queue nothing reads. `slot.sh <id>` names both steps when it
+refuses, and refusing twice - once for the label, once for the assignee - is what a single-step
+answer looks like from the other end.
 
 ## A bug in the loop is not a ticket in your backlog
 

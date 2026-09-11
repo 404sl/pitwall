@@ -118,7 +118,13 @@ for _i in open_ + running:
     if _p:
         live_children_of.add(_p)
 
-def eligible(i):
+# WHOSE QUEUE IT IS, SPLIT OUT FROM WHETHER IT IS WORKABLE AT ALL.
+#
+# Two separate facts, and they used to be one test. An empty ready list then had two causes
+# with one sentence: everything of ours is parked, or nothing carries our name at all. The
+# second is a configuration fault and the sentence blamed labels for it - see the note on the
+# summary line below. Keeping them apart is what lets the report say which.
+def workable(i):
     # A child whose parent is still in flight is not ready, whatever its labels say: the
     # split agent creates children first and labels the decision ones a moment later, so
     # dispatching in that window hands an agent a "Decide whether..." issue that should
@@ -134,14 +140,16 @@ def eligible(i):
     # id prefix is the fact; the label is only documentation of it.
     if i["id"] in live_children_of:
         return False
-    if (i.get("assignee") or "") != SESSION:
-        return False
     return (i.get("issue_type") != "epic"
             and not parked(i)
             and i["id"] not in blocked_ids)
 
+def eligible(i):
+    return workable(i) and (i.get("assignee") or "") == SESSION
+
 ready = sorted([i for i in open_ if eligible(i)],
                key=lambda i: (i.get("priority", 9), i.get("created_at", "")))
+theirs = [i for i in open_ if workable(i) and (i.get("assignee") or "") != SESSION]
 waiting = sorted([i for i in open_ if parked(i)], key=lambda i: i.get("priority", 9))
 nobody = [i for i in open_ + running if not (i.get("assignee") or "")]
 today = datetime.date.today().isoformat()
@@ -186,6 +194,32 @@ print(f" running now      {len(_working)}")
 if _handed_off:
     print(f" awaiting lander  {_handed_off}  claimed and green, not yet live")
 print(f" ready to start   {len(ready)}  assigned to {SESSION}")
+
+# ZERO READY WITH WORK SITTING THERE UNDER ANOTHER NAME IS A CONFIGURATION FAULT, NOT A QUIET DAY.
+#
+# config.sh derives the session from the workspace DIRECTORY, and a workspace whose live session
+# is spelled differently gets a name that matches nothing. Measured on a sibling workspace: the
+# directory is 'maas', so the derived name is 'maas-devloop', and the live session is
+# 'maas-dev-loop'. All 88 of its ready issues are assigned to the live name, so this line read
+# 'ready to start 0' and the NEXT UP block said every open issue needed a person or was blocked.
+# Both true of nothing. Nothing errored, and the shape is the one this whole change exists to
+# kill: a refusal that presents as an absence.
+#
+# The unassigned case is already loud below. This is the other one - assigned, just not to us -
+# and the fix is to print the names that ARE there, because a reader who sees their own pipeline
+# spelled differently needs no further explanation.
+if not ready and theirs:
+    print(f" NONE OF IT IS OURS  {len(theirs)} workable issues are ready and assigned to somebody else.")
+    print(f"                  Not parked, not epics, not parents - they do not carry the name {SESSION}:")
+    _by = {}
+    for _i in theirs:
+        _n = _i.get("assignee") or "unassigned"
+        _by[_n] = _by.get(_n, 0) + 1
+    for _n, _c in sorted(_by.items(), key=lambda kv: (-kv[1], kv[0])):
+        print(f"                    {_n:<28} {_c:3}")
+    print(f"                  If one of those is this pipeline spelled differently, that is the bug:")
+    print(f"                  the name is derived from the workspace directory. Set it explicitly in")
+    print(f'                  .pitwall.json: "sessions": {{ "devloop": "<live name>", "planning": "..." }}')
 if nobody:
     print(f" unassigned       {len(nobody)}  in nobody's queue, so not dispatchable: {' '.join(i['id'] for i in nobody[:6])}")
 
@@ -251,7 +285,9 @@ if running:
 print(" NEXT UP")
 for i in ready[:8]:
     print(f"   {i['id']:<10} P{i.get('priority','?')}  {i.get('issue_type',''):<7} {i['title'][:55]}")
-if not ready:
+if not ready and theirs:
+    print(f"   (nothing for {SESSION} - see NONE OF IT IS OURS above. The work is ready; the name is wrong.)")
+elif not ready:
     print("   (nothing - every open issue needs a person, is blocked, or is claimed)")
 print()
 

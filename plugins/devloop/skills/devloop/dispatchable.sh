@@ -102,7 +102,14 @@ for name,cfg in repos.items():
 # lanes over the same branch.
 cat "/tmp/${LOCK_PREFIX}-slots"/* 2>/dev/null > "$TMP/inlane.txt" || : > "$TMP/inlane.txt"
 
+# TWO READS, AND THEY ANSWER DIFFERENT QUESTIONS. The filtered one DECIDES what may be
+# dispatched; the unfiltered one EXPLAINS an empty answer. Without the second, a session name
+# that matches nothing is indistinguishable from a queue that is genuinely parked out - and the
+# derived name is wrong often enough to matter: config.sh derives it from the workspace
+# directory, so a workspace whose live session is spelled differently reads an empty queue and
+# is told its work is parked.
 bd ready --json -a "$SESSION" >"$TMP/ready.json" 2>/dev/null
+bd ready --json >"$TMP/readyall.json" 2>/dev/null
 bd list --all --json >"$TMP/every.json" 2>/dev/null
 [ -s "$TMP/every.json" ] || bd list --status open --json >"$TMP/every.json" 2>/dev/null
 
@@ -117,6 +124,10 @@ try:
     every = json.load(open(os.path.join(tmp, "every.json")))
 except Exception:
     every = []
+try:
+    readyall = json.load(open(os.path.join(tmp, "readyall.json")))
+except Exception:
+    readyall = []
 limit = int(os.environ["LIMIT"] or 0)
 
 park = {"umbrella", "needs-access", "needs-decision", "watch", "blocked-tooling", "roadmap"}
@@ -164,8 +175,37 @@ if limit:
 for r in out:
     print("%-14s P%-3s %s" % (r["id"], r.get("priority"), (r.get("title") or "")[:66]))
 
+# AN EMPTY ANSWER HAS TWO CAUSES AND THEY NEED DIFFERENT ACTIONS.
+#
+# "Every ready issue of ours is parked" is a queue state. "bd has ready work and none of it
+# carries this name" is a CONFIGURATION fault, and until now both printed the parking sentence -
+# which is false in the second case and sends a reader to look at labels that are not the
+# problem. Measured on a sibling workspace: the directory is 'maas', so config.sh derives
+# 'maas-devloop', and the live session is 'maas-dev-loop'. Its 88 ready issues are all assigned
+# to the live name, so dispatch reported them as parked, epics or parents. Nothing errored.
+#
+# So name the assignees that ARE present. A reader who sees their own pipeline's name spelled
+# differently has the answer in the same line as the symptom.
+def assignee_counts(rows):
+    counts = {}
+    for r in rows:
+        counts[r.get("assignee") or "unassigned"] = counts.get(r.get("assignee") or "unassigned", 0) + 1
+    return sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+
 if not out:
-    print("(nothing dispatchable for %s - every ready issue of its is parked, an epic, or a parent)" % session)
+    mine = [r for r in readyall if (r.get("assignee") or "") == session]
+    if readyall and not mine and not ready:
+        print("(nothing dispatchable for %s - and NOT because of parking, epics or parents:" % session)
+        print("  bd has %d ready issues and NONE of them is assigned to that name.)" % len(readyall))
+        print("  ready, by assignee:")
+        for name, n in assignee_counts(readyall):
+            print("    %-28s %3d" % (name, n))
+        print("  If one of those is this pipeline under another spelling, that is the bug: config.sh")
+        print("  derives the session from the workspace DIRECTORY. Compare %s against the name" % session)
+        print("  this workspace's session actually has, and when they differ set it explicitly:")
+        print('    "sessions": { "devloop": "<the live name>", "planning": "<the live planning name>" }')
+    else:
+        print("(nothing dispatchable for %s - every ready issue of its is parked, an epic, or a parent)" % session)
 
 nobody = [i for i in every
           if i.get("status") in ("open", "in_progress") and not (i.get("assignee") or "")]

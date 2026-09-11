@@ -24,6 +24,8 @@ interface Harness {
   slots: string;
 }
 
+const SESSION = "zz-devloop";
+
 let sequence = 0;
 
 function harness(lanes: number): Harness {
@@ -44,7 +46,18 @@ function harness(lanes: number): Harness {
     }),
   );
   const bd = join(bin, "bd");
-  writeFileSync(bd, "#!/bin/sh\nexit 1\n");
+  writeFileSync(
+    bd,
+    [
+      "#!/bin/sh",
+      'if [ "$1" = "show" ]; then',
+      `  printf '{"id":"%s","labels":[],"assignee":"%s"}\\n' "$2" '${SESSION}'`,
+      "  exit 0",
+      "fi",
+      "exit 1",
+      "",
+    ].join("\n"),
+  );
   chmodSync(bd, 0o755);
   return { root, bin, config, prefix, slots: slotsPath(prefix) };
 }
@@ -72,6 +85,7 @@ function args(box: Harness, ...rest: string[]): Ran {
       PATH: `${box.bin}:${process.env["PATH"] ?? ""}`,
       PITWALL_CONFIG: box.config,
       BEADS_DIR: "",
+      PITWALL_SESSION: SESSION,
     },
   });
   return { status: ran.status ?? -1, stdout: ran.stdout ?? "", stderr: ran.stderr ?? "" };

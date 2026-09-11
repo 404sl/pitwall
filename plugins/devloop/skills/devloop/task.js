@@ -339,9 +339,13 @@ NON-NEGOTIABLE RULES. They outrank speed, and they outrank finishing the task.
    convenience for a person at a terminal and nothing else. The commands below already carry it;
    any bd write of your own must too. Two measured consequences of leaving it off, 2026-09-11:
    a claim on an issue assigned to ${SESSION} is REFUSED, exit 1, 'already claimed by
-   ${SESSION}'; and a write on an UNASSIGNED issue succeeds silently and stamps a person's name
+   ${SESSION}'; and '--claim' on an UNASSIGNED issue succeeds silently and stamps a person's name
    into the assignee, which takes the issue out of this pipeline's queue and no lane ever offers
-   it again. The quiet one is the expensive one.
+   it again. It is '--claim' SPECIFICALLY that writes the assignee, and only that: an
+   '--append-notes' or a status change on an unassigned issue leaves the assignee unset, measured
+   on pitwall-j8u3.1, which sat in_progress for hours with its assignee untouched. So the flag
+   matters on every write for the audit trail, and on a claim it decides routing. The quiet one
+   is the expensive one.
 11. The repos' git hooks that called 'bd sync' were removed: 1.x has no sync subcommand and
    they failed every commit. Do NOT run 'bd hooks install' to repair them - it also installs
    a prepare-commit-msg hook that appends agent identity trailers to commit messages, which
@@ -1576,9 +1580,15 @@ Add 'bd --actor ${SESSION} label add <child> needs-decision' (a choice only a pe
 (something only they can run - a deploy, a dashboard, a device) for any child marked as needing
 a person, with a
 note saying exactly what the person must decide or do.
-A CHILD THAT NEEDS A PERSON ALSO MOVES QUEUE: 'bd --actor ${SESSION} update <child> -a ${PLANNING_SESSION}'.
+A CHILD THAT NEEDS A PERSON ALSO MOVES QUEUE: 'bd --actor ${SESSION} update <child> -a <${ASKED_BY}>'.
 The label says why it stopped; the assignee says whose it is. A child left assigned here is in
 this pipeline's queue however it is labelled.
+IT IS THE SAME DESTINATION AS ANY OTHER HAND-BACK, and deliberately not a second rule: this used
+to send children to the planning session outright while a bounce sent the issue to whoever asked,
+so the same event had two answers depending on which path reached it. A child carries no origin of
+its own - creating one with --parent inherits labels and leaves metadata null - so resolve it the
+way the convention says: the child's own origin if it has one, else walk up the id prefix
+(<id>.1 -> <id>), else the planning session. That walk is what makes the two paths one rule.
 
 CHECK EVERY CHILD'S LABELS AFTER CREATING IT. bd copies the PARENT's labels onto a child,
 and that has gone wrong three different ways: a leaf child inheriting 'umbrella' is treated

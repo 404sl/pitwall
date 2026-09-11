@@ -215,15 +215,36 @@ print("assignee", i.get("assignee") or "")
 ' 2>/dev/null)"
   parked="$(printf '%s\n' "$issue" | sed -n 's/^parked //p')"
   assignee="$(printf '%s\n' "$issue" | sed -n 's/^assignee //p')"
-  if [ -n "$parked" ]; then
-    echo "$ID is parked: $parked" >&2
-    echo "  A lane would bounce on that label without doing anything. If the question is answered," >&2
-    echo "  remove it first:  bd label remove $ID $parked" >&2
+  SESSION="${PITWALL_SESSION:-$(bash "$(dirname "${BASH_SOURCE[0]}")/config.sh" session 2>/dev/null)}"
+
+  # A GATE THAT CANNOT READ THE ISSUE MUST REFUSE, NOT WAVE IT THROUGH.
+  #
+  # This is the only thing between an id typed by hand and a lane that merges and deploys, and
+  # until now an unparseable 'bd show' left $issue empty and skipped both checks below in
+  # silence - so a tracker that would not answer read exactly like an issue that passed. That is
+  # the failure this whole change is about, in the one place it would be least visible.
+  if [ -z "$issue" ]; then
+    echo "$ID could not be read from bd, so neither the park label nor the assignee was checked." >&2
+    echo "  Refusing rather than reserving a lane on an unread issue: a query that fails looks" >&2
+    echo "  identical to one that passed, and this gate is what stands between a hand-typed id" >&2
+    echo "  and a lane that merges and deploys. Check BEADS_DIR and 'bd show $ID --json'." >&2
     exit 1
   fi
 
-  SESSION="${PITWALL_SESSION:-$(bash "$(dirname "${BASH_SOURCE[0]}")/config.sh" session 2>/dev/null)}"
-  if [ -n "$issue" ] && [ -n "$SESSION" ] && [ "$assignee" != "$SESSION" ]; then
+  if [ -n "$parked" ]; then
+    echo "$ID is parked: $parked" >&2
+    echo "  A lane would bounce on that label without doing anything. Answering it takes TWO" >&2
+    echo "  steps now that routing is the assignee, and removing the label alone leaves you with" >&2
+    echo "  a second, different refusal from this same gate:" >&2
+    echo "    bd --actor <your session> label remove $ID $parked" >&2
+    if [ -n "$SESSION" ] && [ "$assignee" != "$SESSION" ]; then
+      echo "    bd --actor <your session> update $ID -a $SESSION" >&2
+      echo "  because a hand-back MOVED it: assignee is now ${assignee:-unassigned}, not $SESSION." >&2
+    fi
+    exit 1
+  fi
+
+  if [ -n "$SESSION" ] && [ "$assignee" != "$SESSION" ]; then
     if [ -z "$assignee" ]; then
       echo "$ID is UNASSIGNED, so it is not dispatchable." >&2
       echo "  Nothing unassigned may be dispatched: that is IMPORT -> PROMOTE expressed as" >&2

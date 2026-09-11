@@ -131,8 +131,11 @@ test("the write names the session as bd's actor, not whatever the shell resolves
   assert.deepEqual(
     [...new Set(actors)],
     ["lane-acme-1"],
-    "every bd write must carry --actor <session>: without it bd falls through to git user.name, " +
-      "which stamps a person onto the issue and takes it out of the pipeline's queue",
+    "every bd write must carry --actor <session>: without it bd falls through to BEADS_ACTOR and " +
+      "then git user.name, and a run inherits no export from the session that dispatched it, so " +
+      "the note is recorded as having been written by a person who was not there. This write is " +
+      "--append-notes and does not touch the assignee; the one that does is --claim, and it is the " +
+      "same flag that has to be right on both",
   );
 });
 

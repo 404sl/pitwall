@@ -156,6 +156,15 @@ if cfg.get("lockPrefix") == "devloop":
           "      Namespace it per APPLICATION, not per pipeline: two pipelines over DIFFERENT apps\n"
           "      need different prefixes, and two over the SAME app must share one, or the lane\n"
           "      lock silently stops guarding that app's test databases.")
+if not (cfg.get("sessions") or {}).get("devloop"):
+    _derived = os.path.basename(os.path.normpath(cfg.get("root") or _here)) + "-devloop"
+    print(f"note: no \"sessions\" key, so the devloop session name is DERIVED as '{_derived}'.\n"
+          "      Dispatch filters on the assignee, so a live session spelled even slightly\n"
+          "      differently reads an EMPTY QUEUE rather than an error: one workspace on this\n"
+          "      machine derives 'maas-devloop' while its session is named 'maas-dev-loop', and\n"
+          "      its 88 ready issues were reported as parked. Compare the derived name against\n"
+          "      the name this workspace's session actually has, and when they differ set\n"
+          "      \"sessions\": { \"devloop\": ..., \"planning\": ... } rather than renaming a session.")
 if bad:
     print("\n".join("  " + b for b in bad)); sys.exit(1)
 print(f"  config OK: {len(cfg.get('repos') or {})} repos, idPrefix '{cfg.get('idPrefix')}', "

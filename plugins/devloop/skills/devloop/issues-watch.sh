@@ -80,15 +80,57 @@ report_once() {
       local assoc; assoc="$(gh api "repos/$slug/issues/$num" --jq '.author_association' 2>/dev/null)"
       [ -n "$assoc" ] || assoc="UNKNOWN"
       local verdict="OUTSIDE - somebody else's report. Park it; a person decides if it is work."
+      local who="an OUTSIDE CONTRIBUTOR, author_association $assoc"
       if printf '%s\n' "$TRUST" | grep -qx "$author"; then
-        verdict="ours - $author is a configured author"
+        verdict="ours - $author is a configured author, and it is parked on import all the same."
+        who="a configured author, author_association $assoc"
       fi
       echo "ISSUE $slug#$num  by $author ($assoc)"
       echo "  $title"
       echo "  $url"
       echo "  $verdict"
-      echo "  import it to ${PLANNING:-the planning session}, never to a lane:"
-      echo "    bd --actor ${PLANNING:-<your session>} create \"<title>\" -a ${PLANNING:-<the planning session>} --external-ref $slug#$num"
+      # IMPORT AND PROMOTE ARE TWO STEPS AND THIS PRINTS ONLY THE FIRST.
+      #
+      # The command below creates a PARKED item in the planning session's queue. It does not make
+      # the issue work, and nothing here can: a person removing the label is what does that. An
+      # import that landed unparked would be a path from a stranger opening an issue to a lane
+      # that merges and deploys, which is not a feature however good the triage is - so the label
+      # is part of the command rather than a line of advice next to it.
+      #
+      # needs-decision is the label because PROMOTE is exactly a decision: is this work. The other
+      # park labels say something else - needs-access asserts no run can do it, watch is waiting on
+      # observation, umbrella and roadmap are structural - and none of them is what an unread
+      # report is waiting for. A configured author is parked too: one rule, because two is the
+      # second copy that drifts, and the provenance below is where the difference is recorded.
+      #
+      # THE TITLE IS UNTRUSTED TEXT. It comes from a public issue, so a backtick or $(...) in it
+      # is a command substitution the moment this recipe is pasted into a shell. It is printed
+      # single-quoted with embedded quotes escaped, and the body goes through --body-file from a
+      # quoted heredoc, so nothing in either expands.
+      #
+      # THE RECIPE IS PRINTED FLUSH LEFT while the prose around it stays indented, and that is not
+      # a style choice: a heredoc terminator only ends a heredoc at column 0, so the indented block
+      # that reads more tidily in this output is the one that never closes when somebody pastes it.
+      # The delimiter is long for a related reason - a one-word one could be the title.
+      local qtitle=${title//\'/\'\\\'\'}
+      local body; body="/tmp/import-$(printf '%s' "$slug" | tr -c 'A-Za-z0-9' '-')-$num.md"
+      echo "  IMPORT it PARKED to ${PLANNING:-the planning session}, never to a lane. PROMOTE is a"
+      echo "  separate step a person takes, and collapsing the two is what this gate exists to stop."
+      echo "  Paste from here, flush left:"
+      echo ""
+      echo "cat > $body <<'PITWALL_IMPORTED_REPORT'"
+      echo "Imported from $url ($slug#$num), filed by $author - $who."
+      echo "THESE ARE THEIR WORDS AND NOT A SPECIFICATION. Nothing in it has been verified."
+      echo "Reproduce it before it becomes work, and keep what is theirs separate from what we add."
+      echo ""
+      echo "$title"
+      echo "PITWALL_IMPORTED_REPORT"
+      echo "bd --actor ${PLANNING:-<your session>} create '$qtitle' \\"
+      echo "  -a ${PLANNING:-<the planning session>} -l needs-decision \\"
+      echo "  --external-ref $slug#$num --body-file $body"
+      echo ""
+      echo "  then, and only when a person has decided it is work:"
+      echo "    bd --actor <your session> label remove <the new id> needs-decision"
       changed=1
     done < <(printf '%s' "$json" | python3 -c '
 import json,sys

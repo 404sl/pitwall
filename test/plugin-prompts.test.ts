@@ -54,9 +54,10 @@ test("every bd write a run is told to make names the actor", () => {
   assert.deepEqual(
     offenders,
     [],
-    "a bd write with no --actor falls through to git user.name: on an issue this pipeline owns " +
-      "the claim is refused, and on an unassigned one the write silently stamps a person as the " +
-      "assignee, which takes the issue out of the queue for good. The flag has to appear in the " +
+    "a bd write with no --actor falls through to git user.name, which is the wrong name in the " +
+      "audit trail on every write and decides routing on one of them: --claim on an issue this " +
+      "pipeline owns is refused, and --claim on an unassigned one silently stamps a person as the " +
+      "assignee, taking the issue out of the queue for good. The flag has to appear in the " +
       `TEXT a run is handed, not only in the script that renders it:\n${offenders.join("\n")}`,
   );
 });
@@ -66,4 +67,29 @@ test("every workflow script is present in the plugin", () => {
     const path = join(SKILL, file);
     assert.doesNotThrow(() => readFileSync(path), `${file} is missing from the published plugin`);
   }
+});
+
+// ONE RULE FOR WHERE A HAND-BACK GOES, NOT TWO.
+//
+// The bounce paths resolve the asking session - metadata.origin.session, walking up the id prefix,
+// else the planning session - while the split-child path used to hardcode the planning session
+// outright. Same event, two answers depending on which path reached it, which is the second copy
+// this ticket warns about: one of them drifts and nobody notices because both look deliberate.
+//
+// The planning session name still appears inside the resolution text itself, as the "else" of that
+// walk. What must not appear is a bd write that assigns to it directly.
+test("no brief assigns a hand-back straight to the planning session", () => {
+  const source = readFileSync(join(SKILL, "task.js"), "utf8");
+  const offenders = source
+    .split("\n")
+    .map((line, index) => [index + 1, line] as const)
+    .filter(([, line]) => /-a \$\{PLANNING_SESSION\}/.test(line))
+    .map(([n, line]) => `task.js:${n} ${line.trim()}`);
+  assert.deepEqual(
+    offenders,
+    [],
+    "a hand-back goes to the session that asked, resolved the same way everywhere. Write " +
+      "'-a <${ASKED_BY}>' so the id-prefix walk decides, and let the planning session be the " +
+      `fallback inside that rather than a second destination:\n${offenders.join("\n")}`,
+  );
 });

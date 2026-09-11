@@ -5,19 +5,37 @@
 **The pipeline took any ready ticket; now it takes only what is assigned to it.** Routing is the
 assignee, and three separate holes had to close together for that to be true rather than decorative.
 
-- **Dispatch filters on the assignee.** `dispatchable.sh` asks bd for this session's queue and
-  filters the JSON on `assignee` as well; `queue.sh` applies the same rule to its ready list; and
-  `slot.sh` refuses a lane for anything that is not this session's, so a hand-dispatch by id is
-  gated on the same fact as a listing. Unassigned is refused by name rather than filtered away in
-  silence - it is IMPORT -> PROMOTE expressed as ownership, and it is the only thing between a
-  stranger's issue and a lane that merges and deploys.
+- **Dispatch filters on the assignee.** `dispatchable.sh` asks bd for this session's queue with
+  `bd ready -a <session>` and filters the JSON on `assignee` as well; `queue.sh` applies the same
+  rule to its ready list; and `slot.sh` refuses a lane for anything that is not this session's, so
+  a hand-dispatch by id is gated on the same fact as a listing. Unassigned is refused by name
+  rather than filtered away in silence - it is IMPORT -> PROMOTE expressed as ownership, and it is
+  the only thing between a stranger's issue and a lane that merges and deploys.
+- **An empty queue says which kind of empty it is.** "Everything of ours is parked" is a queue
+  state; "bd has ready work and none of it carries this name" is a configuration fault, and both
+  used to print the parking sentence. Both scripts now separate the assignee test from the
+  workable test and, when the ready list is non-empty overall but nothing carries this session's
+  name, print the assignees that ARE there with their counts instead of blaming labels.
+  `dispatchable.sh` reads `bd ready` a second time unfiltered for that - the filtered read decides,
+  the unfiltered one explains. `config.sh --check` prints the derived name as a note when no
+  `sessions` key is set. This is a real sibling workspace: directory `maas` derives `maas-devloop`
+  while the live session is `maas-dev-loop`, so its 88 ready issues were being reported as parked,
+  epics or parents, and nothing errored.
+- **`slot.sh` refuses when it cannot read the issue at all.** An unparseable `bd show` left the
+  variable empty and skipped both the park check and the assignee check in silence, so a tracker
+  that would not answer read exactly like an issue that passed - in the one gate that stands
+  between a hand-typed id and a lane that merges and deploys.
 - **Every bd write carries `--actor <session>`, in the scripts and in the prompt text.** bd resolves
   its actor from `--actor`, then `BEADS_ACTOR`, then `git user.name`, and a run inherits no export
   from the session that dispatched it - so the flag is the mechanism and the variable is a
   convenience for a person at a terminal. Measured 2026-09-11: without it a claim on an issue this
-  pipeline owns is refused (exit 1, "already claimed by <name>"), and a write on an UNASSIGNED issue
-  succeeds silently and stamps `git user.name` into the assignee, which takes the issue out of the
-  queue for good. That quiet path is how 37 issues came to be assigned to a person.
+  pipeline owns is refused (exit 1, "already claimed by <name>"), and `--claim` on an UNASSIGNED
+  issue succeeds silently and stamps `git user.name` into the assignee, which takes the issue out of
+  the queue for good. That quiet path is how 37 issues came to be assigned to a person. `--claim` is
+  the only write that touches the assignee: `--append-notes` and a status change on an unassigned
+  issue both leave it unset, which is why pitwall-j8u3.1 stayed `in_progress` for hours still
+  assigned to this pipeline. So the flag is on every write for the audit trail, and on a claim it
+  decides routing.
 - **`queue.sh --next` no longer discards a refused claim.** Its only claim site captured bd's
   non-zero exit and continued, so with every open issue assigned and no actor it would hand out
   nothing, report no error, and present 97 ready issues as a quiet day. It now names what it could
@@ -26,8 +44,28 @@ assignee, and three separate holes had to close together for that to be true rat
   that asked - `metadata.origin.session`, walking up the id prefix, else the planning session - and
   still apply `needs-decision` / `needs-access`. The assignee moves the queue; the label still says
   why it stopped, and classification is still derived from the label. A split child that needs a
-  person moves to the planning session the same way, and `issues-watch.sh` prints the import command
-  assigned there, never to a lane.
+  person goes to the SAME destination by the SAME rule: it used to be sent to the planning session
+  outright while a bounce resolved whoever asked, which made one event answer two ways depending on
+  which path reached it. A child carries no origin of its own, so the id prefix walk is what makes
+  them one rule rather than two to drift.
+- **Answering a handed-back ticket takes two commands, and both are now written down.** Removing the
+  label is necessary and no longer sufficient, because the assignee has moved - a person who removed
+  only the label hit a second, different refusal from the same gate and nothing said why. `slot.sh`
+  names both steps when it refuses a parked issue and prints the current assignee (`unassigned`
+  spelled out rather than blank), and SKILL.md carries the pair, taking the target name from
+  `config.sh session` rather than a literal.
+- **`issues-watch.sh` imports PARKED, with provenance.** It printed a create command that assigned to
+  the planning session and stopped there - which collapses IMPORT into PROMOTE, and the two must
+  never be one: the repositories are public, so a path from a stranger opening an issue to a lane
+  that merges and deploys is not a feature. The printed recipe now carries `-l needs-decision` and a
+  `--body-file` body recording whose words it is, that nothing in it has been verified, and whether
+  the author is an outside contributor, with the label-removal step shown separately as the decision
+  a person makes. `needs-decision` because PROMOTE *is* a decision - is this work - where
+  `needs-access` would assert no run can do it and `watch`, `umbrella` and `roadmap` say something
+  else again. A configured author is parked too: one rule, and the provenance is where the
+  difference is recorded. The title goes in single-quoted with embedded quotes escaped and the body
+  through a quoted heredoc, because an issue title is untrusted text and a backtick in one is a
+  command substitution the moment the recipe is pasted.
 - **The session names are derived in one place.** `config.sh session` and `config.sh
   planning-session`, defaulting to the workspace directory plus `-devloop` / `-planning-session`,
   overridable per workspace with `"sessions": { "devloop": ..., "planning": ... }`, and carried into
@@ -35,16 +73,32 @@ assignee, and three separate holes had to close together for that to be true rat
   session-replay has `idPrefix` `sr` and sessions named `session-replay-devloop`, so deriving from
   `idPrefix` would have matched nothing and starved that pipeline while reporting nothing at all.
 
-UPGRADING A WORKSPACE THAT HAS NEVER ASSIGNED ITS BACKLOG: dispatch now refuses, loudly, naming the
-command - `bd --actor <session> update <id> -a <session>`. That is deliberate. The alternative to a
-visible refusal is a queue that reads as empty, which is the failure this whole change is about.
+UPGRADING, AND THE FIRST STEP IS NOT THE BACKFILL - IT IS THE NAME. Run `config.sh --check` and read
+the derived session name, then compare it against the name this workspace's session actually has. If
+they differ, set `"sessions": { "devloop": ..., "planning": ... }` in `.pitwall.json` before doing
+anything else: every step below writes that name into the tracker, and writing the wrong one assigns
+the whole backlog to a queue nothing reads while every hand-back goes to a planning session that does
+not exist. The derivation is the workspace DIRECTORY, and it is wrong for at least one workspace on
+this machine - `maas` derives `maas-devloop` where the session is `maas-dev-loop`.
 
-Tests: eight drive `queue.sh`, `slot.sh` and `config.sh` against a stub bd - only assigned issues are
-handed out, an unassigned one is never even claimed, every claim carries the actor, a run whose claims
-are all refused fails and says so, the unassigned are reported, and the names derive from the
-workspace with an explicit pair winning. A source test reads the briefs and fails on any bd write
-that does not name the actor. Seven of the eight routing tests fail before the change, and the source
-test fails on 17 lines of it - twelve in task.js, three in land.js, two in land-train.js.
+THEN, FOR A WORKSPACE THAT HAS NEVER ASSIGNED ITS BACKLOG: dispatch refuses, loudly, naming the
+command - `bd --actor <session> update <id> -a <session>`. That is deliberate. The alternative to a
+visible refusal is a queue that reads as empty, which is the failure this whole change is about. The
+refusal is loud for UNASSIGNED and, as of this version, loud for assigned-to-another-name too: that
+second case used to be reported as parking.
+
+Tests: sixteen drive `queue.sh`, `slot.sh`, `dispatchable.sh`, `issues-watch.sh` and `config.sh`
+against stub `bd` and `gh` - only assigned issues are handed out, an unassigned one is never even
+claimed, every claim carries the actor, a run whose claims are all refused fails and says so, the
+unassigned are reported, an empty queue whose work carries another name names that name instead of
+blaming labels, a parked hand-back names both the label and the reassignment, a gate that cannot read
+its issue refuses rather than reserving a lane, an import carries the park label and its provenance,
+a hostile issue title cannot execute from the printed recipe, and the names derive from the workspace
+with an explicit pair winning. Two source tests read the briefs: one fails on any bd write that does
+not name the actor, the other on any hand-back assigned straight to the planning session rather than
+to the session that asked. Seven of the original eight routing tests fail before the change and the
+actor test fails on 17 lines of it - twelve in task.js, three in land.js, two in land-train.js; the
+eight tests added for the rework all fail before it too.
 
 ## 0.1.23
 
