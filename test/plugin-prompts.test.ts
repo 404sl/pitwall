@@ -1,5 +1,5 @@
 import { strict as assert } from "node:assert";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -100,9 +100,42 @@ test("nothing in the plugin commits or rebases on an identity it did not pass", 
 });
 
 test("every workflow script is present in the plugin", () => {
-  for (const file of ["task.js", "land.js", "rework.js", "land-train.js", "config.sh", "lock-check.sh", "lane-running.sh"]) {
+  for (const file of ["task.js", "land.js", "rework.js", "land-train.js", "config.sh", "lock-check.sh", "lane-running.sh", "git-guard.sh"]) {
     const path = join(SKILL, file);
     assert.doesNotThrow(() => readFileSync(path), `${file} is missing from the published plugin`);
+  }
+});
+
+const BARE_GUARD = /\bgit-guard(?!\\?\.sh)/;
+
+test("what the brief tells a run to invoke is the guard that ships, not the binary on PATH", () => {
+  const rules = bodyOfRulesTemplate(readFileSync(join(SKILL, "task.js"), "utf8"));
+  assert.ok(
+    rules.includes("git-guard.sh"),
+    "rule 3 of every brief no longer names git-guard.sh. Whatever it names instead is not the " +
+      "guard that ships with the plugin, and a run following the rule is running something this " +
+      "repository does not contain",
+  );
+  assert.ok(
+    readFileSync(join(SKILL, "land.js"), "utf8").includes("git-guard.sh"),
+    "the rebase-and-push instruction no longer names git-guard.sh, so the step that pushes is " +
+      "told to guard itself with something that is not here",
+  );
+
+  for (const file of readdirSync(SKILL).filter((f) => f.endsWith(".js") || f.endsWith(".sh"))) {
+    const hits = readFileSync(join(SKILL, file), "utf8")
+      .split("\n")
+      .map((line, at) => ({ line, at: at + 1 }))
+      .filter(({ line }) => BARE_GUARD.test(line));
+    assert.deepEqual(
+      hits.map(({ line, at }) => `${file}:${at}${line}`),
+      [],
+      "git-guard with no .sh is a name on PATH, and on the machine this pipeline runs on it " +
+        "resolves to a file mode 700 that a lane can neither read nor execute - calling it exits " +
+        "126 and the caller reports that as the push being refused. Name the script beside the " +
+        "other shared guards instead. The scan covers .js and .sh only: CHANGELOG.md has to be " +
+        "able to say what the old binary was called.",
+    );
   }
 });
 

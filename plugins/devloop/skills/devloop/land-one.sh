@@ -33,6 +33,8 @@ set -u
 # /tmp/<prefix>-worktrees a merge writes into, so a wrong one silently operates in
 # another project's scratch space rather than failing.
 PREFIX="$(bash "$(dirname "${BASH_SOURCE[0]}")/config.sh" lockPrefix 2>/dev/null || echo devloop)"
+SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+GUARD="$SKILL_DIR/git-guard.sh"
 LABEL=lane-verified
 REPO_PATH=""; SLUG=""; PR=""; BRANCH=""
 
@@ -57,6 +59,21 @@ case "$PR" in ''|*[!0-9]*) echo "--pr must be a number, got: $PR" >&2; exit 6 ;;
 
 WT="/tmp/${PREFIX}-worktrees/land-${PR}"
 say() { printf '%s\n' "$*"; }
+
+guard_verdict() {
+  local rc=$1 errf=$2 what=$3 ref=$4 reason=""
+  reason=$(grep -m1 '^git-guard\.sh: ' "$errf" 2>/dev/null)
+  [ -n "$reason" ] || reason=$(grep -v '^[[:space:]]*$' "$errf" 2>/dev/null | tail -1)
+  cat "$errf" >&2
+  case "$rc" in
+    2)       printf 'usage: the guard refused %s for %s - %s\n' \
+               "$what" "$ref" "${reason:-it gave no reason}" ;;
+    126|127) printf 'usage: the guard %s could not be run, exit %s - %s. %s was never attempted for %s\n' \
+               "$GUARD" "$rc" "${reason:-it printed nothing}" "$what" "$ref" ;;
+    *)       printf 'usage: %s failed for %s, exit %s - %s\n' \
+               "$what" "$ref" "$rc" "${reason:-nothing was printed}" ;;
+  esac
+}
 
 # Everything below runs against the worktree, never the main checkout. A person works in that
 # checkout on their own branch with their own uncommitted edits, and a stray checkout there has
@@ -121,10 +138,16 @@ else
 
   # Never force-push a default branch; this is not one, and the guard proves it rather than
   # trusting that the cd above went where it was meant to.
-  if ! git-guard --dir="$WT" --branch="$BRANCH" -- git push --force-with-lease >/dev/null 2>/dev/null; then
+  guard_err=$(mktemp "${TMPDIR:-/tmp}/guard-err.XXXXXX")
+  bash "$GUARD" --dir="$WT" --branch="$BRANCH" -- git push --force-with-lease >/dev/null 2>"$guard_err"
+  guard_rc=$?
+  if [ "$guard_rc" != 0 ]; then
+    verdict=$(guard_verdict "$guard_rc" "$guard_err" "push --force-with-lease" "$BRANCH")
+    rm -f "$guard_err"
     cd "$REPO_PATH" || true; cleanup
-    say "usage: push --force-with-lease was refused for ${BRANCH}"; exit 6
+    say "$verdict"; exit 6
   fi
+  rm -f "$guard_err"
   cd "$REPO_PATH" || true
   cleanup
   say "rebased: ${BRANCH} was ${behind} behind, rebased and pushed"
