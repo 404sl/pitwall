@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.1.32
+
+**`dupes.sh` guessed its lock prefix, so it could score another workspace's issues and say so
+confidently.** `PFX="${LOCK_PREFIX:-devloop}"` was the last literal default left under the skill.
+The scratch files it names live in `/tmp`, which is shared between every workspace on a machine,
+so a guess that happens to match a real prefix reads every bit as authoritative as a correct
+answer - and "nothing resembles closed work" is the most expensive thing this script can say
+wrongly, because the whole point of it is to stop two lanes building the same ticket.
+
+It now resolves `lockPrefix` through `config.sh` and REFUSES with a non-zero exit when it cannot,
+which is the shape `lanes.sh` took in 0.1.23 and the reasoning `lock-check.sh` has carried in its
+own header since the five scripts found reporting on the wrong project on 2026-09-09.
+
+Three tests, all failing before: a directory with no workspace config exits 6 with `refusing to
+guess` on stderr and prints no report, a config declaring a prefix is what the scratch files are
+named after, and a source scan over every `.sh` and `.js` in the skill fails on any `:-devloop`
+left in it.
+
 ## 0.1.30
 
 **The prefix was resolved where state is read and written out by hand where it is created.** Every
