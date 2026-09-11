@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.1.28
+
+**A ticket spanning two repositories got one pull request labelled and the other silently
+orphaned, and the ticket closed anyway.** `lane-handoff.sh` took a single `--repo-path`, `--slug`
+and `--pr`, so a two-repo ticket needed two invocations and nothing required, counted or checked
+the second. Whichever half was handed off got the label the lander reads; the other stayed open
+and unlabelled, which makes it invisible to the lander - and the issue closed on the strength of
+the half that landed. Measured two for two on 2026-09-10: both primary halves landed and deployed,
+both second halves were left open, both tickets closed. In one of the two the orphan was the
+artwork generator, so shipped images were no longer reproducible from master while every dashboard
+stayed green.
+
+- **The set of pull requests is derived from the branch, not from what the handoff was told
+  about.** Every repository the workspace config names is asked for its open pull requests whose
+  head is `--branch`, and each one found is checked and labelled in the same invocation. The
+  caller still names one, and it is still checked; it can no longer be the only one. Of the three
+  shapes the issue offered this is the one that cannot be under-reported by the step with the most
+  reason to stop early, and it needs no new plumbing between steps.
+- **Every pull request is checked before any is labelled.** Labelling the first and then finding
+  the second not ready would leave a mergeable half of a two-repo ticket, which is the defect
+  rather than a smaller version of it. A refusal names the pull request it could not pass and
+  labels nothing anywhere, so exit 2 and exit 4 are now assertions about the whole branch.
+- **A repository whose pull requests cannot be listed is a refusal, not an empty answer.** The
+  same rule the body read already followed, for the reason the release train's own notes give:
+  an empty list must not be able to hide work that went nowhere. A configured repository with no
+  slug, and a config naming no repositories at all, are reported on stdout rather than passed over
+  in silence.
+- **The worktree sweep follows the same set.** Collapsing two invocations into one would otherwise
+  have left the second repository's worktree checked out on the branch, which is what the
+  lander's branch deletion trips on. The refusal to remove a main checkout is applied per
+  repository.
+- This closes the first half of the family only. The release train acting on one repository per
+  run, and being unable to report that it ignored the others, is a different file and a separate
+  issue.
+
 ## 0.1.27
 
 **The silent-lane alarm judged whichever run for an issue had stopped writing, not the one that is

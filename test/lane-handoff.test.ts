@@ -29,6 +29,13 @@ interface Harness {
   ghLog: string;
 }
 
+interface Second {
+  list: string;
+  rollup: string;
+  body: string;
+  listFails?: boolean;
+}
+
 function git(dir: string, ...args: string[]): string {
   const ran = spawnSync("git", args, { cwd: dir, encoding: "utf8" });
   assert.equal(ran.status, 0, ran.stderr);
@@ -40,7 +47,7 @@ function executable(path: string, body: string): void {
   chmodSync(path, 0o755);
 }
 
-function harness(seededNotes: string): Harness {
+function harness(seededNotes: string, second?: Second): Harness {
   const root = mkdtempSync(join(tmpdir(), "pitwall-handoff-"));
   const repo = join(root, "repo");
   const bin = join(root, "bin");
@@ -49,7 +56,16 @@ function harness(seededNotes: string): Harness {
   mkdirSync(bin);
 
   const config = join(root, ".pitwall.json");
-  writeFileSync(config, JSON.stringify({ lockPrefix: `pwhandoff${process.pid}`, repos: {} }));
+  const repos = second
+    ? {
+        site: { path: "repo", slug: "acme/thing" },
+        docs: { path: "other", slug: "acme/other" },
+      }
+    : {};
+  writeFileSync(
+    config,
+    JSON.stringify({ root, lockPrefix: `pwhandoff${process.pid}`, repos }),
+  );
 
   git(repo, "init", "--quiet");
   git(repo, "config", "user.email", "nobody@example.invalid");
@@ -67,6 +83,30 @@ function harness(seededNotes: string): Harness {
   git(repo, "update-ref", `refs/remotes/origin/${BRANCH}`, head);
   git(repo, "checkout", "--quiet", base);
 
+  let otherHead = "";
+  if (second) {
+    const other = join(root, "other");
+    const origin = join(root, "other-origin.git");
+    mkdirSync(other);
+    mkdirSync(origin);
+    git(origin, "init", "--quiet", "--bare");
+    git(other, "init", "--quiet");
+    git(other, "config", "user.email", "nobody@example.invalid");
+    git(other, "config", "user.name", "Nobody");
+    git(other, "remote", "add", "origin", origin);
+    writeFileSync(join(other, "b.txt"), "one\n");
+    git(other, "add", "b.txt");
+    git(other, "commit", "--quiet", "-m", "base");
+    const otherBase = git(other, "rev-parse", "HEAD");
+    git(other, "update-ref", "refs/remotes/origin/master", otherBase);
+    writeFileSync(join(other, "b.txt"), "two\n");
+    git(other, "add", "b.txt");
+    git(other, "commit", "--quiet", "-m", "Regenerate the artwork from the same source");
+    otherHead = git(other, "rev-parse", "HEAD");
+    git(other, "update-ref", `refs/remotes/origin/${BRANCH}`, otherHead);
+    git(other, "checkout", "--quiet", otherBase);
+  }
+
   const ghLog = join(root, "gh.log");
   executable(
     join(bin, "gh"),
@@ -74,6 +114,16 @@ function harness(seededNotes: string): Harness {
       "#!/bin/sh",
       `printf '%s\\n' "$*" >> "${ghLog}"`,
       'case "$*" in',
+      ...(second
+        ? [
+            `  "pr list --repo acme/thing"*) printf '[{"number":14}]\\n' ;;`,
+            second.listFails
+              ? `  "pr list --repo acme/other"*) echo "gh: could not read acme/other" >&2; exit 1 ;;`
+              : `  "pr list --repo acme/other"*) printf '%s\\n' '${second.list}' ;;`,
+            `  *"--repo acme/other"*statusCheckRollup*) printf '{"statusCheckRollup":%s,"headRefOid":"%s"}\\n' '${second.rollup}' '${otherHead}' ;;`,
+            `  *"--repo acme/other --json title,body"*) printf '%s\\n' '${second.body}' ;;`,
+          ]
+        : []),
       `  *statusCheckRollup*) printf '{"statusCheckRollup":[{"name":"ci","conclusion":"SUCCESS"}],"headRefOid":"${head}"}\\n' ;;`,
       `  *"--json title,body"*) printf '{"title":"Fix the thing","body":"It was broken. Now it is not."}\\n' ;;`,
       `  *"--json labels"*) printf '{"labels":[{"name":"lane-verified"}]}\\n' ;;`,
@@ -115,6 +165,7 @@ interface Ran {
   stdout: string;
   stderr: string;
   labelled: boolean;
+  calls: string;
 }
 
 function handoff(box: Harness, args: string[], record: boolean): Ran {
@@ -140,6 +191,7 @@ function handoff(box: Harness, args: string[], record: boolean): Ran {
     stdout: ran.stdout ?? "",
     stderr: ran.stderr ?? "",
     labelled: calls.includes("pr edit"),
+    calls,
   };
 }
 
@@ -201,4 +253,60 @@ test("an earlier note carrying the same link does not pass a lost note off as pr
 
   assert.equal(ran.status, 5, ran.stdout + ran.stderr);
   assert.match(ran.stdout, /note-unconfirmed/);
+});
+
+const READY = '[{"name":"ci","conclusion":"SUCCESS"}]';
+const CLEAN = '{"title":"Regenerate the artwork","body":"The generator was the orphan. Now it is not."}';
+
+test("every repository with a pull request on the branch is labelled, not only the one named", () => {
+  const box = harness("", { list: '[{"number":7}]', rollup: READY, body: CLEAN });
+  const ran = handoff(box, [...required(box), "--issue", "acme-1", "--note-file", box.notePath], true);
+
+  assert.equal(ran.status, 0, ran.stdout + ran.stderr);
+  assert.match(ran.stdout, /handed off: acme\/thing#14/);
+  assert.match(ran.stdout, /also labelled lane-verified on lane\/x: acme\/other#7/);
+  assert.match(ran.calls, /pr edit 14 --repo acme\/thing/);
+  assert.match(ran.calls, /pr edit 7 --repo acme\/other/);
+});
+
+test("a second repository's pull request that is not green leaves NOTHING labelled", () => {
+  const box = harness("", { list: '[{"number":7}]', rollup: "[]", body: CLEAN });
+  const ran = handoff(box, [...required(box), "--issue", "acme-1", "--note-file", box.notePath], true);
+
+  assert.equal(ran.status, 4, ran.stdout + ran.stderr);
+  assert.match(ran.stdout, /acme\/other#7/);
+  assert.doesNotMatch(ran.stdout, /^handed off: /m);
+  assert.equal(ran.labelled, false, "a pull request was labelled while a second one was not ready");
+});
+
+test("a second repository's pull request whose body names the pipeline leaves NOTHING labelled", () => {
+  const box = harness("", {
+    list: '[{"number":7}]',
+    rollup: READY,
+    body: '{"title":"Regenerate the artwork","body":"Captured under /tmp/shots while checking."}',
+  });
+  const ran = handoff(box, [...required(box), "--issue", "acme-1", "--note-file", box.notePath], true);
+
+  assert.equal(ran.status, 2, ran.stdout + ran.stderr);
+  assert.match(ran.stdout, /non-compliant: acme\/other#7/);
+  assert.equal(ran.labelled, false, "a pull request was labelled despite a non-compliant sibling");
+});
+
+test("a repository whose open pull requests cannot be read is refused, not read as having none", () => {
+  const box = harness("", { list: "[]", rollup: READY, body: CLEAN, listFails: true });
+  const ran = handoff(box, [...required(box), "--issue", "acme-1", "--note-file", box.notePath], true);
+
+  assert.equal(ran.status, 6, ran.stdout + ran.stderr);
+  assert.match(ran.stderr, /could not list the open pull requests of acme\/other/);
+  assert.equal(ran.labelled, false, "the pull request was labelled on an unreadable survey");
+});
+
+test("a repository the config names with no pull request on the branch is not labelled", () => {
+  const box = harness("", { list: "[]", rollup: READY, body: CLEAN });
+  const ran = handoff(box, [...required(box), "--issue", "acme-1", "--note-file", box.notePath], true);
+
+  assert.equal(ran.status, 0, ran.stdout + ran.stderr);
+  assert.match(ran.stdout, /handed off: acme\/thing#14/);
+  assert.doesNotMatch(ran.stdout, /also labelled/);
+  assert.doesNotMatch(ran.calls, /pr edit \d+ --repo acme\/other/);
 });
