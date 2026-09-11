@@ -43,6 +43,7 @@ function closed(id: string, origin?: Origin): ClosedIssue {
     origin,
     closedAt: CLOSED_AT,
     closeReason: undefined,
+    externalRef: undefined,
   };
 }
 

@@ -208,6 +208,64 @@ Where there is nothing to deliver through, the notice is not dropped quietly: wh
 and why nobody was told becomes a row on the board against `pitwall serve: outbound notice`,
 beside everything else the console could not do.
 
+## Closing the issue a bead came from
+
+An issue filed on a public repository becomes a tracker item carrying an external reference
+back to it. Nothing in the tracker closes the public issue when that item closes, so a
+repository keeps advertising work that shipped days ago. Pitwall closes it, from the same two
+consecutive snapshots the notices are computed from: a bead that was open at the previous
+collection and closed at this one.
+
+The link is the bead's recorded external reference and nothing else. A title is not a link —
+two unrelated items can carry the same one with no tell — so a bead that records no reference
+closes nothing, however well its title matches. Only a `https://github.com/<owner>/<repo>/issues/<n>`
+reference is acted on, and only where `<owner>/<repo>` is the origin of one of the workspace's
+own checkouts: a reference to somebody else's tracker, or to a pull request, is read and left
+alone.
+
+What the comment may say is decided by the close reason alone, because that is the only thing
+the tracker holds that records something having shipped. The reason has to OPEN by naming a
+pull request or a revision — "Landed in cli #91", "Merged as 404sl/pitwall#94 (44cc687)" — and
+the comment quotes its first sentence, no further than that reference and never more than 120
+characters, so a remark meant for the tracker does not travel with it. Anything that opens some
+other way leaves the issue open however it goes on: "Will not do — out of scope. Related work
+landed in cli #77" reports nothing, because what shipped there is not what this bead did. So
+does a reason whose reference arrives only in a later sentence, and so does no reason at all —
+a pull request being open for that bead at the previous collection is not evidence that anything
+merged, and is never read as any. A bead closed as superseded, a duplicate, won't-do or not
+planned is not reported to its issue as shipped at all: what to do with somebody else's report
+is a person's decision, and the issue is left open with a line saying so.
+
+A number only becomes a link where two facts agree. `#91` in a comment on a public repository
+addresses that repository, which is the wrong one as often as the right one, so an unqualified
+number travels as literal text unless a pull request of that same bead carries that same
+number — then the comment names the pull request in full. A reference that already names its
+repository is left exactly as the reason wrote it.
+
+One direction only. The one thing this asks GitHub to do is close an issue with a comment;
+nothing reopens a bead, promotes anything into the tracker, or reads issue comments. It runs
+for a workspace you have listed in `roots`, on the same terms as a notice, and a workspace
+found by scanning closes nothing.
+
+Whether a reference is one of ours is answered by asking each checkout for its `origin`, and a
+checkout that will not answer is not the same as one that has nothing to say. A path that is no
+repository, or a repository with no `origin`, simply owns no reference. A checkout whose `git
+remote get-url origin` FAILS — a broken `.git`, an unreadable configuration, no `git` on the
+path — cannot be distinguished from one that does not own the reference, so for as long as that
+is true the run says so for every reference it could not place, naming the checkout and what git
+said. Turning the feature off quietly is the one outcome that is not allowed.
+
+A close that fails — no permission, no network, an issue since deleted — is appended to the
+bead with the reason and written to standard error by `snapshot`. It is not retried: the bead
+closes once, so the attempt happens once, and what did not happen is readable on the bead
+rather than lost. It does not reach the board: the collection carries the failure as an error
+against `gh issue close`, and the board renders only the errors the snapshot itself was written
+with.
+
+An issue deliberately LEFT open — nothing shipped, a veto, a checkout that would not answer —
+is written to standard error with the reason and is not appended to the bead, because the bead's
+own close reason already says what happened to it and the run is the thing that needs telling.
+
 ## How it is put together
 
 ```

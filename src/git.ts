@@ -56,9 +56,33 @@ export function slugOf(url: string): string | undefined {
   return host === GITHUB_HOST ? path : `${host}/${path}`;
 }
 
-export function remoteSlugOf(repo: string): string | undefined {
+const NO_SUCH_REMOTE = 2;
+const REMOTE_COMMAND = `git remote get-url ${ORIGIN}`;
+
+export interface Remote {
+  slug?: string;
+  failure?: string;
+}
+
+function refusedBy(status: number | null, signal: NodeJS.Signals | null, said: string): string {
+  const lines = said
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line !== "");
+  const refusal = lines.find((line) => line.startsWith("fatal:") || line.startsWith("error:"));
+  const last = lines[lines.length - 1];
+  if (refusal !== undefined || last !== undefined) {
+    return refusal ?? last ?? "";
+  }
+  if (signal !== null) {
+    return `${REMOTE_COMMAND} was killed by ${signal}`;
+  }
+  return `${REMOTE_COMMAND} exited ${status ?? "without a status"}`;
+}
+
+export function remoteOf(repo: string): Remote {
   if (!existsSync(join(repo, ".git"))) {
-    return undefined;
+    return {};
   }
   const read = spawnSync("git", ["remote", "get-url", ORIGIN], {
     cwd: repo,
@@ -66,8 +90,18 @@ export function remoteSlugOf(repo: string): string | undefined {
     maxBuffer: GIT_OUTPUT_LIMIT,
     timeout: GIT_TIMEOUT_MS,
   });
-  if (read.error !== undefined || read.status !== 0) {
-    return undefined;
+  if (read.error !== undefined) {
+    return { failure: `${REMOTE_COMMAND}: ${read.error.message}` };
   }
-  return slugOf(read.stdout ?? "");
+  if (read.status === NO_SUCH_REMOTE) {
+    return {};
+  }
+  if (read.status !== 0) {
+    return { failure: refusedBy(read.status, read.signal, read.stderr ?? "") };
+  }
+  return { slug: slugOf(read.stdout ?? "") };
+}
+
+export function remoteSlugOf(repo: string): string | undefined {
+  return remoteOf(repo).slug;
 }
