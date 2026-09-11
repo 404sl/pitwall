@@ -139,6 +139,16 @@ export const strings = {
   problems: {
     run: "run",
     console: "console",
+    group: {
+      affected: "{count} issues",
+      acrossProjects: "{count} projects",
+      cause: {
+        reference: "references could not be checked",
+        precondition: "preconditions could not be run",
+      },
+      show: "show {count}",
+      hide: "hide",
+    },
   },
   failure: {
     heading: "Nothing to show",

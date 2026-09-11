@@ -256,12 +256,28 @@ body {
 .pw-cell--id,
 .pw-cell--data,
 .pw-cell--at,
+.pw-cell--source,
 .pw-count {
   font-family: var(--pw-font-data);
   font-size: 12px;
   line-height: 1.6;
   letter-spacing: 0.02em;
+}
+
+.pw-cell--id,
+.pw-cell--data,
+.pw-cell--at,
+.pw-count {
   white-space: nowrap;
+}
+
+.pw-cell--source {
+  overflow-wrap: anywhere;
+}
+
+.pw-table--problems .pw-cell--source {
+  inline-size: 36ch;
+  min-inline-size: 36ch;
 }
 
 .pw-cell--at {
@@ -641,8 +657,27 @@ body {
 }
 
 .pw-disclosure__summary:hover .pw-disclosure__label,
-.pw-disclosure__summary:focus-visible .pw-disclosure__label {
+.pw-disclosure__summary:focus-visible .pw-disclosure__label,
+.pw-problems__toggle:hover .pw-disclosure__label,
+.pw-problems__toggle:focus-visible .pw-disclosure__label {
   text-decoration-color: var(--pw-ink);
+}
+
+.pw-problems__toggle {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.pw-problems__detail[hidden] {
+  display: none;
+}
+
+.pw-problems__detail .pw-row > :first-child {
+  padding-inline-start: 24px;
 }
 
 .pw-disclosure__separator {
@@ -823,6 +858,20 @@ body {
 
   .pw-row {
     padding-block: 6px;
+  }
+
+  .pw-table--problems .pw-cell--source {
+    inline-size: auto;
+    min-inline-size: 0;
+  }
+
+  .pw-problems__cause {
+    display: block;
+  }
+
+  .pw-problems__toggle {
+    display: block;
+    min-block-size: 44px;
   }
 
   .pw-row--signal {

@@ -15,6 +15,7 @@ import {
 import { parentIdOf, type ClassificationReason } from "./classify.js";
 import { priorityLabel } from "./format.js";
 import {
+  STALENESS_SOURCE,
   UNRESOLVED_KINDS,
   stalenessSource,
   unresolvedOf,
@@ -101,6 +102,69 @@ export interface ProblemRow {
 
 export function problemKey(row: ProblemRow): string {
   return [row.scope, row.name, row.source, row.at, row.message].join("\u0000");
+}
+
+export type ProblemEntry =
+  | { kind: "rows"; key: string; rows: ProblemRow[] }
+  | { kind: "group"; key: string; source: string; cause: UnresolvedKind; rows: ProblemRow[]; at: string };
+
+function sharedCause(row: ProblemRow): UnresolvedKind | undefined {
+  if (row.scope === "console" || !row.source.startsWith(`${STALENESS_SOURCE} `)) {
+    return undefined;
+  }
+  return unresolvedOf(row.message)?.kind;
+}
+
+function looseEntry(rows: readonly ProblemRow[]): ProblemEntry[] {
+  const [first] = rows;
+  return first === undefined ? [] : [{ kind: "rows", key: problemKey(first), rows: [...rows] }];
+}
+
+function newest(rows: readonly ProblemRow[]): string {
+  return rows.reduce((latest, row) => (row.at > latest ? row.at : latest), "");
+}
+
+export function problemGroups(rows: readonly ProblemRow[]): ProblemEntry[] {
+  const shared = new Map<UnresolvedKind, ProblemRow[]>();
+  for (const row of rows) {
+    const cause = sharedCause(row);
+    if (cause === undefined) {
+      continue;
+    }
+    const held = shared.get(cause);
+    if (held === undefined) {
+      shared.set(cause, [row]);
+    } else {
+      held.push(row);
+    }
+  }
+  const entries: ProblemEntry[] = [];
+  const loose: ProblemRow[] = [];
+  const placed = new Set<UnresolvedKind>();
+  for (const row of rows) {
+    const cause = sharedCause(row);
+    const held = cause === undefined ? undefined : shared.get(cause);
+    if (cause === undefined || held === undefined || held.length < 2) {
+      loose.push(row);
+      continue;
+    }
+    if (placed.has(cause)) {
+      continue;
+    }
+    placed.add(cause);
+    entries.push(...looseEntry(loose));
+    loose.length = 0;
+    entries.push({
+      kind: "group",
+      key: `${STALENESS_SOURCE}-${cause}`,
+      source: STALENESS_SOURCE,
+      cause,
+      rows: held,
+      at: newest(held),
+    });
+  }
+  entries.push(...looseEntry(loose));
+  return entries;
 }
 
 export const FILTER_NONE = "none";

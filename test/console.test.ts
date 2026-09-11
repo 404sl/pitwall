@@ -16,10 +16,11 @@ import {
   parkedReasons,
   parkedSummary,
   previewIssue,
+  problemGroups,
   problemKey,
   snapshotAge,
 } from "../ui/model.ts";
-import type { Board, BuildState, FilterState, IssuePayload, IssuePreview } from "../ui/model.ts";
+import type { Board, BuildState, FilterState, IssuePayload, IssuePreview, ProblemRow } from "../ui/model.ts";
 import { strings } from "../ui/strings.ts";
 import { countLabel } from "../ui/format.ts";
 import { boardHref, filterOf, filterQuery, issueHref, routeOf } from "../ui/routes.ts";
@@ -1320,6 +1321,110 @@ test("two failures the run recorded at one instant are still two rows a reader c
   const markup = renderToStaticMarkup(createElement(Problems, { rows: board.problems }));
   assert.equal(markup.match(/nothing records when an issue stopped/g)?.length, 1);
   assert.equal(markup.match(/no pull request host is configured/g)?.length, 1);
+});
+
+const RATE_LIMITED = "API rate limit exceeded for user ID 2201. (HTTP 403)";
+const LIST_COMMAND =
+  "gh pr list --repo 404sl/pitwall --state open --limit 200 --json number,title,labels,headRefName,url,statusCheckRollup,body";
+const COLLECTED_AT = "2026-09-12T00:11:00Z";
+
+function unreadable(source: string, message: string, name = "pitwall"): ProblemRow {
+  return { scope: "project", name, source, message, at: COLLECTED_AT };
+}
+
+function uncheckable(index: number, kind: "reference" | "precondition", name = "pitwall"): ProblemRow {
+  const count = (index % 3) + 1;
+  const noun = count === 1 ? kind : `${kind}s`;
+  const verb = kind === "reference" ? "checked" : "run";
+  return unreadable(
+    `staleness pitwall-${index.toString(36)}`,
+    `${count} ${noun} could not be ${verb}: #${index + 40}`,
+    name,
+  );
+}
+
+function tbodyOf(markup: string, id: string): string {
+  const opened = markup.split(`<tbody id="${id}"`)[1] ?? "";
+  return opened.split("</tbody>")[0] ?? "";
+}
+
+test("a rate limit that stopped every check is one row naming the cause, not one row per issue", () => {
+  const rows = [
+    unreadable(LIST_COMMAND, RATE_LIMITED),
+    unreadable("staleness", "no pull request host is configured, so pull requests could not be looked up"),
+    ...Array.from({ length: 121 }, (_, index) => uncheckable(index, "reference", index % 4 === 0 ? "session-replay" : "pitwall")),
+  ];
+  const entries = problemGroups(rows);
+  assert.deepEqual(
+    entries.map((entry) => entry.kind),
+    ["rows", "group"],
+    "the failures that are different must stay ahead of the collapsed cause",
+  );
+  const markup = renderToStaticMarkup(createElement(Problems, { rows }));
+  assert.match(markup, /121 issues/);
+  assert.match(markup, /references could not be checked/);
+  assert.equal(markup.match(/aria-expanded="false"/g)?.length, 1, "one cause collapses to one toggle");
+  assert.match(markup, /2 projects/, "a cause that crossed projects must say so");
+  assert.ok(markup.includes(LIST_COMMAND), "the command somebody re-runs must survive collapsing");
+  assert.ok(markup.includes(RATE_LIMITED));
+  for (const row of rows) {
+    assert.equal(markup.match(new RegExp(row.message.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g"))?.length, 1);
+  }
+  const detail = tbodyOf(markup, "problems-staleness-reference");
+  assert.match(detail, /^ class="pw-problems__detail" hidden=""/, "a group starts collapsed");
+  assert.ok(!detail.includes(LIST_COMMAND), "the row that is different must not be hidden inside a group");
+  assert.ok(!detail.includes("no pull request host is configured"), "a run-scope failure is not a per-issue one");
+  assert.equal(detail.match(/could not be checked/g)?.length, 121, "expanding must give every issue back");
+});
+
+test("a long source renders in a column of its own, because the message column is not for commands", () => {
+  const markup = renderToStaticMarkup(
+    createElement(Problems, { rows: [unreadable(LIST_COMMAND, RATE_LIMITED)] }),
+  );
+  assert.match(markup, /pw-cell pw-cell--source/, "a source is a command, not an id");
+  assert.ok(!markup.includes("pw-cell--id"), "the id column is measured for ids and must not size a command");
+});
+
+test("problems group on the cause they share, never on the message they do not", () => {
+  const rows = [
+    ...Array.from({ length: 2 }, (_, index) => uncheckable(index, "reference")),
+    ...Array.from({ length: 3 }, (_, index) => uncheckable(index + 10, "precondition")),
+  ];
+  const entries = problemGroups(rows);
+  assert.deepEqual(
+    entries.map((entry) => (entry.kind === "group" ? entry.cause : entry.kind)),
+    ["reference", "precondition"],
+  );
+  const markup = renderToStaticMarkup(createElement(Problems, { rows }));
+  assert.equal(markup.match(/aria-expanded="false"/g)?.length, 2);
+  assert.match(markup, /2 issues/);
+  assert.match(markup, /3 issues/);
+  assert.match(markup, /preconditions could not be run/);
+});
+
+test("one failure of a cause stays the row it was, because there is nothing to collapse", () => {
+  const rows = [uncheckable(1, "reference"), unreadable("staleness pitwall-9x", "the note could not be parsed")];
+  assert.deepEqual(
+    problemGroups(rows).map((entry) => entry.kind),
+    ["rows"],
+  );
+  const markup = renderToStaticMarkup(createElement(Problems, { rows }));
+  assert.ok(!markup.includes("aria-expanded"), "a single row must not grow a toggle");
+  assert.ok(!markup.includes("pw-problems__detail"), "a single row must not hide behind a disclosure");
+});
+
+test("a console failure is never collapsed and keeps the live region a reader is told through", () => {
+  const rows: ProblemRow[] = [
+    { scope: "console", name: "console", source: "staleness pitwall-1", message: "2 references could not be checked: #1", at: COLLECTED_AT },
+    { scope: "console", name: "console", source: "staleness pitwall-2", message: "3 references could not be checked: #2", at: COLLECTED_AT },
+  ];
+  assert.deepEqual(
+    problemGroups(rows).map((entry) => entry.kind),
+    ["rows"],
+  );
+  const markup = renderToStaticMarkup(createElement(Problems, { rows }));
+  assert.equal(markup.match(/role="status"/g)?.length, 2);
+  assert.ok(!markup.includes("aria-expanded"));
 });
 
 test("problems render whole under every filter, because a hidden collection failure reads as health", () => {
