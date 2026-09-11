@@ -70,14 +70,17 @@ test("the standing shell block carries no backticks in any script that hands it 
   }
 });
 
+const WRITES_A_COMMIT = /(^\s*|&&\s*|\|\|\s*|;\s*)(if ! )?git\s+(commit|rebase|cherry-pick|merge)(?![-\w])/;
+
 test("nothing in the plugin commits or rebases on an identity it did not pass", () => {
-  for (const file of ["land-train.sh", "land-one.sh"]) {
+  for (const file of ["task.js", "land.js", "rework.js", "land-train.js", "land-train.sh", "land-one.sh"]) {
     const source = readFileSync(join(SKILL, file), "utf8");
     const writes = source
       .split("\n")
       .map((line, i) => ({ line, at: i + 1 }))
-      .filter(({ line }) => /^\s*(if ! )?git (commit|rebase|cherry-pick|merge)(\s|$)/.test(line))
-      .filter(({ line }) => !/--(abort|continue|skip)\b/.test(line));
+      .filter(({ line }) => WRITES_A_COMMIT.test(line))
+      .filter(({ line }) => !/--(abort|continue|skip)\b/.test(line))
+      .filter(({ line }) => !/user\.name=/.test(line));
     assert.deepEqual(
       writes.map(({ line, at }) => `${file}:${at}${line}`),
       [],

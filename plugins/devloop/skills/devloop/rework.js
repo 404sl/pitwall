@@ -118,9 +118,11 @@ branch being built on:
   git -c user.name="$(git log -1 --format=%an origin/master)" -c user.email="$(git log -1 --format=%ae origin/master)" commit -F <message file>
 
 Without it git either refuses outright, 'unable to auto-detect email address', or writes the
-wrong author - and nothing downstream notices the second. Credential helpers normally live in the
-system config rather than the home one, so pushes keep working; if a push asks for a password,
-say so rather than putting the home config back.`
+wrong author - and nothing downstream notices the second. On this machine the credential helper
+sits in the system config rather than the home one, so pushes keep working - but that is this
+machine, not a rule: a workspace set up by 'gh auth setup-git' has the helper in the GLOBAL
+config, and these exports drop it. If a push asks for a password, say so rather than putting the
+home config back.`
 
 const RESOLVE = {
   type: 'object',
@@ -229,7 +231,7 @@ put it back once CI is green on the new head:
 
 MERGE MASTER IN. Do not rebase.
 
-  cd ${WT_PATH} && git merge --no-ff --no-commit origin/master
+  cd ${WT_PATH} && git -c user.name="$(git log -1 --format=%an origin/master)" -c user.email="$(git log -1 --format=%ae origin/master)" merge --no-ff --no-commit origin/master
 
 and then write the commit message YOURSELF, because a generated one says nothing. Its default
 reads

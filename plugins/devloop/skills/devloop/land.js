@@ -173,9 +173,11 @@ branch being built on:
   git -c user.name="$(git log -1 --format=%an origin/master)" -c user.email="$(git log -1 --format=%ae origin/master)" commit -F <message file>
 
 Without it git either refuses outright, 'unable to auto-detect email address', or writes the
-wrong author - and nothing downstream notices the second. Credential helpers normally live in the
-system config rather than the home one, so pushes keep working; if a push asks for a password,
-say so rather than putting the home config back.`
+wrong author - and nothing downstream notices the second. On this machine the credential helper
+sits in the system config rather than the home one, so pushes keep working - but that is this
+machine, not a rule: a workspace set up by 'gh auth setup-git' has the helper in the GLOBAL
+config, and these exports drop it. If a push asks for a password, say so rather than putting the
+home config back.`
 
 const LAW = `
 Never use 2>&1 - it makes some commands fail outright.

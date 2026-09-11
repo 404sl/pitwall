@@ -19,16 +19,20 @@ Every brief that hands out a git or bundler command now leads with
 That reaches the fix, review, handoff and split briefs, the rework's resolve and handoff, the
 lander's steps and the train's. The exports are unconditional rather than probed: whether a synced folder has
 materialised a file is not something a run controls, so the next eviction would bring the whole
-failure back. Gems resolve from the default path without the user config, and a credential helper
-normally sits in the system config rather than the home one, so pushes keep working - a run whose
-push asks for a password is told to say so rather than to put the home config back.
+failure back. Gems resolve from the default path without the user config. The credential helper
+sits in the system config on the machine this was measured on, so pushes keep working there - but
+a workspace set up by `gh auth setup-git` keeps the helper in the global config, and these exports
+drop it, so a run whose push asks for a password is told to say so rather than to put the home
+config back.
 
 - **Commit identity is passed on the command now, not read from a config.** It is the one thing
   those exports take away, and nothing warns about it. Every brief that writes a commit carries
   `git -c user.name="$(git log -1 --format=%an origin/master)" -c user.email="$(git log -1
   --format=%ae origin/master)"` - the author master already carries, so there is no new
   configuration to keep in step and the history gains no second name for the same work. The rebase
-  the lander is told to run carries it too: a rebase writes commits.
+  the lander is told to run carries it too: a rebase writes commits. So does the merge the rework's
+  resolve step runs - `--no-commit` records no author, but git refuses the merge before it touches a
+  file, and the lane reports that as a conflict with master that does not exist.
 - **`land-train.sh` and `land-one.sh` pass it themselves,** because they merge, commit and rebase in
   their own shells rather than in a brief. Without it the train drops every candidate: the squash
   merge is refused before the commit is even reached, which the script reports as a conflict, and a
@@ -49,8 +53,12 @@ which is the one the setup block does not reach, the review brief, the lander's 
 briefs, and both rework briefs. Two run the shell scripts against a throwaway remote with no
 identity anywhere git can reach: the train must still commit, under master's own author, and the
 rebase must not be reported as a conflict. Two read the sources: the standing block must carry no
-backtick, which closes a brief's template literal early and blocks every dispatch, and no commit or
-rebase anywhere in the plugin may take its identity from configuration.
+backtick, which closes a brief's template literal early and blocks every dispatch, and no commit,
+merge, rebase or cherry-pick anywhere in the plugin may take its identity from configuration. That
+last audit reads the four briefs as well as the two shell scripts, because a brief is where most of
+those commands are written; it matches a git invocation in command position, which keeps prose that
+merely names a command out of the result, and skips `merge-base`, `merge-tree` and the
+`--abort`/`--continue`/`--skip` forms, none of which write a commit.
 
 ## 0.1.23
 
