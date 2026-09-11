@@ -83,7 +83,7 @@ a fifth after that lesson was supposedly learned: slot 7 was reused for `app-sey
 `app-12lw` had finished on it, forgetting `app-9q71` was also there. That run refused to start
 and cost 153k tokens to discover a fact `slot.sh --list` prints instantly.
 
-Its registry is a file per slot under `/tmp/devloop-slots` and it goes stale across sessions -
+Its registry is a file per slot under `/tmp/<lockPrefix>-slots` and it goes stale across sessions -
 it held seven finished issues from a previous day while five different lanes were live, which
 would have answered "all lanes busy". When it disagrees with the locks, the LOCKS ARE THE FACT:
 rebuild the registry from them rather than trusting either blindly, and never run `--gc` right
@@ -152,7 +152,7 @@ Workflow({ scriptPath: <the scriptPath that object carries>,
 ```
 
 Launch it when any repo has a labelled PR and no lander run is already going. It takes
-`/tmp/devloop-merge.lock` itself and gives it back on every exit path, so a second run and a
+`/tmp/<lockPrefix>-merge.lock` itself and gives it back on every exit path, so a second run and a
 person merging by hand both wait rather than collide - but two launches still waste a run,
 so check first. Without this step the pipeline's output is labelled PRs sitting forever.
 
@@ -489,7 +489,7 @@ give you, and never choose a slot yourself.
 
 The slot is not decoration: `task.js` derives `TEST_ENV_NUMBER` from it, so the slot number
 *is* the test database. Two live workflows on one slot share a database and corrupt each
-other's run. `--next` now assigns it from a registry under `/tmp/devloop-slots`, reconciled
+other's run. `--next` now assigns it from a registry under `/tmp/<lockPrefix>-slots`, reconciled
 against `in_progress` on every call, so a slot frees itself as soon as its issue is released
 and a died workflow needs no cleaning up by hand.
 
@@ -691,7 +691,7 @@ agent cannot relay what it has not been shown.
   Triage would catch them anyway, but that costs a workflow to learn what a label says.
 - Visual evidence is scaffolding and must never reach a commit. Captures are written by a
   throwaway spec that is deleted before committing, and both the implementer and the
-  reviewer grep the staged diff for `devloop-worktrees` and `save_screenshot`. A scratch
+  reviewer grep the staged diff for the worktree root, the scratch root and `save_screenshot`. A scratch
   path baked into a permanent spec makes every future run of that suite, on every machine,
   write into a directory that exists on one of them.
 - **There is no pre-commit hook, and lanes must not pass `--no-verify`.** This line used to
