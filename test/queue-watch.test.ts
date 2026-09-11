@@ -72,6 +72,59 @@ function workspace(flight: Flight): Workspace {
   return { root, wf, tasks };
 }
 
+interface Dispatch {
+  task: string;
+  run: string;
+  minutesAgo: number;
+  label?: string;
+}
+
+function dispatches(runs: readonly Dispatch[]): Workspace {
+  const root = mkdtempSync(join(tmpdir(), "pitwall-queue-watch-"));
+  const wf = join(root, "projects");
+  const tasks = join(root, "tasks");
+  mkdirSync(wf, { recursive: true });
+  mkdirSync(tasks, { recursive: true });
+
+  const records: string[] = [];
+  for (const dispatch of runs) {
+    writeFileSync(join(tasks, `${dispatch.task}.output`), "");
+    const dir = join(wf, "session-1", "subagents", "workflows", dispatch.run);
+    mkdirSync(dir, { recursive: true });
+    const journal = join(dir, "journal.jsonl");
+    writeFileSync(
+      journal,
+      `${[
+        JSON.stringify({ type: "launched" }),
+        JSON.stringify({
+          type: "started",
+          agentId: "a1",
+          label: dispatch.label ?? "fix:pitwall-azp",
+          phase: "Fix",
+        }),
+      ].join("\n")}\n`,
+    );
+    const when = new Date(Date.now() - dispatch.minutesAgo * 60_000);
+    utimesSync(journal, when, when);
+    records.push(
+      JSON.stringify({
+        type: "user",
+        toolUseResult: {
+          status: "async_launched",
+          taskId: dispatch.task,
+          taskType: "local_workflow",
+          workflowName: "devloop-task",
+          runId: dispatch.run,
+          summary: "Carry one tracker issue from open to landable",
+          scriptPath: "/w/.autofix-run/task.js",
+        },
+      }),
+    );
+  }
+  writeFileSync(join(wf, "session-1.jsonl"), `${records.join("\n")}\n`);
+  return { root, wf, tasks };
+}
+
 function shellFunction(name: string): string {
   const source = readFileSync(join(SKILL, "queue-watch.sh"), "utf8");
   const start = source.indexOf(`${name}() {`);
@@ -172,6 +225,15 @@ test("the land gate says so when the lane holding it shut has gone silent", () =
   assert.match(out, /gate stays shut/);
 });
 
+test("a lane dispatched once and gone silent is reported without a withheld-dispatch trailer", () => {
+  const space = workspace("lane");
+  silence(space, 92);
+  const out = landGate(space, "site#61");
+  assert.match(out, /journal silent 9[0-9]m/);
+  assert.doesNotMatch(out, /newest of/);
+  assert.doesNotMatch(out, /earlier dispatch/);
+});
+
 test("the land gate stays quiet while the lane holding it shut is still writing", () => {
   assert.equal(landGate(workspace("lane"), "site#61"), "");
 });
@@ -185,6 +247,43 @@ test("a lane that goes silent after the gate has already seen that ready set is 
 
 test("the land gate announces work ready to land when no lane is running", () => {
   assert.match(landGate(workspace("nothing"), "site#61"), /^QUEUE: ready to land, no lanes running - site#61$/);
+});
+
+test("an issue re-dispatched twice is not silent while its newest run is writing", () => {
+  const space = dispatches([
+    { task: "w111", run: "wf_f80fcf95", minutesAgo: 93 },
+    { task: "w222", run: "wf_12c0c01f", minutesAgo: 92 },
+    { task: "w333", run: "wf_92bb050e", minutesAgo: 0 },
+  ]);
+  assert.equal(landGate(space, "site#80"), "");
+});
+
+test("an issue whose newest run is also silent is reported, naming that run and no other", () => {
+  const space = dispatches([
+    { task: "w111", run: "wf_f80fcf95", minutesAgo: 93 },
+    { task: "w222", run: "wf_12c0c01f", minutesAgo: 92 },
+    { task: "w333", run: "wf_92bb050e", minutesAgo: 30 },
+  ]);
+  const out = landGate(space, "site#80");
+  assert.match(out, /gone silent - site#80/);
+  assert.match(out, /task w333, workflow wf_92bb050e/);
+  assert.match(out, /journal silent (29|30|31)m/);
+  assert.match(out, /, newest of 3$/m);
+  assert.match(out, /An earlier dispatch says nothing about the issue/);
+  assert.doesNotMatch(out, /wf_f80fcf95/);
+  assert.doesNotMatch(out, /wf_12c0c01f/);
+  assert.equal(out.split("\n").filter((line) => line.includes("task w")).length, 1);
+});
+
+test("a run whose labels carry no issue id is judged alone, not against another such run", () => {
+  const space = dispatches([
+    { task: "w111", run: "wf_one", minutesAgo: 93, label: "Fix" },
+    { task: "w222", run: "wf_two", minutesAgo: 0, label: "Fix" },
+  ]);
+  const out = landGate(space, "site#80");
+  assert.match(out, /task w111, workflow wf_one/);
+  assert.doesNotMatch(out, /wf_two/);
+  assert.doesNotMatch(out, /newest of/);
 });
 
 test("the land gate announces that it cannot tell whether a lane is running", () => {

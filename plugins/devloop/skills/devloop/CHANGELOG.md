@@ -1,5 +1,50 @@
 # Changelog
 
+## 0.1.27
+
+**The silent-lane alarm judged whichever run for an issue had stopped writing, not the one that is
+still writing.** An issue re-dispatched after a supervisor stop or a launch crash leaves the earlier
+attempts with empty task output files for ever, so `lane-running.sh --any` lists each of them as
+`RUNNING` - correctly, per task - and `queue-watch.sh` reported the first with a stale journal. The
+event ends in a recommendation to run `kill-lane.sh`, so acting on it would have torn down the
+healthy lane.
+
+Measured on 2026-09-10: `pitwall-azp` had three dispatches that afternoon. `wf_f80fcf95-b4b` was
+stopped by the supervisor over malformed args and had been silent 93m; `wf_12c0c01f-926` failed at
+launch in 41ms with zero agents and had been silent 92m; `wf_92bb050e-d68` was the live one and had
+written 0m earlier. The event named the first, and the alarm is self-confirming in the wrong
+direction - the more often an issue is re-dispatched, the more dead runs exist to be found, so an
+issue with a rough start looks progressively more dead while being progressively more actively
+worked.
+
+- **`silent_lanes` groups the `--any` lines by issue id and judges one run per issue:** the newest
+  writer. A line with no silence annotation is a run inside the staleness window, which settles its
+  issue outright; when every run for an issue is annotated, the smallest age is the newest writer
+  and only that one is reported. A run that is not the newest for its issue is not evidence about
+  the issue at all.
+- **The live/dead decision is still `lane-running.sh`'s.** The only new thing here is which of its
+  lines the monitor reads, so there is no second way to decide whether a lane is alive, and the
+  per-task lines stay as they are for `kill-lane.sh`, which asks a per-issue question and must still
+  refuse on any task in flight.
+- **Not fixed by filtering on task status, and not by a longer threshold.** A stopped task, a crashed
+  task and a finished-but-unreported task are different things the supervisor cannot always tell
+  apart, and the newest-writer test never has to. Raising the window would delay a true alarm
+  without removing a false one, because a lane waiting on CI writes nothing for half an hour at a
+  time - the defect was which run it looked at, not how patient it was.
+- **The event names what it judged.** The reported line carries the task and the workflow as before
+  and, where an issue was dispatched more than once, says it is the newest of N runs for that issue;
+  only then does the event carry a trailer reading that annotation and saying the earlier dispatches
+  were not judged. A reader who runs `lane-running.sh --any` and sees three lines can therefore check
+  the same one the monitor checked instead of the oldest, and a single-dispatch event reads exactly as
+  it did before.
+- **A line whose labels carry no issue id is judged alone.** `lane_ids` prints `no id in its labels`
+  for those, and keying them together would let one such run silence the alarm for another.
+
+Four tests drive `land_gate`: over a workspace with three dispatches for one issue the newest
+writing reports nothing, the newest silent past the window reports that run and neither of the
+others, and two id-less runs do not suppress each other; over a workspace with one dispatch, a
+silent lane is reported with no annotation and no trailer. The first two fail before this change.
+
 ## 0.1.26
 
 **The handoff halted over an instruction its brief had already settled, because the settlement was
