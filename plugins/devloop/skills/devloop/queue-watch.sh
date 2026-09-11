@@ -74,8 +74,35 @@ lanes_busy() {
 }
 
 silent_lanes() {
-  bash "$skill/lane-running.sh" --any 2>/dev/null |
-    sed -n 's/^RUNNING  \(.*journal silent [0-9]*m\)\./  \1/p'
+  bash "$skill/lane-running.sh" --any 2>/dev/null | awk '
+    /^RUNNING  / {
+      rest = substr($0, 10)
+      ids = rest
+      sub(/ - task .*$/, "", ids)
+      task = ""
+      if (match(rest, /task [^,]+/)) task = substr(rest, RSTART + 5, RLENGTH - 5)
+      key = (ids == "no id in its labels") ? "task " task : ids
+      if (!(key in runs)) { order[++n] = key; runs[key] = 0 }
+      runs[key]++
+      if (match($0, /journal silent [0-9]+m/)) {
+        age = substr($0, RSTART + 15, RLENGTH - 16) + 0
+        if (!(key in quiet) || age < quiet[key]) { quiet[key] = age; newest[key] = rest }
+      } else {
+        writing[key] = 1
+      }
+    }
+    END {
+      for (i = 1; i <= n; i++) {
+        key = order[i]
+        if (key in writing) continue
+        if (!(key in newest)) continue
+        text = newest[key]
+        sub(/\.$/, "", text)
+        if (runs[key] > 1) text = text ", newest of " runs[key] " runs for this issue"
+        print "  " text
+      }
+    }
+  '
 }
 
 # A lander already running holds the merge lock. Announcing "ready to land" then is not just
@@ -151,6 +178,8 @@ land_gate() {
   echo "  Still RUNNING, and the gate stays shut - a lane waiting on a CI run writes nothing for"
   echo "  half an hour at a time. But a task orphaned at dispatch reads the same way forever, so"
   echo "  read the lane before the next train: kill-lane.sh --slot N --id <id> if it is dead."
+  echo "  Each run named is the newest writer for its issue. An earlier dispatch for the same issue"
+  echo "  says nothing about it and was not judged - check the same run this did, not the oldest."
   prev_silent=$ready
 }
 
