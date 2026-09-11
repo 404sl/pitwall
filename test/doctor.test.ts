@@ -8,6 +8,9 @@ import { fileURLToPath } from "node:url";
 import { WORKSPACE_FILE } from "../src/autofix.ts";
 import { diagnose, renderDoctor, type Check, type Diagnosis } from "../src/doctor.ts";
 import { slotsPath } from "../src/lanes.ts";
+import { nullGlobalGitConfig } from "./support/git.js";
+
+nullGlobalGitConfig();
 
 const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), "fixtures");
 const BD_OUTPUT = join(FIXTURES, "bd", "tracker", "bd-output");

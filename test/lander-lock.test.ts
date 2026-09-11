@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import { GIT_ENV } from "./support/git.js";
 import { runScript, type Call } from "./support/workflow.js";
 
 const SKILL = join(import.meta.dirname, "..", "plugins", "devloop", "skills", "devloop");
@@ -12,7 +13,10 @@ const SKILL = join(import.meta.dirname, "..", "plugins", "devloop", "skills", "d
 const RELEASE_LOCK = join(SKILL, "release-lock.sh");
 
 function releaseLock(lock: string, token: string) {
-  const run = spawnSync("bash", [RELEASE_LOCK, "--lock", lock, "--token", token], { encoding: "utf8" });
+  const run = spawnSync("bash", [RELEASE_LOCK, "--lock", lock, "--token", token], {
+    encoding: "utf8",
+    env: { ...process.env, ...GIT_ENV },
+  });
   return { code: run.status, outcome: (run.stdout || "").split("\n")[0], err: run.stderr || "" };
 }
 

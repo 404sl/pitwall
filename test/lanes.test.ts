@@ -15,6 +15,7 @@ import {
   worktreePath,
   worktreePaths,
 } from "../src/lanes.ts";
+import { GIT_ENV } from "./support/git.js";
 
 const PREFIX = "fixture";
 const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), "fixtures");
@@ -589,6 +590,7 @@ const LANES_SH = join(
 function runLanesScript(cwd: string): { status: number; out: string; err: string } {
   const env: Record<string, string | undefined> = {
     ...process.env,
+    ...GIT_ENV,
     DEVLOOP_ROOT: cwd,
     PITWALL_CONFIG: undefined,
     DEVLOOP_CONFIG: undefined,

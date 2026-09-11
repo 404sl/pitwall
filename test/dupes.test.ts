@@ -13,12 +13,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import { GIT_ENV } from "./support/git.js";
+
 const SKILL = join(import.meta.dirname, "..", "plugins", "devloop", "skills", "devloop");
 const DUPES_SH = join(SKILL, "dupes.sh");
 
 function runDupesScript(cwd: string, extraPath?: string): { status: number; out: string; err: string } {
   const env: Record<string, string | undefined> = {
     ...process.env,
+    ...GIT_ENV,
     DEVLOOP_ROOT: cwd,
     PITWALL_CONFIG: undefined,
     DEVLOOP_CONFIG: undefined,

@@ -26,6 +26,9 @@ import { SESSION_REF_VAR } from "../src/sender.ts";
 import { readSnapshot, snapshotPath } from "../src/state.ts";
 import { CLOSE_SOURCE, upstreamReport, type Closure } from "../src/upstream.ts";
 import { VERSION } from "../src/version.ts";
+import { nullGlobalGitConfig, spawnGit } from "./support/git.js";
+
+nullGlobalGitConfig();
 
 const hasSqlite = await import("node:sqlite").then(
   () => true,
@@ -505,7 +508,7 @@ function pipelineRoot(remote: string, where?: string): string {
   const dir = join(root, "site");
   mkdirSync(dir, { recursive: true });
   for (const args of [["init", "--quiet"], ["remote", "add", "origin", remote]]) {
-    const ran = spawnSync("git", args, { cwd: dir, encoding: "utf8" });
+    const ran = spawnGit(args, { cwd: dir });
     assert.equal(ran.status, 0, ran.stderr);
   }
   return root;
