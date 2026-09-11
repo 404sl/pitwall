@@ -1241,9 +1241,36 @@ PR: ${work.prUrl || work.prNumber}
    actually on the branch, labels, reads the label back, removes YOUR worktree, appends your
    note with --append-notes and reads it back, and drops your lane lock last.
 
-   Exit codes: 0 handed off, 2 non-compliant (NOTHING was labelled - it prints the offending
-   lines, you judge them, you fix, you re-run), 4 not in a state to label, 5 labelled and cleaned
-   up but the tracker note could not be confirmed, 6 bad arguments.
+   IT HANDLES EVERY PULL REQUEST ON THE BRANCH, not only the one you name. It asks every
+   repository the workspace config names for its open pull requests whose head is --branch, and
+   checks and labels each one it finds in the same run. A ticket that touched two repositories is
+   therefore ONE handoff, not two: running it once per repository appends your note twice.
+
+   Exit codes: 0 handed off, 2 non-compliant (NOTHING was labelled anywhere - it prints the
+   offending lines against the pull request they came from, you judge them, you fix, you re-run),
+   4 a pull request on the branch is not in a state to label (nothing was labelled anywhere),
+   5 labelled and cleaned up but the tracker note could not be confirmed, 6 bad arguments,
+   7 the set of pull requests on the branch could not be established - the config could not be
+   read, a repository's pull requests or labels could not be listed, the label could not be
+   created in one of them, or a checkout named by the config has no origin/<branch> (nothing was
+   labelled anywhere), 8 labelling began and stopped part-way.
+
+   EXIT 7 IS NOT 'BAD ARGUMENTS'. Your arguments were fine and nothing was labelled: something it
+   has to read or prepare to cover the full set of pull requests would not answer. READ WHICH ONE
+   IT NAMES, because the remedies are different and only one of them is waiting. A config it could
+   not find: run it from the main checkout rather than from your worktree. A repository with no
+   slug and no checkout: add the slug to the config. A repository that would not list its pull
+   requests or labels, with gh's reason quoted: that one may be transient, so re-run it. A
+   repository with no lane-verified label that it could not create one in: that is a permissions
+   answer, not a transient one - somebody with write access there creates the label once, and no
+   number of re-runs will do it. Do NOT label by hand instead, whichever it is: labelling the half
+   you know about is the defect this script exists to prevent.
+
+   EXIT 8 MEANS RE-RUN IT, once the cause it quotes is gone. It prints which pull requests carry
+   the label and which do not. Adding a label is idempotent and it stops before the worktree
+   removal and the tracker note, so a second run relabels what is already labelled harmlessly and
+   finishes the rest. Never take a label off to tidy this up, and never label the remainder by
+   hand - the lander reads only the label, so a pull request left out is invisible to it.
 
    EXIT 5 IS NOT A REASON TO RE-RUN IT. The label is on and the worktree is gone; only the note is
    outstanding, and the message says which repair it wants. Re-running the whole handoff cannot

@@ -1,5 +1,78 @@
 # Changelog
 
+## 0.1.28
+
+**A ticket spanning two repositories got one pull request labelled and the other silently
+orphaned, and the ticket closed anyway.** `lane-handoff.sh` took a single `--repo-path`, `--slug`
+and `--pr`, so a two-repo ticket needed two invocations and nothing required, counted or checked
+the second. Whichever half was handed off got the label the lander reads; the other stayed open
+and unlabelled, which makes it invisible to the lander - and the issue closed on the strength of
+the half that landed. Measured two for two on 2026-09-10: both primary halves landed and deployed,
+both second halves were left open, both tickets closed. In one of the two the orphan was the
+artwork generator, so shipped images were no longer reproducible from master while every dashboard
+stayed green.
+
+- **The set of pull requests is derived from the branch, not from what the handoff was told
+  about.** Every repository the workspace config names is asked for its open pull requests whose
+  head is `--branch`, and each one found is checked and labelled in the same invocation. The
+  caller still names one, and it is still checked; it can no longer be the only one. Of the three
+  shapes the issue offered this is the one that cannot be under-reported by the step with the most
+  reason to stop early, and it needs no new plumbing between steps.
+- **Every pull request is checked before any is labelled.** Labelling the first and then finding
+  the second not ready would leave a mergeable half of a two-repo ticket, which is the defect
+  rather than a smaller version of it. A refusal names the pull request it could not pass and
+  labels nothing anywhere, so exit 2 and exit 4 are now assertions about the whole branch.
+- **A repository whose pull requests cannot be listed is a refusal, not an empty answer.** The
+  same rule the body read already followed, for the reason the release train's own notes give:
+  an empty list must not be able to hide work that went nowhere. Anything that leaves the set of
+  pull requests on the branch unknown refuses with nothing labelled - a config that cannot be
+  read or names no repositories, a repository whose slug cannot be found, a checkout that is not
+  there or has no `origin/<branch>`.
+- **The worktree sweep follows the same set.** Collapsing two invocations into one would otherwise
+  have left the second repository's worktree checked out on the branch, which is what the
+  lander's branch deletion trips on. The refusal to remove a main checkout is applied per
+  repository.
+- **The label is proved to exist in every repository before the first pull request is labelled.**
+  `--add-label` fails where the label is absent, and labelling a set one pull request at a time
+  means the first succeeding and the second failing leaves exactly the orphan this release is
+  about: one half mergeable, the other invisible to the lander. The label cannot be taken off
+  again to repair that - a labelled pull request belongs to the lander, which may already be
+  mid-attempt holding the merge lock - so every repository in the set is asked for its labels and
+  given the label if it has none, and one that cannot carry it refuses the whole handoff with
+  nothing labelled. `gh label list` is asked with `--search` and `--limit`, because its default
+  first thirty labels make a label further down the list look absent - and its answer to a search
+  that matches nothing is NO BYTES AT ALL rather than an empty list, so the read keeps gh's exit
+  status and its output apart instead of reading a parse failure as a repository that would not
+  answer. A name that merely contains the label is not the label, so the comparison is exact.
+  WHAT THIS COSTS: creating a label is a write, so a workspace holding a repository that has no
+  `lane-verified` AND a gh identity without write access there now fails every handoff on that
+  branch at exit 7 with nothing labelled, and needs the label created once by hand. The creation is
+  attempted only against repositories that actually hold a pull request in the set, so merely
+  configuring a repository does not put a label in it. All three repositories of this workspace
+  already carry the label, so nothing here changes. `--search` was checked against gh 2.75.1; no
+  older version was available to check.
+- **Labelling that stops part-way anyway says which pull requests carry the label**, under its own
+  exit code rather than as a bare "the label did not stick", and gh's reason is no longer
+  discarded. Adding a label is idempotent and the handoff stops before the worktree removal and
+  the tracker note, so the remedy is to fix what gh reported and re-run - never to label the
+  remainder by hand, and never to take a label off.
+- **A repository configured without a `path` is read under its own name**, which is what
+  `config.sh --check` has always blessed, and an absolute `path` is read as written. Reading the
+  config is new here, so neither is a change in behaviour; both are what the survey had to get
+  right first time, because defaulting the path to nothing resolves such a repository to the
+  workspace ROOT - which fails on a missing `origin/<branch>` at best, and at worst, had that root
+  been a checkout carrying the branch, grades compliance against the wrong repository's commit
+  messages.
+- **Two new exit codes rather than one overloaded one.** 6 is bad arguments again; 7 is a set of
+  pull requests that could not be established, with nothing labelled; 8 is labelling that began
+  and stopped. A lane reads what a code means from the prose in `task.js` and `rework.js`, and
+  both now describe 7 and 8 and what to do about them: a survey failure reported as "bad
+  arguments" leads a lane to do the handoff by hand, which skips the compliance gate, and
+  `task.js` already records that having happened.
+- This closes the first half of the family only. The release train acting on one repository per
+  run, and being unable to report that it ignored the others, is a different file and a separate
+  issue.
+
 ## 0.1.27
 
 **The silent-lane alarm judged whichever run for an issue had stopped writing, not the one that is
