@@ -1519,3 +1519,115 @@ test("metrics are per project, so a filtered today band says it is not filtered 
   assert.deepEqual(board.today, { landed: 13, closed: 19 });
   assert.ok(todayMarkup(board).includes(strings.filters.notFiltered));
 });
+
+const { IssueActions } = await import("../ui/components/IssueActions.tsx");
+
+const ACTING_ROUTE = { project: "session-replay", id: "sr-15s2" };
+
+function actionsMarkup(over: Partial<IssuePreview> = {}, loaded = true): string {
+  return renderToStaticMarkup(
+    createElement(IssueActions, {
+      route: ACTING_ROUTE,
+      shown: aPreview(over),
+      loaded,
+      onOutcome: () => Promise.resolve(),
+    }),
+  );
+}
+
+function actingDetailMarkup(over: Partial<IssuePayload["issue"]> = {}): string {
+  const view = buildIssueView(payload(over));
+  return renderToStaticMarkup(
+    createElement(IssueDetail, {
+      shown: shownOf(view),
+      view,
+      route: ACTING_ROUTE,
+      onOutcome: () => Promise.resolve(),
+    }),
+  );
+}
+
+test("only an issue in the owner's own queue offers anything to do about it", () => {
+  assert.match(actionsMarkup(), /<section class="pw-actions"/);
+  assert.match(actionsMarkup({ classification: "yours:access" }), /<section class="pw-actions"/);
+  for (const classification of ["ready", "in-flight", "landing", "blocked", "parked:roadmap"] as const) {
+    assert.equal(
+      actionsMarkup({ classification }),
+      "",
+      `${classification} is nobody's queue, so the screen offers no control on it`,
+    );
+  }
+  assert.equal(actionsMarkup({ closed: true }), "", "a closed issue is not a queue either");
+  assert.equal(
+    actionsMarkup({ classification: undefined }),
+    "",
+    "an unclassified issue is not acted on, and reading one must not throw",
+  );
+});
+
+test("a ticket parked on a question arrives with the box open; one parked on access does not", () => {
+  const asked = actionsMarkup();
+  assert.match(asked, /<textarea[^>]*id="pw-action-text"/);
+  assert.match(asked, /aria-expanded="true"[^>]*aria-controls="pw-action-panel"/);
+  assert.ok(asked.includes(strings.actions.answerLabel));
+  assert.ok(asked.includes(strings.actions.answerHint));
+
+  const access = actionsMarkup({ classification: "yours:access" });
+  assert.doesNotMatch(access, /<textarea/, "the call there is to run it, not to type an answer");
+  assert.doesNotMatch(access, /aria-expanded="true"/);
+  for (const label of [strings.actions.answer, strings.actions.ready, strings.actions.notMine]) {
+    assert.ok(access.includes(label), `${label} is offered whatever parks the issue`);
+  }
+});
+
+test("nothing can be written until the issue itself has been read", () => {
+  const waiting = actionsMarkup({}, false);
+  assert.equal(
+    waiting.match(/<button[^>]*disabled/g)?.length,
+    4,
+    "a control enabled against the stale snapshot writes against data nobody has seen",
+  );
+  assert.ok(waiting.includes(strings.actions.waiting));
+  assert.match(actionsMarkup(), /<button type="submit"[^>]*disabled/, "an empty box cannot unpark a ticket");
+});
+
+test("the controls are grey, name the tracker as their whole reach, and never say dispatch", () => {
+  const markup = actionsMarkup();
+  assert.equal(markup.match(/class="pw-button"/g)?.length, 4);
+  assert.doesNotMatch(
+    markup,
+    /pw-signal|pw-alert|pw-hold|pw-row--|pw-band--alert/,
+    "a button is neither a lane running nor a lane needing a person",
+  );
+  assert.doesNotMatch(markup, /style=/, "appearance belongs in the stylesheet");
+  assert.ok(markup.includes(strings.actions.scope));
+  assert.doesNotMatch(markup, /[Dd]ispatch/, "the console clears a hold; the loop decides what to run");
+  assert.ok(markup.includes(strings.actions.ready));
+});
+
+test("the controls sit under the note being answered, not above it", () => {
+  const markup = actingDetailMarkup({ notes: THREE_NOTES });
+  const ask = markup.indexOf('class="pw-call__ask"');
+  const actions = markup.indexOf('<section class="pw-actions"');
+  const id = markup.indexOf('class="pw-issue__id"');
+  assert.ok(ask > -1 && actions > -1 && id > -1);
+  assert.ok(
+    ask < actions && actions < id,
+    "a box above the question is a box filled in blind",
+  );
+});
+
+test("a page with nothing to act on renders exactly as it did before", () => {
+  const view = buildIssueView(payload({ classification: "ready" }));
+  assert.equal(
+    renderToStaticMarkup(
+      createElement(IssueDetail, {
+        shown: shownOf(view),
+        view,
+        route: ACTING_ROUTE,
+        onOutcome: () => Promise.resolve(),
+      }),
+    ),
+    renderToStaticMarkup(createElement(IssueDetail, { shown: shownOf(view), view })),
+  );
+});
