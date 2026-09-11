@@ -45,8 +45,10 @@ const EMPTY = {
   running: "No lane is running.",
   ready: "Nothing is ready to pick up.",
   parked: "Nothing parked.",
-  problems: "Every project read cleanly.",
+  problems: "Nothing needs a person.",
 };
+
+const PREVENTED = " · prevented {count} staleness {checks}";
 
 const VERDICT_WORD: Record<StalenessVerdict, string> = {
   unchecked: "unchecked",
@@ -269,6 +271,13 @@ function parkedLines(entries: ParkedEntry[], paint: Paint): string[] {
   return entries.map((entry) => `  ${entry.reason.padEnd(reasonWidth)} ${paint(String(entry.count), "2")}`);
 }
 
+function preventedText(count: number | undefined): string {
+  if (count === undefined) {
+    return "";
+  }
+  return fill(PREVENTED, { count: String(count), checks: count === 1 ? "check" : "checks" });
+}
+
 function problemLines(rows: ProblemRow[], paint: Paint): string[] {
   if (rows.length === 0) {
     return [`  ${EMPTY.problems}`];
@@ -276,7 +285,8 @@ function problemLines(rows: ProblemRow[], paint: Paint): string[] {
   const nameWidth = widest(rows.map((row) => row.name));
   const sourceWidth = widest(rows.map((row) => row.source));
   return rows.map(
-    (row) => `  ${paint(row.name.padEnd(nameWidth), "31")} ${row.source.padEnd(sourceWidth)} ${row.message}`,
+    (row) =>
+      `  ${paint(row.name.padEnd(nameWidth), "31")} ${row.source.padEnd(sourceWidth)} ${row.message}${preventedText(row.prevented)}`,
   );
 }
 
