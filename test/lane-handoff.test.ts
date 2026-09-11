@@ -33,6 +33,8 @@ interface Second {
   list: string;
   rollup: string;
   body: string;
+  mergeable?: string;
+  mergeState?: string;
   listFails?: boolean;
   omitPath?: boolean;
   editFails?: boolean;
@@ -131,7 +133,9 @@ function harness(seededNotes: string, second?: Second, detached?: boolean): Harn
                 ? ` echo "gh: could not read acme/other" >&2; exit 1 ;;`
                 : ` printf '%s\\n' '${second.list}' ;;`
             }`,
-            `  *"--repo acme/other"*statusCheckRollup*) printf '{"statusCheckRollup":%s,"headRefOid":"%s"}\\n' '${second.rollup}' '${otherHead}' ;;`,
+            `  *"--repo acme/other"*statusCheckRollup*) printf '{"statusCheckRollup":%s,"headRefOid":"%s"${
+              second.mergeable ? `,"mergeable":"${second.mergeable}"` : ""
+            }${second.mergeState ? `,"mergeStateStatus":"${second.mergeState}"` : ""}}\\n' '${second.rollup}' '${otherHead}' ;;`,
             `  *"--repo acme/other --json title,body"*) printf '%s\\n' '${second.body}' ;;`,
             `  "label list --repo acme/other"*)${
               second.labelListFails
@@ -319,6 +323,69 @@ test("a second repository's pull request that is not green leaves NOTHING labell
   assert.match(ran.stdout, /acme\/other#7/);
   assert.doesNotMatch(ran.stdout, /^handed off: /m);
   assert.equal(ran.labelled, false, "a pull request was labelled while a second one was not ready");
+});
+
+test("a conflicted pull request is reported as conflicted rather than waited on as pending", () => {
+  const box = harness("", {
+    list: '[{"number":7}]',
+    rollup: "[]",
+    body: CLEAN,
+    mergeable: "CONFLICTING",
+    mergeState: "DIRTY",
+  });
+  const ran = handoff(box, [...required(box), "--issue", "acme-1", "--note-file", box.notePath], true);
+
+  assert.equal(ran.status, 3, ran.stdout + ran.stderr);
+  assert.match(ran.stdout, /conflicted: acme\/other#7 conflicts with master/);
+  assert.doesNotMatch(ran.stdout, /not-green/);
+  assert.equal(ran.labelled, false, "a conflicted pull request was labelled");
+});
+
+test("an uncomputed mergeability is not read as a conflict", () => {
+  const box = harness("", {
+    list: '[{"number":7}]',
+    rollup: "[]",
+    body: CLEAN,
+    mergeable: "UNKNOWN",
+    mergeState: "UNKNOWN",
+  });
+  const ran = handoff(box, [...required(box), "--issue", "acme-1", "--note-file", box.notePath], true);
+
+  assert.equal(ran.status, 4, ran.stdout + ran.stderr);
+  assert.match(ran.stdout, /not-green: rollup is empty on acme\/other#7/);
+  assert.doesNotMatch(ran.stdout, /conflicted/);
+  assert.equal(ran.labelled, false, "an unready pull request was labelled");
+});
+
+test("a failing check is reported as red, not as a conflict", () => {
+  const box = harness("", {
+    list: '[{"number":7}]',
+    rollup: '[{"name":"ci","conclusion":"FAILURE"}]',
+    body: CLEAN,
+    mergeable: "MERGEABLE",
+    mergeState: "CLEAN",
+  });
+  const ran = handoff(box, [...required(box), "--issue", "acme-1", "--note-file", box.notePath], true);
+
+  assert.equal(ran.status, 4, ran.stdout + ran.stderr);
+  assert.match(ran.stdout, /not-green: BAD:ci on acme\/other#7/);
+  assert.doesNotMatch(ran.stdout, /conflicted/);
+  assert.equal(ran.labelled, false, "a red pull request was labelled");
+});
+
+test("a green pull request that conflicts with master is still handed off for the lander to rebase", () => {
+  const box = harness("", {
+    list: '[{"number":7}]',
+    rollup: READY,
+    body: CLEAN,
+    mergeable: "CONFLICTING",
+    mergeState: "DIRTY",
+  });
+  const ran = handoff(box, [...required(box), "--issue", "acme-1", "--note-file", box.notePath], true);
+
+  assert.equal(ran.status, 0, ran.stdout + ran.stderr);
+  assert.match(ran.stdout, /handed off: acme\/thing#14/);
+  assert.match(ran.stdout, /also labelled lane-verified on lane\/x: acme\/other#7/);
 });
 
 test("a second repository's pull request whose body names the pipeline leaves NOTHING labelled", () => {

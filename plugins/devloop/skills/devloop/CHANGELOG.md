@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.1.33
+
+**A lane waited two hours on a pull request whose checks GitHub was never going to schedule.**
+To run a `pull_request` workflow GitHub builds `refs/pull/<n>/merge`, and it cannot build that ref
+while the branch conflicts with base - so for a conflicted pull request no run is created at all.
+Not queued, not skipped, not failed: absent. `statusCheckRollup` is `[]` and stays `[]`, which is
+the same shape as a rollup a minute after a push, so every poller in the pipeline read "not ready
+yet" and waited. `pitwall#120` sat like that while Actions was demonstrably healthy, and the usual
+re-trigger - close, reopen one second later - changed nothing, because reopening does not resolve a
+conflict.
+
+`lane-handoff.sh` now reads `mergeable` and `mergeStateStatus` in the same call as the rollup, and
+a conflict is its own outcome with its own exit code:
+
+    3  conflicted  the branch conflicts with master, so no check is coming. Nothing was labelled.
+                   The remedy is a merge from master and a push, not another wait.
+
+`mergeable` `CONFLICTING` or `mergeStateStatus` `DIRTY` is a conflict. `UNKNOWN`, or the field
+missing entirely, is GitHub still computing it and means nothing either way - it is never read as a
+conflict. A pull request that is green on its current head is untouched whatever its mergeability
+says: the lander rebases and waits for CI again, which the handoff brief already promises, and
+`land-one.sh` already owns that path.
+
+The lane briefs in `task.js` say the same thing at the two places a lane waits: after a push, when
+`gh pr checks` answers "no checks reported", and in the handoff step, which returns `blocked` with
+the conflict rather than polling a rollup that cannot fill.
+
+Four tests, the first failing before the change: an empty rollup with `CONFLICTING`/`DIRTY` exits 3
+and says `conflicted`, the same rollup with `UNKNOWN` still exits 4 and says `not-green`, a failing
+check exits 4 and is not called a conflict, and a green pull request that conflicts is still handed
+off. Every existing green test sends no mergeability fields at all, which is the absent case.
+
 ## 0.1.32
 
 **`dupes.sh` guessed its lock prefix, so it could score another workspace's issues and say so

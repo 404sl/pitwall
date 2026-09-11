@@ -27,8 +27,11 @@
 #                    recorded and read back
 #   2  non-compliant NOTHING was labelled anywhere. The offending lines are printed against the
 #                    pull request they came from. Fix, then re-run.
-#   4  not-green     a pull request on the branch is not in a state to label (empty rollup, a
-#                    failing check). Nothing was labelled anywhere.
+#   3  conflicted    a pull request on the branch conflicts with master, so GitHub scheduled no
+#                    checks for it at all and none are coming. Nothing was labelled anywhere.
+#                    The remedy is a merge from master and a push, not another wait.
+#   4  not-green     a pull request on the branch is not in a state to label (empty rollup with
+#                    no conflict to explain it, a failing check). Nothing was labelled anywhere.
 #   5  note-unconfirmed  labelled and cleaned up, but the tracker note could not be confirmed.
 #                    Do not re-run - repair the note only.
 #   6  usage         bad arguments. Nothing was read and nothing was labelled.
@@ -217,23 +220,36 @@ check_one() {
   #    says nothing about what is on the branch now.
   head_sha=$(git -C "$_path" rev-parse "origin/${BRANCH}" 2>/dev/null)
   HEAD_OF="$head_sha"
-  state=$(gh pr view "$_pr" --repo "$_slug" --json statusCheckRollup,headRefOid 2>/dev/null \
+  state=$(gh pr view "$_pr" --repo "$_slug" --json statusCheckRollup,headRefOid,mergeable,mergeStateStatus 2>/dev/null \
     | python3 -c "
 import json,sys
 d=json.load(sys.stdin)
 r=d.get('statusCheckRollup') or []
-if not r: print('EMPTY|'); raise SystemExit
-bad=[c.get('name') for c in r if c.get('conclusion') not in ('SUCCESS','NEUTRAL','SKIPPED')]
-print(('BAD:'+','.join(bad) if bad else 'GREEN')+'|'+(d.get('headRefOid') or ''))
+m=str(d.get('mergeable') or '').upper()
+s=str(d.get('mergeStateStatus') or '').upper()
+c='CONFLICTED' if m == 'CONFLICTING' or s == 'DIRTY' else ''
+if not r: print('EMPTY||'+c); raise SystemExit
+bad=[c2.get('name') for c2 in r if c2.get('conclusion') not in ('SUCCESS','NEUTRAL','SKIPPED')]
+print(('BAD:'+','.join(bad) if bad else 'GREEN')+'|'+(d.get('headRefOid') or '')+'|'+c)
 " 2>/dev/null)
-  verdict=${state%%|*}; rollup_head=${state#*|}
+  verdict=${state%%|*}; rest=${state#*|}; rollup_head=${rest%%|*}; conflict=${rest#*|}
+
+  stale=0
+  if [ -n "$rollup_head" ] && [ "$rollup_head" != "$head_sha" ]; then stale=1; fi
+
+  if { [ "$verdict" != GREEN ] || [ "$stale" = 1 ]; } && [ "$conflict" = CONFLICTED ]; then
+    echo "conflicted: ${_slug}#${_pr} conflicts with master, so GitHub schedules NO checks for it"
+    echo "            at all - this rollup will not fill in and waiting on it costs the whole lane."
+    echo "            Merge master into ${BRANCH}, resolve, push, and wait on the new head."
+    return 3
+  fi
 
   case "$verdict" in
     GREEN) ;;
     EMPTY) echo "not-green: rollup is empty on ${_slug}#${_pr} - no check has registered, which is not a pass"; return 4 ;;
     *)     echo "not-green: ${verdict} on ${_slug}#${_pr}"; return 4 ;;
   esac
-  if [ -n "$rollup_head" ] && [ "$rollup_head" != "$head_sha" ]; then
+  if [ "$stale" = 1 ]; then
     echo "not-green: rollup describes ${rollup_head} but the head of ${_slug}#${_pr} is ${head_sha}"
     return 4
   fi
