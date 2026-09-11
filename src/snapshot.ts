@@ -474,6 +474,7 @@ export async function emitSnapshot(options: SnapshotOptions = {}): Promise<Snaps
     errors: history.error === undefined ? snapshot.errors : [...snapshot.errors, history.error],
   });
   const written = keptBoard(recorded, previous, gathered);
+  const delivered = await announce(gathered, previous, roots, options);
   const path = writeSnapshot(written, options);
   const delivered = await announce(gathered, previous, roots, options);
   return {
