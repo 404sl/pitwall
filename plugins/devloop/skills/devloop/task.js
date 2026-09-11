@@ -1177,8 +1177,10 @@ PR: ${work.prUrl || work.prNumber}
    conflict: that was tried there, one second apart, and changed nothing.
 
    A CONFLICT IS NOT YOURS TO RESOLVE HERE - you are not rebasing and not merging in this step.
-   Return status 'blocked' with 'conflicted with master' and the mergeStateStatus in 'notes', so
-   the branch goes for rework rather than sitting in a wait that cannot end.
+   Return status 'blocked' with 'conflicted with master' and the mergeStateStatus in 'notes'. The
+   run then ends NOT LABELLED with the conflict on the record, which is what whoever reads it needs
+   to send the branch for a merge from master. Nothing is lost by stopping: the wait could not have
+   ended.
 
    mergeable UNKNOWN means GitHub has not computed it yet, which is neither a conflict nor a
    clean merge. Re-read it on the next poll; never conclude a conflict from one read.
@@ -1288,8 +1290,9 @@ PR: ${work.prUrl || work.prNumber}
 
    EXIT 3 IS NOT A WAIT AND NOT A RE-RUN. The pull request conflicts with master, so GitHub builds
    no merge ref and schedules no checks for it - the rollup you are waiting on will never fill.
-   Nothing you can do in this step changes that: return 'blocked' with what it printed, and the
-   branch goes for rework. Re-running it just reads the same conflict again.
+   Nothing you can do in this step changes that, and a second run reads the same conflict again:
+   return 'blocked' with what it printed. The remedy is a merge from master, and it is not yours
+   here.
 
    EXIT 7 IS NOT 'BAD ARGUMENTS'. Your arguments were fine and nothing was labelled: something it
    has to read or prepare to cover the full set of pull requests would not answer. READ WHICH ONE

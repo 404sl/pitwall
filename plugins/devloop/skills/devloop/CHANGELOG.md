@@ -24,8 +24,8 @@ says: the lander rebases and waits for CI again, which the handoff brief already
 `land-one.sh` already owns that path.
 
 The lane briefs in `task.js` say the same thing at the two places a lane waits: after a push, when
-`gh pr checks` answers "no checks reported", and in the handoff step, which returns `blocked` with
-the conflict rather than polling a rollup that cannot fill.
+`gh pr checks` answers "no checks reported", and in the handoff step, which returns `blocked`
+with the conflict on the record rather than polling a rollup that cannot fill.
 
 Four tests, the first failing before the change: an empty rollup with `CONFLICTING`/`DIRTY` exits 3
 and says `conflicted`, the same rollup with `UNKNOWN` still exits 4 and says `not-green`, a failing
