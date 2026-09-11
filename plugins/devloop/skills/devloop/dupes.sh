@@ -28,7 +28,14 @@
 # PFX was referenced and never assigned, so both scratch files were written to /tmp/-dupes-*.json
 # - one pair of names shared by every project on this machine. Two projects running this at once
 # scored each other's issues. Named properly now.
-PFX="${LOCK_PREFIX:-devloop}"
+PFX="${LOCK_PREFIX:-$(bash "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/config.sh" lockPrefix 2>/dev/null)}"
+case "$PFX" in
+  ''|*[!a-zA-Z0-9_-]*)
+    echo "$(basename "${BASH_SOURCE[0]}"): could not resolve lockPrefix from the workspace config - refusing to guess." >&2
+    echo "          The default names another project's scratch files, so 'nothing resembles closed work'" >&2
+    echo "          would be a confident answer about the wrong workspace. Run from the workspace root." >&2
+    exit 6 ;;
+esac
 
 CFG="$(dirname "${BASH_SOURCE[0]}")/config.sh"
 ROOT="${DEVLOOP_ROOT:-$(bash "$CFG" root 2>/dev/null)}"
