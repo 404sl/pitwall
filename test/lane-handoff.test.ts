@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { GIT_ENV, spawnGit } from "./support/git.js";
 
 const SCRIPT = join(
   import.meta.dirname,
@@ -47,7 +48,7 @@ interface Second {
 }
 
 function git(dir: string, ...args: string[]): string {
-  const ran = spawnSync("git", args, { cwd: dir, encoding: "utf8" });
+  const ran = spawnGit(args, { cwd: dir });
   assert.equal(ran.status, 0, ran.stderr);
   return (ran.stdout ?? "").trim();
 }
@@ -218,6 +219,7 @@ function handoff(
     encoding: "utf8",
     env: {
       ...process.env,
+      ...GIT_ENV,
       PATH: `${box.bin}:${process.env["PATH"] ?? ""}`,
       PITWALL_CONFIG: box.config,
       BEADS_DIR: "",

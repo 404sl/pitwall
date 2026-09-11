@@ -1,15 +1,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
 import { copyFileSync, mkdirSync, mkdtempSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { spawnGit } from "./support/git.js";
 
 const IGNORE_FILE = fileURLToPath(new URL("../.gitignore", import.meta.url));
 
 function git(dir: string, ...args: string[]): { status: number | null; stdout: string } {
-  const ran = spawnSync("git", args, { cwd: dir, encoding: "utf8" });
+  const ran = spawnGit(args, { cwd: dir });
   return { status: ran.status, stdout: ran.stdout };
 }
 

@@ -1,17 +1,20 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createBuildCheck, readStamp, type BuildStamp } from "../src/build.ts";
+import { nullGlobalGitConfig, spawnGit } from "./support/git.js";
+
+nullGlobalGitConfig();
 
 const STAMPER = fileURLToPath(new URL("../scripts/stamp-build.mjs", import.meta.url));
 const ABSENT = "0123456789abcdef0123456789abcdef01234567";
 
 function git(dir: string, ...args: string[]): string {
-  const ran = spawnSync("git", args, { cwd: dir, encoding: "utf8" });
+  const ran = spawnGit(args, { cwd: dir });
   assert.equal(ran.status, 0, `git ${args.join(" ")}: ${ran.stderr}`);
   return (ran.stdout ?? "").trim();
 }

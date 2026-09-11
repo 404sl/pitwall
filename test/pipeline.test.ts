@@ -1,6 +1,5 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -9,6 +8,9 @@ import { PullRequest, type Project } from "@404sl/pitwall-schema";
 import { readWorkspace, WORKSPACE_FILE } from "../src/autofix.ts";
 import { remoteOf, remoteSlugOf, slugOf } from "../src/git.ts";
 import { LIST_LIMIT, issueMatcher, readPipeline, rollupChecks } from "../src/pipeline.ts";
+import { nullGlobalGitConfig, spawnGit } from "./support/git.js";
+
+nullGlobalGitConfig();
 
 const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "gh");
 const RECORDED = join(FIXTURES, "recorded");
@@ -17,7 +19,7 @@ const HTTPS_REMOTE = "https://github.com/acme/site.git";
 const SSH_REMOTE = "git@github.com:acme/site.git";
 
 function git(dir: string, ...args: string[]): void {
-  const ran = spawnSync("git", args, { cwd: dir, encoding: "utf8" });
+  const ran = spawnGit(args, { cwd: dir });
   assert.equal(ran.status, 0, ran.stderr);
 }
 

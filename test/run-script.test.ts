@@ -13,6 +13,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LOCK_ROOT, slotsPath } from "../src/lanes.ts";
+import { GIT_ENV } from "./support/git.js";
 
 const SKILL = join(import.meta.dirname, "..", "plugins", "devloop", "skills", "devloop");
 const RUN_SCRIPT = join(SKILL, "run-script.sh");
@@ -74,6 +75,7 @@ function run(box: Harness, script: string, ...rest: string[]): Ran {
     cwd: box.root,
     env: {
       ...process.env,
+      ...GIT_ENV,
       PATH: `${box.bin}:${process.env["PATH"] ?? ""}`,
       PITWALL_CONFIG: box.config,
       BEADS_DIR: "",

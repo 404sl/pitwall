@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { GIT_ENV, spawnGit } from "./support/git.js";
 
 const DEPLOY_ONE = join(
   import.meta.dirname,
@@ -16,10 +17,9 @@ const DEPLOY_ONE = join(
 );
 
 function git(cwd: string, ...argv: string[]) {
-  const run = spawnSync(
-    "git",
+  const run = spawnGit(
     ["-c", "user.name=Lander", "-c", "user.email=lander@example.com", ...argv],
-    { cwd, encoding: "utf8" },
+    { cwd },
   );
   assert.equal(run.status, 0, `git ${argv.join(" ")} in ${cwd} failed: ${run.stderr}`);
   return (run.stdout || "").trim();
@@ -75,7 +75,7 @@ function deployOne(opts: {
     "60",
   ];
   if (opts.expect) argv.push("--expect", opts.expect);
-  const run = spawnSync("bash", argv, { encoding: "utf8" });
+  const run = spawnSync("bash", argv, { encoding: "utf8", env: { ...process.env, ...GIT_ENV } });
   return { code: run.status, out: run.stdout || "", err: run.stderr || "" };
 }
 
