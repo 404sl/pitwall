@@ -39,6 +39,7 @@ interface Second {
   labelMissing?: boolean;
   labelCreateFails?: boolean;
   labelListFails?: boolean;
+  noSlug?: boolean;
 }
 
 function git(dir: string, ...args: string[]): string {
@@ -66,6 +67,7 @@ function harness(seededNotes: string, second?: Second, detached?: boolean): Harn
   };
   if (second) {
     if (second.omitPath) repos["other"] = { slug: "acme/other" };
+    else if (second.noSlug) repos["docs"] = { path: "other" };
     else repos["docs"] = { path: "other", slug: "acme/other" };
   }
   writeFileSync(
@@ -99,7 +101,7 @@ function harness(seededNotes: string, second?: Second, detached?: boolean): Harn
     git(other, "init", "--quiet");
     git(other, "config", "user.email", "nobody@example.invalid");
     git(other, "config", "user.name", "Nobody");
-    git(other, "remote", "add", "origin", origin);
+    git(other, "remote", "add", "origin", second.noSlug ? "https://github.com/acme/other.git" : origin);
     writeFileSync(join(other, "b.txt"), "one\n");
     git(other, "add", "b.txt");
     git(other, "commit", "--quiet", "-m", "base");
@@ -430,6 +432,15 @@ test("a workspace config naming no repositories refuses instead of labelling the
 
 test("a configured repository with no path of its own is read under its name", () => {
   const box = harness("", { list: '[{"number":7}]', rollup: READY, body: CLEAN, omitPath: true });
+  const ran = handoff(box, [...required(box), "--issue", "acme-1", "--note-file", box.notePath], true);
+
+  assert.equal(ran.status, 0, ran.stdout + ran.stderr);
+  assert.match(ran.stdout, /also labelled lane-verified on lane\/x: acme\/other#7/);
+  assert.match(ran.calls, /pr edit 7 --repo acme\/other/);
+});
+
+test("a configured repository with no slug has one read from its own origin", () => {
+  const box = harness("", { list: '[{"number":7}]', rollup: READY, body: CLEAN, noSlug: true });
   const ran = handoff(box, [...required(box), "--issue", "acme-1", "--note-file", box.notePath], true);
 
   assert.equal(ran.status, 0, ran.stdout + ran.stderr);

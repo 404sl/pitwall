@@ -296,7 +296,14 @@ while IFS="|" read -r rname rpath rslug; do
   if [ -z "$rslug" ]; then
     rslug=$(git -C "$rdir" remote get-url origin 2>/dev/null \
             | sed -e 's#\.git$##' -e 's#^git@github\.com:##' -e 's#^https://github\.com/##')
-    case "$rslug" in */*) ;; *) rslug="" ;; esac
+    # owner/name AND NOTHING ELSE. An origin that is a local path - a bare repository beside the
+    # checkout, a mirror - survives the rewrites above and still holds a slash, so a bare */*
+    # test would hand a directory to gh as a repository and read its answer as "no pull requests".
+    case "$rslug" in
+      /*|*/*/*) rslug="" ;;
+      */*) ;;
+      *) rslug="" ;;
+    esac
   fi
   if [ -z "$rslug" ]; then
     echo "lane-handoff.sh: ${rname} has no slug in the workspace config and none could be" >&2
