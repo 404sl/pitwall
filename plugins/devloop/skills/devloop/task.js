@@ -371,7 +371,7 @@ NON-NEGOTIABLE RULES. They outrank speed, and they outrank finishing the task.
    they failed every commit. Do NOT run 'bd hooks install' to repair them - it also installs
    a prepare-commit-msg hook that appends agent identity trailers to commit messages, which
    rule 1 forbids. If a commit is blocked by a hook, say so and stop.
-12. EVERY 'gh pr' COMMAND CARRIES ITS REPOSITORY. Use '--repo <owner/name>' on every one,
+12. EVERY 'gh pr' COMMAND CARRIES ITS REPOSITORY. Use '--repo' with this run's slug on every one,
    including inside the checkout. A bare number means "whichever repository this directory
    points at", which is the assumption that is wrong when a run has been routed to the wrong
    checkout - and pull request numbers overlap across the repositories here, so a bare number
@@ -1310,9 +1310,16 @@ PR: ${work.prUrl || work.prNumber}
 
    STEPS 1 TO 5 OF THIS HANDOFF ARE ONE COMMAND. Prefer it:
 
-     bash ${SKILL_DIR}/lane-handoff.sh --repo-path ${repo} --slug <owner/name> \
+     bash ${SKILL_DIR}/lane-handoff.sh --repo-path ${repo} --slug ${slug} \
        --pr ${work.prNumber} --branch <your branch> --issue ${task.id} \
        --note-file <a file holding your tracker note> --worktree ${wtPath}
+
+   A REFUSAL IS NEVER WORKED AROUND BY LABELLING BY HAND. Every non-zero exit below means
+   nothing was labelled anywhere, and putting the label on yourself asserts exactly the judgement
+   this script exists to withhold. If you believe the script is wrong rather than your arguments,
+   file a ticket quoting the exact command and exit code, say so in 'notes', and return 'blocked'.
+   A lane has already read a correct refusal as a defect and labelled its pull request by hand:
+   the script was right, and the slug it had been given was not.
 
    --worktree, --lane-lock and --note-file are ALL OPTIONAL. Leave out any you do not have and
    the script skips that step. It needs only --repo-path, --slug, --pr and --branch. A lane read
