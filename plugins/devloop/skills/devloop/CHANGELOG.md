@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.1.31
+
+**The triage scan's seen state was keyed to the directory the skill is installed in, so a rename
+had already thrown it away.** `triage-scan.sh` kept its watermarks at `~/.claude/skills/devloop/`.
+The write never failed - it creates the directory - but the skill used to be called `autofix`, and
+the 22 watermarks it last wrote are still sitting under that former name, untouched since
+2026-08-28. Every run since read an empty set, so every issue a person had already judged came back
+as a fresh finding, which is how a monitor becomes noise and then gets ignored. A plugin update
+would do the same thing again on its own: the install path carries a version segment and is
+replaced wholesale each release.
+
+- **It now lives at `/tmp/<prefix>-triage-seen.json`,** beside the slot registry and the lane
+  locks and keyed by the same `lockPrefix`, so neither a release nor a rename can move it.
+  `whatsnew.sh` already kept its own marker this way. `/tmp` is the right kind of home for it
+  regardless: losing it costs one noisy run, not work.
+- **The scan recognises `autofix/` as well as `devloop/` when reading an id out of a branch name.**
+  A merged `autofix/<id>` was not matched, so its issue - still `in_progress`, worktree gone, no
+  live run - was reported as `E stale claim`, a lane that died holding it. 27 of those branches are
+  in this workspace's pull request history and three are inside the 60-PR window the check reads.
+  The branch namespace a lane WRITES stays the literal `devloop/` and stays unconfigurable, for the
+  reason recorded with the prefix work: several readers match it literally, so a key only the
+  writer honoured would split the namespace. What a reader accepts has to be the wider set.
+- **Branches nobody generated are deliberately still unmatched.** `fix/...`, `docs/...` and the
+  rest carry no id anywhere in the name - 12 of the last 60 merged pull requests - and they are
+  matched by the number quoted in the issue's own notes instead. No prefix list would help them.
+- **The documented mark command pointed at a path that does not resolve.** `TRIAGE.md` told a
+  triage agent to run `~/.claude/skills/devloop/triage-scan.sh`, so the step that records a
+  judgement silently did nothing and the seen state was never written at all. It now uses
+  `${CLAUDE_PLUGIN_ROOT}`, as every other invocation in the skill does.
+
 ## 0.1.23
 
 **A rework gave its lane back only when it handed off.** `rework.js` takes the lane lock in its
