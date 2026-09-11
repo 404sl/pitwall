@@ -17,14 +17,18 @@ type Result = {
 function runScript(file: string, args: unknown, reply: Reply) {
   const source = readFileSync(join(SKILL, file), "utf8").replace(/^export const /m, "const ");
   const calls: Call[] = [];
+  const logged: string[] = [];
   const body = new AsyncFunction("args", "agent", "phase", "log", "parallel", source);
   const agent = async (prompt: string, opts: { label?: string } = {}) => {
     const call = { prompt, label: opts.label || "" };
     calls.push(call);
     return reply(call, calls.length);
   };
+  const log = (line: unknown) => {
+    logged.push(String(line));
+  };
   const noop = () => {};
-  return { calls, done: body(args, agent, noop, noop, noop) as Promise<Result> };
+  return { calls, logged, done: body(args, agent, noop, log, noop) as Promise<Result> };
 }
 
 const ARGS = {
@@ -134,9 +138,40 @@ test("a PR whose CI never finished is reported, not dropped", async () => {
   assert.match(
     result.skipped[0]?.why || "",
     /checks still running/,
-    "the run does not say why the PR was surveyed and not acted on, in the words the round that " +
-      "deferred it used. Every reason land-one.sh declines to merge for arrives as 'blocked', so a " +
-      "cause this line picks for itself describes most of them wrongly",
+    "the run does not say why the PR was surveyed and not acted on - and the reason has to be the " +
+      "one the attempt reported, because nothing else in the run read the pull request",
+  );
+});
+
+test("a deferred PR is reported with the cause the attempt gave, not one nobody read", async () => {
+  const unread = [
+    "unreadable: could not read the status rollup for 404sl/pitwall-site#23 - nothing is known about its checks",
+    "gh exited 1 and said: HTTP 403: API rate limit exceeded for installation",
+  ].join("\n");
+  const { logged, done } = lander((call) => {
+    if (call.label.startsWith("survey")) return { prs: [THE_PR] };
+    if (call.label.startsWith("land:")) return { status: "blocked", notes: unread };
+    return { status: "deployed" };
+  });
+  const result = await done;
+
+  const deferrals = logged.filter((line) => line.startsWith("DEFERRED "));
+  assert.ok(deferrals.length > 0, `nothing was deferred:\n${logged.join("\n")}`);
+  assert.match(
+    deferrals[0] || "",
+    /rate limit/,
+    "the deferral throws away what the attempt said and so the run asserts a cause nobody read - " +
+      `the rollup could not be read at all, which is not the same as CI being unfinished:\n${deferrals[0] || ""}`,
+  );
+  assert.deepEqual(
+    logged.filter((line) => /CI had not finished/.test(line)),
+    [],
+    `the run states a cause it did not read:\n${logged.join("\n")}`,
+  );
+  assert.match(
+    result.skipped[0]?.why || "",
+    /rate limit/,
+    `the end-of-run summary substitutes its own cause for the reported one:\n${result.skipped[0]?.why}`,
   );
 });
 

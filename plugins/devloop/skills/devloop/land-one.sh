@@ -20,14 +20,17 @@
 #   0  ready      rebased if needed, pushed, CI green on the pushed head. Merge it.
 #   3  conflict   rebase hit a conflict. Aborted, worktree removed. A person decides.
 #   4  red        CI FAILED on the rebased head. A real failure; the PR is not landable as is.
-#   7  not_ready  the rollup is empty or describes an older head - CI has not finished
-#                 registering. NOT a failure and NOT the same as 4: the caller must retry this
-#                 one in a later round rather than retiring it, which is what the separate
-#                 verify agent used to be for.
+#   7  not_ready  the rollup is empty, has a check that has not concluded, or describes an older
+#                 head - CI has not finished registering. NOT a failure and NOT the same as 4:
+#                 the caller must retry this one in a later round rather than retiring it, which
+#                 is what the separate verify agent used to be for.
 #   8  merge_shaped the branch carries a merge commit of its own and master has moved under it, so
 #                 a rebase would replay only its own commits and drop whatever exists solely in
 #                 that merge's resolution. Nothing was touched. Like 7 this is not a failure of
 #                 the work: it needs rework, not retiring.
+#   9  unreadable the rollup could not be read AT ALL - a throttled or failing gh, or output that
+#                 did not parse. Nothing is known about the checks, which is not the same as
+#                 knowing they failed. Retry it in a later round like 7; never report it as red.
 #   5  master_red master was not green before starting. Nothing was touched.
 #   6  usage      bad arguments, or the repository/branch does not exist.
 
@@ -197,10 +200,10 @@ fi
 # 3. WAIT FOR CI ON THE HEAD THAT IS ACTUALLY THERE NOW, and wait by blocking rather than by
 #    polling. gh streams the result, so this costs one call and no interval latency; the old
 #    loop asked every few seconds and noticed late. --fail-fast returns as soon as one fails.
-if ! gh pr checks "$PR" --repo "$SLUG" --watch --fail-fast >/dev/null 2>/dev/null; then
-  head_now=$(git rev-parse "origin/${BRANCH}" 2>/dev/null)
-  say "red: checks failed on ${BRANCH} at ${head_now}"
-  exit 4
+gh pr checks "$PR" --repo "$SLUG" --watch --fail-fast >/dev/null 2>/dev/null
+checks_code=$?
+if [ "$checks_code" -ne 0 ]; then
+  say "checks: gh pr checks exited ${checks_code} for ${SLUG}#${PR} - reading the rollup to find out why"
 fi
 
 # 4. Read the rollup back rather than trusting the exit code, and refuse an EMPTY one. Every
@@ -208,24 +211,57 @@ fi
 #    vacuously true of an empty array and reads as a pass forever.
 git fetch origin --quiet 2>/dev/null
 head_sha=$(git rev-parse "origin/${BRANCH}" 2>/dev/null)
-verdict=$(gh pr view "$PR" --repo "$SLUG" --json labels,statusCheckRollup,headRefOid 2>/dev/null \
-  | python3 -c "
+READ_ATTEMPT="gh pr view ${PR} --repo ${SLUG} --json labels,statusCheckRollup,headRefOid"
+read_dir=$(mktemp -d "/tmp/${PREFIX}-rollup-XXXXXX" 2>/dev/null) || read_dir=""
+trap 'rm -rf "$read_dir" 2>/dev/null' EXIT
+if [ -n "$read_dir" ]; then
+  gh_err="$read_dir/gh.err"; py_err="$read_dir/python.err"
+else
+  gh_err=/dev/null; py_err=/dev/null
+fi
+
+rollup_json=$(gh pr view "$PR" --repo "$SLUG" --json labels,statusCheckRollup,headRefOid 2>"$gh_err")
+gh_code=$?
+if [ "$gh_code" -ne 0 ] || [ -z "$rollup_json" ]; then
+  said=$(head -n 1 "$gh_err" 2>/dev/null)
+  say "unreadable: could not read the status rollup for ${SLUG}#${PR} - nothing is known about its checks"
+  say "attempted: ${READ_ATTEMPT}"
+  say "gh exited ${gh_code} and said: ${said:-nothing on stderr}"
+  say "This is NOT a red pull request and it was not merged. Retry it in a later round."
+  exit 9
+fi
+
+verdict=$(printf '%s' "$rollup_json" | python3 -c "
 import json,sys
 d=json.load(sys.stdin)
 rollup=d.get('statusCheckRollup') or []
 labels=[l['name'] for l in d.get('labels') or []]
 if not rollup:
     print('EMPTY|%s|%s' % (d.get('headRefOid',''), ','.join(labels))); raise SystemExit
-bad=[c.get('name') for c in rollup if c.get('conclusion') not in ('SUCCESS','NEUTRAL','SKIPPED')]
-print('%s|%s|%s' % ('BAD:'+','.join(bad) if bad else 'GREEN', d.get('headRefOid',''), ','.join(labels)))
-" 2>/dev/null)
+bad=[c.get('name') for c in rollup if c.get('conclusion') and c.get('conclusion') not in ('SUCCESS','NEUTRAL','SKIPPED')]
+pending=[c.get('name') for c in rollup if not c.get('conclusion')]
+state='BAD:'+','.join(bad) if bad else 'PENDING:'+','.join(pending) if pending else 'GREEN'
+print('%s|%s|%s' % (state, d.get('headRefOid',''), ','.join(labels)))
+" 2>"$py_err")
+py_code=$?
+if [ "$py_code" -ne 0 ] || [ -z "$verdict" ]; then
+  said=$(tail -n 1 "$py_err" 2>/dev/null)
+  began=$(printf '%s' "$rollup_json" | head -c 120 | tr '\n\t' '  ')
+  say "unreadable: the status rollup for ${SLUG}#${PR} did not parse - nothing is known about its checks"
+  say "attempted: ${READ_ATTEMPT}"
+  say "the reader exited ${py_code} and said: ${said:-nothing on stderr}"
+  say "gh returned ${#rollup_json} bytes beginning: ${began}"
+  say "This is NOT a red pull request and it was not merged. Retry it in a later round."
+  exit 9
+fi
 
 state=${verdict%%|*}; rest=${verdict#*|}; rollup_head=${rest%%|*}; labels=${rest#*|}
 
 case "$state" in
-  GREEN) ;;
-  EMPTY) say "not_ready: rollup is empty on ${PR} - no check has registered, which is not a pass"; exit 7 ;;
-  *)     say "red: ${state} on ${PR}"; exit 4 ;;
+  GREEN)     ;;
+  EMPTY)     say "not_ready: rollup is empty on ${PR} - no check has registered, which is not a pass"; exit 7 ;;
+  PENDING:*) say "not_ready: ${state#PENDING:} on ${PR} has not concluded yet - a check still running is not a failure"; exit 7 ;;
+  *)         say "red: ${state#BAD:} failed on ${PR} at ${head_sha}"; exit 4 ;;
 esac
 
 # IS THE LABEL STILL THERE? A lane can pull it back while a run is in flight, and that is the

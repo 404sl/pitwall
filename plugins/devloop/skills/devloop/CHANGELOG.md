@@ -1,5 +1,54 @@
 # Changelog
 
+## 0.1.57
+
+**`land-one.sh` reported a rollup it could not read as a red one.** The read was one pipeline with
+one `2>/dev/null` over both halves of it, so a throttled `gh`, a wrong slug, an expired token or a
+deleted pull request all ended the same way: empty stdout, a traceback nobody saw, an empty
+`verdict`, an empty `state`, and the catch-all printing
+
+    red:  on 101
+
+with nothing after `red:`. The pull request was not red. Nothing had been read at all. Secondary
+rate limits are live in this workspace and are invisible in `gh api rate_limit` - every bucket
+reads full while calls are refused - so a throttled read is the common case, not a rare one, and a
+whole morning of 2026-09-11 went on debugging a credential that was never broken.
+
+The rollup read and the parse of it now keep their own exit status and their own stderr, and a read
+that did not happen has its own outcome:
+
+    9  unreadable  the rollup could not be READ - gh failed, was throttled, or returned something
+                   that did not parse. Nothing is known about the checks, which is not the same as
+                   knowing they failed. Retry it in a later round, like 7.
+
+It names the attempt - the exact `gh pr view` including the slug and the fields - prints what gh or
+the reader said, and says in words that this is not a red pull request. It still refuses to merge,
+which it always did; only the reporting was wrong.
+
+**`gh pr checks` exiting non-zero is no longer a verdict either.** It was terminal at `red: checks
+failed`, and it is the step a throttled `gh` dies in FIRST, so the rollup read below it never ran -
+which also made the `EMPTY` branch unreachable whenever `gh pr checks` refuses a pull request with
+no checks. A non-zero exit there cannot distinguish a failed check from a call that never reached
+GitHub, so it is now recorded and the rollup decides. The rollup is the single reader of record.
+
+Because the script can now reach that read while a check is still in flight, a `conclusion` that is
+not yet set is `not_ready` rather than bad: a check still running was previously counted with the
+failures, which would have turned the fall-through into the same false red by another route.
+
+**The run log asserted the same cause nobody read, one file up.** `land.js` reads 9 as `blocked`,
+and the blocked branch logged `CI had not finished` whatever the attempt reported - so a throttled
+read, whose whole point is that nothing was read, produced a run log naming a cause. The
+end-of-run summary said it too, for every pull request a run surveyed and did not land. Both now
+carry the sentences the attempt printed and say it reported no cause when it returned nothing. A
+red report also names the head it read and no longer prints the reader's internal `BAD:` token,
+and a parse failure quotes the last line of what the reader said rather than the word `Traceback`.
+
+Six tests, all failing before: a `gh pr view` that exits 1 on a rate limit is `unreadable` with the
+attempt named and no `red:` anywhere, output that is not JSON is `unreadable` rather than red, a
+genuinely failing check is still `red:` with the check named and exit 4, a check that has not
+concluded is `not_ready` with exit 7, and a deferred pull request is reported - in the round log and
+in the end-of-run summary - with the cause the attempt gave rather than a stock one.
+
 ## 0.1.56
 
 A release train is now launched with `config.sh --train <repo>`, the way the serial lander is launched with `config.sh --land`. Pass the object it prints and nothing assembled by hand: it carries the merge-lock token the train writes into the holder file, and `land-train.js` refuses to start without one rather than minting its own. One launch per repository - the train still refuses to guess which. A lock step must never be asked to mint the token it reports; a replayed answer agrees with itself while the lock belongs to another run.
