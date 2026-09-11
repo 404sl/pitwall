@@ -21,6 +21,7 @@ import {
   type Collection,
 } from "../src/serve.ts";
 import { REFRESH_SOURCE } from "../src/board.ts";
+import type { BuildCheck, BuildReport } from "../src/build.ts";
 import { snapshotPath, stateHome } from "../src/state.ts";
 import { VERSION } from "../src/version.ts";
 
@@ -40,6 +41,15 @@ function stateWith(contents?: string): { env: Record<string, string | undefined>
   }
   return { env: { XDG_STATE_HOME: home }, path };
 }
+
+const BUILT_AT = "2026-09-08T20:47:00.000Z";
+const BUILT_FROM = "9f2c1ab0000000000000000000000000000000ab";
+
+function builds(report: BuildReport): BuildCheck {
+  return { state: () => report, refresh: () => {} };
+}
+
+const NO_CHECKOUT: BuildReport = { build: { commit: BUILT_FROM, at: BUILT_AT }, buildCheck: "no-checkout" };
 
 const OUTSIDE_THE_CONSOLE = "a file the console must never hand out\n";
 
@@ -128,6 +138,7 @@ test("the version endpoint names the running process, not the process that wrote
     env,
     uiDir: builtConsole(),
     updates: { update: () => undefined, refresh: () => Promise.resolve() },
+    builds: builds(NO_CHECKOUT),
   });
   t.after(() => server.close());
   const { origin } = await started(server);
@@ -145,12 +156,62 @@ test("the version endpoint carries the newer release once a check has confirmed 
     env,
     uiDir: builtConsole(),
     updates: { update: () => "9.9.9", refresh: () => Promise.resolve() },
+    builds: builds(NO_CHECKOUT),
   });
   t.after(() => server.close());
   const { origin } = await started(server);
 
   const response = await fetch(`${origin}/api/version`);
-  assert.deepEqual(await response.json(), { running: VERSION, update: "9.9.9" });
+  assert.deepEqual(await response.json(), {
+    running: VERSION,
+    update: "9.9.9",
+    build: { commit: BUILT_FROM, at: BUILT_AT },
+    buildCheck: "no-checkout",
+  });
+});
+
+test("the version endpoint says which build it is serving and how far the checkout has moved", async (t) => {
+  const { env } = stateWith(JSON.stringify(SNAPSHOT));
+  const server = createConsoleServer({
+    env,
+    uiDir: builtConsole(),
+    updates: { update: () => undefined, refresh: () => Promise.resolve() },
+    builds: builds({
+      build: { commit: BUILT_FROM, at: BUILT_AT },
+      checkout: { branch: "master", head: "1a2b3c4000000000000000000000000000000000", ahead: 23 },
+      buildCheck: "behind",
+    }),
+  });
+  t.after(() => server.close());
+  const { origin } = await started(server);
+
+  const response = await fetch(`${origin}/api/version`);
+  assert.deepEqual(await response.json(), {
+    running: VERSION,
+    build: { commit: BUILT_FROM, at: BUILT_AT },
+    checkout: { branch: "master", head: "1a2b3c4000000000000000000000000000000000", ahead: 23 },
+    buildCheck: "behind",
+  });
+});
+
+test("a console that cannot tell says unknown, and never answers that it is current", async (t) => {
+  const { env } = stateWith(JSON.stringify(SNAPSHOT));
+  const server = createConsoleServer({
+    env,
+    uiDir: builtConsole(),
+    updates: { update: () => undefined, refresh: () => Promise.resolve() },
+    builds: builds({ buildCheck: "unknown", unknownBecause: { kind: "no-stamp" } }),
+  });
+  t.after(() => server.close());
+  const { origin } = await started(server);
+
+  const body = (await (await fetch(`${origin}/api/version`)).json()) as Record<string, unknown>;
+  assert.deepEqual(body, {
+    running: VERSION,
+    buildCheck: "unknown",
+    unknownBecause: { kind: "no-stamp" },
+  });
+  assert.notEqual(body.buildCheck, "current");
 });
 
 test("the snapshot endpoint keeps its shape - the version is served beside it, never inside it", async (t) => {
@@ -159,6 +220,7 @@ test("the snapshot endpoint keeps its shape - the version is served beside it, n
     env,
     uiDir: builtConsole(),
     updates: { update: () => "9.9.9", refresh: () => Promise.resolve() },
+    builds: builds(NO_CHECKOUT),
   });
   t.after(() => server.close());
   const { origin } = await started(server);
