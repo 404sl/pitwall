@@ -48,10 +48,10 @@ function train(reply: Reply, args: Record<string, unknown> = {}) {
   });
 }
 
-function oneLandedInSite(survey: unknown): Reply {
+function oneLandedInSite(survey: unknown, included: number[] = [1287]): Reply {
   return (call: Call) => {
     if (call.label.startsWith("build:")) {
-      return { status: "built", trainPr: 120, trainBranch: "release/train-1", included: [1287], skipped: [] };
+      return { status: "built", trainPr: 120, trainBranch: "release/train-1", included, skipped: [] };
     }
     if (call.label.startsWith("verify:")) return { status: "green", failingSpecs: [] };
     if (call.label.startsWith("version:")) {
@@ -252,4 +252,85 @@ test("the survey step is given every configured repository by key and owner/name
         "merge lock and it exists only to report.",
     );
   }
+});
+
+test("a number this train landed does not cancel the same number in another repository", async () => {
+  const { done } = train(
+    oneLandedInSite(
+      {
+        repos: [
+          { repo: "site", status: "read", labelled: [185] },
+          { repo: "docs", status: "read", labelled: [185] },
+        ],
+      },
+      [185],
+    ),
+  );
+  const out = (await done) as Result;
+
+  const docs = account(out, "docs");
+  assert.equal(
+    docs.left,
+    1,
+    "a labelled pull request in another repository vanished because this train landed the same " +
+      "number in its own. A pull request's identity is slug#number, never a bare number, and the " +
+      "two repositories here number in the same range. A zero from a repository the survey read " +
+      "is believed, so this is worse than the absent key it replaced.",
+  );
+  assert.deepEqual(docs.leftPrs, [185]);
+  assert.equal(docs.surveyed, 1);
+  assert.equal(docs.taken, 0);
+  assert.equal(docs.why, null);
+  assert.match(docs.relaunch || "", /repo: docs/);
+
+  const site = account(out, "site");
+  assert.equal(site.taken, 1);
+  assert.equal(site.left, 0, "the number this train landed was counted as still left in its own repository");
+});
+
+test("a labelled pull request left in the train's own repository is explained rather than left bare", async () => {
+  const { done } = train(
+    oneLandedInSite({
+      repos: [
+        { repo: "site", status: "read", labelled: [1287, 1300] },
+        { repo: "docs", status: "read", labelled: [] },
+      ],
+    }),
+  );
+  const out = (await done) as Result;
+
+  const site = account(out, "site");
+  assert.equal(site.left, 1);
+  assert.deepEqual(site.leftPrs, [1300]);
+  assert.equal(site.taken, 1);
+  assert.equal(site.surveyed, 2);
+  assert.ok(
+    site.why,
+    "a labelled pull request still open in the repository this train ran for was reported as a " +
+      "count with no explanation. It is in neither rejected nor stranded when it was labelled " +
+      "after the build surveyed the queue, so the number alone tells a supervisor nothing.",
+  );
+  assert.equal(site.relaunch, null, "the train's own repository asked for a relaunch for itself");
+});
+
+test("a labelled list the survey could not read as numbers is unknown, not zero", async () => {
+  const { done } = train(
+    oneLandedInSite({
+      repos: [
+        { repo: "site", status: "read", labelled: [] },
+        { repo: "docs", status: "read", labelled: ["185"] },
+      ],
+    }),
+  );
+  const out = (await done) as Result;
+
+  const docs = account(out, "docs");
+  assert.equal(
+    docs.surveyed,
+    null,
+    "an element that could not be read as a pull request number was dropped, leaving a confident " +
+      "zero for a repository that may hold labelled work",
+  );
+  assert.equal(docs.left, null);
+  assert.match(docs.why || "", /185/);
 });

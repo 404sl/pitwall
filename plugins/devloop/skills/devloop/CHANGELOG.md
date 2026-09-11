@@ -29,9 +29,14 @@ never OPENED.
   An absent key and a zero are the same thing to a reader and different things in fact, which is
   the `errors[]` argument applied to the train's own output.
 - **A repository that could not be surveyed is `null`, not zero.** No slug configured, a `gh`
-  command that failed, or a repository the survey left out of its answer all come back with
-  `surveyed: null` and a `why`. A failed read reported as a clean zero is the defect one layer
-  down from the one this entry is about.
+  command that failed, a repository the survey left out of its answer, or a `labelled` entry that is
+  not a pull request number all come back with `surveyed: null` and a `why`. A failed read reported
+  as a clean zero is the defect one layer down from the one this entry is about.
+- **A pull request's identity is `slug#number`, never a bare number,** so what this train landed is
+  subtracted only from its own repository's count. The repositories here number in the same range -
+  `404sl/pitwall` is at #115-120 and the pull request that prompted this was `pitwall-site#185` -
+  and a number landed in one repository cancelling the same number labelled in another would have
+  reinstated the whole defect behind a confident zero from a repository reported as read.
 - **What is left carries the exact relaunch rather than a complaint.** `docs: 1 labelled pull
   request left (404sl/pitwall-site#185) - run again with repo: docs`. Running a second train is the
   right answer and hand-merging is not: a hand-merge ships the content and skips the release
@@ -45,11 +50,13 @@ loss hard to see - so a survey taken before the train was built would miss exact
 exists for. A train that built nothing surveys too: that is the run most likely to be the one where
 another repository holds the only work in the workspace.
 
-Eleven tests drive the script as a function body: a train with no `repo` returns an error and takes
+Fourteen tests drive the script as a function body: a train with no `repo` returns an error and takes
 no lock, a labelled pull request in a second configured repository appears in the result with its
 relaunch, the survey is ordered before the release, every configured key is present with numeric
-counts, and an unreadable, an omitted and a slugless repository each come back unknown rather than
-clean. All eleven fail against the previous revision.
+counts, the same number labelled in two repositories is counted in both, a pull request still
+labelled in the train's own repository is explained rather than left as a bare count, and an
+unreadable, an omitted, a slugless and an unnumbered repository each come back unknown rather than
+clean. All fourteen fail against the previous revision.
 
 **Not changed here:** the lock diagnostics in this file name `/tmp/devloop-merge.lock` literally,
 but so does the `mkdir` that takes it, so they describe the lock the run actually holds. Making

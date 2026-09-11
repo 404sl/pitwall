@@ -798,7 +798,13 @@ for (const [name, r] of Object.entries(REPOS)) {
     perRepo[name] = unsurveyed(`the survey step could not read this repository: ${trimmed(entry.notes) || 'it reported ' + (trimmed(entry.status) || 'nothing') + ' and said no more'}`)
     continue
   }
-  const left = entry.labelled.filter((n) => Number.isInteger(n) && !landed.includes(n))
+  const unreadable = entry.labelled.filter((n) => !Number.isInteger(n))
+  if (unreadable.length) {
+    perRepo[name] = unsurveyed(`the survey step reported ${unreadable.map((n) => JSON.stringify(n)).join(', ')} where a pull request number belongs, so what is labelled in this repository cannot be counted`)
+    continue
+  }
+  const left = entry.labelled.filter((n) => !(mine && landed.includes(n)))
+  const many = left.length === 1 ? 'it' : 'them'
   perRepo[name] = {
     slug: r.slug,
     train: mine,
@@ -807,14 +813,20 @@ for (const [name, r] of Object.entries(REPOS)) {
     left: left.length,
     leftPrs: left,
     relaunch: (!mine && left.length) ? `run again with repo: ${name}` : null,
-    why: null,
+    why: !(mine && left.length) ? null
+      : outcome.stopped
+        ? `this train stopped (${outcome.stopped}) without taking ${many}, and the label stands - the next train for ${name} takes ${many}`
+        : `still labelled and open in ${name} after this train merged - in rejected or stranded above if this run saw ${many}, otherwise labelled after the build surveyed the queue; the label stands either way and the next train for ${name} takes ${many}`,
   }
 }
 for (const [name, a] of Object.entries(perRepo)) {
+  const count = `${a.left} labelled pull request${a.left === 1 ? '' : 's'} left (${a.leftPrs.map((n) => `${a.slug}#${n}`).join(', ')})`
   if (a.surveyed === null) {
     log(`${name} was NOT surveyed - ${a.why}`)
   } else if (a.relaunch) {
-    log(`${name}: ${a.left} labelled pull request${a.left === 1 ? '' : 's'} left (${a.leftPrs.map((n) => `${a.slug}#${n}`).join(', ')}) - ${a.relaunch}`)
+    log(`${name}: ${count} - ${a.relaunch}`)
+  } else if (a.left) {
+    log(`${name}: ${count} - ${a.why}`)
   }
 }
 } finally {
