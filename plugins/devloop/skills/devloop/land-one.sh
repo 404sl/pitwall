@@ -70,6 +70,16 @@ cleanup() {
 cd "$REPO_PATH" || exit 6
 git fetch origin --quiet 2>/dev/null
 
+ident_name=$(git log -1 --format=%an origin/master 2>/dev/null)
+ident_email=$(git log -1 --format=%ae origin/master 2>/dev/null)
+git_with_identity() {
+  if [ -n "$ident_name" ] && [ -n "$ident_email" ]; then
+    git -c "user.name=$ident_name" -c "user.email=$ident_email" "$@"
+  else
+    git "$@"
+  fi
+}
+
 # 1. MASTER MUST BE GREEN FIRST. Landing on top of a break makes it harder to untangle, not
 #    easier, and the lander cannot merge the fix for a red master while master is red.
 master_state=$(gh run list --branch master --limit 1 --json status,conclusion 2>/dev/null \
@@ -98,7 +108,7 @@ else
   cd "$WT" || { cleanup; exit 6; }
   git checkout -B "$BRANCH" "origin/${BRANCH}" >/dev/null 2>/dev/null
 
-  if ! git rebase origin/master >/dev/null 2>/dev/null; then
+  if ! git_with_identity rebase origin/master >/dev/null 2>/dev/null; then
     # A conflict is a decision, not a task. Report WHAT disagrees and hand it back; guessing
     # here is how a merge that is green on both sides breaks the product.
     files=$(git diff --name-only --diff-filter=U 2>/dev/null | tr '\n' ' ')

@@ -146,6 +146,39 @@ const DEPLOY_EVERY = input.deployEvery || 3
 const MAX_ROUNDS = 4
 const WT = `/tmp/${LOCK_PREFIX}-worktrees`
 
+const SHELL_FIRST = `EVERY COMMAND THAT RUNS git OR bundle STARTS WITH THESE TWO EXPORTS, and so does every
+command that runs a script which does:
+
+  export GIT_CONFIG_GLOBAL=/dev/null BUNDLE_USER_CONFIG=/dev/null && <your command>
+
+Each command you run is its own shell, so exporting them once at the start reaches nothing after
+it - they go at the front of the command, the way TEST_ENV_NUMBER already does. Lead with
+'export ... &&' rather than writing them as a prefix assignment: a $(...) inside the command
+expands BEFORE a prefix assignment takes effect, so the identity reads below would still go
+through the home config.
+
+A HOME-DIRECTORY CONFIG THAT CANNOT BE READ PRESENTS AS ANYTHING BUT ITSELF. Every git command
+fails with 'unknown error occurred while reading the configuration files', and every
+bundler-fronted command HANGS with no output at all - 60s of wall clock against 0.067s of user
+time, so blocked on I/O rather than slow. A hang and a slow machine look identical, so a run pays
+its full timeout before suspecting anything: three runs diagnosed this from scratch in one
+evening, one of them after killing two suites on timeouts. Whether a synced folder has
+materialised a file is not something a run controls, so those files are not read at all. The two
+exports cost a readable config nothing and are not conditional.
+
+COMMIT IDENTITY IS THE ONE THING THAT DOES NOT SURVIVE THEM, and every command that WRITES a
+commit needs it - commit, rebase, merge, cherry-pick. Pass it on the command, taken from the
+branch being built on:
+
+  git -c user.name="$(git log -1 --format=%an origin/master)" -c user.email="$(git log -1 --format=%ae origin/master)" commit -F <message file>
+
+Without it git either refuses outright, 'unable to auto-detect email address', or writes the
+wrong author - and nothing downstream notices the second. On this machine the credential helper
+sits in the system config rather than the home one, so pushes keep working - but that is this
+machine, not a rule: a workspace set up by 'gh auth setup-git' has the helper in the GLOBAL
+config, and these exports drop it. If a push asks for a password, say so rather than putting the
+home config back.`
+
 const LAW = `
 Never use 2>&1 - it makes some commands fail outright.
 Use absolute paths, never relative ones.
@@ -153,7 +186,9 @@ Nothing you write anywhere may mention AI, assistants, automated authorship or t
 not a commit message, not a PR body, not a comment, not a tracker note. Read back what you
 wrote from the thing that stored it - GitHub and git both add and rewrite text - and check
 it rather than trusting what you meant to write.
-Never force-push a default branch, and never commit to one directly.`
+Never force-push a default branch, and never commit to one directly.
+
+${SHELL_FIRST}`
 
 const SURVEY = {
   type: 'object',
@@ -733,12 +768,23 @@ a report to the supervisor, not a problem for you to solve.
    than making another - a lane may have left one holding exactly this branch, which is a
    favour and not a mess. 'git worktree list' says where it is.
 
-     cd <worktree> && git rebase origin/master
+     cd <worktree> && git -c user.name="$(git log -1 --format=%an origin/master)" -c user.email="$(git log -1 --format=%ae origin/master)" rebase origin/master
 
    TEXTUAL CONFLICTS IN THE SAME REGION are yours to resolve when the intent of both sides is
    plain - two additions to one list, an import added on both sides, a spec file gaining
    examples at the same place. Resolve it so both changes survive, and say in 'notes' what you
    resolved and how.
+
+   FINISHING A STOPPED REBASE NEEDS THE IDENTITY AGAIN, AND AN EDITOR IT CAN RUN. A -c flag
+   applies to ONE invocation and does not carry into --continue - and --continue is what writes
+   the commit for the resolution, so a bare one fails for want of an identity exactly like the
+   rebase above. The exports also take core.editor away, and --continue opens an editor to
+   reword that commit, so git falls back to $EDITOR and a run with no terminal hangs or dies on
+   it. Both halves, every time the rebase stops:
+     cd <worktree> && git add <the files you resolved>
+     cd <worktree> && git -c user.name="$(git log -1 --format=%an origin/master)" -c user.email="$(git log -1 --format=%ae origin/master)" -c core.editor=true rebase --continue
+   A rebase can stop more than once. Repeat both until it reports it has finished. Do not take
+   git's own hint to set a --global identity: that is the file the exports exist to ignore.
 
    A CONFLICT OF MEANING IS NOT. If your branch and something merged since disagree about what
    the code should DO - one renames what the other calls, one changes a behaviour the other

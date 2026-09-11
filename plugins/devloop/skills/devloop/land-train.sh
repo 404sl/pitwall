@@ -63,6 +63,16 @@ git fetch origin --quiet 2>/dev/null
 
 say() { printf '%s\n' "$*"; }
 
+ident_name=$(git log -1 --format=%an origin/master 2>/dev/null)
+ident_email=$(git log -1 --format=%ae origin/master 2>/dev/null)
+git_with_identity() {
+  if [ -n "$ident_name" ] && [ -n "$ident_email" ]; then
+    git -c "user.name=$ident_name" -c "user.email=$ident_email" "$@"
+  else
+    git "$@"
+  fi
+}
+
 # 1. Master green first. A train built on a break lands the break plus everything else, and then
 #    nobody can tell which commit to look at.
 master_state=$(gh run list --branch master --limit 1 --json status,conclusion 2>/dev/null \
@@ -132,7 +142,7 @@ msgfile=$(mktemp "${TMPDIR:-/tmp}/train-msg.XXXXXX")
 
 while IFS="$(printf '\t')" read -r num branch title; do
   [ -n "$num" ] || continue
-  if ! git merge --squash "origin/${branch}" >/dev/null 2>/dev/null; then
+  if ! git_with_identity merge --squash "origin/${branch}" >/dev/null 2>/dev/null; then
     files=$(git diff --name-only --diff-filter=U 2>/dev/null | tr '\n' ' ')
     git reset --hard HEAD >/dev/null 2>/dev/null
     git clean -fd >/dev/null 2>/dev/null
@@ -147,7 +157,7 @@ while IFS="$(printf '\t')" read -r num branch title; do
     continue
   fi
   printf '%s\n\nCloses #%s\n' "$title" "$num" > "$msgfile"
-  git commit -q -F "$msgfile" 2>/dev/null || {
+  git_with_identity commit -q -F "$msgfile" 2>/dev/null || {
     git reset --hard HEAD >/dev/null 2>/dev/null
     say "  skipped #${num} ${branch} - commit refused"
     skipped="${skipped}${num} "
