@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.1.30
+
+**The prefix was resolved where state is read and written out by hand where it is created.** Every
+reader - `lanes.sh`, `slot.sh`, `kill-lane.sh`, `stranded.sh`, `queue.sh`, `precheck.sh`,
+`triage-scan.sh`, `land.js`, `land-one.sh`, `land-train.sh`, `rework.js` - builds its path from the
+workspace's `lockPrefix`. Three writers did not, so in any workspace whose prefix is not the
+default they wrote somewhere no reader of that workspace looks.
+
+- **`land.js` and `land-train.js` took DIFFERENT merge locks.** The serial lander built its path
+  from `lockPrefix`; the train wrote the default out in twelve places and referred to `lockPrefix`
+  nowhere. The two therefore did not exclude each other, and the one thing this lock exists to
+  prevent - two runs merging into one repository at once - was available to any workspace that had
+  namespaced itself. Train against train was safe only because every train shared one hardcode.
+- **Three of those twelve were instructions to a PERSON.** The supervisor-facing leak diagnostics
+  named a lock path by hand and told whoever read them to check its holder file and remove it if it
+  was theirs. The advice is the right shape and it pointed at a file no run had taken - read under
+  time pressure, during the one operation where touching the wrong lock is unrecoverable.
+- **Every workspace on a machine shared ONE lane scratch directory, unconditionally.** `task.js`
+  built it as a literal, so no setting separated two workspaces and there was nothing to align a
+  prefix to. Measured before the fix: about seventy-four directories from this workspace's lanes
+  sat beside another workspace's in the same parent, going back a day and spanning two different
+  `lockPrefix` values. The hazard is cleanup, not a name clash - either side running an `rm` over
+  the parent destroys the other's live lane scratch, and the victim sees its debug output vanish
+  rather than an error. The comment above that line already argues this fix one scope down: scratch
+  is one directory per issue because lanes writing into a shared parent overwrite each other's
+  output and neither notices. Same argument, same fix, one level up.
+- **The worktree path in the docs-role brief is the resolved one.** It was prompt text, which looks
+  like documentation and survives a sweep of the code - and a brief is followed. The code paths
+  beside it were already prefix-aware, so a code-only fix would have left the brief manufacturing
+  directories under the default prefix and the ticket would have read as done.
+- **The train passes its prefix to `land-train.sh`,** which otherwise fell back to its own default
+  and cut the release worktree under another workspace's directory.
+- **The branch namespace stays one namespace, and is not derived from the prefix.** Branches are
+  namespaced by repository already, so the machine-global collision `lockPrefix` exists to prevent
+  cannot happen to them; and seven readers match `devloop/` literally, so a key only the writer
+  honoured would strand pull requests nothing picks up.
+
+A test drives both landers with a non-default prefix and asserts they name the same lock, that each
+releases the lock it took, that the lane brief carries the resolved worktree and scratch roots, and
+that no file in the skill names a `/tmp` path under the default prefix at all. Four of the five fail
+before this change.
+
 ## 0.1.28
 
 **A ticket spanning two repositories got one pull request labelled and the other silently
@@ -857,8 +899,9 @@ the first copy seen won, so a written copy could lose to an empty one.
 
 **`lanes.sh` was answering about whichever workspace the default prefix names.** It built the
 registry path from `LOCK_PREFIX` falling back to `devloop` instead of this workspace's
-`lockPrefix`, and reported "no slot registry at /tmp/devloop-slots - no lanes have ever been
-claimed" while three slots were claimed under the prefix the config names. It resolves the
+`lockPrefix`, and reported no slot registry at all - naming the path the default prefix builds,
+under which no lane had ever been claimed - while three slots were claimed under the prefix the
+config names. It resolves the
 prefix from the config now and refuses with exit 6 rather than defaulting, the rule `slot.sh`
 and `lock-check.sh` already follow: an answer about another project's lanes is worse than none.
 

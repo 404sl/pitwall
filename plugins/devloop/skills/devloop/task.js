@@ -89,6 +89,7 @@ if (!SKILL_DIR) {
 }
 
 const WT = input.worktrees || `/tmp/${LOCK_PREFIX}-worktrees`
+const SCRATCH = `/tmp/${LOCK_PREFIX}-scratch`
 
 // What a lane runs to check its own work, per repo, from the config. Falls back to an
 // instruction rather than a guess: a wrong test command reads as a broken build.
@@ -665,8 +666,8 @@ modified topics-from-search.md and five untracked drafts. Branching there puts y
 of their work, and one 'git add -A' commits their drafts into your pull request.
 
   cd ${repoPath('docs')} && git fetch origin --quiet
-  git worktree add --force /tmp/devloop-worktrees/${task.id} -b ${`devloop/${task.id}`} origin/master
-  cd /tmp/devloop-worktrees/${task.id}
+  git worktree add --force ${wtPath} -b devloop/${task.id} origin/master
+  cd ${wtPath}
 
 Everything after that happens in the worktree. Do not cd back, do not check anything out in the
 original, and remove the worktree when you hand off. Branch from origin/master rather than the
@@ -748,7 +749,7 @@ function fixPrompt(task, attempt, feedback, laneIndex, brief) {
   // dbg.txt, full.txt and err-before.txt straight into the shared worktrees parent, where two
   // lanes debugging at once overwrite each other's output and neither notices. That is the
   // same failure as two runs sharing a test database, in a place nobody thought to look.
-  const scratch = `/tmp/devloop-scratch/${task.id}`
+  const scratch = `${SCRATCH}/${task.id}`
   const again = attempt > 1
   return `${again ? 'REWORK' : 'Fix'} one tracker issue end to end and open a pull request.
 
@@ -856,7 +857,7 @@ Create ${WT}/shots first. Return the absolute paths in 'screenshots'.
 
 Before committing, prove none of it leaked:
   cd ${wtPath} && git diff --cached --name-only
-  cd ${wtPath} && git diff --cached | grep -n "devloop-worktrees\|save_screenshot" || true
+  cd ${wtPath} && git diff --cached | grep -nE "${WT}|${SCRATCH}|save_screenshot" || true
 If either turns up anything, remove it and stage again. Untracked leftovers matter too -
 check 'git status --porcelain' is limited to what you meant to commit.
 
@@ -1092,7 +1093,7 @@ you did not actually view an image.
   worktree, run that test, restore it. Leave the worktree byte-clean and say you did.
 - Did unrelated changes ride along?
 - Did any scaffolding reach the commit? Run
-  'git diff origin/master...HEAD | grep -n "devloop-worktrees\|save_screenshot"'. A scratch
+  'git diff origin/master...HEAD | grep -nE "${WT}|${SCRATCH}|save_screenshot"'. A scratch
   path or a capture call inside a committed file is an automatic rejection: it makes every
   future run of that suite write into a directory that exists on one machine.
 - What breaks that the suite cannot see? Other callers of the changed code, a state the new
