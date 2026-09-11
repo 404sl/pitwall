@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { realpathSync } from "node:fs";
 import { SCHEMA_VERSION } from "@404sl/pitwall-schema";
 import { diagnose, renderDoctor } from "./doctor.js";
-import { DEFAULT_PORT, HOST, consoleCollector, createConsoleServer, listen, parseServeArgs } from "./serve.js";
+import { DEFAULT_PORT, HOST, consoleAnnouncer, consoleCollector, createConsoleServer, listen, parseServeArgs } from "./serve.js";
 import { undeliveredReport } from "./notify.js";
 import { emitSnapshot } from "./snapshot.js";
 import { readSnapshot, readSnapshotFrom, snapshotPath } from "./state.js";
@@ -148,7 +148,10 @@ if (isEntry) {
   } else if (serve === undefined) {
     process.exit(code);
   } else {
-    listen(createConsoleServer({ collect: consoleCollector() }), serve.port).then(
+    listen(
+      createConsoleServer({ collect: consoleCollector(), announce: consoleAnnouncer() }),
+      serve.port,
+    ).then(
       () => process.stdout.write(`pitwall console on http://${HOST}:${serve.port}/\n`),
       (cause: NodeJS.ErrnoException) => {
         const why = cause.code === "EADDRINUSE" ? `port ${serve.port} is already in use` : cause.message;

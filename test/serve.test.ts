@@ -18,9 +18,11 @@ import {
   listen,
   parseServeArgs,
   sendIssueFailure,
+  type Announcer,
   type Collection,
 } from "../src/serve.ts";
-import { REFRESH_SOURCE } from "../src/board.ts";
+import type { CollectionNotice, Delivery } from "../src/notify.ts";
+import { NOTICE_SOURCE, REFRESH_SOURCE } from "../src/board.ts";
 import type { BuildCheck, BuildReport } from "../src/build.ts";
 import { snapshotPath, stateHome } from "../src/state.ts";
 import { VERSION } from "../src/version.ts";
@@ -1179,5 +1181,143 @@ test("a note that will not write stops the action, so no issue is unparked witho
     logged(box.log).filter((line) => line.includes("--remove-label")),
     [],
     "the labels were cleared after the note failed, so a lane can take work whose answer was lost",
+  );
+});
+
+function announcer(delivery: Delivery = { delivered: true }): {
+  sent: CollectionNotice[];
+  announce: Announcer;
+} {
+  const sent: CollectionNotice[] = [];
+  return {
+    sent,
+    announce: (notice) => {
+      sent.push(notice);
+      return Promise.resolve(delivery);
+    },
+  };
+}
+
+const OFF_PATH = () => Promise.reject(new Error("bd is not on PATH"));
+
+async function attempts(
+  origin: string,
+  calls: Array<Promise<Collection>>,
+  clock: { at: number },
+  times: readonly number[],
+): Promise<void> {
+  for (const at of times) {
+    clock.at = at;
+    await (await fetch(`${origin}/api/snapshot`)).json();
+    await (calls[calls.length - 1] as Promise<Collection>).catch(() => undefined);
+    await settle();
+  }
+}
+
+test("a collection failing for longer than the threshold is announced once, not once an attempt", async (t) => {
+  const { env } = stateWith(JSON.stringify(SNAPSHOT));
+  const clock = { at: 0 };
+  const { sent, announce } = announcer();
+  const { collect, calls } = collector([OFF_PATH]);
+  const server = createConsoleServer({
+    env,
+    uiDir: builtConsole(),
+    collect,
+    announce,
+    refreshFloorMs: 0,
+    outageAfterMs: 60_000,
+    now: () => clock.at,
+  });
+  t.after(() => server.close());
+  const { origin } = await started(server);
+
+  await attempts(origin, calls, clock, [0, 30_000, 60_000, 90_000, 120_000]);
+
+  assert.equal(calls.length, 5);
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0]?.kind, "collection-failed");
+  assert.match(sent[0]?.text ?? "", /Collection has failed for 1m/);
+  assert.match(sent[0]?.text ?? "", /bd is not on PATH/);
+});
+
+test("a collection that fails for less than the threshold reaches nobody at all", async (t) => {
+  const { env } = stateWith(JSON.stringify(SNAPSHOT));
+  const clock = { at: 0 };
+  const { sent, announce } = announcer();
+  const { collect, calls } = collector([OFF_PATH, OFF_PATH, () => Promise.resolve(READ)]);
+  const server = createConsoleServer({
+    env,
+    uiDir: builtConsole(),
+    collect,
+    announce,
+    refreshFloorMs: 0,
+    outageAfterMs: 60_000,
+    now: () => clock.at,
+  });
+  t.after(() => server.close());
+  const { origin } = await started(server);
+
+  await attempts(origin, calls, clock, [0, 30_000, 45_000, 200_000]);
+
+  assert.equal(calls.length, 4);
+  assert.deepEqual(sent, []);
+});
+
+test("a collection that comes back is announced once too, and nothing is said after that", async (t) => {
+  const { env } = stateWith(JSON.stringify(SNAPSHOT));
+  const clock = { at: 0 };
+  const { sent, announce } = announcer();
+  const { collect, calls } = collector([OFF_PATH, OFF_PATH, () => Promise.resolve(READ)]);
+  const server = createConsoleServer({
+    env,
+    uiDir: builtConsole(),
+    collect,
+    announce,
+    refreshFloorMs: 0,
+    outageAfterMs: 60_000,
+    now: () => clock.at,
+  });
+  t.after(() => server.close());
+  const { origin } = await started(server);
+
+  await attempts(origin, calls, clock, [0, 60_000, 90_000, 150_000]);
+
+  assert.deepEqual(
+    sent.map((notice) => notice.kind),
+    ["collection-failed", "collection-recovered"],
+  );
+  assert.match(sent[1]?.text ?? "", /Collection recovered after 1m/);
+});
+
+test("a notice nobody could be handed is a row on the board, not a silence", async (t) => {
+  const { env } = stateWith(JSON.stringify(SNAPSHOT));
+  const clock = { at: 0 };
+  const { announce } = announcer({
+    delivered: false,
+    reason: "no notify command is configured in the workspace file in /w",
+  });
+  const { collect, calls } = collector([OFF_PATH]);
+  const server = createConsoleServer({
+    env,
+    uiDir: builtConsole(),
+    collect,
+    announce,
+    refreshFloorMs: 0,
+    outageAfterMs: 60_000,
+    now: () => clock.at,
+  });
+  t.after(() => server.close());
+  const { origin } = await started(server);
+
+  await attempts(origin, calls, clock, [0, 60_000]);
+
+  const errors = errorsOf(await (await fetch(`${origin}/api/snapshot`)).json());
+  const unreached = errors.find((error) => error.source === NOTICE_SOURCE);
+  assert.notEqual(unreached, undefined);
+  assert.match(unreached?.message ?? "", /Collection has failed for 1m/);
+  assert.match(unreached?.message ?? "", /Nobody was told: no notify command is configured/);
+  assert.notEqual(
+    errors.find((error) => error.source === REFRESH_SOURCE),
+    undefined,
   );
 });

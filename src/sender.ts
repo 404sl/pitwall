@@ -2,8 +2,8 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { WORKSPACE_FILES, workspaceFile } from "./autofix.js";
-import { configPath, type RootsSource } from "./config.js";
-import type { Delivery, Sender } from "./notify.js";
+import { configPath, resolveRoots, type RootsOptions, type RootsSource } from "./config.js";
+import type { Delivery, Sender, Transport } from "./notify.js";
 
 export const SESSION_REF_VAR = "PITWALL_SESSION_REF";
 export const NOTIFY_FIELD = "notify";
@@ -123,7 +123,7 @@ function reasonOf(
   return reported === "" ? `${program} ${how} and said nothing` : `${program} ${how}: ${reported}`;
 }
 
-export function commandSender(command: readonly string[], options: CommandOptions = {}): Sender {
+export function commandSender(command: readonly string[], options: CommandOptions = {}): Transport {
   const program = command[0] ?? "";
   const args = command.slice(1);
   const env = options.env ?? process.env;
@@ -175,7 +175,7 @@ export function commandSender(command: readonly string[], options: CommandOption
     });
 }
 
-function holding(reason: string): Sender {
+function holding(reason: string): Transport {
   return () => Promise.resolve({ delivered: false, reason });
 }
 
@@ -199,4 +199,41 @@ export function workspaceSender(root: string, options: TransportOptions = {}): S
     env: options.env,
     timeoutMs: options.timeoutMs,
   });
+}
+
+export interface OutboundOptions extends RootsOptions {
+  timeoutMs?: number;
+}
+
+export type Outbound = { send: Transport; root: string } | { reason: string };
+
+export function outboundPath(options: OutboundOptions = {}): Outbound {
+  const roots = resolveRoots(options);
+  if (roots.source !== "config") {
+    return {
+      reason: `the workspaces were found by scanning ${roots.from} rather than listed in roots in ${roots.configPath}, so there is no ${NOTIFY_FIELD} command this console may run`,
+    };
+  }
+  const reasons: string[] = [];
+  for (const listed of roots.roots) {
+    const root = resolve(listed);
+    const found = notifyCommandOf(root);
+    if ("command" in found) {
+      return {
+        send: commandSender(found.command, {
+          cwd: root,
+          env: options.env,
+          timeoutMs: options.timeoutMs,
+        }),
+        root,
+      };
+    }
+    reasons.push(found.reason);
+  }
+  return {
+    reason:
+      reasons.length === 0
+        ? `roots in ${roots.configPath} names no workspace to deliver through`
+        : reasons.join("; "),
+  };
 }

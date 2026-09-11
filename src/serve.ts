@@ -4,7 +4,7 @@ import { extname, resolve, sep } from "node:path";
 import { pipeline } from "node:stream";
 import { fileURLToPath } from "node:url";
 import type { Classification, CollectionError, Issue, Project, Snapshot } from "@404sl/pitwall-schema";
-import { REFRESH_SOURCE, stalenessErrors } from "./board.js";
+import { NOTICE_SOURCE, REFRESH_SOURCE, stalenessErrors } from "./board.js";
 import {
   IssueActionFailure,
   OWNER_LABELS,
@@ -15,8 +15,15 @@ import {
 } from "./beads.js";
 import { createBuildCheck, type BuildCheck } from "./build.js";
 import { collectionError } from "./errors.js";
-import { lostNotices } from "./notify.js";
+import {
+  collectionFailedNotice,
+  collectionRecoveredNotice,
+  lostNotices,
+  type CollectionNotice,
+  type Delivery,
+} from "./notify.js";
 import { createUpdateCheck, type UpdateCheck } from "./registry.js";
+import { outboundPath, type OutboundOptions } from "./sender.js";
 import { emitSnapshot, type SnapshotOptions } from "./snapshot.js";
 import { readSnapshot, type StateOptions, type StoredSnapshot } from "./state.js";
 import { VERSION } from "./version.js";
@@ -28,6 +35,7 @@ export const UI_DIR = fileURLToPath(new URL("../dist/ui", import.meta.url));
 export const ISSUE_PREFIX = "/api/issue/";
 export const VERSION_ROUTE = "/api/version";
 export const REFRESH_FLOOR_MS = 60_000;
+export const OUTAGE_AFTER_MS = 15 * 60_000;
 export const NOTHING_READ = "No project could be read. The board still shows the last snapshot collected.";
 const NOTHING_READ_YET = "The last collection could read no project either";
 const REFRESH_FAILED_TOO = "The last collection failed too";
@@ -39,6 +47,8 @@ export interface Collection {
 
 export type Collector = () => Promise<Collection>;
 
+export type Announcer = (notice: CollectionNotice) => Promise<Delivery>;
+
 export interface ServeOptions extends StateOptions {
   uiDir?: string;
   timeoutMs?: number;
@@ -46,7 +56,18 @@ export interface ServeOptions extends StateOptions {
   builds?: BuildCheck;
   collect?: Collector;
   refreshFloorMs?: number;
+  outageAfterMs?: number;
+  announce?: Announcer;
   now?: () => number;
+}
+
+export function consoleAnnouncer(options: OutboundOptions = {}): Announcer {
+  return (notice) => {
+    const path = outboundPath(options);
+    return "reason" in path
+      ? Promise.resolve({ delivered: false, reason: path.reason })
+      : path.send(notice);
+  };
 }
 
 export function consoleCollector(options: SnapshotOptions = {}): Collector {
@@ -117,6 +138,13 @@ interface RefreshFailure {
 interface Refresher {
   consider: (stored: StoredSnapshot) => void;
   failure: () => RefreshFailure | undefined;
+  unreached: () => CollectionError | undefined;
+}
+
+interface Outage {
+  since: number;
+  sinceAt: string;
+  announced: boolean;
 }
 
 function causeOf(errors: readonly CollectionError[]): string {
@@ -158,14 +186,53 @@ function ageOf(stored: StoredSnapshot, nowMs: number): number {
 }
 
 export function createRefresher(options: ServeOptions): Refresher {
-  const { collect } = options;
+  const { announce, collect } = options;
   const floor = options.refreshFloorMs ?? REFRESH_FLOOR_MS;
+  const outageAfter = options.outageAfterMs ?? OUTAGE_AFTER_MS;
   const clock = options.now ?? Date.now;
   let attemptedAt: number | undefined;
   let running = false;
   let failure: RefreshFailure | undefined;
+  let outage: Outage | undefined;
+  let unreached: CollectionError | undefined;
+  let saying: Promise<void> = Promise.resolve();
+  async function handed(notice: CollectionNotice, to: Announcer): Promise<void> {
+    let delivery: Delivery;
+    try {
+      delivery = await to(notice);
+    } catch (cause) {
+      delivery = { delivered: false, reason: cause instanceof Error ? cause.message : String(cause) };
+    }
+    unreached = delivery.delivered
+      ? undefined
+      : collectionError(NOTICE_SOURCE, `${notice.text} Nobody was told: ${delivery.reason}`);
+  }
+  function say(notice: CollectionNotice): void {
+    if (announce === undefined) {
+      return;
+    }
+    saying = saying.then(() => handed(notice, announce));
+  }
+  function stillFailing(at: number, current: RefreshFailure): void {
+    outage ??= { since: at, sinceAt: current.at, announced: false };
+    const forMs = at - outage.since;
+    if (outage.announced || forMs < outageAfter) {
+      return;
+    }
+    outage.announced = true;
+    say(collectionFailedNotice({ since: outage.sinceAt, forMs, cause: current.cause }));
+  }
+  function readAgain(at: number): void {
+    const ended = outage;
+    outage = undefined;
+    if (ended === undefined || !ended.announced) {
+      return;
+    }
+    say(collectionRecoveredNotice({ since: ended.sinceAt, forMs: at - ended.since }));
+  }
   return {
     failure: () => failure,
+    unreached: () => unreached,
     consider: (stored: StoredSnapshot) => {
       if (collect === undefined || running) {
         return;
@@ -182,10 +249,17 @@ export function createRefresher(options: ServeOptions): Refresher {
       void started(collect)
         .then(
           (collection) => {
-            failure = collection.read ? undefined : refreshFailure(causeOf(collection.errors), true);
+            if (collection.read) {
+              failure = undefined;
+              readAgain(clock());
+              return;
+            }
+            failure = refreshFailure(causeOf(collection.errors), true);
+            stillFailing(clock(), failure);
           },
           (cause: unknown) => {
             failure = refreshFailure(cause, false);
+            stillFailing(clock(), failure);
           },
         )
         .finally(() => {
@@ -195,23 +269,24 @@ export function createRefresher(options: ServeOptions): Refresher {
   };
 }
 
-function withRefreshFailure(snapshot: Snapshot, failure: RefreshFailure | undefined): Snapshot {
-  if (failure === undefined) {
-    return snapshot;
+function withConsoleErrors(snapshot: Snapshot, refresher: Refresher): Snapshot {
+  const added: CollectionError[] = [];
+  const failure = refresher.failure();
+  if (failure !== undefined) {
+    added.push({ source: REFRESH_SOURCE, message: messageWithBoard(failure), at: failure.at });
   }
-  const error: CollectionError = {
-    source: REFRESH_SOURCE,
-    message: messageWithBoard(failure),
-    at: failure.at,
-  };
-  return { ...snapshot, errors: [...(snapshot.errors ?? []), error] };
+  const unreached = refresher.unreached();
+  if (unreached !== undefined) {
+    added.push(unreached);
+  }
+  return added.length === 0 ? snapshot : { ...snapshot, errors: [...(snapshot.errors ?? []), ...added] };
 }
 
 function serveSnapshot(res: ServerResponse, options: ServeOptions, refresher: Refresher): void {
   const stored = readSnapshot(options);
   refresher.consider(stored);
   if (stored.snapshot !== undefined) {
-    sendJson(res, 200, withRefreshFailure(stored.snapshot, refresher.failure()));
+    sendJson(res, 200, withConsoleErrors(stored.snapshot, refresher));
     return;
   }
   const { error } = stored;
