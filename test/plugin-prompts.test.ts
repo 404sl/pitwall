@@ -70,7 +70,7 @@ test("the standing shell block carries no backticks in any script that hands it 
   }
 });
 
-const WRITES_A_COMMIT = /(^\s*|&&\s*|\|\|\s*|;\s*)(if ! )?git\s+(commit|rebase|cherry-pick|merge)(?![-\w])/;
+const WRITES_A_COMMIT = /(^\s*|&&\s*|\|\|\s*|;\s*)(if ! )?git\s+(-C\s+\S+\s+)?(commit|rebase|cherry-pick|merge)(?![-\w])/;
 
 test("nothing in the plugin commits or rebases on an identity it did not pass", () => {
   for (const file of ["task.js", "land.js", "rework.js", "land-train.js", "land-train.sh", "land-one.sh"]) {

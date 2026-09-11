@@ -56,9 +56,10 @@ rebase must not be reported as a conflict. Two read the sources: the standing bl
 backtick, which closes a brief's template literal early and blocks every dispatch, and no commit,
 merge, rebase or cherry-pick anywhere in the plugin may take its identity from configuration. That
 last audit reads the four briefs as well as the two shell scripts, because a brief is where most of
-those commands are written; it matches a git invocation in command position, which keeps prose that
-merely names a command out of the result, and skips `merge-base`, `merge-tree` and the
-`--abort`/`--continue`/`--skip` forms, none of which write a commit.
+those commands are written; it matches a git invocation in command position, with or without a
+`-C <path>` in front of the verb, which keeps prose that merely names a command out of the result,
+and skips `merge-base`, `merge-tree` and the `--abort`/`--continue`/`--skip` forms, none of which
+write a commit.
 
 ## 0.1.23
 
