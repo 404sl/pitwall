@@ -79,7 +79,7 @@ test("nothing in the plugin commits or rebases on an identity it did not pass", 
       .split("\n")
       .map((line, i) => ({ line, at: i + 1 }))
       .filter(({ line }) => WRITES_A_COMMIT.test(line))
-      .filter(({ line }) => !/--(abort|continue|skip)\b/.test(line))
+      .filter(({ line }) => !/--(abort|skip)\b/.test(line))
       .filter(({ line }) => !/user\.name=/.test(line));
     assert.deepEqual(
       writes.map(({ line, at }) => `${file}:${at}${line}`),

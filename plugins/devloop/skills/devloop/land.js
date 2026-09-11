@@ -775,6 +775,17 @@ a report to the supervisor, not a problem for you to solve.
    examples at the same place. Resolve it so both changes survive, and say in 'notes' what you
    resolved and how.
 
+   FINISHING A STOPPED REBASE NEEDS THE IDENTITY AGAIN, AND AN EDITOR IT CAN RUN. A -c flag
+   applies to ONE invocation and does not carry into --continue - and --continue is what writes
+   the commit for the resolution, so a bare one fails for want of an identity exactly like the
+   rebase above. The exports also take core.editor away, and --continue opens an editor to
+   reword that commit, so git falls back to $EDITOR and a run with no terminal hangs or dies on
+   it. Both halves, every time the rebase stops:
+     cd <worktree> && git add <the files you resolved>
+     cd <worktree> && git -c user.name="$(git log -1 --format=%an origin/master)" -c user.email="$(git log -1 --format=%ae origin/master)" -c core.editor=true rebase --continue
+   A rebase can stop more than once. Repeat both until it reports it has finished. Do not take
+   git's own hint to set a --global identity: that is the file the exports exist to ignore.
+
    A CONFLICT OF MEANING IS NOT. If your branch and something merged since disagree about what
    the code should DO - one renames what the other calls, one changes a behaviour the other
    asserts - stop, 'git rebase --abort', and return status 'conflict' saying what disagrees

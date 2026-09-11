@@ -138,6 +138,13 @@ test("the lander's version step carries them, which is the step an unreadable co
       "script that wraps it reports that failure as a conflict with master, which is a decision " +
       "handed to a person for a reason that is not true",
   );
+  assert.ok(
+    land.prompt.includes(`${IDENTITY} -c core.editor=true rebase --continue`),
+    "the lander is told to resolve a textual conflict but not how to finish the rebase it " +
+      "stopped. A -c flag covers one invocation, so --continue - which is what commits the " +
+      "resolution - gets no identity, and with no home config there is no core.editor either, " +
+      "so git reaches for an editor a run with no terminal cannot answer",
+  );
 });
 
 test("a rework brief carries them too, for the merge commit it has to write by hand", async () => {

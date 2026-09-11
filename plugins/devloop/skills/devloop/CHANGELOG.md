@@ -40,6 +40,17 @@ config back.
   empty, which reads as "nothing was ready". `land-one.sh` reported a rebase that failed for want of
   an identity as a CONFLICT with master, a branch handed back to a person for a reason that was not
   true.
+- **Finishing a stopped rebase needs the identity a second time, and an editor.** A `-c` flag
+  covers one invocation and does not carry into `--continue` - which is the command that writes the
+  commit for a resolved conflict. The lander's rebase step told a run to resolve a textual conflict
+  and stopped there, so the only way to finish was a bare `git rebase --continue`: measured under
+  the environment the tests pin, that dies with "no email was given and auto-detection is disabled",
+  and the wrapper reports it as a conflict with master that does not exist - the same false symptom
+  one command later in the same brief. The exports take `core.editor` away as well, and `--continue`
+  opens an editor to reword that commit, so `-c core.editor=true` goes on it too; without that it
+  dies on the editor instead, having got the identity right. Step 4 now spells both commands out,
+  and says not to take git's own hint to set a `--global` identity, which is the file the exports
+  exist to ignore.
 - **What git does with no identity depends on the machine, and the kinder answer is the dangerous
   one.** Where it can build one from the account - a gecos name and a hostname with a domain - it
   does not refuse: the commit lands, under a name that belongs to nobody. Where it cannot, the
@@ -58,8 +69,9 @@ merge, rebase or cherry-pick anywhere in the plugin may take its identity from c
 last audit reads the four briefs as well as the two shell scripts, because a brief is where most of
 those commands are written; it matches a git invocation in command position, with or without a
 `-C <path>` in front of the verb, which keeps prose that merely names a command out of the result,
-and skips `merge-base`, `merge-tree` and the `--abort`/`--continue`/`--skip` forms, none of which
-write a commit.
+and skips `merge-base`, `merge-tree` and the `--abort`/`--skip` forms, none of which write a
+commit. `--continue` is NOT skipped, because it is the command that writes the commit for a
+resolved conflict - and the lander's rebase step was leading a run straight into a bare one.
 
 ## 0.1.23
 
