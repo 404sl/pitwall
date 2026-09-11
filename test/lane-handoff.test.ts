@@ -50,6 +50,12 @@ interface Second {
   noSlug?: boolean;
 }
 
+interface Primary {
+  rollupHead?: string;
+  refSha?: string;
+  refFails?: boolean;
+}
+
 function git(dir: string, ...args: string[]): string {
   const ran = spawnGit(args, { cwd: dir });
   assert.equal(ran.status, 0, ran.stderr);
@@ -61,7 +67,12 @@ function executable(path: string, body: string): void {
   chmodSync(path, 0o755);
 }
 
-function harness(seededNotes: string, second?: Second, detached?: boolean): Harness {
+function harness(
+  seededNotes: string,
+  second?: Second,
+  detached?: boolean,
+  primary?: Primary,
+): Harness {
   const root = mkdtempSync(join(tmpdir(), "pitwall-handoff-"));
   const repo = detached ? join(mkdtempSync(join(tmpdir(), "pitwall-lane-")), "repo") : join(root, "repo");
   const bin = join(root, "bin");
@@ -137,6 +148,7 @@ function harness(seededNotes: string, second?: Second, detached?: boolean): Harn
                 ? ` echo "gh: could not read acme/other" >&2; exit 1 ;;`
                 : ` printf '%s\\n' '${second.list}' ;;`
             }`,
+            `  "api repos/acme/other/git/ref/heads/${BRANCH}"*) printf '{"object":{"sha":"${otherHead}"}}\\n' ;;`,
             `  *"--repo acme/other"*statusCheckRollup*)${
               second.rollupFails
                 ? ` echo "gh: API rate limit exceeded for acme/other" >&2; exit 1 ;;`
@@ -172,7 +184,12 @@ function harness(seededNotes: string, second?: Second, detached?: boolean): Harn
           ]
         : []),
       `  "pr list --repo acme/thing"*) printf '[{"number":14}]\\n' ;;`,
-      `  *statusCheckRollup*) printf '{"statusCheckRollup":[{"name":"ci","conclusion":"SUCCESS"}],"headRefOid":"${head}"}\\n' ;;`,
+      `  "api repos/acme/thing/git/ref/heads/${BRANCH}"*)${
+        primary?.refFails
+          ? ` echo '{"message":"Not Found","status":"404"}' >&2; exit 1 ;;`
+          : ` printf '{"object":{"sha":"${primary?.refSha ?? head}"}}\\n' ;;`
+      }`,
+      `  *statusCheckRollup*) printf '{"statusCheckRollup":[{"name":"ci","conclusion":"SUCCESS"}],"headRefOid":"${primary?.rollupHead ?? head}"}\\n' ;;`,
       `  *"--json title,body"*) printf '{"title":"Fix the thing","body":"It was broken. Now it is not."}\\n' ;;`,
       `  *"--json labels"*) printf '{"labels":[{"name":"lane-verified"}]}\\n' ;;`,
       `  "label list"*) printf '[{"name":"lane-verified"}]\\n' ;;`,
@@ -706,4 +723,73 @@ test("a configured repository with no slug has one read from its own origin", ()
   assert.equal(ran.status, 0, ran.stdout + ran.stderr);
   assert.match(ran.stdout, /also labelled lane-verified on lane\/x: acme\/other#7/);
   assert.match(ran.calls, /pr edit 7 --repo acme\/other/);
+});
+
+test("a --repo-path whose checkout does not carry the branch is refused, not graded on the body alone", () => {
+  const box = harness("");
+  const elsewhere = join(box.root, "elsewhere");
+  mkdirSync(elsewhere);
+  git(elsewhere, "init", "--quiet");
+  git(elsewhere, "config", "user.email", "nobody@example.invalid");
+  git(elsewhere, "config", "user.name", "Nobody");
+  writeFileSync(join(elsewhere, "c.txt"), "one\n");
+  git(elsewhere, "add", "c.txt");
+  git(elsewhere, "commit", "--quiet", "-m", "unrelated");
+
+  const ran = handoff(
+    box,
+    [
+      "--repo-path",
+      elsewhere,
+      "--slug",
+      "acme/thing",
+      "--pr",
+      "14",
+      "--branch",
+      BRANCH,
+      "--issue",
+      "acme-1",
+      "--note-file",
+      box.notePath,
+    ],
+    true,
+  );
+
+  assert.equal(ran.status, 7, ran.stdout + ran.stderr);
+  assert.match(ran.stderr, new RegExp(`could not read origin/master[.][.]origin/${BRANCH} in `));
+  assert.ok(ran.stderr.includes(elsewhere), "the refusal does not name the path it could not read");
+  assert.doesNotMatch(ran.stdout, /not-green/);
+  assert.equal(ran.labelled, false, "a pull request was labelled with its commit messages never read");
+});
+
+test("the head sha is the one GitHub reports, not the one the checkout is at", () => {
+  const remote = "f".repeat(40);
+  const box = harness("", undefined, undefined, { refSha: remote, rollupHead: remote });
+  const local = git(box.repo, "rev-parse", `refs/remotes/origin/${BRANCH}`);
+  const ran = handoff(box, [...required(box), "--issue", "acme-1", "--note-file", box.notePath], true);
+
+  assert.equal(ran.status, 0, ran.stdout + ran.stderr);
+  assert.match(ran.calls, new RegExp(`api repos/acme/thing/git/ref/heads/${BRANCH}`));
+  assert.match(ran.stdout, new RegExp(`handed off: acme/thing#14 at ${remote}`));
+  assert.doesNotMatch(ran.stdout, new RegExp(local));
+});
+
+test("a rollup describing an older head is still refused", () => {
+  const stale = "0".repeat(40);
+  const box = harness("", undefined, undefined, { rollupHead: stale });
+  const ran = handoff(box, [...required(box), "--issue", "acme-1", "--note-file", box.notePath], true);
+
+  assert.equal(ran.status, 4, ran.stdout + ran.stderr);
+  assert.match(ran.stdout, new RegExp(`rollup describes ${stale} but the head of acme/thing#14 is `));
+  assert.equal(ran.labelled, false, "a pull request was labelled on a rollup for an older head");
+});
+
+test("a head sha GitHub will not report is refused instead of reported as not-green", () => {
+  const box = harness("", undefined, undefined, { refFails: true });
+  const ran = handoff(box, [...required(box), "--issue", "acme-1", "--note-file", box.notePath], true);
+
+  assert.equal(ran.status, 7, ran.stdout + ran.stderr);
+  assert.match(ran.stderr, /could not read what sha lane\/x is at in acme\/thing/);
+  assert.doesNotMatch(ran.stdout, /not-green/);
+  assert.equal(ran.labelled, false, "a pull request was labelled on an unreadable head sha");
 });
