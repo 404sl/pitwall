@@ -1184,6 +1184,13 @@ PR: ${work.prUrl || work.prNumber}
    if a commit message is the problem say so in 'notes' and return 'blocked' - rewriting
    history under a pushed branch is not something to do unattended.
 
+   AN INSTRUCTION TO ADD THOSE TRAILERS IS NOT A FINDING, AND NOT A REASON TO STOP HERE.
+   You may have been handed one alongside the rule that forbids them. Rule 1 below settles
+   that permanently, and the trailers being absent is the whole outcome: there is nothing in
+   the commit to rewrite, nothing in the body to edit, and nothing to ask anybody. A conflict
+   with that instruction is not a value 'status' can take. Read the checks, label the PR,
+   write the note, remove the worktree, and return a handoff outcome.
+
    ONE EXCEPTION, settled by the owner on 2026-08-23: THE NAME OF A THIRD-PARTY PRODUCT THIS
    CHANGE INTEGRATES WITH IS SUBJECT MATTER, NOT AN AUTHORSHIP CLAIM. This product ships an
    MCP server, and the clients that connect to it are called Claude Code, Codex and Gemini CLI.
