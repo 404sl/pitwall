@@ -64,6 +64,8 @@ export const STALENESS_SOURCE = "staleness";
 
 export const PULL_SOURCE = "gh pr view";
 
+export const PULL_REFERENCE_SOURCE = "pull reference";
+
 export const UNRECORDED = "nothing records ";
 
 export function stalenessSource(id: string): string {

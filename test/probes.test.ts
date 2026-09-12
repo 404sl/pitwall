@@ -7,7 +7,8 @@ import { tmpdir } from "node:os";
 import type { CollectionError } from "@404sl/pitwall-schema";
 import { issueMatcher } from "../src/pipeline.ts";
 import { preconditionProbe, pullLookup } from "../src/probes.ts";
-import type { PullReference } from "../src/staleness.ts";
+import { unresolvedOf, type PullReference } from "../src/staleness.ts";
+import { dispositionOf } from "../src/problems.ts";
 
 const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), "fixtures");
 const NO_TOOLS = join(FIXTURES, "gh", "missing");
@@ -112,7 +113,11 @@ test("a bare number with more than one repository to choose from is never spawne
     errors,
   });
   assert.equal(await lookup(aReference()), undefined);
-  assert.deepEqual(errors, []);
+  assert.deepEqual(
+    errors.map((error) => error.source),
+    ["pull reference"],
+    "no command ran, so nothing is blamed on the tool",
+  );
 });
 
 test("a number that is not a pull request is an answer, not a collection error", async () => {
@@ -205,4 +210,101 @@ test("nothing is attributed to an issue when the run has no id prefix to match",
     state: "merged",
     issueId: undefined,
   });
+});
+
+function twoRepos(): Map<string, string> {
+  return new Map([
+    ["site", aRepo()],
+    ["docs", aRepo()],
+  ]);
+}
+
+test("references nowhere to place are one error per project naming them and the repositories there were", async () => {
+  const errors: CollectionError[] = [];
+  const lookup = pullLookup({ repos: twoRepos(), env: { PATH: LANDED_GH }, errors });
+  assert.equal(await lookup(aReference({ number: 130, text: "#130" })), undefined);
+  assert.equal(await lookup(aReference({ number: 130, text: "#130" })), undefined);
+  assert.equal(await lookup(aReference({ number: 131, text: "#131" })), undefined);
+  assert.equal(await lookup(aReference({ number: 9, repo: "ext", text: "ext#9" })), undefined);
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0]?.source, "pull reference");
+  assert.equal(
+    errors[0]?.message,
+    "3 pull references could not be placed. 2 repositories are configured. #130, #131 name no repository. ext#9 names a repository that is not one of them.",
+  );
+});
+
+test("a reference that cannot be placed never reads as a per-issue count of unresolved checks", async () => {
+  const errors: CollectionError[] = [];
+  const lookup = pullLookup({ repos: twoRepos(), env: { PATH: LANDED_GH }, errors });
+  assert.equal(await lookup(aReference({ number: 130, text: "#130" })), undefined);
+  const recorded = errors[0];
+  assert.notEqual(recorded, undefined);
+  assert.equal(unresolvedOf(recorded?.message ?? ""), undefined);
+  assert.equal(dispositionOf(recorded as CollectionError), "act");
+  assert.equal(
+    recorded?.message,
+    "1 pull reference could not be placed. 2 repositories are configured. #130 names no repository.",
+  );
+});
+
+test("a project with many unplaceable references names a few and counts the rest", async () => {
+  const errors: CollectionError[] = [];
+  const lookup = pullLookup({ repos: twoRepos(), env: { PATH: LANDED_GH }, errors });
+  for (const number of [130, 131, 132, 133, 134]) {
+    assert.equal(await lookup(aReference({ number, text: `#${number}` })), undefined);
+  }
+  assert.equal(errors.length, 1);
+  assert.match(errors[0]?.message ?? "", /#130, #131, #132, \+2 more name no repository\./);
+});
+
+test("the repositories a named reference could not be placed in are counted, never listed", async () => {
+  const errors: CollectionError[] = [];
+  const lookup = pullLookup({ repos: twoRepos(), env: { PATH: LANDED_GH }, errors });
+  for (const [index, repo] of ["alpha", "beta", "gamma", "delta", "epsilon"].entries()) {
+    const number = index + 1;
+    assert.equal(
+      await lookup(aReference({ number, repo, text: `${repo}#${number}` })),
+      undefined,
+    );
+  }
+  assert.equal(errors.length, 1);
+  assert.equal(
+    errors[0]?.message,
+    "5 pull references could not be placed. 2 repositories are configured. alpha#1, beta#2, gamma#3, +2 more name repositories that are not among them.",
+  );
+});
+
+test("several references naming one absent repository read as one repository", async () => {
+  const errors: CollectionError[] = [];
+  const lookup = pullLookup({ repos: twoRepos(), env: { PATH: LANDED_GH }, errors });
+  assert.equal(await lookup(aReference({ number: 9, repo: "ext", text: "ext#9" })), undefined);
+  assert.equal(await lookup(aReference({ number: 10, repo: "ext", text: "ext#10" })), undefined);
+  assert.equal(errors.length, 1);
+  assert.equal(
+    errors[0]?.message,
+    "2 pull references could not be placed. 2 repositories are configured. ext#9, ext#10 name a repository that is not one of them.",
+  );
+});
+
+test("the first failure is when a project stopped being able to place a reference", async () => {
+  const errors: CollectionError[] = [];
+  const lookup = pullLookup({ repos: twoRepos(), env: { PATH: LANDED_GH }, errors });
+  assert.equal(await lookup(aReference({ number: 130, text: "#130" })), undefined);
+  const at = errors[0]?.at;
+  await new Promise((resume) => setTimeout(resume, 5));
+  assert.equal(await lookup(aReference({ number: 131, text: "#131" })), undefined);
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0]?.at, at);
+});
+
+test("a reference a single repository can answer for is placed there and records nothing", async () => {
+  const errors: CollectionError[] = [];
+  const lookup = pullLookup({
+    repos: new Map([["site", aRepo()]]),
+    env: { PATH: LANDED_GH },
+    errors,
+  });
+  assert.notEqual(await lookup(aReference({ number: 12, text: "#12" })), undefined);
+  assert.deepEqual(errors, []);
 });

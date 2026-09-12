@@ -228,3 +228,43 @@ test("the status screen says what could not complete when nothing recorded why",
   assert.match(band, /2 staleness checks could not complete and nothing recorded why/);
   assert.doesNotMatch(band, /could not be checked/);
 });
+
+test("checks a reference nothing could place prevented are counted against that cause, not unexplained", () => {
+  const started = ago(3 * 60 * 60_000);
+  const board = buildBoard(
+    snapshotOf([
+      {
+        source: "pull reference",
+        message:
+          "2 pull references could not be placed. 4 repositories are configured. #130, #131 name no repository.",
+        at: started,
+      },
+      unchecked("pitwall-a", 1),
+      unchecked("pitwall-b", 1),
+    ]),
+  );
+  assert.deepEqual(
+    board.problems.map((row) => [row.source, row.prevented]),
+    [["pull reference", 2]],
+  );
+  assert.equal(board.problems[0]?.at, started);
+});
+
+test("the status screen names an unplaceable reference as the cause of the checks it stopped", () => {
+  const out = renderStatus(
+    snapshotOf([
+      {
+        source: "pull reference",
+        message:
+          "1 pull reference could not be placed. 2 repositories are configured. #130 names no repository.",
+        at: GENERATED_AT,
+      },
+      unchecked("pitwall-a", 1),
+    ]),
+    { now: NOW },
+  );
+  const band = out.slice(out.indexOf("PROBLEMS"));
+  assert.match(band, /pull reference +1 pull reference could not be placed\./);
+  assert.match(band, /prevented 1 staleness check/);
+  assert.doesNotMatch(band, /nothing recorded why/);
+});

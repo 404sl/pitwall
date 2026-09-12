@@ -2,6 +2,7 @@ import type { CollectionError, Snapshot } from "@404sl/pitwall-schema";
 import { fill } from "./format.js";
 import {
   PRECONDITIONS,
+  PULL_REFERENCE_SOURCE,
   PULL_SOURCE,
   STALENESS_SOURCE,
   UNRECORDED,
@@ -72,7 +73,7 @@ export function dispositionOf(error: CollectionError): Disposition {
 
 function causesOf(row: ProblemRow, named: Unresolved): readonly string[] {
   if (named.kind === "reference") {
-    return [PULL_SOURCE];
+    return [PULL_SOURCE, PULL_REFERENCE_SOURCE];
   }
   return PRECONDITIONS.map((precondition) => precondition.command.join(" ")).filter((source) =>
     row.message.includes(source),
