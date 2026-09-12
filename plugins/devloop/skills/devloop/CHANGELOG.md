@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.56
+
+A release train is now launched with `config.sh --train <repo>`, the way the serial lander is launched with `config.sh --land`. Pass the object it prints and nothing assembled by hand: it carries the merge-lock token the train writes into the holder file, and `land-train.js` refuses to start without one rather than minting its own. One launch per repository - the train still refuses to guess which. A lock step must never be asked to mint the token it reports; a replayed answer agrees with itself while the lock belongs to another run.
+
+When a train reports labelled pull requests left in another repository, its result now names `config.sh --train <repo>` for each one. Run that command per repository and dispatch what it prints - do not carry one train's args object over to the next, which would hand both runs the same lock token.
+
+A resume is the one case where the args object is reused: resume with `resumeFromRunId` and the same args object the run was launched with, never a fresh `config.sh --train` output. The token sits in the lock step's prompt, so a new one misses the cache, takes the lock again and cuts a second release branch for the same pull requests.
+
 ## 0.1.55
 
 The lander now refuses to rebase a branch that already carries a merge commit of

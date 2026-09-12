@@ -10,7 +10,9 @@ const ARGS = {
   repos: { site: { path: "cli", slug: "404sl/pitwall" } },
 };
 
-const TRAIN_ARGS = { ...ARGS, repo: "site" };
+const TRAIN_TOKEN = "land-train-1788964650-29574";
+
+const TRAIN_ARGS = { ...ARGS, repo: "site", lockToken: TRAIN_TOKEN };
 
 const PR = {
   slug: "404sl/pitwall",
@@ -67,7 +69,7 @@ function lander(reply: Declared | null, land: unknown = { status: "merged", merg
 
 function train(reply: Declared | null) {
   return runScript("land-train.js", TRAIN_ARGS, (call: Call, n: number) => {
-    if (n === 1) return { status: "taken", token: "train-1788964650-29574", holder: "train-1788964650-29574" };
+    if (n === 1) return { status: "taken", holder: TRAIN_TOKEN };
     if (call.label.startsWith("build:")) return { status: "built", trainPr: 120, trainBranch: "release/train-1", included: [80], skipped: [] };
     if (call.label.startsWith("verify:")) return { status: "green", failingSpecs: [] };
     if (call.label.startsWith("version:")) return reply;

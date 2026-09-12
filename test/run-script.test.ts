@@ -201,6 +201,72 @@ test("a lander dispatch mints a merge-lock token that is different every launch"
   }
 });
 
+test("a train dispatch restages the train and names the repository it runs against", () => {
+  const box = harness();
+  try {
+    stale(box, "land-train.js");
+
+    const ran = run(box, CONFIG_SH, "--train", "site");
+    assert.equal(ran.status, 0, ran.stderr);
+    const args = JSON.parse(ran.stdout) as { scriptPath: string; repo: string };
+    assert.equal(args.scriptPath, join(box.stage, "land-train.js"));
+    assert.equal(
+      args.repo,
+      "site",
+      "the dispatch carries no repo, and a train refuses to guess which repository it runs " +
+        "against - so the launch the supervisor is told to build cannot start",
+    );
+    assert.equal(staged(box, "land-train.js"), installed("land-train.js"));
+  } finally {
+    clean(box);
+  }
+});
+
+test("a train dispatch refuses a repository this workspace does not configure", () => {
+  const box = harness();
+  try {
+    const ran = run(box, CONFIG_SH, "--train", "extension");
+    assert.notEqual(ran.status, 0, `--train accepted a repository the config never names: ${ran.stdout}`);
+    assert.equal(ran.stdout, "");
+    assert.match(ran.stderr, /no repository extension in this config/);
+  } finally {
+    clean(box);
+  }
+});
+
+test("a train dispatch mints a merge-lock token that is different every launch", () => {
+  const box = harness();
+  try {
+    const first = run(box, CONFIG_SH, "--train", "site");
+    const second = run(box, CONFIG_SH, "--train", "site");
+    assert.equal(first.status, 0, first.stderr);
+    assert.equal(second.status, 0, second.stderr);
+
+    const one = (JSON.parse(first.stdout) as { lockToken?: string }).lockToken;
+    const two = (JSON.parse(second.stdout) as { lockToken?: string }).lockToken;
+
+    for (const token of [one, two]) {
+      assert.ok(
+        token && /^land-train-[A-Za-z0-9._-]+$/.test(token),
+        `config.sh --train printed ${JSON.stringify(token)} as the merge-lock token. ` +
+          "land-train.js refuses a launch whose token is absent or carries anything it cannot " +
+          "quote into a single-quoted shell argument, so a token of the wrong shape is a train " +
+          "that never starts. The land-train- prefix is what tells a holder file apart from the " +
+          "serial lander's and from a person merging by hand.",
+      );
+    }
+    assert.notEqual(
+      one,
+      two,
+      "two launches were handed the same merge-lock token. The token is the only evidence a " +
+        "run has that the lock step really ran for it rather than replaying an earlier answer, " +
+        "and one shared by two launches proves nothing at all.",
+    );
+  } finally {
+    clean(box);
+  }
+});
+
 test("nothing in the skill dispatches a scriptPath written out by hand", () => {
   const offenders: string[] = [];
   for (const entry of readdirSync(SKILL)) {

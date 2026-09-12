@@ -359,6 +359,35 @@ The lock is the one that gets forgotten because it is the only one whose name is
 id - **slot N takes lane N+1**, and that off-by-one is exactly what a hand cleanup misses. The
 script also refuses to delete a branch that reached origin, since a pull request may point at it.
 
+## Launching a train
+
+```
+# BUILD THE ARGS WITH config.sh, one repository per run.
+args=$(bash ${CLAUDE_PLUGIN_ROOT}/skills/devloop/config.sh --train site)
+
+Workflow({ scriptPath: <the scriptPath that object carries>,
+           args: <the object config.sh printed> })
+```
+
+**Pass the object `config.sh --train` printed, never one assembled by hand.** Among the fields it
+carries is `lockToken`, the string that train writes into the holder file, and `land-train.js`
+refuses to start without one rather than minting its own. It is the same arrangement `--land`
+gives `land.js` and it exists for the same reason: a token minted inside the lock step is
+reported out of one cached answer, so a replayed acquisition agrees with itself while the lock on
+disk belongs to somebody else, and no comparison inside the script can see it. A token minted per
+launch cannot be replayed - it is stable if the same run resumes and different on the next.
+
+**A resume passes `resumeFromRunId` together with the same args object the run was launched with,
+never a fresh `config.sh --train` output.** The token sits in the lock step's prompt, and a resume
+replays that step only when the prompt matches: a new token misses the cache, takes the lock a
+second time and cuts a second release branch for the same pull requests - the outcome the resume
+after `merge_refused` exists to avoid. Keep the object the launch used and hand it back unchanged.
+
+The train's token is prefixed `land-train-`, which is what tells a holder file apart from
+`land.js`'s `lander-` and from a person merging by hand. The repository is named on the command
+because the train refuses to guess one; run it again per repository, and its result names the
+relaunch for every other repository that still has labelled work.
+
 ## A landed pull request reads CLOSED, not MERGED
 
 The train squashes each branch onto a release branch and merges ONE pull request, so every

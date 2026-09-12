@@ -68,7 +68,7 @@ async function landerLockSteps(): Promise<LockSteps[]> {
   const out: LockSteps[] = [];
   for (const file of ["land.js", "land-train.js"]) {
     const { calls, done } = runScript(file, LAND_ARGS, (call, n) => {
-      if (n === 1) return { status: "taken", token: "lander-1788964650-29574", holder: "lander-1788964650-29574" };
+      if (n === 1) return { status: "taken", holder: LAND_ARGS.lockToken };
       if (call.label && call.label.startsWith("survey")) return { prs: [] };
       if (call.label === "release") return { status: "released" };
       return { status: "error", notes: "nothing to build" };
@@ -116,7 +116,7 @@ test("each lander releases the lock it took", async () => {
 
 test("the train builds its worktree under the workspace's own prefix", async () => {
   const { calls, done } = runScript("land-train.js", LAND_ARGS, (call, n) => {
-    if (n === 1) return { status: "taken", token: "land-train-1788964650-29574", holder: "land-train-1788964650-29574" };
+    if (n === 1) return { status: "taken", holder: LAND_ARGS.lockToken };
     if (call.label === "release") return { status: "released" };
     return { status: "empty", notes: "nothing carries the label" };
   });

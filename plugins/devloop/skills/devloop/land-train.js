@@ -1,7 +1,7 @@
 export const meta = {
   name: 'land-train',
   description: 'Land one repository\'s ready pull requests as one release train: build it, test it once, merge, deploy, close',
-  whenToUse: 'When lane-verified pull requests are queued and the merge lock is free. A train covers ONE repository per run and args.repo is REQUIRED - it names which, it is refused rather than guessed, and the result reports every other configured repository with the relaunch to run for it. If this run ends with stopped=merge_refused, the supervisor must run `gh pr view <trainPr> --repo <slug> --json labels,statusCheckRollup` in ITS OWN transcript and then RESUME with resumeFromRunId - the merge agent checking the PR itself does not count, and rerunning from scratch cuts a second release branch for the same PRs.',
+  whenToUse: 'When lane-verified pull requests are queued and the merge lock is free. A train covers ONE repository per run and args.repo is REQUIRED - it names which, it is refused rather than guessed, and the result reports every other configured repository with the relaunch to run for it. If this run ends with stopped=merge_refused, the supervisor must run `gh pr view <trainPr> --repo <slug> --json labels,statusCheckRollup` in ITS OWN transcript and then RESUME with resumeFromRunId AND THE SAME args object the run was launched with, never a fresh `config.sh --train` output - the lockToken sits in the lock prompt, so a new one misses the cache, takes the lock again and cuts a second release branch for the same PRs. The merge agent checking the PR itself does not count, and rerunning from scratch cuts that second release branch too.',
   phases: [
     { title: 'Lock', detail: 'take the merge lock, or stand down' },
     { title: 'Build', detail: 'squash the ready branches onto one branch cut from master' },
@@ -98,6 +98,21 @@ if (!REPO.slug) {
     notes: `no slug configured for repo '${REPO_KEY}'. Add slug: "owner/name" to its entry in ` +
            `the repos config. This will not guess one: on 2026-09-09 a guessed slug had one ` +
            `workspace assembling squash merges against another project's repository.`
+  }
+}
+const LOCK_TOKEN = trimmed(input.lockToken)
+if (!LOCK_TOKEN || !TOKEN_SHAPE.test(LOCK_TOKEN)) {
+  const said = LOCK_TOKEN
+    ? `lockToken reads [${LOCK_TOKEN}], which is not ${TOKEN_SHAPE} - it is interpolated into a single-quoted shell argument and nothing else can be`
+    : 'args carry no lockToken'
+  return {
+    status: 'error',
+    notes: `${said}. Build the dispatch with config.sh --train <repo>, which mints one per ` +
+           `launch - stable across a resume of the same run, different on the next - and carries ` +
+           `it in the args object it prints. land-train.js will not mint its own and does not ` +
+           `fall back to one: a lock step that mints the token reports every value from inside ` +
+           `one cached result, so a replayed acquisition agrees with itself and nothing in this ` +
+           `script can tell it from a fresh one.`
   }
 }
 const REPO_PATH = `${ROOT}/${REPO.path}`
@@ -801,36 +816,38 @@ empty 'holder' - that is how a lock looks between another run's mkdir and its pr
 field is the one ownership is decided from, so a value filled in to have something to say is
 worse than none.
 
-If it prints TAKEN, STAMP THE LOCK WITH AN IDENTITY THAT IS YOURS. The holder file used to say
-just "lander", which identifies nothing, so the release step could not prove the lock it was
-about to delete was its own - it removed a shared resource unconditionally, which is rightly
-refused, and every train leaked its lock and needed clearing by hand. Mint a token instead:
+If it prints TAKEN, STAMP THE LOCK WITH THE TOKEN THIS RUN WAS LAUNCHED WITH. The holder file used
+to say just "lander", which identifies nothing, so the release step could not prove the lock it
+was about to delete was its own - it removed a shared resource unconditionally, which is rightly
+refused, and every train leaked its lock and needed clearing by hand. Write this one:
 
-  TOKEN="land-train-$(date +%s)-$$"
-  printf '%s\\n' "$TOKEN" > ${MERGE_LOCK}/holder
+  printf '%s\\n' '${LOCK_TOKEN}' > ${MERGE_LOCK}/holder
   cat ${MERGE_LOCK}/holder
 
-Report status "taken", the token you wrote as 'token', and what cat printed back as 'holder',
-verbatim and untidied. Report both even when they are identical, and do not correct either one to
-match the other: the train compares them and stands down when they differ, because the file is
-the fact and the value you report is a claim about it. The newline the file ends with and cat
-prints back is not a difference - the train ignores whitespace around both values. The release
-step is handed what you report and can compare against nothing else, so a token you omit or
-retype is a lock this run cannot give back.`,
+THE TOKEN IS ALREADY IN THAT COMMAND AND IS NOT YOURS TO MINT. Do not put $(date +%s), $$, or
+anything you compose yourself in its place, and do not ask anybody for one. It is minted per
+launch outside this run and the release step is handed the same value, so a token substituted
+here is a lock this train cannot give back. A token this step made up would also be stale in
+exactly the way this arrangement exists to prevent: replay this answer and every value in it
+agrees with itself while the lock on disk belongs to somebody else.
+
+REPORT ONE VALUE: 'holder' is what cat printed back, verbatim and untidied, whatever it says. Do
+not correct it to match the token above - the train compares the two and stands down when they
+differ, because the file is the fact and what you report is a claim about it. The newline the file
+ends with and cat prints back is not a difference: the train ignores whitespace around both.`,
   { schema: { type: 'object', required: ['status', 'holder'], properties: {
-      status: { type: 'string', enum: ['taken', 'held'] }, token: { type: 'string' },
+      status: { type: 'string', enum: ['taken', 'held'] },
       holder: { type: 'string' } } },
     model: 'haiku', effort: 'low', phase: 'Lock' },
 )
 
-const token = trimmed(lock && lock.token)
 const holder = trimmed(lock && lock.holder)
 if (!lock || lock.status !== 'taken') {
   return { status: 'held', notes: `Another lander holds ${MERGE_LOCK}${holder ? `, whose holder file reads [${holder}]` : ''}. Nothing was done.` }
 }
 
-if (!token || !TOKEN_SHAPE.test(token) || holder !== token) {
-  const unproven = `LEAKED - the lock step reported taken, but ${MERGE_LOCK}/holder reads [${holder}] against a token of [${token}], so this train cannot prove the lock is its own. Nothing was built and nothing was removed. Read ${MERGE_LOCK}/holder: if it names a run that has finished, clear it; if it names another lander, it is theirs and they give it back themselves.`
+if (holder !== LOCK_TOKEN) {
+  const unproven = `LEAKED - the lock step reported taken, but ${MERGE_LOCK}/holder reads [${holder}] against a token of [${LOCK_TOKEN}], so this train cannot prove the lock is its own. Nothing was built and nothing was removed. Read ${MERGE_LOCK}/holder: if it names a run that has finished, clear it; if it names another lander, it is theirs and they give it back themselves.`
   return { status: 'held', notes: unproven, lock: unproven }
 }
 
@@ -1079,7 +1096,7 @@ for (const [name, r] of Object.entries(REPOS)) {
     taken,
     left: left.length,
     leftPrs: left,
-    relaunch: (!mine && left.length) ? `run again with repo: ${name}` : null,
+    relaunch: (!mine && left.length) ? `run config.sh --train ${name} and dispatch the object it prints` : null,
     why: !(mine && left.length) ? null
       : outcome.stopped
         ? `this train stopped (${outcome.stopped}) before taking ${many}; the label stands`
@@ -1097,17 +1114,13 @@ for (const [name, a] of Object.entries(perRepo)) {
   }
 }
 } finally {
-if (!token || !TOKEN_SHAPE.test(token)) {
-  lockState = `LEAKED - ${MERGE_LOCK} is held under a token this run cannot quote back, so no removal was even asked for. Read ${MERGE_LOCK}/holder, and leave it alone unless it names a run that has finished.`
-  log(lockState)
-} else {
 released = await agent(
   `Release the serial merge lock. This runs however the train ended - merged, stopped or failed -
 because a lock left behind stands down every train after it for no reason.
 
 RUN THIS ONE COMMAND, EXACTLY AS IT STANDS, AND NOTHING ELSE:
 
-  bash ${SKILL_DIR}/release-lock.sh --lock ${MERGE_LOCK} --token '${token}'
+  bash ${SKILL_DIR}/release-lock.sh --lock ${MERGE_LOCK} --token '${LOCK_TOKEN}'
 
 It reads the holder file, removes the lock only if that file holds this run's token, and prints
 what it did on its first line: RELEASED, NOT_MINE, ALREADY_GONE or STILL_HELD. Report that word
@@ -1136,15 +1149,14 @@ ALREADY_GONE likewise: there was nothing to release. Report what it printed and 
 if (released && released.status === 'released') {
   lockState = 'released'
 } else if (released && released.status === 'not_mine') {
-  lockState = `not_mine - ${MERGE_LOCK}/holder did not hold ${token}, so nothing was removed and nothing should be`
+  lockState = `not_mine - ${MERGE_LOCK}/holder did not hold ${LOCK_TOKEN}, so nothing was removed and nothing should be`
   log(`${lockState}.\n    ${released.notes || 'the script reported NOT_MINE and says what the holder file read instead'}`)
 } else if (released && released.status === 'already_gone') {
   lockState = `already_gone - ${MERGE_LOCK} was not there to release`
   log(`${lockState}. Something removed this run's lock while it was working, so another train may have been running beside it.\n    ${released.notes || ''}`)
 } else {
-  lockState = `LEAKED - ${MERGE_LOCK} still held ${token} after the release step, or the step answered nothing. Check ${MERGE_LOCK}/holder still reads ${token} before removing it - if it reads anything else, another train has it and it is not yours.`
+  lockState = `LEAKED - ${MERGE_LOCK} still held ${LOCK_TOKEN} after the release step, or the step answered nothing. Check ${MERGE_LOCK}/holder still reads ${LOCK_TOKEN} before removing it - if it reads anything else, another train has it and it is not yours.`
   log(`${lockState}\n    ${(released && released.notes) || 'the release agent returned nothing'}`)
-}
 }
 }
 

@@ -6,6 +6,7 @@ import { runScript, type Call, type Reply } from "./support/workflow.js";
 const ARGS = {
   skillDir: "/skill",
   root: "/root",
+  lockToken: "land-train-1788964650-29574",
   repos: {
     site: { path: "cli", slug: "404sl/pitwall", deploy: ["staging"] },
     docs: { path: "site", slug: "404sl/pitwall-site" },
@@ -43,7 +44,7 @@ function account(out: Result, name: string): Account {
 
 function train(reply: Reply, args: Record<string, unknown> = {}) {
   return runScript("land-train.js", { ...ARGS, repo: "site", ...args }, (call, n) => {
-    if (n === 1) return { status: "taken", token: TOKEN, holder: TOKEN };
+    if (n === 1) return { status: "taken", holder: TOKEN };
     return reply(call, n);
   });
 }
@@ -116,10 +117,12 @@ test("a labelled pull request in another configured repo is reported, with the t
   assert.equal(docs.surveyed, 1);
   assert.match(
     docs.relaunch || "",
-    /repo: docs/,
-    "the result says a pull request was left but not what to do about it. args.repo is the answer " +
-      "and nobody knew it existed, so 'left behind' alone makes a supervisor hand-merge - which " +
-      "ships the content and skips the release branch, the close step and this accounting.",
+    /config\.sh --train docs/,
+    "the result says a pull request was left but not the command that launches a train for it. " +
+      "config.sh --train docs is the answer and it mints that train's lock token, so 'left behind' " +
+      "alone makes a supervisor hand-merge - which ships the content and skips the release branch, " +
+      "the close step and this accounting - while 'run again with repo: docs' makes them reuse the " +
+      "args object this train was launched with, handing two runs the same token.",
   );
 });
 
@@ -194,7 +197,7 @@ test("a pull request labelled in the other repo while this train ran is still re
   assert.deepEqual(docs.leftPrs, [185]);
   assert.equal(docs.surveyed, 1);
   assert.equal(docs.taken, 0);
-  assert.match(docs.relaunch || "", /repo: docs/);
+  assert.match(docs.relaunch || "", /config\.sh --train docs/);
   assert.equal(account(out, "site").taken, 1);
 });
 
@@ -341,7 +344,7 @@ test("a number this train landed does not cancel the same number in another repo
   assert.equal(docs.surveyed, 1);
   assert.equal(docs.taken, 0);
   assert.equal(docs.why, null);
-  assert.match(docs.relaunch || "", /repo: docs/);
+  assert.match(docs.relaunch || "", /config\.sh --train docs/);
 
   const site = account(out, "site");
   assert.equal(site.taken, 1);
