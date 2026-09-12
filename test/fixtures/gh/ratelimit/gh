@@ -1,3 +1,0 @@
-#!/bin/sh
-echo "API rate limit exceeded for user ID 1. (http://developer.github.com/v3/#rate-limiting)" >&2
-exit 1

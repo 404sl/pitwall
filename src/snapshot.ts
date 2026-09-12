@@ -27,8 +27,8 @@ import {
   type Noter,
   type Sender,
 } from "./notify.js";
-import { issueMatcher, readPipeline } from "./pipeline.js";
-import { preconditionProbe, pullLookup } from "./probes.js";
+import { readPipeline } from "./pipeline.js";
+import { preconditionProbe } from "./probes.js";
 import { carryFailingSince } from "./problems.js";
 import { sessionRefOf, unlistedNotifiers, workspaceSender } from "./sender.js";
 import { readSnapshot, writeSnapshot } from "./state.js";
@@ -48,7 +48,6 @@ import { VERSION } from "./version.js";
 export interface SnapshotOptions extends RootsOptions {
   timeoutMs?: number;
   now?: Date;
-  pullFacts?: StalenessContext["pullFacts"];
   probe?: StalenessContext["probe"];
   sender?: Sender;
   sessionRef?: string;
@@ -114,23 +113,10 @@ function stalenessContext(
   day: Date,
   errors: CollectionError[],
 ): StalenessContext {
-  const repos = new Map(project.repos.map((repo) => [repo.name, repo.path]));
-  const knownIds = new Set([...collected.issues, ...collected.closed].map((issue) => issue.id));
   return {
     idPrefix: project.authority.idPrefix,
-    knownIds,
+    knownIds: new Set([...collected.issues, ...collected.closed].map((issue) => issue.id)),
     closedIds: new Set(collected.closed.map((issue) => issue.id)),
-    pullFacts:
-      options.pullFacts ??
-      (repos.size === 0
-        ? undefined
-        : pullLookup({
-            repos,
-            names: issueMatcher(project.authority.idPrefix, knownIds),
-            env: options.env,
-            timeoutMs: options.timeoutMs,
-            errors,
-          })),
     probe:
       options.probe ??
       preconditionProbe({ env: options.env, timeoutMs: options.timeoutMs, errors }),
