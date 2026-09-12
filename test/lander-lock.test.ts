@@ -610,7 +610,11 @@ test("land-train.js writes the token it was launched with and hands the same one
   assert.equal(result.lock, "released", `the train did not report the lock released: ${result.lock}`);
 });
 
-test("every instruction to launch a train goes through config.sh --train", () => {
+type Accounting = {
+  repos?: Record<string, { train: boolean; left: number | null; relaunch: string | null }>;
+};
+
+test("every instruction to launch a train goes through config.sh --train", async () => {
   const skill = readFileSync(join(SKILL, "SKILL.md"), "utf8");
   const at = skill.indexOf("config.sh --train");
   assert.ok(
@@ -626,6 +630,71 @@ test("every instruction to launch a train goes through config.sh --train", () =>
     "the documented launch no longer passes the object config.sh printed, so a supervisor " +
       "following it assembles args by hand and leaves out the token",
   );
+
+  const { done } = runScript(
+    "land-train.js",
+    {
+      ...landArgs(TRAIN_TOKEN),
+      repos: {
+        site: { path: "cli", slug: "owner/name" },
+        docs: { path: "site", slug: "owner/docs" },
+      },
+    },
+    (call, n) => {
+      if (n === 1) return { status: "taken", holder: TRAIN_TOKEN };
+      if (call.label.startsWith("build:")) {
+        return { status: "built", trainPr: 120, trainBranch: "release/train-1", included: [1287], skipped: [] };
+      }
+      if (call.label.startsWith("verify:")) return { status: "green", failingSpecs: [] };
+      if (call.label.startsWith("version:")) {
+        return {
+          status: "no_manifest",
+          masterVersion: "",
+          branchVersion: "",
+          touchesPlugin: false,
+          notes: "this repository carries no devloop plugin manifest on master",
+        };
+      }
+      if (call.label.startsWith("merge:")) {
+        return { status: "merged", mergeSha: "e1a54123ca4d0b6a32479f49da4d26893f648206", masterGreen: true, notes: "" };
+      }
+      if (call.label === "close") return { status: "closed", closed: [{ pr: 1287, issue: "pitwall-1287" }], notes: "" };
+      if (call.label === "left-behind") {
+        return {
+          repos: [
+            { repo: "site", status: "read", labelled: [1287] },
+            { repo: "docs", status: "read", labelled: [185] },
+          ],
+        };
+      }
+      return { status: "released" };
+    },
+  );
+  const accounting = Object.entries(((await done) as Accounting).repos || {});
+
+  const asked = accounting.filter(([, a]) => a.relaunch !== null);
+  assert.ok(
+    asked.length > 0,
+    "no repository in this run's accounting asked for a train at all, so the assertion below " +
+      `proves nothing. The fixture leaves a labelled pull request in docs: ${JSON.stringify(accounting)}`,
+  );
+  for (const [name, a] of accounting) {
+    if (a.train) {
+      assert.equal(a.relaunch, null, `${name} is the repository this train ran for and it asked for a relaunch`);
+      continue;
+    }
+    if (!a.left) continue;
+    assert.match(
+      a.relaunch || "",
+      new RegExp(`config\\.sh --train ${name}`),
+      `the result tells a supervisor to relaunch ${name} without naming the command that mints ` +
+        "that train's lock token. This string used to read 'run again with repo: <name>', which a " +
+        "supervisor follows by reusing the args object config.sh --train printed for THIS run and " +
+        "swapping the repo - handing two launches the same lockToken, which is the replayable lock " +
+        "acquisition the token was moved out of the script to prevent. SKILL.md naming the command " +
+        "is not enough on its own: the script's own result is a launch instruction too.",
+    );
+  }
 });
 
 test("every instruction to launch the lander goes through config.sh --land", () => {

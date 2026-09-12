@@ -1096,7 +1096,7 @@ for (const [name, r] of Object.entries(REPOS)) {
     taken,
     left: left.length,
     leftPrs: left,
-    relaunch: (!mine && left.length) ? `run again with repo: ${name}` : null,
+    relaunch: (!mine && left.length) ? `run config.sh --train ${name} and dispatch the object it prints` : null,
     why: !(mine && left.length) ? null
       : outcome.stopped
         ? `this train stopped (${outcome.stopped}) before taking ${many}; the label stands`
