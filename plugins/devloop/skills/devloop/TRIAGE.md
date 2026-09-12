@@ -116,7 +116,7 @@ re-fires every tick and spends an agent each time to rediscover something alread
 
 Record the judgement on every issue you looked at, then mark them so the scan goes quiet:
 
-    TRIAGE_MARK=1 bash ~/.claude/skills/devloop/triage-scan.sh >/dev/null
+    TRIAGE_MARK=1 bash ${CLAUDE_PLUGIN_ROOT}/skills/devloop/triage-scan.sh >/dev/null
 
 The watermark is a hash of each issue's labels and notes. Anything you changed, or anyone
 changes later, comes back automatically. Mark ONLY what you actually judged - marking without

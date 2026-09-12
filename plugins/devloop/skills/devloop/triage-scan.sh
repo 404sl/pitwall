@@ -58,6 +58,8 @@ fi
 # two lanes from sharing a test database.
 PFX="$(bash "$CFG" lockPrefix 2>/dev/null || echo devloop)"
 
+BRANCH_PREFIXES="devloop/ autofix/"
+
 cd "$ROOT" || exit 1
 QUIET=0
 [ "$1" = "--quiet" ] && QUIET=1
@@ -144,6 +146,14 @@ if [ -n "$_SLUGS" ] && command -v gh >/dev/null 2>&1; then
     ORPHANS="$ORPHANS$(printf '%s' "$_out" | python3 -c '
 import json, sys, os, glob, subprocess
 repo, pfx = sys.argv[1], sys.argv[2]
+BRANCH_PREFIXES = tuple(sys.argv[3].split()) if len(sys.argv) > 3 else ("devloop/",)
+
+def lane_id(branch):
+    for bp in BRANCH_PREFIXES:
+        if branch.startswith(bp):
+            return branch[len(bp):]
+    return None
+
 held = set()
 for f in glob.glob("/tmp/%s-slots/*" % pfx):
     try:
@@ -179,17 +189,17 @@ def parked(issue_id):
 
 for p in prs:
     ref = p.get("headRefName") or ""
-    if not ref.startswith("devloop/"):
+    issue_id = lane_id(ref)
+    if issue_id is None:
         continue
     if any(l.get("name") == "lane-verified" for l in (p.get("labels") or [])):
         continue
-    issue_id = ref[len("devloop/"):]
     if issue_id in held:
         continue
     if parked(issue_id):
         continue
     print("    %s #%s (%s) - open, unlabelled, and no lane holds it" % (repo, p["number"], ref))
-' "$_repo" "$PFX" 2>/dev/null)"
+' "$_repo" "$PFX" "$BRANCH_PREFIXES" 2>/dev/null)"
   done
 fi
 if [ -n "$ORPHANS" ]; then
@@ -208,7 +218,7 @@ if [ -n "$ORPHANS" ]; then
 fi
 
 TRACKER_RC=0
-python3 - "$QUIET" "$ROOT" "$PFX" <<'PY' || TRACKER_RC=$?
+python3 - "$QUIET" "$ROOT" "$PFX" "$BRANCH_PREFIXES" <<'PY' || TRACKER_RC=$?
 import json, os, subprocess, sys
 
 quiet = sys.argv[1] == "1"
@@ -216,7 +226,14 @@ quiet = sys.argv[1] == "1"
 # handed-off check below runs gh inside each one.
 ROOT = sys.argv[2]
 PFX = sys.argv[3] if len(sys.argv) > 3 else "devloop"
+BRANCH_PREFIXES = tuple(sys.argv[4].split()) if len(sys.argv) > 4 else ("devloop/",)
 PARK = {"needs-decision", "needs-access", "blocked-tooling", "watch", "umbrella", "roadmap"}
+
+def lane_id(branch):
+    for bp in BRANCH_PREFIXES:
+        if branch.startswith(bp):
+            return branch[len(bp):]
+    return None
 
 def load(p):
     try: d = json.load(open(p))
@@ -545,9 +562,9 @@ def _handed_off_ids():
                 continue   # cannot ask: fall through and let E flag it, a false finding beats a miss
             for line in out.splitlines():
                 branch = line.strip()
-                if not branch.startswith("devloop/"):
+                bid = lane_id(branch)
+                if bid is None:
                     continue
-                bid = branch[len("devloop/"):]
                 ids.add(bid)
                 # Branches are not always exactly devloop/<id>: a lane that reworks its own
                 # branch appends a word, as devloop/app-1jxg.9.3.1-parse did. Matching only the
@@ -636,8 +653,11 @@ for i in run:
 # person answers a question, or a lane appends a finding, the hash moves and the issue comes
 # back. If nothing has changed, the last judgement still stands and there is nothing to redo.
 #
-# Delete /tmp is not where this lives: losing it means one noisy run, not lost work.
-SEEN = os.path.expanduser("~/.claude/skills/devloop/.triage-seen.json")
+# It lives beside the slot registry and the lane locks, keyed by the same lockPrefix, and NOT under
+# the directory this script is installed in: that directory is versioned and replaced wholesale on
+# every update, and a rename of it has already orphaned these watermarks once.
+# Losing /tmp means one noisy run, not lost work.
+SEEN = f"/tmp/{PFX}-triage-seen.json"
 try:
     seen = json.load(open(SEEN))
 except Exception:
