@@ -587,7 +587,10 @@ const LANES_SH = join(
   "lanes.sh",
 );
 
-function runLanesScript(cwd: string): { status: number; out: string; err: string } {
+function runLanesScript(
+  cwd: string,
+  args: readonly string[] = [],
+): { status: number; signal: string | null; out: string; err: string } {
   const env: Record<string, string | undefined> = {
     ...process.env,
     ...GIT_ENV,
@@ -596,8 +599,8 @@ function runLanesScript(cwd: string): { status: number; out: string; err: string
     DEVLOOP_CONFIG: undefined,
     LOCK_PREFIX: undefined,
   };
-  const ran = spawnSync("bash", [LANES_SH], { encoding: "utf8", cwd, env });
-  return { status: ran.status ?? -1, out: ran.stdout ?? "", err: ran.stderr ?? "" };
+  const ran = spawnSync("bash", [LANES_SH, ...args], { encoding: "utf8", cwd, env, timeout: 5000 });
+  return { status: ran.status ?? -1, signal: ran.signal, out: ran.stdout ?? "", err: ran.stderr ?? "" };
 }
 
 test("lanes.sh reads the registry the workspace config names, not the default one", () => {
@@ -621,4 +624,19 @@ test("lanes.sh refuses rather than reporting another workspace's registry as thi
   assert.equal(status, 6, `${out}${err}`);
   assert.match(err, /refusing to guess/);
   assert.doesNotMatch(out, /no slot registry/);
+});
+
+test("lanes.sh refuses --stale-minutes with no value instead of looping on it forever", () => {
+  const root = mkdtempSync(join(tmpdir(), "pitwall-lanes-novalue-"));
+  writeFileSync(
+    join(root, ".autofix.json"),
+    `${JSON.stringify({ root, idPrefix: "fixture", lockPrefix: "fixturepfx", repos: {} })}\n`,
+  );
+
+  const { status, signal, out, err } = runLanesScript(root, ["--stale-minutes"]);
+
+  assert.equal(signal, null, "the script had to be killed");
+  assert.equal(status, 6, `${out}${err}`);
+  assert.match(err, /--stale-minutes needs a value/);
+  assert.doesNotMatch(err, /refusing to guess/);
 });

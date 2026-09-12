@@ -68,9 +68,14 @@ function fixture(verdict: Verdict, id: string): Fixture {
 }
 
 function kill(space: Fixture, id: string, args: readonly string[] = []) {
-  const ran = spawnSync("bash", [join(SKILL, "kill-lane.sh"), "--slot", "2", "--id", id, ...args], {
+  return run(space, ["--slot", "2", "--id", id, ...args]);
+}
+
+function run(space: Fixture, args: readonly string[]) {
+  const ran = spawnSync("bash", [join(SKILL, "kill-lane.sh"), ...args], {
     encoding: "utf8",
     cwd: space.root,
+    timeout: 5000,
     env: {
       ...process.env,
       ...GIT_ENV,
@@ -81,7 +86,7 @@ function kill(space: Fixture, id: string, args: readonly string[] = []) {
       LOCK_PREFIX: space.prefix,
     },
   });
-  return { status: ran.status ?? -1, out: ran.stdout ?? "", err: ran.stderr ?? "" };
+  return { status: ran.status ?? -1, signal: ran.signal, out: ran.stdout ?? "", err: ran.stderr ?? "" };
 }
 
 function worktreeMidRebase(space: Fixture, id: string): string {
@@ -153,5 +158,16 @@ test("--force clears a worktree mid-rebase once a person has confirmed it", () =
     assert.equal(existsSync(wt), false);
   } finally {
     rmSync(join("/tmp", `${space.prefix}-worktrees`), { recursive: true, force: true });
+  }
+});
+
+test("a flag that takes a value is refused when given none, not looped on forever", () => {
+  const space = fixture("not-running", "pitwall-90b");
+  for (const args of [["--slot"], ["--slot", "2", "--id"], ["--slot", "2", "--id", "pitwall-90b", "--repo"]]) {
+    const { status, signal, out, err } = run(space, args);
+    assert.equal(signal, null, `${args.join(" ")}: the script had to be killed`);
+    assert.equal(status, 6, `${args.join(" ")}: ${out}${err}`);
+    assert.match(err, new RegExp(`${args[args.length - 1]} needs a value`));
+    assert.match(err, /usage: kill-lane.sh/);
   }
 });
