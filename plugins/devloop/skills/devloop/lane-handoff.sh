@@ -43,6 +43,11 @@
 #                    carry the label and which do not. Adding a label is idempotent and this
 #                    exits before the worktree removal and the tracker note, so re-run it once
 #                    the cause is gone rather than labelling the rest by hand.
+#   9  unreadable    the status rollup of a pull request on the branch could not be READ at all -
+#                    a throttled or failing gh, or output that did not parse. Nothing is known
+#                    about its checks, which is not the same as knowing they failed, so this is
+#                    never reported as 4. Nothing was labelled anywhere. It names the exact
+#                    'gh pr view' it attempted and what gh or the reader said. Retry the read.
 
 set -u
 
@@ -184,6 +189,7 @@ neutral='s#[A-Za-z/._-]*CLAUDE\.md#REPO-DOC#g; s#[A-Za-z/._-]*AGENTS\.md#REPO-DO
 check_one() {
   local _path="$1" _slug="$2" _pr="$3"
   local body msgs trailers hits head_sha state verdict rollup_head
+  local attempt rollup_json rollup_err gh_rc read_rc said began
 
   body=$(gh pr view "$_pr" --repo "$_slug" --json title,body 2>/dev/null \
          | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('title','')); print(d.get('body',''))" 2>/dev/null)
@@ -220,8 +226,21 @@ check_one() {
   #    says nothing about what is on the branch now.
   head_sha=$(git -C "$_path" rev-parse "origin/${BRANCH}" 2>/dev/null)
   HEAD_OF="$head_sha"
-  state=$(gh pr view "$_pr" --repo "$_slug" --json statusCheckRollup,headRefOid,mergeable,mergeStateStatus 2>/dev/null \
-    | python3 -c "
+  attempt="gh pr view ${_pr} --repo ${_slug} --json statusCheckRollup,headRefOid,mergeable,mergeStateStatus"
+  rollup_err=$(mktemp "${TMPDIR:-/tmp}/lane-handoff-rollup.XXXXXX")
+  rollup_json=$(gh pr view "$_pr" --repo "$_slug" --json statusCheckRollup,headRefOid,mergeable,mergeStateStatus 2>"$rollup_err")
+  gh_rc=$?
+  if [ "$gh_rc" -ne 0 ] || [ -z "$rollup_json" ]; then
+    said=$(head -n 1 "$rollup_err")
+    rm -f "$rollup_err"
+    echo "unreadable: could not read the status rollup for ${_slug}#${_pr} - nothing is known about its checks"
+    echo "            attempted: ${attempt}"
+    echo "            gh exited ${gh_rc} and said: ${said:-nothing on stderr}"
+    echo "            Nothing was labelled and no check is known to have failed. Retry the read."
+    return 9
+  fi
+
+  state=$(printf '%s' "$rollup_json" | python3 -c "
 import json,sys
 d=json.load(sys.stdin)
 r=d.get('statusCheckRollup') or []
@@ -231,7 +250,21 @@ c='CONFLICTED' if m == 'CONFLICTING' or s == 'DIRTY' else ''
 if not r: print('EMPTY||'+c); raise SystemExit
 bad=[c2.get('name') for c2 in r if c2.get('conclusion') not in ('SUCCESS','NEUTRAL','SKIPPED')]
 print(('BAD:'+','.join(bad) if bad else 'GREEN')+'|'+(d.get('headRefOid') or '')+'|'+c)
-" 2>/dev/null)
+" 2>"$rollup_err")
+  read_rc=$?
+  if [ "$read_rc" -ne 0 ] || [ -z "$state" ]; then
+    said=$(tail -n 1 "$rollup_err")
+    began=$(printf '%s' "$rollup_json" | head -c 120 | tr '\n\t' '  ')
+    rm -f "$rollup_err"
+    echo "unreadable: the status rollup for ${_slug}#${_pr} did not parse - nothing is known about its checks"
+    echo "            attempted: ${attempt}"
+    echo "            the reader exited ${read_rc} and said: ${said:-nothing on stderr}"
+    echo "            gh returned ${#rollup_json} bytes beginning: ${began}"
+    echo "            Nothing was labelled and no check is known to have failed. Retry the read."
+    return 9
+  fi
+  rm -f "$rollup_err"
+
   verdict=${state%%|*}; rest=${state#*|}; rollup_head=${rest%%|*}; conflict=${rest#*|}
 
   stale=0

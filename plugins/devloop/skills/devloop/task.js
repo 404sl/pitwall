@@ -557,8 +557,9 @@ mergeable UNKNOWN means GitHub has not computed it yet. Re-read it; conclude not
 
 WHAT THIS DOES NOT CHANGE: the PR still has to be green before it is labelled, and
 lane-handoff.sh refuses to label anything whose rollup is empty, failing, or describing a stale
-head - and exits 3 'conflicted' rather than 4 when a conflict is what emptied it. The gate did not
-move, only where the suite runs.
+head - and exits 3 'conflicted' rather than 4 when a conflict is what emptied it, and 9
+'unreadable' rather than 4 when it could not read the rollup at all. The gate did not move, only
+where the suite runs.
 
 IF YOU EDIT A FILE WITH THE Edit TOOL, READ IT WITH THE Read TOOL FIRST. Inspecting it with
 'cat' through Bash does not count: Edit refuses with "File has not been read yet" and the call
@@ -1319,7 +1320,18 @@ PR: ${work.prUrl || work.prNumber}
    7 the set of pull requests on the branch could not be established - the config could not be
    read, a repository's pull requests or labels could not be listed, the label could not be
    created in one of them, or a checkout named by the config has no origin/<branch> (nothing was
-   labelled anywhere), 8 labelling began and stopped part-way.
+   labelled anywhere), 8 labelling began and stopped part-way, 9 a pull request's status rollup
+   could not be READ at all.
+
+   EXIT 9 IS NOT A FAILING PULL REQUEST. It means gh would not answer - throttled, an expired
+   token, a wrong slug, a deleted pull request - or answered something that did not parse, so
+   nothing whatever is known about that pull request's checks. That is not the same as knowing a
+   check failed, which is why it is not 4 and why the output never claims a verdict. It names the
+   exact 'gh pr view' it attempted and quotes what gh or the reader said: READ THAT before deciding
+   anything. Secondary rate limits are live here and are invisible in 'gh api rate_limit' - every
+   bucket reads full while calls are refused - so a throttled read is the common case. Wait a
+   minute and run the handoff again; if the same read keeps failing for a reason the output names
+   as permanent, return 'blocked' quoting it.
 
    EXIT 3 IS NOT A WAIT AND NOT A RE-RUN. The pull request conflicts with master, so GitHub builds
    no merge ref and schedules no checks for it - the rollup you are waiting on will never fill.
