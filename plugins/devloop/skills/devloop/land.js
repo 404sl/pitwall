@@ -752,12 +752,13 @@ a report to the supervisor, not a problem for you to solve.
                     with the line it printed in 'notes', VERBATIM - the label stays on and the
                     branch goes back for rework onto master. Do NOT rebase, merge or push it by
                     hand, and do not report this as a conflict.
-     9  unreadable  the rollup could not be READ - gh failed, was throttled, or returned
-                    something that did not parse. Nothing is known about the checks, which is
-                    not the same as knowing they failed. Return status 'blocked' with the
-                    sentences it printed, and do NOT report this as red or as a failing build:
-                    secondary rate limits read as full in 'gh api rate_limit', so a throttled
-                    read looks like nothing at all from here.
+     9  unreadable  the rollup, or master's latest run before it, could not be READ - gh
+                    failed, was throttled, or returned something that did not parse. Nothing
+                    is known about the checks or about master, which is not the same as
+                    knowing either failed. Return status 'blocked' with the sentences it
+                    printed, and do NOT report this as red, as a failing build or as a red
+                    master: secondary rate limits read as full in 'gh api rate_limit', so a
+                    throttled read looks like nothing at all from here.
      5  master_red  master was not green. Nothing was touched. Return status 'master_red'.
      6  usage       the arguments, the repository or the plugin version it had to assign are
                     wrong. Return status 'blocked' with the line it printed in 'notes',
@@ -1583,7 +1584,8 @@ try {
       const detail = trimmed(r && (r.failureDetail || r.notes))
 
       // 'blocked' carries every reason land-one.sh exits without merging and nothing is wrong
-      // with the pull request: an empty, stale or unreadable rollup, and every usage refusal too.
+      // with the pull request: an empty, stale or unreadable rollup, a master run gh could not
+      // answer for, and every usage refusal too.
       // Only the attempt knows which, so its own sentences are what gets logged. Keeping it in
       // `seen` retires it from this whole run, and the rebase it already did is thrown away.
       // Put it back so a later round finds the run finished - but only when a later round could

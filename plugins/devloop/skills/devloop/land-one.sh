@@ -28,10 +28,12 @@
 #                 a rebase would replay only its own commits and drop whatever exists solely in
 #                 that merge's resolution. Nothing was touched. Like 7 this is not a failure of
 #                 the work: it needs rework, not retiring.
-#   9  unreadable the rollup could not be read AT ALL - a throttled or failing gh, or output that
-#                 did not parse. Nothing is known about the checks, which is not the same as
-#                 knowing they failed. Retry it in a later round like 7; never report it as red.
-#   5  master_red master was not green before starting. Nothing was touched.
+#   9  unreadable the rollup, or master's latest run before it, could not be read AT ALL - a
+#                 throttled or failing gh, or output that did not parse. Nothing is known about
+#                 the checks or about master, which is not the same as knowing they failed.
+#                 Retry it in a later round like 7; never report it as red or as a red master.
+#   5  master_red master's latest run was READ and was not green before starting. Nothing was
+#                 touched.
 #   6  usage      bad arguments, or the repository/branch does not exist.
 
 set -u
@@ -90,12 +92,43 @@ git_with_identity() {
 
 # 1. MASTER MUST BE GREEN FIRST. Landing on top of a break makes it harder to untangle, not
 #    easier, and the lander cannot merge the fix for a red master while master is red.
-master_state=$(gh run list --branch master --limit 1 --json status,conclusion 2>/dev/null \
-  | python3 -c "
+read_dir=$(mktemp -d "/tmp/${PREFIX}-rollup-XXXXXX" 2>/dev/null) || read_dir=""
+trap 'rm -rf "$read_dir" 2>/dev/null' EXIT
+if [ -n "$read_dir" ]; then
+  gh_err="$read_dir/gh.err"; py_err="$read_dir/python.err"
+else
+  gh_err=/dev/null; py_err=/dev/null
+fi
+
+MASTER_ATTEMPT="gh run list --branch master --limit 1 --json status,conclusion"
+runs_json=$(gh run list --branch master --limit 1 --json status,conclusion 2>"$gh_err")
+gh_code=$?
+if [ "$gh_code" -ne 0 ] || [ -z "$runs_json" ]; then
+  said=$(head -n 1 "$gh_err" 2>/dev/null)
+  say "unreadable: could not read master's latest run for ${SLUG} - nothing is known about master"
+  say "attempted: ${MASTER_ATTEMPT}"
+  say "gh exited ${gh_code} and said: ${said:-nothing on stderr}"
+  say "This is NOT a red master and nothing was touched. Retry it in a later round."
+  exit 9
+fi
+
+master_state=$(printf '%s' "$runs_json" | python3 -c "
 import json,sys
 r=json.load(sys.stdin)
 print('%s/%s' % (r[0].get('status'), r[0].get('conclusion')) if r else 'none/none')
-" 2>/dev/null)
+" 2>"$py_err")
+py_code=$?
+if [ "$py_code" -ne 0 ] || [ -z "$master_state" ]; then
+  said=$(tail -n 1 "$py_err" 2>/dev/null)
+  began=$(printf '%s' "$runs_json" | head -c 120 | tr '\n\t' '  ')
+  say "unreadable: master's latest run for ${SLUG} did not parse - nothing is known about master"
+  say "attempted: ${MASTER_ATTEMPT}"
+  say "the reader exited ${py_code} and said: ${said:-nothing on stderr}"
+  say "gh returned ${#runs_json} bytes beginning: ${began}"
+  say "This is NOT a red master and nothing was touched. Retry it in a later round."
+  exit 9
+fi
+
 case "$master_state" in
   completed/success) ;;
   *) say "master_red: master is $master_state - nothing touched"; exit 5 ;;
@@ -212,14 +245,6 @@ fi
 git fetch origin --quiet 2>/dev/null
 head_sha=$(git rev-parse "origin/${BRANCH}" 2>/dev/null)
 READ_ATTEMPT="gh pr view ${PR} --repo ${SLUG} --json labels,statusCheckRollup,headRefOid"
-read_dir=$(mktemp -d "/tmp/${PREFIX}-rollup-XXXXXX" 2>/dev/null) || read_dir=""
-trap 'rm -rf "$read_dir" 2>/dev/null' EXIT
-if [ -n "$read_dir" ]; then
-  gh_err="$read_dir/gh.err"; py_err="$read_dir/python.err"
-else
-  gh_err=/dev/null; py_err=/dev/null
-fi
-
 rollup_json=$(gh pr view "$PR" --repo "$SLUG" --json labels,statusCheckRollup,headRefOid 2>"$gh_err")
 gh_code=$?
 if [ "$gh_code" -ne 0 ] || [ -z "$rollup_json" ]; then
