@@ -22,7 +22,9 @@ const PR = {
 const SHA = "e1a54123ca4d0b6a32479f49da4d26893f648206";
 
 type Declared = {
+  fetched?: boolean;
   status: string;
+  prStatus?: string;
   masterVersion: string;
   branchVersion: string;
   touchesPlugin: boolean;
@@ -33,7 +35,9 @@ type Declared = {
 
 function declared(over: Partial<Declared> = {}): Declared {
   return {
+    fetched: true,
     status: "read",
+    prStatus: "read",
     masterVersion: "0.1.21",
     branchVersion: "0.1.22",
     touchesPlugin: true,
@@ -402,4 +406,143 @@ test("land.js refuses an unreadable master even when the step also reports the l
   assert.equal(calls.filter((c) => c.label.startsWith("retire:")).length, 0, `it was un-queued on ignorance: ${labels(calls)}`);
   assert.equal(out.stopped[0]?.why, "version_unreadable");
   assert.match(out.stopped[0]?.detail || "", /git fetch origin exited 128/);
+});
+
+test("land.js lands a branch touching no plugin file when the manifest could not be read, because the guard does not govern it", async () => {
+  const { calls, logs, done } = lander(
+    declared({ status: "unreadable", masterVersion: "", branchVersion: "", touchesPlugin: false, notes: "git show origin/master exited 128" }),
+  );
+  const out = await done;
+
+  assert.equal(
+    calls.filter((c) => c.label.startsWith("land:")).length,
+    1,
+    `a branch changing nothing under plugins/ or .claude-plugin/ was refused over a number the ` +
+      `guard never compares for it: ${labels(calls)}`,
+  );
+  assert.deepEqual(out.stopped, []);
+  assert.equal(out.landed.length, 1);
+  assert.ok(
+    logs.some((l) => /plugins\/ or \.claude-plugin\//.test(l)),
+    `the versions were left uncompared and the run log says nothing about it, so a wrong ` +
+      `touchesPlugin on an unreadable manifest passes silently: ${logs.join("\n")}`,
+  );
+});
+
+test("land.js calls an unreadable pull request pr_unreadable, and does not spend a merge agent on it", async () => {
+  const { calls, logs, done } = lander(
+    declared({
+      prStatus: "unreadable",
+      labelled: false,
+      open: false,
+      notes: "gh pr view 37 failed with exit code 1: GraphQL API rate limit already exceeded",
+    }),
+  );
+  const out = await done;
+
+  assert.equal(out.stopped[0]?.why, "pr_unreadable");
+  assert.match(out.stopped[0]?.detail || "", /rate limit already exceeded/);
+  assert.equal(
+    calls.filter((c) => c.label.startsWith("land:")).length,
+    0,
+    `a merge agent was spawned while gh could not answer, and land-one.sh reads an unanswerable ` +
+      `rollup as red and exits 4 - which retires the pull request: ${labels(calls)}`,
+  );
+  assert.equal(
+    calls.filter((c) => c.label.startsWith("retire:")).length,
+    0,
+    `it was un-queued because gh was rate limited: ${labels(calls)}`,
+  );
+  assert.ok(
+    !logs.some((l) => /is gone|closed, merged or draft/.test(l)),
+    `labelled and open were read as facts from a gh call that printed nothing: ${logs.join("\n")}`,
+  );
+});
+
+test("land.js keeps a rate-limited read off the version verdict even when the branch ships a plugin file", async () => {
+  const { done } = lander(declared({ prStatus: "unreadable", touchesPlugin: true, labelled: false, open: false, notes: "API rate limit exceeded" }));
+  const out = await done;
+
+  assert.equal(
+    out.stopped[0]?.why,
+    "pr_unreadable",
+    `a failed pull request read was reported as a version problem, which sends a reader to ` +
+      `manifests and version arithmetic that were never wrong`,
+  );
+});
+
+test("the version prompt asks for the manifest read and the pull request read as separate fields", async () => {
+  const { calls, done } = lander(declared());
+  await done;
+
+  const prompt = calls.find((c) => c.label.startsWith("version:"))?.prompt || "";
+  assert.match(prompt, /prStatus/, "the step has no field to report a failed gh call in");
+  assert.ok(
+    !/gh pr view printed no answer\. Say which in notes/.test(prompt),
+    "the prompt still routes a failed gh call into status, which is the field the version verdict reads",
+  );
+});
+
+test("land.js refuses a branch the version guard does not govern when the fetch itself failed", async () => {
+  const { calls, logs, done } = lander(
+    declared({
+      fetched: false,
+      masterVersion: "0.1.21",
+      branchVersion: "0.1.21",
+      touchesPlugin: false,
+      notes: "git fetch did not print FETCHED",
+    }),
+  );
+  const out = await done;
+
+  assert.equal(
+    out.stopped[0]?.why,
+    "fetch_failed",
+    "a failed fetch was waved through on scope. Every ref after it is whatever the checkout " +
+      "already held, so a stale origin/master diffs and shows perfectly well - and land-one.sh " +
+      "swallows its own fetch error, reads the branch as not behind, rebases nothing and merges " +
+      `it on a master it was never tested against: ${JSON.stringify(out.stopped)}`,
+  );
+  assert.equal(calls.filter((c) => c.label.startsWith("land:")).length, 0, `the merge step ran on stale refs: ${labels(calls)}`);
+  assert.equal(calls.filter((c) => c.label.startsWith("retire:")).length, 0, `it was un-queued on ignorance: ${labels(calls)}`);
+  assert.deepEqual(out.landed, [], JSON.stringify(out.landed));
+  assert.ok(
+    logs.some((l) => /fetch/i.test(l)),
+    `the run log does not name the fetch as the reason it stopped: ${logs.join("\n")}`,
+  );
+});
+
+test("land.js refuses a failed fetch on a plugin branch too, whatever the numbers say", async () => {
+  const { calls, done } = lander(declared({ fetched: false, masterVersion: "0.1.21", branchVersion: "0.1.22", notes: "fatal: could not read from remote repository" }));
+  const out = await done;
+
+  assert.equal(out.stopped[0]?.why, "fetch_failed", JSON.stringify(out.stopped));
+  assert.match(out.stopped[0]?.detail || "", /could not read from remote repository/);
+  assert.equal(calls.filter((c) => c.label.startsWith("land:")).length, 0, labels(calls));
+});
+
+test("the version prompt asks for the fetch as its own field, not as a manifest verdict", async () => {
+  const { calls, done } = lander(declared());
+  await done;
+
+  const prompt = calls.find((c) => c.label.startsWith("version:"))?.prompt || "";
+  assert.match(prompt, /fetched/, "the step has no field to report a failed fetch in");
+  assert.ok(
+    !/FETCHED did not print, or ls-tree/.test(prompt),
+    "the prompt still folds a failed fetch into status, which the version verdict skips entirely " +
+      "for a branch that touches no plugin file",
+  );
+});
+
+test("land.js says in the run log when the versions were left uncompared over a manifest it could not read", async () => {
+  const { logs, done } = lander(
+    declared({ status: "unreadable", masterVersion: "", branchVersion: "", touchesPlugin: false, notes: "git show origin/master exited 128" }),
+  );
+  await done;
+
+  assert.ok(
+    logs.some((l) => /not compared/.test(l) && /git show origin\/master exited 128/.test(l)),
+    "the not-compared line reads identically for a repository that has no plugin number and one " +
+      `whose manifest could not be read, so nobody can tell the two apart: ${logs.join("\n")}`,
+  );
 });

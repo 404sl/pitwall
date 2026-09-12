@@ -143,9 +143,13 @@ function compare(repo: string, build: BuildStamp, timeoutMs: number): BuildRepor
   };
 }
 
+export function isCheckout(repo: string = PACKAGE_ROOT): boolean {
+  return existsSync(join(repo, ".git"));
+}
+
 export function buildReport(repo: string, stamp: BuildStamp | undefined, timeoutMs: number): BuildReport {
   const build = stamp !== undefined && COMMIT.test(stamp.commit) ? stamp : undefined;
-  if (!existsSync(join(repo, ".git"))) {
+  if (!isCheckout(repo)) {
     return { ...(build === undefined ? {} : { build }), buildCheck: "no-checkout" };
   }
   if (build === undefined) {

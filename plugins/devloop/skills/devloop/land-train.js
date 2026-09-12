@@ -54,21 +54,24 @@ const ROOT = input.root
 // with nothing that would ever pick it up. A train runs against ONE repository at a time; run it
 // again per repository.
 //
-// deploys: only site has somewhere to deploy TO. The extension ships through store review, and
-// integration is published by hand because the npm account has two-factor. Running site's mina
-// commands against either would be wrong, so the deploy phase is skipped where deploys is false.
-// From the config, a repo deploys when its entry carries a deploy array.
+// deploys: only some repositories have somewhere to deploy TO. The extension ships through store
+// review, and integration is published by hand because the npm account has two-factor. Running one
+// repository's deploy commands against another would be wrong, so the deploy phase is skipped where
+// deploys is false. From the config, a repo deploys when its entry carries a deploy array, and the
+// commands in that array are what the deploy step runs.
 const REPOS = input.repos
   ? Object.fromEntries(Object.entries(input.repos).map(([name, r]) => [name, {
       path: (r || {}).path || name,
       slug: (r || {}).slug,
+      deploy: (Array.isArray((r || {}).deploy) ? (r || {}).deploy : []).filter((c) => trimmed(c)),
+      verify: (r || {}).verify,
       deploys: Array.isArray((r || {}).deploy) && (r || {}).deploy.length > 0
     }]))
   : {
-      site: { path: 'site', slug: 'your-org/your-app', deploys: true },
-      extension: { path: 'extension', slug: 'your-org/your-ext', deploys: false },
-      integration: { path: 'integration', slug: 'your-org/your-integration', deploys: false },
-      docs: { path: 'docs', slug: 'your-org/your-docs', deploys: false },
+      site: { path: 'site', slug: 'your-org/your-app', deploy: [], deploys: true },
+      extension: { path: 'extension', slug: 'your-org/your-ext', deploy: [], deploys: false },
+      integration: { path: 'integration', slug: 'your-org/your-integration', deploy: [], deploys: false },
+      docs: { path: 'docs', slug: 'your-org/your-docs', deploy: [], deploys: false },
     }
 
 const REPO_KEY = trimmed(input.repo)
@@ -476,9 +479,31 @@ guess. If master goes RED after this merge, say so plainly and set masterGreen f
 the one outcome that must not be softened, because the next train will refuse to build on it.`
 }
 
+function deployCommands() {
+  const cmds = REPO.deploy.map((c) => `  cd ${REPO_PATH} && ${trimmed(c)}`)
+  return cmds.length
+    ? cmds.join('\n\n')
+    : `  (${REPO_KEY} records no usable deploy command in its config, so there is nothing here to
+  run - say so in 'notes' rather than inventing a deploy)`
+}
+
+function verifyCommands() {
+  const verify = REPO.verify
+  const out = typeof verify === 'string'
+    ? (trimmed(verify) ? [`  ${trimmed(verify)}`] : [])
+    : verify && typeof verify === 'object'
+      ? Object.values(verify).filter((c) => typeof c === 'string' && trimmed(c)).map((c) => `  ${trimmed(c)}`)
+      : []
+  return out.length
+    ? out.join('\n')
+    : `  This project records no verify command for ${REPO_KEY}. Work out what the deployed version
+  is by whatever means the project offers, and say in 'notes' what you used - a deploy nobody
+  confirmed is a deploy that may not have happened.`
+}
+
 function deployPrompt(mergeSha, included) {
-  return `Deploy master to staging AND production. Master is at ${mergeSha}, which carries
-${included.length} change(s): ${included.join(', ')}.
+  return `Deploy master to EVERY environment this repository deploys to. Master is at ${mergeSha},
+which carries ${included.length} change(s): ${included.join(', ')}.
 
 ${SHELL_FIRST}
 
@@ -488,11 +513,10 @@ ${SHELL_FIRST}
 Confirm the sha above is what origin/master actually points at BEFORE deploying. If it is not,
 stop and report it rather than deploying something else.
 
-Then deploy each environment with this, STAGING FIRST:
+Then deploy each environment with these, IN THE ORDER LISTED - the first is the earliest
+environment and the last is the one the public reaches:
 
-  bash ~/.claude/skills/devloop/deploy-one.sh --label staging --repo-path ${REPO_PATH} --deploy 'bundle exec mina staging deploy' --revision 'curl -s -m 20 https://staging.example.com/health | sed -n "s/.*\\"git_revision\\":\\"\\([0-9a-f]*\\)\\".*/\\1/p"' --timeout 1500
-
-  bash ~/.claude/skills/devloop/deploy-one.sh --label production --repo-path ${REPO_PATH} --deploy 'bundle exec mina production deploy' --revision 'curl -s -m 20 https://example.com/health | sed -n "s/.*\\"git_revision\\":\\"\\([0-9a-f]*\\)\\".*/\\1/p"' --timeout 1500
+${deployCommands()}
 
 RUN EACH OF THOSE IN THE FOREGROUND, one Bash call each, with the call's own timeout set to
 1800000. Do NOT background them and then block on a 'tail -f' of the output file. Two reasons.
@@ -505,32 +529,33 @@ hand-deployed production. The train was alive and mid-deploy; the server ended u
 production releases 101 seconds apart and a second train running against the same repository.
 A foreground call cannot vanish and its result is in the transcript.
 
-The revision is read from /health rather than over ssh on purpose: it needs no session, and it
-is the sha the outside world is actually being served.
+The revision is read back from the running host rather than over ssh on purpose: it needs no
+session, and it is the sha the outside world is actually being served.
 
-DO NOT run the mina commands directly, and DO NOT chain the two environments with '&&'. The
-script exists because mina's exit code does not tell you whether the deploy happened: on
-2026-09-04 a staging deploy finished completely on the server - lock removed, symlink moved,
-revisions.log written - and then hung locally for 21 minutes, so the second command never ran and
-production silently stayed a release behind with nothing reporting an error. The script bounds
-the deploy with a timeout and then decides by reading the sha back off the server, which is the
-right answer in both directions: killed but serving the sha is a success, exited 0 but not
-serving it is a failure.
+RUN EACH COMMAND EXACTLY AS WRITTEN, and DO NOT chain the environments with '&&'. Each one wraps
+the underlying deploy tool because that tool's exit code does not tell you whether the deploy
+happened: on 2026-09-04 a staging deploy finished completely on the server - lock removed, symlink
+moved, revisions.log written - and then hung locally for 21 minutes, so the second command never
+ran and production silently stayed a release behind with nothing reporting an error. The wrapper
+bounds the deploy with a timeout and then decides by reading the sha back off the server, which is
+the right answer in both directions: killed but serving the sha is a success, exited 0 but not
+serving it is a failure. Do not unwrap one and run the deploy tool directly.
 
-ITS EXIT CODE IS THE ONE TO TRUST, not mina's output. If STAGING does not exit 0, STOP - report
-it and do NOT deploy production, because staging broken with production shipped is the same
-forbidden split mirrored.
+THE WRAPPER'S EXIT CODE IS THE ONE TO TRUST, not the deploy tool's output. If an EARLIER
+environment does not exit 0, STOP - report it and do NOT deploy the ones after it, because an
+early environment broken with the public one shipped is the same forbidden split mirrored.
 
-BOTH environments, always. The extension has an environment switcher, so a server change live in
-only one of them is live in neither as far as a tester is concerned.
+EVERY environment, always. A change live in one environment and not another is live in neither as
+far as a tester is concerned - which is the whole reason this is one step and not two.
 
-BEFORE YOU START, read both environments and say what you found:
+BEFORE YOU START, read every environment back and say what you found:
 
-  for h in staging.example.com example.com; do echo -n "$h "; curl -s -m 20 "https://$h/health" | sed -n 's/.*"git_revision":"\\([0-9a-f]*\\)".*/\\1/p'; echo; done
+${verifyCommands()}
 
-If staging is ALREADY at the merge sha and production is not, say so and deploy production only -
-do not re-deploy staging. Note that this is also exactly what a train looks like WHILE it is
-deploying, so if you are not that train, confirm no other run is in flight before acting on it.
+If an earlier environment is ALREADY at the merge sha and a later one is not, say so and deploy
+only the ones that are behind - do not re-deploy what is already there. Note that this is also
+exactly what a train looks like WHILE it is deploying, so if you are not that train, confirm no
+other run is in flight before acting on it.
 
 THIS STEP MERGES NOTHING. Everything is already on master.`
 }

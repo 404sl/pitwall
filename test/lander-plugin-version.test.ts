@@ -224,7 +224,7 @@ test("land-one.sh does not push a branch that needs neither a rebase nor a versi
 function versionCommits(repo: string, branch: string): string[] {
   return git(repo, "log", "--format=%s", `origin/master..origin/${branch}`)
     .split("\n")
-    .filter((line) => line.startsWith("Set devloop plugin version "));
+    .filter((line) => /^Set (the|devloop) plugin version /.test(line));
 }
 
 test("land-one.sh run twice on one plugin branch leaves one version commit and pushes nothing the second time", () => {
@@ -421,4 +421,33 @@ test("a train whose version cannot be assigned names the plugin changes that los
       `the pass with it:\n${ran.out}`,
   );
   assert.equal(trainOn(box.bare), "", `the refused train was left on the remote:\n${ran.out}`);
+});
+
+test("a version commit an earlier round wrote under the subject that has since changed is still dropped", () => {
+  const box = workspace("0.1.33");
+  const bin = stubs(box.root, box.bare, BODY);
+  lane(box.repo, "devloop/zz-oldsubject", SKILL_DOC, "Changed.\n");
+
+  git(box.repo, "checkout", "--quiet", "devloop/zz-oldsubject");
+  manifests(box.repo, "0.1.34");
+  write(
+    box.repo,
+    LOG,
+    "# Changelog\n\n## 0.1.34\n\nWhat an earlier round recorded.\n\n## 0.1.33\n\nWhat the version before this one did.\n",
+  );
+  git(box.repo, "add", "-A");
+  git(box.repo, "commit", "-m", "Set devloop plugin version 0.1.34");
+  git(box.repo, "push", "--quiet", "origin", "devloop/zz-oldsubject");
+  git(box.repo, "checkout", "--quiet", "master");
+
+  const ran = landOne(box.root, box.repo, bin, "devloop/zz-oldsubject", "108");
+
+  assert.equal(ran.code, 0, `${ran.out}\n${ran.err}`);
+  assert.match(ran.out, /^dropped: 1 version commit/m, ran.out);
+  git(box.repo, "fetch", "--quiet", "origin");
+  assert.deepEqual(
+    versionCommits(box.repo, "devloop/zz-oldsubject"),
+    ["Set the plugin version 0.1.34"],
+    "a branch prepared by an earlier round kept its old version commit as well as the new one",
+  );
 });

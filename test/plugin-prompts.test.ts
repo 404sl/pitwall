@@ -3,6 +3,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 
+import { runScript } from "./support/workflow.js";
+
 // THE WORKFLOW RUNNER IS THE ONLY THING THAT LOADS THESE FILES, AND `node --check` DOES NOT
 // SPEAK FOR IT.
 //
@@ -162,6 +164,77 @@ test("the handoff brief carries no backticks of its own", () => {
   );
 });
 
+test("the handoff brief says a compliance refusal is terminal, not a judgement about proceeding", () => {
+  const source = promptTemplate(readFileSync(join(SKILL, "task.js"), "utf8"), "handoffPrompt");
+  const handoff = source.replace(/\s+/g, " ");
+  for (const phrase of [
+    "DECIDES HOW TO REWORD A HIT, NEVER WHETHER TO PROCEED PAST IT",
+    "Exit 2 is TERMINAL",
+    "never in a label applied by hand",
+  ]) {
+    assert.ok(
+      handoff.includes(phrase),
+      `the handoff brief invites a lane holding a hit on its own subject matter to read the refusal as ` +
+        `advisory and label by hand, which is how a pull request carried the label with no verdict behind ` +
+        `it on 2026-09-12. Missing: ${phrase}`,
+    );
+  }
+});
+
+function complianceRefusal(): string {
+  const source = readFileSync(join(SKILL, "lane-handoff.sh"), "utf8");
+  const start = source.indexOf('echo "Fix the PR body or the commit message');
+  const end = source.indexOf("return 2", start);
+  assert.ok(start > 0 && end > start, "the compliance refusal block moved; this guard no longer reads it");
+  return [...source.slice(start, end).matchAll(/^\s*echo "(.*)"$/gm)]
+    .map((m) => m[1])
+    .join(" ")
+    .replace(/\s+/g, " ");
+}
+
+test("the handoff brief tells a lane the label token has no exemption and names the rewrite", () => {
+  const source = promptTemplate(readFileSync(join(SKILL, "task.js"), "utf8"), "handoffPrompt");
+  const handoff = source.replace(/\s+/g, " ");
+  for (const phrase of [
+    "NO SUBJECT-MATTER EXEMPTION AND NO COMPLIANT SPELLING",
+    "name the label in words rather than writing the token",
+  ]) {
+    assert.ok(
+      handoff.includes(phrase),
+      `a lane holding a leakage hit on its own subject matter needs the brief to say both that there is ` +
+        `no spelling that passes and what to write instead; without the second half 'do not proceed' is ` +
+        `an instruction with nowhere to go. Missing: ${phrase}`,
+    );
+  }
+});
+
+test("neither the brief nor the refusal offers a typeset spelling or claims a check that is not there", () => {
+  const handoff = promptTemplate(readFileSync(join(SKILL, "task.js"), "utf8"), "handoffPrompt").replace(
+    /\s+/g,
+    " ",
+  );
+  const refusal = complianceRefusal();
+
+  assert.ok(refusal.includes("NO SUCH EXEMPTION AND NO COMPLIANT SPELLING"), refusal);
+  assert.ok(refusal.includes("naming the label in words"), refusal);
+
+  for (const [surface, text] of [
+    ["the handoff brief", handoff],
+    ["the compliance refusal", refusal],
+  ] as const) {
+    for (const claim of [/code span/i, /neutralis/i, /raw text/i]) {
+      assert.doesNotMatch(
+        text,
+        claim,
+        `${surface} describes a carve-out for the label token that the compliance check does not ` +
+          `implement - it greps the literal token and nothing subtracts a spelling from it first. A ` +
+          `surface that promises one teaches the next lane a spelling that is refused, or worse, one ` +
+          `that passes. Offending pattern: ${claim}`,
+      );
+    }
+  }
+});
+
 test("the brief tells a lane to leave the three plugin version files alone", () => {
   const fix = promptTemplate(readFileSync(join(SKILL, "task.js"), "utf8"), "fixPrompt");
   for (const path of [
@@ -187,5 +260,68 @@ test("the changelog heading the brief asks a lane for is the one the lander look
     fix.includes(declared[1] as string),
     `the brief asks for a section the lander does not read. The entry would be silently replaced by ` +
       `the pull request title, and nothing would fail: the lander looks for '${declared[1]}'`,
+  );
+});
+
+const HANDOFF_REPOS = {
+  site: { path: "cli", slug: "404sl/pitwall", role: "node", test: "npm test", lint: "npm run lint" },
+  integration: { path: "schema", slug: "404sl/pitwall-schema", role: "node", test: "npm test", lint: "npm run lint" },
+  docs: { path: "site", slug: "404sl/pitwall-site", role: "node", test: "npm test", lint: "npm run lint" },
+};
+
+async function handoffBrief(repo: string): Promise<string> {
+  const { calls, done } = runScript(
+    "task.js",
+    { id: "zz-aaa1", slot: 3, root: "/root", skillDir: "/skill", lockPrefix: "pw", repos: HANDOFF_REPOS },
+    (call, n) => {
+      if (n === 1) {
+        return { eligible: true, repo, title: "a guessed slug", priority: 1, ui: false, reason: "", ticket: "the ticket body" };
+      }
+      if (call.label.startsWith("fix:")) {
+        return { status: "pushed", summary: "fixed", prNumber: 47, prUrl: "https://example.test/pr/47" };
+      }
+      if (call.label.startsWith("review:")) return { approved: true, notes: "good" };
+      if (call.label.startsWith("handoff:")) return { status: "verified", verified: true, prNumber: 47, notes: "" };
+      return { lane: "released", slot: "released" };
+    },
+  );
+  await done;
+  const handoff = calls.find((c) => c.label.startsWith("handoff:"));
+  assert.ok(handoff, `no handoff step ran for ${repo}. Steps seen: ${calls.map((c) => c.label || "?").join(", ")}`);
+  return handoff.prompt;
+}
+
+test("the handoff brief hands the lane its repository's slug rather than a placeholder", async () => {
+  for (const [repo, { slug }] of Object.entries(HANDOFF_REPOS)) {
+    const brief = await handoffBrief(repo);
+    const guesses = brief.split("\n").filter((line) => line.includes("<owner/name>"));
+    assert.deepEqual(
+      guesses,
+      [],
+      `the brief for ${repo} leaves the slug for the lane to guess, and a guess that names a real ` +
+        "pull request in another repository is how the lane-verified label reaches one. The value " +
+        `is in the config the repo path already comes from:\n${guesses.join("\n")}`,
+    );
+    assert.match(
+      brief,
+      new RegExp(`--slug ${slug}\\s+--pr `),
+      `the handoff command in the brief for ${repo} does not pass ${slug}, so the script is told ` +
+        "to check a pull request in a repository the ticket never touched",
+    );
+  }
+});
+
+test("the handoff brief says a refusal is never answered by labelling by hand", async () => {
+  const brief = await handoffBrief("site");
+  assert.ok(
+    brief.includes("A REFUSAL IS NEVER WORKED AROUND BY LABELLING BY HAND"),
+    "the brief offers no reading of a refusal other than the lane's own judgement. Two lanes have " +
+      "met a correct refusal and one labelled its pull request by hand, which skips the compliance " +
+      "gate that is the only reason the script is run at all.",
+  );
+  assert.ok(
+    brief.includes("file a ticket quoting the exact command and exit code"),
+    "the brief does not say what to do with a suspected defect in the script, so the lane is left " +
+      "choosing between believing a refusal it thinks is wrong and bypassing it",
   );
 });

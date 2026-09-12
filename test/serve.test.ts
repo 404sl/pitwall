@@ -517,15 +517,15 @@ test("a verdict the snapshot checked survives a reading that has since closed", 
   assert.deepEqual(body.issue.staleness.evidence, ["mw-1 is still open"]);
 });
 
-test("an issue carries the references its own check could not resolve, and nobody else's", async (t) => {
+test("an issue carries the checks its own assessment could not run, and nobody else's", async (t) => {
   const at = "2026-09-08T13:02:00Z";
   const server = trackerServer(
     "ok",
     [indexed("mw-1", "open", "parked:umbrella")],
     [
-      { source: "staleness mw-1", message: "2 references could not be checked: ext#144, ext#148", at },
-      { source: "staleness mw-9", message: "1 reference could not be checked: ext#150", at },
-      { source: "staleness", message: "no pull request host is configured, so pull requests could not be looked up", at },
+      { source: "staleness mw-1", message: "2 preconditions could not be run: `npm whoami`, `gh auth status`", at },
+      { source: "staleness mw-9", message: "1 precondition could not be run: `npm whoami`", at },
+      { source: "staleness", message: "the project records no issue id prefix, so referenced issues cannot be recognised", at },
       { source: "bd list", message: "timed out", at },
     ],
   );
@@ -536,7 +536,7 @@ test("an issue carries the references its own check could not resolve, and nobod
     errors: Array<{ source: string; message: string }>;
   };
   assert.deepEqual(body.errors, [
-    { source: "staleness mw-1", message: "2 references could not be checked: ext#144, ext#148", at },
+    { source: "staleness mw-1", message: "2 preconditions could not be run: `npm whoami`, `gh auth status`", at },
   ]);
 });
 

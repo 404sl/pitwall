@@ -2,11 +2,9 @@ import type { CollectionError, Snapshot } from "@404sl/pitwall-schema";
 import { fill } from "./format.js";
 import {
   PRECONDITIONS,
-  PULL_SOURCE,
   STALENESS_SOURCE,
   UNRECORDED,
   unresolvedOf,
-  type Unresolved,
 } from "./staleness.js";
 
 export type ProblemScope = "run" | "console" | "project";
@@ -32,10 +30,9 @@ const SELF_HEALING = [/rate limit/i, /^timed out after \d+ms$/];
 
 const UNACCOUNTED = "{count} staleness {checks} could not complete and nothing recorded why";
 
-const PROBE_SOURCES: readonly string[] = [
-  PULL_SOURCE,
-  ...PRECONDITIONS.map((precondition) => precondition.command.join(" ")),
-];
+const PROBE_SOURCES: readonly string[] = PRECONDITIONS.map((precondition) =>
+  precondition.command.join(" "),
+);
 
 export function problemKey(row: ProblemRow): string {
   return JSON.stringify([row.scope, row.name, row.source, row.at, row.message]);
@@ -70,13 +67,10 @@ export function dispositionOf(error: CollectionError): Disposition {
   return isSelfHealing(error) ? "self-healing" : "act";
 }
 
-function causesOf(row: ProblemRow, named: Unresolved): readonly string[] {
-  if (named.kind === "reference") {
-    return [PULL_SOURCE];
-  }
-  return PRECONDITIONS.map((precondition) => precondition.command.join(" ")).filter((source) =>
-    row.message.includes(source),
-  );
+function causesOf(row: ProblemRow): readonly string[] {
+  return PRECONDITIONS.filter((precondition) =>
+    row.message.includes(precondition.command.join(" ")),
+  ).map((precondition) => precondition.command.join(" "));
 }
 
 interface Accounting {
@@ -93,7 +87,7 @@ function accountingOf(rows: readonly ProblemRow[]): Accounting {
     if (named === undefined || !isDerived(row)) {
       continue;
     }
-    const known = causesOf(row, named)
+    const known = causesOf(row)
       .map((source) => causeKey(row.name, source))
       .filter((key) => recorded.has(key));
     if (known.length === 0) {

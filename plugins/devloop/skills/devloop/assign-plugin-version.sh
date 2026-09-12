@@ -278,7 +278,7 @@ with open(path, 'w') as f:
 "
 
 commit_triple <<EOF
-Set devloop plugin version ${next_version}
+Set the plugin version ${next_version}
 
 Assigned at merge time from ${BASE}, which held ${master_version}. A branch does not
 pick this number: every branch that reads master and bumps picks the same one, and all
