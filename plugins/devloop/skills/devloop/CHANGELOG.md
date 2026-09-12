@@ -1,5 +1,55 @@
 # Changelog
 
+## 0.1.41
+
+**A release train's deploy brief named a script that does not exist and two hosts nobody owns.**
+`land-train.js` built its own deploy step out of three literals:
+`~/.claude/skills/devloop/deploy-one.sh`, `bundle exec mina <env> deploy`, and read-backs against
+`staging.example.com` and `example.com`. The plugin does not install to `~/.claude/skills/devloop/` -
+it installs under `~/.claude/plugins/cache/`, with a version segment - so that path resolved to
+nothing, and the placeholder hosts resolved to somebody else's domain.
+
+The same file reads `skillDir` on the way in and REFUSES TO START without it, with a note
+explaining that absent it renders as `bash undefined/...` and that a lane which cannot find a
+script does not stop - it does the steps by hand and the run SUCCEEDS. That argument was made
+about `lane-handoff.sh` and never applied to the deploy step, which is the one that ships.
+
+The hosts are the worse half. A revision read back from a domain we do not control cannot fail,
+and a check that cannot fail is not a check - it is the deploy promoting itself on its own word,
+which is the failure `deploy-one.sh` was written to prevent.
+
+- **The deploy commands come from `repos.<name>.deploy` and the read-backs from
+  `repos.<name>.verify`,** which is what `land.js` has done since 0.1.20 and what `.pitwall.json`
+  has carried since. `land-train.js` already read that array's LENGTH, to decide whether a
+  repository deploys at all, and then threw its CONTENTS away and invented two commands instead.
+  Reading the same field for both is the fix; nothing about one project's deploy tool is written
+  into this file any more.
+- **No deploy tool is named in the brief.** `bundle exec mina` was as wrong as the hosts and for
+  the same reason - this file ships in a plugin other workspaces install, and one deploy command
+  written into it deploys the wrong thing everywhere else. The configured string is passed through
+  verbatim, and the brief says not to unwrap it and run the underlying tool directly.
+- **The brief is worded for N environments rather than exactly two.** It used to say "staging AND
+  production" and "BOTH environments"; it now says every environment the repository deploys to, in
+  the order the config lists them, which is what made "STAGING FIRST" true in the first place. A
+  repository with one environment, or three, is no longer given a brief that miscounts it.
+- **A repository that records no `verify` is told to work out what is live by whatever means the
+  project offers,** the same fallback prose `land.js` uses, rather than being handed a host. The
+  log-only sentences about a read-back that cannot be keyed are deliberately NOT reused here: those
+  are instructions to edit configuration in another repository, and 0.1.20 already established that
+  no sentence written for a person reading the log reaches an agent's brief.
+
+Four tests drive the train with a stubbed agent and assert on the rendered deploy brief: that it
+contains neither `example.com` nor `~/.claude/skills`, that it carries each configured deploy
+command in configured order and names no deploy tool the config did not, that it reads every
+configured environment back, and that a repository with a deploy and no verify gets the fallback
+instruction. All four fail against the copy on master.
+
+The incidents this is measured against: `pitwall-voe`, where a deploy read configuration from the
+wrong copy of a file for hours with nothing reporting it, and `pitwall-ey8` and `pitwall-azp`,
+which exist because a deploy was promoted on its own word.
+
+Refs pitwall-b492.
+
 ## 0.1.40
 
 Report a rollup the handoff could not read as unread, not as not-green
