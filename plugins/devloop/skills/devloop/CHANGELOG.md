@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.50
+
+The lander's merge-lock token is now minted by `config.sh --land` and carried in `args` as `lockToken`, not made up by the lock step. Launch `land.js` with the object that command printed - it refuses to start without a token and will not mint one for itself, so an args object assembled by hand lands nothing. A relaunch after a stall goes through the same command. The lock step is handed the token to write and is asked only for what `cat` printed back; it must not substitute a timestamp or a pid of its own.
+
 ## 0.1.49
 
 Re-running a node-role lane's setup step is now safe. The link command is a no-op when the
