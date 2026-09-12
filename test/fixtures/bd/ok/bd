@@ -14,7 +14,19 @@ case "$*" in
   "blocked --json") cat "$out/blocked.json" ;;
   "show --id "*" --json --include-dependents")
     if [ -f "$out/show-$3.json" ]; then
-      cat "$out/show-$3.json"
+      if [ -n "$BD_NOTES_LOG" ] && [ -f "$BD_NOTES_LOG" ]; then
+        python3 -c '
+import io, json, sys
+shown = json.load(io.open(sys.argv[1]))
+log = "\n" + io.open(sys.argv[2]).read()
+mine = "".join(log.split("\n" + sys.argv[3] + " ")[1:])
+row = shown[0] if isinstance(shown, list) else shown
+row["notes"] = (row.get("notes") or "") + mine
+print(json.dumps(shown))
+' "$out/show-$3.json" "$BD_NOTES_LOG" "$3"
+      else
+        cat "$out/show-$3.json"
+      fi
     else
       echo "Error fetching $3: no issue found matching \"$3\"" >&2
       printf '{\n  "error": "no issues found matching the provided IDs",\n  "schema_version": 1\n}\n'
@@ -26,7 +38,9 @@ case "$*" in
       echo "Error: nowhere to record notes" >&2
       exit 1
     fi
-    printf '%s\n' "$2 $4" >> "$BD_NOTES_LOG"
+    if [ "${BD_NOTES_DROP:-0}" != "1" ]; then
+      printf '%s\n' "$2 $4" >> "$BD_NOTES_LOG"
+    fi
     echo "✓ Updated issue: $2"
     ;;
   "update "*" --remove-label "*)

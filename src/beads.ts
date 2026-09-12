@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { mkdir, readFile, rmdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import {
@@ -9,7 +10,10 @@ import {
   type Lane,
   type Origin,
 } from "@404sl/pitwall-schema";
+import { workspaceFile } from "./autofix.js";
 import { collectionError, failureOf } from "./errors.js";
+import { LOCK_ROOT } from "./lanes.js";
+import { NOTE_STAMP } from "./staleness.js";
 import {
   classify,
   parentIdOf,
@@ -376,26 +380,205 @@ export function appendNotesArgs(id: string, text: string): string[] {
   return ["update", id, "--append-notes", text];
 }
 
+export const SESSION_VAR = "PITWALL_SESSION";
+export const DEFAULT_LOCK_PREFIX = "devloop";
+export const NOTE_LOCK = "bd-write.lock";
+export const NOTE_ATTEMPTS = 3;
+const TOKEN_LENGTH = 24;
+const RAW_TOKEN_LENGTH = 12;
+
+export interface NotePace {
+  lockWaitMs: number;
+  lockPollMs: number;
+  settleMs: number;
+  retryMs: number;
+}
+
+export const DEFAULT_NOTE_PACE: NotePace = {
+  lockWaitMs: 60_000,
+  lockPollMs: 500,
+  settleMs: 300,
+  retryMs: 1000,
+};
+
+export interface NoteOptions {
+  env?: Record<string, string | undefined>;
+  timeoutMs?: number;
+  lockRoot?: string;
+  pace?: Partial<NotePace>;
+  warn?: (line: string) => void;
+}
+
+export function writerOf(env: Record<string, string | undefined>): string {
+  const named = env[SESSION_VAR] || env["USER"] || "unknown";
+  const word = named.replace(/\s+/g, "-").replace(/^-/, "").replace(/-$/, "");
+  return word === "" ? "unknown" : word;
+}
+
+export function stampNote(text: string, writer: string, now: Date): string {
+  const at = now.toISOString().replace(/\.\d{3}Z$/, "Z");
+  const stamp = `${at} ${writer}`;
+  if (!NOTE_STAMP.test(stamp)) {
+    throw new Error(`the stamp ${JSON.stringify(stamp)} is not one a reader recognises`);
+  }
+  return `\n${stamp}\n${text}`;
+}
+
+export function noteToken(text: string): string {
+  const flat = text.replace(/[^A-Za-z0-9]/g, "").slice(0, TOKEN_LENGTH);
+  return flat === "" ? text.slice(0, RAW_TOKEN_LENGTH) : flat;
+}
+
+export function noteLanded(shown: unknown, token: string): boolean {
+  const row = Array.isArray(shown) ? shown[0] : shown;
+  if (typeof row !== "object" || row === null) {
+    return false;
+  }
+  const notes = (row as Record<string, unknown>)["notes"];
+  const flat = typeof notes === "string" ? notes.replace(/[^A-Za-z0-9]/g, "") : "";
+  return flat.includes(token);
+}
+
+export function noteLockPath(lockPrefix: string, lockRoot: string = LOCK_ROOT): string {
+  return join(lockRoot, `${lockPrefix}-${NOTE_LOCK}`);
+}
+
+async function lockPrefixAt(root: string): Promise<string> {
+  const found = workspaceFile(root);
+  if (found === undefined) {
+    return DEFAULT_LOCK_PREFIX;
+  }
+  try {
+    const parsed: unknown = JSON.parse(await readFile(found.path, "utf8"));
+    const prefix = (parsed as Record<string, unknown> | null)?.["lockPrefix"];
+    return typeof prefix === "string" && prefix !== "" ? prefix : DEFAULT_LOCK_PREFIX;
+  } catch {
+    return DEFAULT_LOCK_PREFIX;
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return ms <= 0 ? Promise.resolve() : new Promise((done) => setTimeout(done, ms));
+}
+
+async function takeLock(path: string, pace: NotePace): Promise<boolean> {
+  const deadline = Date.now() + pace.lockWaitMs;
+  for (;;) {
+    try {
+      await mkdir(path);
+      return true;
+    } catch (cause) {
+      if ((cause as { code?: unknown } | null)?.code !== "EEXIST") {
+        return false;
+      }
+    }
+    if (Date.now() >= deadline) {
+      return false;
+    }
+    await sleep(pace.lockPollMs);
+  }
+}
+
+interface NoteWriter {
+  beadsDir: string;
+  env: Record<string, string | undefined>;
+  timeoutMs: number;
+  lockRoot: string | undefined;
+  pace: NotePace;
+  warn: (line: string) => void;
+}
+
+function noteWriterFor(root: string, options: NoteOptions): NoteWriter {
+  return {
+    beadsDir: join(resolve(root), BEADS_DIR),
+    env: options.env ?? process.env,
+    timeoutMs: options.timeoutMs ?? TIMEOUT_MS,
+    lockRoot: options.lockRoot,
+    pace: { ...DEFAULT_NOTE_PACE, ...options.pace },
+    warn: options.warn ?? ((line) => void process.stderr.write(`pitwall: ${line}\n`)),
+  };
+}
+
+async function bdWrite(writer: NoteWriter, args: readonly string[]): Promise<string> {
+  const { stdout } = await run("bd", args as string[], {
+    encoding: "utf8",
+    env: { ...writer.env, [BEADS_DIR_VAR]: writer.beadsDir },
+    maxBuffer: MAX_OUTPUT,
+    timeout: writer.timeoutMs,
+  });
+  return stdout;
+}
+
+type ReadBack = "landed" | "lost" | "unreadable";
+
+async function readBack(writer: NoteWriter, id: string, token: string): Promise<ReadBack> {
+  try {
+    return noteLanded(JSON.parse(await bdWrite(writer, showArgs(id))), token) ? "landed" : "lost";
+  } catch {
+    return "unreadable";
+  }
+}
+
+async function appendVerified(writer: NoteWriter, id: string, text: string): Promise<void> {
+  const described = `bd update ${id} --append-notes`;
+  const stamped = stampNote(text, writerOf(writer.env), new Date());
+  const token = noteToken(text);
+  const args = appendNotesArgs(id, stamped);
+  for (let attempt = 1; attempt <= NOTE_ATTEMPTS; attempt++) {
+    let refused: string | undefined;
+    try {
+      await bdWrite(writer, args);
+    } catch (cause) {
+      refused = failureOf(cause, writer.timeoutMs);
+    }
+    let landed = await readBack(writer, id, token);
+    if (landed === "lost" && refused === undefined) {
+      await sleep(writer.pace.settleMs);
+      landed = await readBack(writer, id, token);
+    }
+    if (landed === "landed") {
+      if (attempt > 1) {
+        writer.warn(`note on ${id} landed on attempt ${attempt}`);
+      }
+      return;
+    }
+    if (refused !== undefined) {
+      throw new Error(`${described}: ${refused}`);
+    }
+    if (landed === "unreadable") {
+      writer.warn(`could not read ${id} back to verify the note - it may well have landed, not retrying`);
+      return;
+    }
+    if (attempt < NOTE_ATTEMPTS) {
+      await sleep(writer.pace.retryMs);
+    }
+  }
+  writer.warn(`note on ${id} did NOT land after ${NOTE_ATTEMPTS} attempts - the text follows so it is not lost:`);
+  writer.warn(stamped);
+  throw new Error(`${described}: the note did not land after ${NOTE_ATTEMPTS} attempts`);
+}
+
+async function appendNote(writer: NoteWriter, root: string, id: string, text: string): Promise<void> {
+  const lock = noteLockPath(await lockPrefixAt(root), writer.lockRoot);
+  const held = await takeLock(lock, writer.pace);
+  if (!held) {
+    writer.warn(`${lock} busy after ${writer.pace.lockWaitMs}ms, writing ${id} unserialised (read-back still applies)`);
+  }
+  try {
+    await appendVerified(writer, id, text);
+  } finally {
+    if (held) {
+      await rmdir(lock).catch(() => undefined);
+    }
+  }
+}
+
 export function noteAppender(
   root: string,
-  options: Omit<ReadIssuesOptions, "errors"> = {},
+  options: NoteOptions = {},
 ): (id: string, text: string) => Promise<void> {
-  const beadsDir = join(resolve(root), BEADS_DIR);
-  const env = options.env ?? process.env;
-  const timeoutMs = options.timeoutMs ?? TIMEOUT_MS;
-  return async (id, text) => {
-    const args = appendNotesArgs(id, text);
-    try {
-      await run("bd", args, {
-        encoding: "utf8",
-        env: { ...env, [BEADS_DIR_VAR]: beadsDir },
-        maxBuffer: MAX_OUTPUT,
-        timeout: timeoutMs,
-      });
-    } catch (cause) {
-      throw new Error(`bd update ${id} --append-notes: ${failureOf(cause, timeoutMs)}`);
-    }
-  };
+  const writer = noteWriterFor(root, options);
+  return (id, text) => appendNote(writer, root, id, text);
 }
 
 export const OWNER_LABELS = ["needs-decision", "needs-access"] as const;
@@ -421,36 +604,23 @@ export function removeLabelArgs(id: string, labels: readonly string[]): string[]
   return ["update", id, ...labels.flatMap((label) => ["--remove-label", label])];
 }
 
-export function issueActor(
-  root: string,
-  options: Omit<ReadIssuesOptions, "errors"> = {},
-): IssueActor {
-  const beadsDir = join(resolve(root), BEADS_DIR);
-  const env = options.env ?? process.env;
-  const timeoutMs = options.timeoutMs ?? TIMEOUT_MS;
-  const call = async (args: readonly string[], described: string): Promise<void> => {
-    try {
-      await run("bd", args as string[], {
-        encoding: "utf8",
-        env: { ...env, [BEADS_DIR_VAR]: beadsDir },
-        maxBuffer: MAX_OUTPUT,
-        timeout: timeoutMs,
-      });
-    } catch (cause) {
-      throw new Error(`${described}: ${failureOf(cause, timeoutMs)}`);
-    }
-  };
+export function issueActor(root: string, options: NoteOptions = {}): IssueActor {
+  const writer = noteWriterFor(root, options);
   return async (id, action) => {
     const { note } = action;
     const labels = action.removeLabels ?? [];
     let noted = false;
     try {
       if (note !== undefined && note !== "") {
-        await call(appendNotesArgs(id, note), `bd update ${id} --append-notes`);
+        await appendNote(writer, root, id, note);
         noted = true;
       }
       if (labels.length > 0) {
-        await call(removeLabelArgs(id, labels), `bd update ${id} --remove-label`);
+        try {
+          await bdWrite(writer, removeLabelArgs(id, labels));
+        } catch (cause) {
+          throw new Error(`bd update ${id} --remove-label: ${failureOf(cause, writer.timeoutMs)}`);
+        }
       }
     } catch (cause) {
       throw new IssueActionFailure(cause instanceof Error ? cause.message : String(cause), noted);

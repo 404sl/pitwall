@@ -51,6 +51,7 @@ export type Announcer = (notice: CollectionNotice) => Promise<Delivery>;
 export interface ServeOptions extends StateOptions {
   uiDir?: string;
   timeoutMs?: number;
+  lockRoot?: string;
   updates?: UpdateCheck;
   builds?: BuildCheck;
   collect?: Collector;
@@ -652,7 +653,11 @@ async function serveAction(
   }
   const note = noteFor(route.action, text, classification);
   const removedLabels = [...OWNER_LABELS];
-  const act = issueActor(indexed.root, { env: options.env, timeoutMs: options.timeoutMs });
+  const act = issueActor(indexed.root, {
+    env: options.env,
+    timeoutMs: options.timeoutMs,
+    lockRoot: options.lockRoot,
+  });
   try {
     await act(route.id, { note, removeLabels: removedLabels });
   } catch (cause) {

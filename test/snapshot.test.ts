@@ -443,9 +443,9 @@ test("with no ref for this session a notice is computed, held and recorded on th
   );
   assert.equal(existsSync(log), false);
   const recorded = readFileSync(notes, "utf8");
-  assert.match(recorded, /mw-1 Completion notice for mw-planning-session \(c1796a\)/);
+  assert.match(recorded, /^mw-1 \n\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z \S+\nCompletion notice for mw-planning-session \(c1796a\)/m);
   assert.match(recorded, new RegExp(`${SESSION_REF_VAR} is not set`));
-  assert.match(recorded, /mw-1\.1 Completion notice/);
+  assert.match(recorded, /^mw-1\.1 \n\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z \S+\nCompletion notice/m);
 });
 
 function scannedRoot(place: Workspace, name: string, notify: boolean): string {
@@ -843,7 +843,7 @@ test("an issue that could not be closed is recorded on the bead and collected as
   assert.equal(refused.length, 1);
   assert.match(refused[0]?.message ?? "", /acme\/site\/issues\/7 was not commented and not closed/);
   assert.match(refused[0]?.message ?? "", /HTTP 403: Resource not accessible/);
-  assert.match(readFileSync(join(place.home, "notes.log"), "utf8"), /mw-1 .*HTTP 403/);
+  assert.match(readFileSync(join(place.home, "notes.log"), "utf8"), /^mw-1 \n\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z \S+\n.*HTTP 403/m);
 });
 
 test("the snapshot reports whether the reason an issue stopped is still true", async () => {
