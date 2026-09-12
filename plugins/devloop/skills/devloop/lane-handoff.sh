@@ -189,7 +189,7 @@ neutral='s#[A-Za-z/._-]*CLAUDE\.md#REPO-DOC#g; s#[A-Za-z/._-]*AGENTS\.md#REPO-DO
 #    meant to write. GitHub and git both add and rewrite text.
 check_one() {
   local _path="$1" _slug="$2" _pr="$3"
-  local body msgs trailers hits head_sha state verdict rollup_head msgs_rc trailers_rc
+  local body msgs hits head_sha state verdict rollup_head msgs_rc
   local attempt rollup_json rollup_err gh_rc read_rc said began
 
   body=$(gh pr view "$_pr" --repo "$_slug" --json title,body 2>/dev/null \
@@ -205,18 +205,30 @@ check_one() {
     echo "                 may not exist. An empty read is not a clean read." >&2
     return 7
   fi
-  msgs=$(git -C "$_path" log "origin/master..origin/${BRANCH}" --format=%B 2>/dev/null); msgs_rc=$?
-  trailers=$(git -C "$_path" log "origin/master..origin/${BRANCH}" --format='%an <%ae>%n%(trailers)' 2>/dev/null); trailers_rc=$?
-  if [ "$msgs_rc" != 0 ] || [ "$trailers_rc" != 0 ]; then
-    echo "lane-handoff.sh: could not read origin/master..origin/${BRANCH} in ${_path}, so the" >&2
-    echo "                 commit messages and trailers of ${_slug}#${_pr} cannot be read. A" >&2
-    echo "                 compliance pass over the pull request body alone is not a compliance" >&2
-    echo "                 pass, so nothing was labelled. Point --repo-path at a checkout that" >&2
-    echo "                 fetches ${BRANCH}, then re-run." >&2
+  msgs=$(gh pr view "$_pr" --repo "$_slug" --json commits 2>/dev/null \
+    | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+cs=d.get('commits') if isinstance(d,dict) else None
+if not cs: raise SystemExit(1)
+for c in cs:
+    h=c.get('messageHeadline') or ''
+    b=c.get('messageBody') or ''
+    if h.endswith('\u2026') and b.startswith('\u2026'): print(h[:-1]+b[1:])
+    else: print(h); print(b)
+    for a in c.get('authors') or []:
+        print('%s <%s>' % (a.get('name') or a.get('login') or '', a.get('email') or ''))
+" 2>/dev/null); msgs_rc=$?
+  if [ "$msgs_rc" != 0 ] || [ -z "$(printf '%s' "$msgs" | tr -d '[:space:]')" ]; then
+    echo "lane-handoff.sh: could not read the commits of ${_slug}#${_pr} from GitHub, so its" >&2
+    echo "                 commit messages and trailers cannot be graded. A compliance pass over" >&2
+    echo "                 the pull request body alone is not a compliance pass, so nothing was" >&2
+    echo "                 labelled. gh may have failed, the token may be expired, or the pull" >&2
+    echo "                 request may not exist. An empty read is not a clean read." >&2
     return 7
   fi
 
-  hits=$(printf '%s\n%s\n%s\n' "$body" "$msgs" "$trailers" \
+  hits=$(printf '%s\n%s\n' "$body" "$msgs" \
     | sed "$neutral" \
     | grep -inE "$authorship|$leakage" \
     | head -20)
@@ -321,10 +333,8 @@ print(('BAD:'+','.join(bad) if bad else 'GREEN')+'|'+(d.get('headRefOid') or '')
 
 # A path MAY BE OMITTED and then it is the repository's key, which is what config.sh's own
 # --check validator blesses. Defaulting it to the empty string instead resolved every such
-# repository to the workspace ROOT: the -d test below passes, the origin/<branch> check then
-# fails, and every handoff in that workspace hard-fails. Worse than the exit - had the root
-# been a checkout carrying the branch, compliance would have been graded against the wrong
-# repository's commit messages.
+# repository to the workspace ROOT, and the worktree sweep below would then look for the
+# branch's checkout in the wrong repository.
 cfg_err_file=$(mktemp "${TMPDIR:-/tmp}/lane-handoff-cfg.XXXXXX")
 CONFIGURED=$(bash "$SKILL_DIR/config.sh" repos 2>"$cfg_err_file" | python3 -c "
 import json,sys
@@ -412,18 +422,6 @@ for p in prs:
   for num in $found; do
     case " $SEEN " in *" ${rslug}#${num} "*) continue ;; esac
     if [ "$rslug" = "$SLUG" ]; then rp="$REPO_PATH"; else rp="$rdir"; fi
-    if [ ! -d "$rp" ]; then
-      echo "lane-handoff.sh: ${rslug}#${num} is open on ${BRANCH} and ${rp} is not a checkout" >&2
-      echo "                 here, so its commit messages cannot be read. Nothing was labelled." >&2
-      exit 7
-    fi
-    git -C "$rp" fetch origin --quiet 2>/dev/null
-    if ! git -C "$rp" rev-parse --verify --quiet "origin/${BRANCH}" >/dev/null; then
-      echo "lane-handoff.sh: ${rslug}#${num} is open on ${BRANCH} but ${rp} has no" >&2
-      echo "                 origin/${BRANCH}, so its commit messages cannot be read." >&2
-      echo "                 Nothing was labelled." >&2
-      exit 7
-    fi
     SEEN="$SEEN ${rslug}#${num}"
     SWEPT_LIST="$SWEPT_LIST ${rslug}#${num}"
     SWEPT_PATHS="${SWEPT_PATHS}${rp}

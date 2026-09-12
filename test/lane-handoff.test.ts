@@ -48,12 +48,14 @@ interface Second {
   labelSimilar?: boolean;
   labelGarbled?: boolean;
   noSlug?: boolean;
+  commitsFails?: boolean;
 }
 
 interface Primary {
   rollupHead?: string;
   refSha?: string;
   refFails?: boolean;
+  message?: string;
 }
 
 function git(dir: string, ...args: string[]): string {
@@ -65,6 +67,20 @@ function git(dir: string, ...args: string[]): string {
 function executable(path: string, body: string): void {
   writeFileSync(path, body);
   chmodSync(path, 0o755);
+}
+
+function commitsJson(message: string, oid: string): string {
+  const [headline, ...rest] = message.split("\n");
+  return JSON.stringify({
+    commits: [
+      {
+        messageHeadline: headline,
+        messageBody: rest.join("\n").replace(/^\n/, ""),
+        authors: [{ name: "Nobody", email: "nobody@example.invalid", login: "nobody" }],
+        oid,
+      },
+    ],
+  });
 }
 
 function harness(
@@ -105,10 +121,12 @@ function harness(
   git(repo, "update-ref", "refs/remotes/origin/master", base);
   writeFileSync(join(repo, "a.txt"), "two\n");
   git(repo, "add", "a.txt");
-  git(repo, "commit", "--quiet", "-m", "Fix the thing");
+  git(repo, "commit", "--quiet", "-m", primary?.message ?? "Fix the thing");
   const head = git(repo, "rev-parse", "HEAD");
   git(repo, "update-ref", `refs/remotes/origin/${BRANCH}`, head);
   git(repo, "checkout", "--quiet", base);
+  const thingCommits = join(root, "commits-thing.json");
+  writeFileSync(thingCommits, `${commitsJson(primary?.message ?? "Fix the thing", head)}\n`);
 
   let otherHead = "";
   if (second) {
@@ -132,6 +150,10 @@ function harness(
     otherHead = git(other, "rev-parse", "HEAD");
     git(other, "update-ref", `refs/remotes/origin/${BRANCH}`, otherHead);
     git(other, "checkout", "--quiet", otherBase);
+    writeFileSync(
+      join(root, "commits-other.json"),
+      `${commitsJson(second.message ?? "Regenerate the artwork from the same source", otherHead)}\n`,
+    );
   }
 
   const ghLog = join(root, "gh.log");
@@ -159,6 +181,11 @@ function harness(
                     }${second.mergeState ? `,"mergeStateStatus":"${second.mergeState}"` : ""}}\\n' '${second.rollup}' '${otherHead}' ;;`
             }`,
             `  *"--repo acme/other --json title,body"*) printf '%s\\n' '${second.body}' ;;`,
+            `  *"--repo acme/other --json commits"*)${
+              second.commitsFails
+                ? ` echo "gh: API rate limit exceeded for acme/other" >&2; exit 1 ;;`
+                : ` cat "${join(root, "commits-other.json")}" ;;`
+            }`,
             `  "label list --repo acme/other"*)${
               second.labelListFails
                 ? ` echo "gh: HTTP 403 on acme/other labels" >&2; exit 1 ;;`
@@ -191,6 +218,7 @@ function harness(
       }`,
       `  *statusCheckRollup*) printf '{"statusCheckRollup":[{"name":"ci","conclusion":"SUCCESS"}],"headRefOid":"${primary?.rollupHead ?? head}"}\\n' ;;`,
       `  *"--json title,body"*) printf '{"title":"Fix the thing","body":"It was broken. Now it is not."}\\n' ;;`,
+      `  *"--json commits"*) cat "${thingCommits}" ;;`,
       `  *"--json labels"*) printf '{"labels":[{"name":"lane-verified"}]}\\n' ;;`,
       `  "label list"*) printf '[{"name":"lane-verified"}]\\n' ;;`,
       `  "label create"*) : ;;`,
@@ -725,39 +753,63 @@ test("a configured repository with no slug has one read from its own origin", ()
   assert.match(ran.calls, /pr edit 7 --repo acme\/other/);
 });
 
-test("a --repo-path whose checkout does not carry the branch is refused, not graded on the body alone", () => {
-  const box = harness("");
-  const elsewhere = join(box.root, "elsewhere");
-  mkdirSync(elsewhere);
-  git(elsewhere, "init", "--quiet");
-  git(elsewhere, "config", "user.email", "nobody@example.invalid");
-  git(elsewhere, "config", "user.name", "Nobody");
-  writeFileSync(join(elsewhere, "c.txt"), "one\n");
-  git(elsewhere, "add", "c.txt");
-  git(elsewhere, "commit", "--quiet", "-m", "unrelated");
+function elsewhere(box: Harness): string {
+  const dir = join(box.root, "elsewhere");
+  mkdirSync(dir);
+  git(dir, "init", "--quiet");
+  git(dir, "config", "user.email", "nobody@example.invalid");
+  git(dir, "config", "user.name", "Nobody");
+  writeFileSync(join(dir, "c.txt"), "one\n");
+  git(dir, "add", "c.txt");
+  git(dir, "commit", "--quiet", "-m", "unrelated");
+  return dir;
+}
 
-  const ran = handoff(
-    box,
-    [
-      "--repo-path",
-      elsewhere,
-      "--slug",
-      "acme/thing",
-      "--pr",
-      "14",
-      "--branch",
-      BRANCH,
-      "--issue",
-      "acme-1",
-      "--note-file",
-      box.notePath,
-    ],
-    true,
-  );
+function fromElsewhere(box: Harness, dir: string): string[] {
+  return [
+    "--repo-path",
+    dir,
+    "--slug",
+    "acme/thing",
+    "--pr",
+    "14",
+    "--branch",
+    BRANCH,
+    "--issue",
+    "acme-1",
+    "--note-file",
+    box.notePath,
+  ];
+}
+
+test("a --repo-path whose checkout does not carry the branch still hands off a green, compliant pull request", () => {
+  const box = harness("");
+  const ran = handoff(box, fromElsewhere(box, elsewhere(box)), true);
+
+  assert.equal(ran.status, 0, ran.stdout + ran.stderr);
+  assert.match(ran.stdout, /handed off: acme\/thing#14/);
+  assert.match(ran.calls, /pr view 14 --repo acme\/thing --json commits/);
+  assert.doesNotMatch(ran.stderr, /could not read/);
+});
+
+test("a commit claiming a machine author is refused even when the checkout does not carry the branch", () => {
+  const box = harness("", undefined, undefined, {
+    message: "Fix the thing\n\nWritten by an AI assistant.",
+  });
+  const ran = handoff(box, fromElsewhere(box, elsewhere(box)), true);
+
+  assert.equal(ran.status, 2, ran.stdout + ran.stderr);
+  assert.match(ran.stdout, /non-compliant: acme\/thing#14/);
+  assert.match(ran.stdout, /Written by an AI assistant/);
+  assert.equal(ran.labelled, false, "a pull request was labelled with an authorship claim in a commit the checkout never held");
+});
+
+test("commits GitHub will not report are refused, not graded on the body alone", () => {
+  const box = harness("", { list: '[{"number":7}]', rollup: READY, body: CLEAN, commitsFails: true });
+  const ran = handoff(box, [...required(box), "--issue", "acme-1", "--note-file", box.notePath], true);
 
   assert.equal(ran.status, 7, ran.stdout + ran.stderr);
-  assert.match(ran.stderr, new RegExp(`could not read origin/master[.][.]origin/${BRANCH} in `));
-  assert.ok(ran.stderr.includes(elsewhere), "the refusal does not name the path it could not read");
+  assert.match(ran.stderr, /could not read the commits of acme\/other#7 from GitHub/);
   assert.doesNotMatch(ran.stdout, /not-green/);
   assert.equal(ran.labelled, false, "a pull request was labelled with its commit messages never read");
 });

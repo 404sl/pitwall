@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.57
+
+The handoff no longer needs `--repo-path` to carry the branch. Commit messages and trailers are read from GitHub, the same place the body comes from, so a checkout that never fetched the branch - or a lane whose worktree is already gone - hands off a green pull request rather than exiting 7. A commit text GitHub will not report, or reports empty, is refused at exit 7 with nothing labelled: re-run it the way a failed sha read is re-run. The exit-7 remedy that said to point `--repo-path` at a checkout fetching the branch no longer applies.
+
 ## 0.1.56
 
 A release train is now launched with `config.sh --train <repo>`, the way the serial lander is launched with `config.sh --land`. Pass the object it prints and nothing assembled by hand: it carries the merge-lock token the train writes into the holder file, and `land-train.js` refuses to start without one rather than minting its own. One launch per repository - the train still refuses to guess which. A lock step must never be asked to mint the token it reports; a replayed answer agrees with itself while the lock belongs to another run.
