@@ -325,3 +325,69 @@ test("the handoff brief says a refusal is never answered by labelling by hand", 
       "choosing between believing a refusal it thinks is wrong and bypassing it",
   );
 });
+
+const NOTE_WRITERS = ["task.js", "land.js", "land-train.js", "rework.js"];
+
+test("no brief tells a run to write a tracker note with a raw append", () => {
+  for (const file of NOTE_WRITERS) {
+    const source = readFileSync(join(SKILL, file), "utf8");
+    const raw = source
+      .split("\n")
+      .map((line, at) => ({ line, at: at + 1 }))
+      .filter(({ line }) => line.includes("--append-notes"))
+      .filter(({ line }) => !line.includes("bd-note.sh"));
+    assert.deepEqual(
+      raw.map(({ line, at }) => `${file}:${at}:${line.trim()}`),
+      [],
+      "a raw append is an unserialised read-modify-write on one text field: two overlapping " +
+        "writers both read the old notes, both append, and the second wins - exit 0, no trace. " +
+        "It is also the only path that produces an unstamped note, and passing the text as a " +
+        "shell argument has already had a note truncated at a backtick. bd-note.sh takes the " +
+        "lock, reads the write back and stamps it; the briefs have to send a run through it.",
+    );
+  }
+});
+
+const WRITES_NOTES = ["task.js", "land.js", "land-train.js"];
+
+test("every brief that asks for a tracker note names the script and the writer", () => {
+  for (const file of WRITES_NOTES) {
+    const source = readFileSync(join(SKILL, file), "utf8");
+    assert.ok(
+      source.includes("${SKILL_DIR}/bd-note.sh"),
+      `${file} no longer names bd-note.sh by the skillDir it is handed, so a run has no path to ` +
+        "the script and falls back to the raw append this guard exists to keep out",
+    );
+    assert.ok(
+      source.includes("PITWALL_SESSION="),
+      `${file} invokes bd-note.sh without PITWALL_SESSION, so the stamp names whatever $USER the ` +
+        "run happens to carry rather than the session that wrote the note",
+    );
+    assert.ok(
+      source.includes("--note-file"),
+      `${file} passes the note as an argument rather than from a file, so a backtick or a dollar-` +
+        "paren in it is evaluated by the shell before bd sees it and the note is stored truncated",
+    );
+  }
+});
+
+test("the brief that parks an issue renders the note command against the issue it parks", async () => {
+  const { calls, done } = runScript(
+    "task.js",
+    { id: "zz-aaa2", slot: 1, root: "/root", skillDir: "/skill", lockPrefix: "pw", repos: HANDOFF_REPOS },
+    (call, n) => {
+      if (n === 1) {
+        return { eligible: false, repo: "site", title: "needs a person", priority: 2, ui: false, reason: "a decision", ticket: "" };
+      }
+      return { verification: "zz-aaa2 [BUG] OPEN needs-decision", notes: "" };
+    },
+  );
+  await done;
+  const handover = calls.find((c) => c.label.startsWith("handover:"));
+  assert.ok(handover, `no handover step ran. Steps seen: ${calls.map((c) => c.label || "?").join(", ")}`);
+  assert.ok(
+    handover.prompt.includes("/skill/bd-note.sh zz-aaa2 --note-file "),
+    "the park brief does not resolve bd-note.sh against the skillDir it was handed and name the " +
+      `issue, so the run has nothing to invoke:\n${handover.prompt}`,
+  );
+});

@@ -1122,9 +1122,12 @@ ${dead.map((d) => `  ${d.slug}#${d.number} in ${REPOS[d.repo]} - ${d.why}${d.iss
 FOR EACH ONE, three things, in this order:
 
 1. Append the finding to its tracker issue, if it named one. Write the text to a file first and
-   pass it with --append-notes, never --notes and never an inline double-quoted string:
-     cd ${ROOT} && bd update <id> --append-notes "$(cat <file>)"
-   --notes overwrites the whole field and has already destroyed a decision somebody recorded.
+   pass the file to bd-note.sh, never 'bd update --notes' and never an inline double-quoted
+   string - a backtick or a $( inside one is evaluated by the shell before bd sees it:
+     cd ${ROOT} && PITWALL_SESSION=lander bash ${SKILL_DIR}/bd-note.sh <id> --note-file <file>
+   The script takes the write lock, stamps the note and reads it back; a bare append is an
+   unserialised read-modify-write and loses one of two overlapping notes silently. --notes
+   overwrites the whole field and has already destroyed a decision somebody recorded.
    Include: that the pull request was attempted and not landed, the reason above in full, that
    the label was removed, and that the branch was left untouched. Somebody reworking this needs
    the diagnosis more than they need the verdict.
@@ -1244,8 +1247,10 @@ meaning does not: "this PR does not finish the ticket", "that acceptance criteri
 "the remaining half is a person's". WHERE A PR SAYS THAT, DO NOT CLOSE THE ISSUE. Append to it
 instead, naming the merge and what is still outstanding:
 
-  BEADS_DIR=${ROOT}/.beads bd update <id> --append-notes "Merged as <repo> #<n>, <sha>, and
-  deployed. NOT closed: the PR states <what remains>."
+  Write 'Merged as <repo> #<n>, <sha>, and deployed. NOT closed: the PR states <what remains>.'
+  to a file, then:
+
+  cd ${ROOT} && BEADS_DIR=${ROOT}/.beads PITWALL_SESSION=lander bash ${SKILL_DIR}/bd-note.sh <id> --note-file <that file>
 
 MERGED AND DONE ARE DIFFERENT FACTS AND YOU ONLY KNOW ONE OF THEM. On 2026-08-26 this step
 closed app-w23d.11 when PR #509 merged. Its acceptance criteria required scoring the real
