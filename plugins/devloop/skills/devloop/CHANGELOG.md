@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.51
+
+The handoff gate's survey of sibling pull requests no longer uses GraphQL, so a
+handoff is no longer blocked by the shared per-account secondary rate limiter
+when the branch has no sibling. A session that previously saw the gate exit 7
+with "could not list the open pull requests of <repo>" during a limiter outage
+should re-run it rather than labelling anything by hand. Note that compliance,
+status-rollup and label calls still use GraphQL, so a total outage can still stop
+a handoff — later in the run, and with a different message.
+
 ## 0.1.50
 
 The lander's merge-lock token is now minted by `config.sh --land` and carried in `args` as `lockToken`, not made up by the lock step. Launch `land.js` with the object that command printed - it refuses to start without a token and will not mint one for itself, so an args object assembled by hand lands nothing. A relaunch after a stall goes through the same command. The lock step is handed the token to write and is asked only for what `cat` printed back; it must not substitute a timestamp or a pid of its own.
