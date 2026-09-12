@@ -426,3 +426,23 @@ test("running the assignment twice on one branch adds nothing the second time an
   assert.equal(git(repo.dir, "rev-parse", "HEAD^{tree}"), tree, "the second run changed the tree");
   assert.equal(git(repo.dir, "status", "--porcelain"), "", "the second run left the worktree dirty");
 });
+
+test("the commit the lander writes carries nothing the handoff gate screens for", () => {
+  const repo = repoAt("0.1.33");
+  branch(repo, "devloop/neutral-subject", () => write(repo.dir, SKILL, "Changed.\n"));
+
+  assert.equal(assign(repo, ["--entry-file", entryFile("What it did.")]).status, 0);
+
+  const message = git(repo.dir, "log", "-1", "--format=%B")
+    .replace(/\.claude-plugin/g, "DOT-PLUGIN-DIR")
+    .replace(/plugins\/devloop/g, "PLUGIN-DIR")
+    .replace(/skills\/devloop/g, "SKILL-DIR");
+
+  assert.doesNotMatch(
+    message,
+    /devloop|lane-verified|\/tmp\/|\/private\/tmp/i,
+    "this commit is written at merge time, after lane-handoff.sh has already checked the " +
+      "branch, so nothing re-reads it before it is on public master",
+  );
+  assert.match(message, /^Set the plugin version 0\.1\.34$/m);
+});
