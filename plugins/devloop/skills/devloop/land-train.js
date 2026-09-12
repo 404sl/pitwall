@@ -800,57 +800,6 @@ rebase, and do not touch any working tree. This step reads and reports.
 Never use 2>&1 - it makes some commands fail outright. Use absolute paths, never relative ones.`
 }
 
-phase('Lock')
-const lock = await agent(
-  `Take the serial merge lock so only one lander runs at a time:
-
-  mkdir ${MERGE_LOCK} 2>/dev/null && echo "TAKEN" || echo "HELD"
-
-If it prints HELD, another lander is running. Read who has it, and DO NOTHING ELSE - do not
-remove the lock, do not wait for it, do not proceed:
-
-  cat ${MERGE_LOCK}/holder
-
-Report status "held" and what cat printed as 'holder'. If the file is not there yet, report an
-empty 'holder' - that is how a lock looks between another run's mkdir and its printf, and this
-field is the one ownership is decided from, so a value filled in to have something to say is
-worse than none.
-
-If it prints TAKEN, STAMP THE LOCK WITH THE TOKEN THIS RUN WAS LAUNCHED WITH. The holder file used
-to say just "lander", which identifies nothing, so the release step could not prove the lock it
-was about to delete was its own - it removed a shared resource unconditionally, which is rightly
-refused, and every train leaked its lock and needed clearing by hand. Write this one:
-
-  printf '%s\\n' '${LOCK_TOKEN}' > ${MERGE_LOCK}/holder
-  cat ${MERGE_LOCK}/holder
-
-THE TOKEN IS ALREADY IN THAT COMMAND AND IS NOT YOURS TO MINT. Do not put $(date +%s), $$, or
-anything you compose yourself in its place, and do not ask anybody for one. It is minted per
-launch outside this run and the release step is handed the same value, so a token substituted
-here is a lock this train cannot give back. A token this step made up would also be stale in
-exactly the way this arrangement exists to prevent: replay this answer and every value in it
-agrees with itself while the lock on disk belongs to somebody else.
-
-REPORT ONE VALUE: 'holder' is what cat printed back, verbatim and untidied, whatever it says. Do
-not correct it to match the token above - the train compares the two and stands down when they
-differ, because the file is the fact and what you report is a claim about it. The newline the file
-ends with and cat prints back is not a difference: the train ignores whitespace around both.`,
-  { schema: { type: 'object', required: ['status', 'holder'], properties: {
-      status: { type: 'string', enum: ['taken', 'held'] },
-      holder: { type: 'string' } } },
-    model: 'haiku', effort: 'low', phase: 'Lock' },
-)
-
-const holder = trimmed(lock && lock.holder)
-if (!lock || lock.status !== 'taken') {
-  return { status: 'held', notes: `Another lander holds ${MERGE_LOCK}${holder ? `, whose holder file reads [${holder}]` : ''}. Nothing was done.` }
-}
-
-if (holder !== LOCK_TOKEN) {
-  const unproven = `LEAKED - the lock step reported taken, but ${MERGE_LOCK}/holder reads [${holder}] against a token of [${LOCK_TOKEN}], so this train cannot prove the lock is its own. Nothing was built and nothing was removed. Read ${MERGE_LOCK}/holder: if it names a run that has finished, clear it; if it names another lander, it is theirs and they give it back themselves.`
-  return { status: 'held', notes: unproven, lock: unproven }
-}
-
 const landed = []
 const rejected = []
 const flakes = []
@@ -869,6 +818,7 @@ let heldBack = []
 const perRepo = {}
 let released = null
 let lockState = `LEAKED - the release step never reported. Read ${MERGE_LOCK}/holder before touching anything.`
+let lockOwned = false
 
 // Build a train, test it, and merge it if green. On red, split and recurse: the failure is in one
 // half or the other, and log2(n) CI runs finds it. Depth is capped because a train that keeps
@@ -954,6 +904,58 @@ async function runTrain(only, suffix, depth) {
 }
 
 try {
+phase('Lock')
+const lock = await agent(
+  `Take the serial merge lock so only one lander runs at a time:
+
+  mkdir ${MERGE_LOCK} 2>/dev/null && echo "TAKEN" || echo "HELD"
+
+If it prints HELD, another lander is running. Read who has it, and DO NOTHING ELSE - do not
+remove the lock, do not wait for it, do not proceed:
+
+  cat ${MERGE_LOCK}/holder
+
+Report status "held" and what cat printed as 'holder'. If the file is not there yet, report an
+empty 'holder' - that is how a lock looks between another run's mkdir and its printf, and this
+field is the one ownership is decided from, so a value filled in to have something to say is
+worse than none.
+
+If it prints TAKEN, STAMP THE LOCK WITH THE TOKEN THIS RUN WAS LAUNCHED WITH. The holder file used
+to say just "lander", which identifies nothing, so the release step could not prove the lock it
+was about to delete was its own - it removed a shared resource unconditionally, which is rightly
+refused, and every train leaked its lock and needed clearing by hand. Write this one:
+
+  printf '%s\\n' '${LOCK_TOKEN}' > ${MERGE_LOCK}/holder
+  cat ${MERGE_LOCK}/holder
+
+THE TOKEN IS ALREADY IN THAT COMMAND AND IS NOT YOURS TO MINT. Do not put $(date +%s), $$, or
+anything you compose yourself in its place, and do not ask anybody for one. It is minted per
+launch outside this run and the release step is handed the same value, so a token substituted
+here is a lock this train cannot give back. A token this step made up would also be stale in
+exactly the way this arrangement exists to prevent: replay this answer and every value in it
+agrees with itself while the lock on disk belongs to somebody else.
+
+REPORT ONE VALUE: 'holder' is what cat printed back, verbatim and untidied, whatever it says. Do
+not correct it to match the token above - the train compares the two and stands down when they
+differ, because the file is the fact and what you report is a claim about it. The newline the file
+ends with and cat prints back is not a difference: the train ignores whitespace around both.`,
+  { schema: { type: 'object', required: ['status', 'holder'], properties: {
+      status: { type: 'string', enum: ['taken', 'held'] },
+      holder: { type: 'string' } } },
+    model: 'haiku', effort: 'low', phase: 'Lock' },
+)
+
+const holder = trimmed(lock && lock.holder)
+if (!lock || lock.status !== 'taken') {
+  return { status: 'held', notes: `Another lander holds ${MERGE_LOCK}${holder ? `, whose holder file reads [${holder}]` : ''}. Nothing was done.` }
+}
+
+if (holder !== LOCK_TOKEN) {
+  const unproven = `LEAKED - the lock step reported taken, but ${MERGE_LOCK}/holder reads [${holder}] against a token of [${LOCK_TOKEN}], so this train cannot prove the lock is its own. Nothing was built and nothing was removed. Read ${MERGE_LOCK}/holder: if it names a run that has finished, clear it; if it names another lander, it is theirs and they give it back themselves.`
+  return { status: 'held', notes: unproven, lock: unproven }
+}
+lockOwned = true
+
 outcome = await runTrain(ONLY, '', 0)
 
 // A RED MASTER IS NEVER DEPLOYED. This condition used to be `landed.length && lastSha` alone,
@@ -1114,6 +1116,7 @@ for (const [name, a] of Object.entries(perRepo)) {
   }
 }
 } finally {
+if (lockOwned) {
 released = await agent(
   `Release the serial merge lock. This runs however the train ended - merged, stopped or failed -
 because a lock left behind stands down every train after it for no reason.
@@ -1157,6 +1160,7 @@ if (released && released.status === 'released') {
 } else {
   lockState = `LEAKED - ${MERGE_LOCK} still held ${LOCK_TOKEN} after the release step, or the step answered nothing. Check ${MERGE_LOCK}/holder still reads ${LOCK_TOKEN} before removing it - if it reads anything else, another train has it and it is not yours.`
   log(`${lockState}\n    ${(released && released.notes) || 'the release agent returned nothing'}`)
+}
 }
 }
 

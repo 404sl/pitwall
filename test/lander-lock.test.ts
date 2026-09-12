@@ -69,6 +69,72 @@ test("land-train.js releases the merge lock when a step throws", async () => {
   );
 });
 
+test("each lander takes the merge lock inside the try that gives it back", () => {
+  const acquisitions: Record<string, RegExp> = {
+    "land.js": /label: 'lock'/,
+    "land-train.js": /phase\('Lock'\)/,
+  };
+  for (const [file, acquisition] of Object.entries(acquisitions)) {
+    const source = readFileSync(join(SKILL, file), "utf8");
+    const tries = [...source.matchAll(/^try \{$/gm)].map((m) => m.index);
+    assert.equal(tries.length, 1, `${file} has ${tries.length} top-level try blocks, expected one`);
+    const taken = source.search(acquisition);
+    assert.ok(taken >= 0, `${file} no longer takes the lock the way this test looks for it`);
+    assert.ok(
+      (tries[0] ?? Infinity) < taken,
+      `${file} takes the merge lock before the try whose finally releases it. Nothing between ` +
+        "the two can throw today, but one inserted await away the script dies holding the lock " +
+        "with no release step in the journal at all - the shape that cost four runs on 2026-09-09.",
+    );
+  }
+});
+
+test("neither lander runs a release step for a lock it did not take", async () => {
+  const standDowns: Record<string, unknown[]> = {
+    "land.js": [{ status: "held_by_other", holder: "lander-1788960000-10001" }, undefined],
+    "land-train.js": [{ status: "held", holder: "land-train-1788960000-10001" }, undefined],
+  };
+  for (const [file, replies] of Object.entries(standDowns)) {
+    for (const reply of replies) {
+      const { calls, done } = runScript(file, landArgs(TOKEN), (call, n) => {
+        if (n === 1) return reply;
+        throw new Error(`${file} carried on past a lock it does not hold: ${call.label || call.prompt.slice(0, 40)}`);
+      });
+      await done;
+
+      assert.equal(
+        calls.length,
+        1,
+        `${file} ran ${calls.length} steps after a lock step that answered ${JSON.stringify(reply)}. ` +
+          `Steps seen: ${calls.map((c) => c.label || "?").join(", ")}. With the acquisition inside ` +
+          "the try, a stand-down still passes through the finally, and a release there would hand " +
+          "release-lock.sh a token against somebody else's lock.",
+      );
+      assert.deepEqual(
+        calls.filter((c) => c.prompt.includes("release-lock.sh")).map((c) => c.label),
+        [],
+        `${file} offered a removal for a lock another run holds`,
+      );
+    }
+  }
+});
+
+test("neither lander runs a release step when the lock step itself throws", async () => {
+  for (const file of ["land.js", "land-train.js"]) {
+    const { calls, done } = runScript(file, landArgs(TOKEN), () => {
+      throw new Error("the lock agent died before answering");
+    });
+    await assert.rejects(done, /died before answering/);
+
+    assert.equal(
+      calls.length,
+      1,
+      `${file} ran a step after the lock agent threw. Steps seen: ${calls.map((c) => c.label || "?").join(", ")}. ` +
+        "Nothing proved the lock was taken, so the finally must not try to give it back.",
+    );
+  }
+});
+
 test("land.js puts the token it was launched with into the release command itself", async () => {
   const { calls, done } = runScript("land.js", landArgs(TOKEN), (call, n) => {
     if (n === 1) return { status: "taken", holder: TOKEN };
