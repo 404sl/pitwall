@@ -325,7 +325,11 @@ for longer than `--stale-minutes` (default 20, the window `lanes.sh` uses) is an
 naming the task, the workflow and how long it has been silent. An issue re-dispatched after a
 supervisor stop or a launch crash leaves every abandoned run reading `RUNNING` for ever, so the
 event judges only the newest-writing run for each issue and says which one of how many it
-judged - an earlier dispatch is not evidence about that issue. It stays `RUNNING` and the gate
+judged - an earlier dispatch is not evidence about that issue. A run whose age cannot be measured
+at all - nothing under its workflow directory can be stat'd - says `journal age unknown`, a third
+state beside the annotation and its absence. It is counted as a dispatch of its issue and then not
+judged: read as a writer it would silence the report for every other run of the same issue, and
+read as silence it would put the kill recommendation behind a failed stat. It stays `RUNNING` and the gate
 stays shut - a lane waiting on CI writes nothing for half an hour - but a task orphaned at
 dispatch reads `RUNNING` for as long as its empty output file exists, and that used to hold the
 event shut in silence. The gate used to count `lanes.sh` rows through a pattern fixed to one

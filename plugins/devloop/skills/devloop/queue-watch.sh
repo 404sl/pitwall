@@ -84,6 +84,7 @@ silent_lanes() {
       key = (ids == "no id in its labels") ? "task " task : ids
       if (!(key in runs)) { order[++n] = key; runs[key] = 0 }
       runs[key]++
+      if (index($0, "journal age unknown")) next
       if (match($0, /journal silent [0-9]+m/)) {
         age = substr($0, RSTART + 15, RLENGTH - 16) + 0
         if (!(key in quiet) || age < quiet[key]) { quiet[key] = age; newest[key] = rest }
