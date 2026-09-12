@@ -243,7 +243,7 @@ const LAND = {
   properties: {
     // conflict: the rebase surfaced a disagreement about what the code should do, rather
     // than two edits to nearby lines. That is a decision, and it goes back to a person.
-    status: { enum: ['merged', 'red_after_rebase', 'conflict', 'master_red', 'blocked'] },
+    status: { enum: ['merged', 'red_after_rebase', 'conflict', 'merge_shaped', 'master_red', 'blocked'] },
     mergeSha: { type: 'string', description: 'the sha of the commit the merge produced ON THE DEFAULT BRANCH - the squash commit gh pr merge reports, never the pull request head, because a deployed host is compared against this' },
     masterGreen: { type: 'boolean' },
     failureDetail: { type: 'string', description: 'the failing examples and their messages, in enough detail to act on without re-running anything' },
@@ -743,6 +743,12 @@ a report to the supervisor, not a problem for you to solve.
                     label back. Return status 'blocked' with the line it printed in 'notes',
                     VERBATIM - the run puts it back for a later round instead of retiring it,
                     and that line is the only record of why. Do NOT report this as red.
+     8  merge_shaped the branch already carries a merge commit of its own, and rebasing it onto
+                    master would drop whatever exists only in that merge's resolution. Nothing
+                    was touched. NOT a failure and NOT a conflict: return status 'merge_shaped'
+                    with the line it printed in 'notes', VERBATIM - the label stays on and the
+                    branch goes back for rework onto master. Do NOT rebase, merge or push it by
+                    hand, and do not report this as a conflict.
      5  master_red  master was not green. Nothing was touched. Return status 'master_red'.
      6  usage       the arguments, the repository or the plugin version it had to assign are
                     wrong. Return status 'blocked' with the line it printed in 'notes',
@@ -1138,12 +1144,13 @@ ${LAW}`
 // author's work is left exactly as it was, only un-queued.
 //
 // NOT retired: 'master_red' (nothing is wrong with the PR), 'blocked' (CI simply had not
-// finished - a timing accident that the next round should retry), 'version_unreadable' (the
-// number could not be read at all, which is ignorance rather than a finding), 'pr_unreadable'
-// (gh could not be asked about the PR, which is the same ignorance about a different read),
-// 'fetch_failed' (the refs everything else was read from may be stale, which is ignorance about
-// all of them at once), and 'agent_error' (we do not know what happened, and un-queueing on
-// ignorance loses work silently).
+// finished - a timing accident that the next round should retry), 'merge_shaped' (the branch
+// needs rebuilding onto master, and un-queueing it would reopen an issue whose work is fine),
+// 'version_unreadable' (the number could not be read at all, which is ignorance rather than a
+// finding), 'pr_unreadable' (gh could not be asked about the PR, which is the same ignorance
+// about a different read), 'fetch_failed' (the refs everything else was read from may be stale,
+// which is ignorance about all of them at once), and 'agent_error' (we do not know what
+// happened, and un-queueing on ignorance loses work silently).
 const RETIRE = { type: 'object', required: ['status'], additionalProperties: false, properties: {
   status: { enum: ['retired', 'partial', 'nothing_to_do'] },
   retired: { type: 'array', items: { type: 'string' } },
@@ -1523,7 +1530,9 @@ try {
       }
 
       stopped.push({ ...pr, why, detail })
-      log(`STOPPED ${keyOf(pr)} - ${why}\n    ${detail || 'the agent returned nothing'}`)
+      log(why === 'merge_shaped'
+        ? `NEEDS REWORK ${keyOf(pr)} - the branch carries a merge commit of its own, so the lander will not rebase it. The label stays on, the issue stays as it is, and nothing was touched - rebuild the branch onto master.\n    ${detail || 'the agent returned nothing'}`
+        : `STOPPED ${keyOf(pr)} - ${why}\n    ${detail || 'the agent returned nothing'}`)
 
       // A red master blocks everything behind it, so there is no point trying the rest.
       //

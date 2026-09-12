@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.55
+
+The lander now refuses to rebase a branch that already carries a merge commit of
+its own. It exits `merge_shaped` instead, keeps the handoff label on the pull
+request and leaves the tracker issue alone - the branch needs rebuilding onto
+master, not retiring. A session that sees `NEEDS REWORK` in a lander run should
+rework the branch onto master rather than re-deriving the work. If the lander
+cannot count a branch's merge commits at all it stops with exit 6 rather than
+rebasing on a guess, and the pull request is retried in a later round.
+
 ## 0.1.54
 
 A rework session now rebases a dropped pull request onto master instead of
