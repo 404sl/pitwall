@@ -27,7 +27,7 @@
 # These used to be one machine's absolute paths, pinned to one project and one session of it.
 # Anywhere else that reported another project's runs as though they were this workspace's.
 # The harness names its per-project directory after the workspace path with the separators
-# swapped, so it can be computed; the session inside it is whichever ran most recently.
+# swapped, so it can be computed; the runs inside it are read from every session, nested or flat.
 CFG="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/config.sh"
 ROOT="${DEVLOOP_ROOT:-$(bash "$CFG" root 2>/dev/null)}"
 [ -n "$ROOT" ] || { echo "$(basename "${BASH_SOURCE[0]}"): no workspace resolved - refusing to guess." >&2; exit 6; }
@@ -73,7 +73,7 @@ done
 echo
 echo "WORKFLOW DIRECTORIES BY LAST WRITE"
 shown=0
-for run in $(ls -dt "$WF"/*/subagents/workflows/*/ "$WF"/*/ 2>/dev/null); do
+ls -dt "$WF"/*/subagents/workflows/*/ "$WF"/*/ 2>/dev/null | while IFS= read -r run; do
   [ -f "$run/journal.jsonl" ] || continue
   [ "$shown" -lt 14 ] || break
   shown=$((shown + 1))

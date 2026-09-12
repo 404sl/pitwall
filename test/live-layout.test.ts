@@ -23,10 +23,10 @@ interface Space {
   tasks: string;
 }
 
-function workspace(): Space {
+function workspace(projects = "projects"): Space {
   const root = mkdtempSync(join(tmpdir(), "pitwall-live-layout-"));
   const skill = join(root, "skill");
-  const wf = join(root, "projects");
+  const wf = join(root, projects);
   const tasks = join(root, "tasks");
   mkdirSync(skill);
   mkdirSync(wf);
@@ -146,4 +146,17 @@ test("a nested run whose transcript names no id is reported unknown, not dropped
 
   assert.equal(out.status, 0, out.stderr);
   assert.match(out.stdout, /^ {2}wf_quiet +UNKNOWN - could not identify/m);
+});
+
+test("a harness directory whose path contains a space still lists every run", () => {
+  const space = workspace("my projects");
+  flat(space, "wf_flat", "sr-flat1");
+  nested(space, "11111111-aaaa-4bbb-8ccc-000000000001", "wf_aaa", "sr-nest1");
+
+  const out = live(space);
+
+  assert.equal(out.status, 0, out.stderr);
+  assert.match(out.stdout, /^ {2}wf_flat +sr-flat1 /m);
+  assert.match(out.stdout, /^ {2}wf_aaa +sr-nest1 /m);
+  assert.doesNotMatch(out.stdout, /UNKNOWN/);
 });
