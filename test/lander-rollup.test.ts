@@ -178,3 +178,136 @@ test("a check still in flight is not ready rather than red", () => {
   assert.match(ran.out, /^not_ready:/m, `a check that has not concluded is not reported as pending:\n${ran.out}`);
   assert.equal(ran.code, 7, `a pending check does not exit 7:\n${ran.out}\n${ran.err}`);
 });
+
+function rollupView(head: string, rollup: string): string {
+  return `echo '{"labels":[{"name":"lane-verified"}],"statusCheckRollup":${rollup},"headRefOid":"${head}"}'`;
+}
+
+test("a rollup of commit statuses that all succeeded is green and ready to merge", () => {
+  const box = workspace();
+  const head = git(box.repo, "rev-parse", "refs/remotes/origin/devloop/zz-aaa1");
+  const bin = stubs(
+    box.root,
+    rollupView(
+      head,
+      '[{"__typename":"StatusContext","context":"codecov/project","state":"SUCCESS"},' +
+        '{"__typename":"StatusContext","context":"vercel","state":"SUCCESS"}]',
+    ),
+    "exit 0",
+  );
+
+  const ran = run(box.root, box.repo, bin);
+
+  assert.doesNotMatch(
+    ran.out,
+    /^unreadable:/m,
+    `a commit status is reported as a rollup that did not parse:\n${ran.out}`,
+  );
+  assert.match(ran.out, /^ready:/m, `green commit statuses are not read as ready:\n${ran.out}`);
+  assert.equal(ran.code, 0, `green commit statuses do not exit 0:\n${ran.out}\n${ran.err}`);
+});
+
+test("a commit status that failed is red and names the context", () => {
+  const box = workspace();
+  const head = git(box.repo, "rev-parse", "refs/remotes/origin/devloop/zz-aaa1");
+  const bin = stubs(
+    box.root,
+    rollupView(
+      head,
+      '[{"__typename":"StatusContext","context":"vercel","state":"SUCCESS"},' +
+        '{"__typename":"StatusContext","context":"codecov/project","state":"FAILURE"}]',
+    ),
+    "exit 1",
+  );
+
+  const ran = run(box.root, box.repo, bin);
+
+  assert.doesNotMatch(ran.out, /^not_ready:/m, `a failed commit status is deferred as pending:\n${ran.out}`);
+  assert.match(ran.out, /^red: codecov\/project failed/m, `a failed commit status is not red, or does not name the context:\n${ran.out}`);
+  assert.equal(ran.code, 4, `a failed commit status does not exit 4:\n${ran.out}\n${ran.err}`);
+});
+
+test("a commit status in error is red, not pending", () => {
+  const box = workspace();
+  const head = git(box.repo, "rev-parse", "refs/remotes/origin/devloop/zz-aaa1");
+  const bin = stubs(
+    box.root,
+    rollupView(head, '[{"__typename":"StatusContext","context":"codecov/patch","state":"ERROR"}]'),
+    "exit 1",
+  );
+
+  const ran = run(box.root, box.repo, bin);
+
+  assert.match(ran.out, /^red: codecov\/patch failed/m, `an errored commit status is not red:\n${ran.out}`);
+  assert.equal(ran.code, 4, `an errored commit status does not exit 4:\n${ran.out}\n${ran.err}`);
+});
+
+test("a commit status still pending or expected is not ready rather than red or unreadable", () => {
+  for (const state of ["PENDING", "EXPECTED"]) {
+    const box = workspace();
+    const head = git(box.repo, "rev-parse", "refs/remotes/origin/devloop/zz-aaa1");
+    const bin = stubs(
+      box.root,
+      rollupView(head, `[{"__typename":"StatusContext","context":"codecov/project","state":"${state}"}]`),
+      "exit 8",
+    );
+
+    const ran = run(box.root, box.repo, bin);
+
+    assert.doesNotMatch(ran.out, /^red:/m, `a ${state} commit status is reported as red:\n${ran.out}`);
+    assert.match(
+      ran.out,
+      /^not_ready: codecov\/project on 101 has not concluded/m,
+      `a ${state} commit status is not reported as pending by context:\n${ran.out}`,
+    );
+    assert.equal(ran.code, 7, `a ${state} commit status does not exit 7:\n${ran.out}\n${ran.err}`);
+  }
+});
+
+test("a rollup mixing check runs and commit statuses reads both kinds", () => {
+  const box = workspace();
+  const head = git(box.repo, "rev-parse", "refs/remotes/origin/devloop/zz-aaa1");
+
+  const redStatus = stubs(
+    box.root,
+    rollupView(
+      head,
+      '[{"__typename":"CheckRun","name":"CI","conclusion":"SUCCESS","status":"COMPLETED"},' +
+        '{"__typename":"StatusContext","context":"codecov/project","state":"FAILURE"}]',
+    ),
+    "exit 1",
+  );
+  const ranRed = run(box.root, box.repo, redStatus);
+  assert.match(ranRed.out, /^red: codecov\/project failed/m, `a failed status beside a green check run is not red:\n${ranRed.out}`);
+  assert.equal(ranRed.code, 4, ranRed.out + ranRed.err);
+
+  const other = workspace();
+  const otherHead = git(other.repo, "rev-parse", "refs/remotes/origin/devloop/zz-aaa1");
+  const pendingRun = stubs(
+    other.root,
+    rollupView(
+      otherHead,
+      '[{"__typename":"CheckRun","name":"CI","conclusion":"","status":"IN_PROGRESS"},' +
+        '{"__typename":"StatusContext","context":"codecov/project","state":"SUCCESS"}]',
+    ),
+    "exit 8",
+  );
+  const ranPending = run(other.root, other.repo, pendingRun);
+  assert.match(ranPending.out, /^not_ready: CI on 101/m, `a running check run beside a green status is not pending:\n${ranPending.out}`);
+  assert.equal(ranPending.code, 7, ranPending.out + ranPending.err);
+
+  const third = workspace();
+  const thirdHead = git(third.repo, "rev-parse", "refs/remotes/origin/devloop/zz-aaa1");
+  const allGreen = stubs(
+    third.root,
+    rollupView(
+      thirdHead,
+      '[{"__typename":"CheckRun","name":"CI","conclusion":"SUCCESS","status":"COMPLETED"},' +
+        '{"__typename":"StatusContext","context":"codecov/project","state":"SUCCESS"}]',
+    ),
+    "exit 0",
+  );
+  const ranGreen = run(third.root, third.repo, allGreen);
+  assert.match(ranGreen.out, /^ready:/m, `a green check run beside a green status is not ready:\n${ranGreen.out}`);
+  assert.equal(ranGreen.code, 0, ranGreen.out + ranGreen.err);
+});

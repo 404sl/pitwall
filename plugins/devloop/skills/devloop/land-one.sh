@@ -238,8 +238,16 @@ rollup=d.get('statusCheckRollup') or []
 labels=[l['name'] for l in d.get('labels') or []]
 if not rollup:
     print('EMPTY|%s|%s' % (d.get('headRefOid',''), ','.join(labels))); raise SystemExit
-bad=[c.get('name') for c in rollup if c.get('conclusion') and c.get('conclusion') not in ('SUCCESS','NEUTRAL','SKIPPED')]
-pending=[c.get('name') for c in rollup if not c.get('conclusion')]
+def read(c):
+    label=c.get('name') or c.get('context') or c.get('__typename') or 'unnamed'
+    if c.get('__typename')=='StatusContext' or ('state' in c and 'conclusion' not in c):
+        s=str(c.get('state') or '').upper()
+        return label, 'GREEN' if s=='SUCCESS' else 'PENDING' if s in ('PENDING','EXPECTED','') else 'BAD'
+    k=str(c.get('conclusion') or '').upper()
+    return label, 'PENDING' if not k else 'GREEN' if k in ('SUCCESS','NEUTRAL','SKIPPED') else 'BAD'
+read_all=[read(c) for c in rollup]
+bad=[l for l,v in read_all if v=='BAD']
+pending=[l for l,v in read_all if v=='PENDING']
 state='BAD:'+','.join(bad) if bad else 'PENDING:'+','.join(pending) if pending else 'GREEN'
 print('%s|%s|%s' % (state, d.get('headRefOid',''), ','.join(labels)))
 " 2>"$py_err")
