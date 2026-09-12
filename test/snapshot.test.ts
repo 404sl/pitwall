@@ -515,6 +515,31 @@ test("the board reports a scanned notifier once, and the same row after a refres
   assert.equal(existsSync(notes), false);
 });
 
+test("the written board carries a scanned notifier as one problem against the run", async () => {
+  const place = withConfig("{}");
+  rmSync(place.configPath);
+  const root = scannedRoot(place, "scanned", true);
+  const notes = join(root, "notes.log");
+  const shown = () => {
+    const onDisk = readSnapshot({ env: place.env, home: place.home }).snapshot;
+    assert.ok(onDisk !== undefined);
+    return buildBoard(onDisk).problems.filter((row) => row.source === place.configPath);
+  };
+  await emitSnapshot({ ...options(place), env: place.env });
+  const first = shown();
+  assert.equal(first.length, 1);
+  assert.equal(first[0]?.scope, "run");
+  assert.match(first[0]?.message ?? "", /no completion notice is delivered for it/);
+  assert.match(first[0]?.message ?? "", new RegExp(root));
+  await emitSnapshot({
+    ...options(place),
+    env: { ...place.env, BD_LIST_FIXTURE: "landed", BD_NOTES_LOG: notes },
+  });
+  const again = shown();
+  assert.equal(again.length, 1);
+  assert.equal(again[0]?.message, first[0]?.message);
+});
+
 test("a notice the tracker would not record reaches the board as an error", async () => {
   const place = withConfig("{}");
   notifyingRoot(place);

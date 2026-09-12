@@ -467,12 +467,17 @@ export async function emitSnapshot(options: SnapshotOptions = {}): Promise<Snaps
     limits: historyLimits(options),
     now: new Date(snapshot.generatedAt),
   });
+  const unlisted = unlistedReport(roots, options);
   const recorded = parseSnapshot({
     ...snapshot,
     projects: snapshot.projects.map((project) =>
       withHistory(project, history.metrics.get(project.id)),
     ),
-    errors: history.error === undefined ? snapshot.errors : [...snapshot.errors, history.error],
+    errors: [
+      ...snapshot.errors,
+      ...unlisted,
+      ...(history.error === undefined ? [] : [history.error]),
+    ],
   });
   const written = carryFailingSince(keptBoard(recorded, previous, gathered), previous);
   const delivered = await announce(gathered, previous, roots, options);
@@ -484,7 +489,7 @@ export async function emitSnapshot(options: SnapshotOptions = {}): Promise<Snaps
     code,
     read: true,
     delivered,
-    unlisted: unlistedReport(roots, options),
+    unlisted,
     upstream,
   };
 }
