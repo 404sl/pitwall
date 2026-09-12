@@ -529,21 +529,9 @@ Report the conclusions you actually saw in 'checks', and the head sha in 'headRe
 run's log says what was true rather than only whether it liked it.`
 }
 
-function versionAhead(branch, master) {
-  const a = SEMVER.exec(branch)
-  const b = SEMVER.exec(master)
-  if (!a || !b) return null
-  for (let i = 1; i <= 3; i++) {
-    const x = Number(a[i])
-    const y = Number(b[i])
-    if (x !== y) return x > y
-  }
-  return false
-}
-
 function versionVerdict(read) {
   if (!read) {
-    return { why: 'version_unreadable', detail: 'the version step answered nothing, and a number nobody read is not a number that is ahead' }
+    return { why: 'version_unreadable', detail: 'the version step answered nothing, and a number nobody read is not a number the next one can be counted from' }
   }
   if (read.status === 'no_manifest') return null
   if (read.status !== 'read') {
@@ -553,32 +541,11 @@ function versionVerdict(read) {
     }
   }
   if (!read.touchesPlugin) return null
-  const branch = trimmed(read.branchVersion)
   const master = trimmed(read.masterVersion)
-  const ahead = versionAhead(branch, master)
-  if (ahead === null) {
+  if (!SEMVER.test(master)) {
     return {
       why: 'version_unreadable',
-      detail: `the declared devloop plugin version cannot be compared - the branch reported '${branch}' and origin/master reported '${master}', and a version that is not three numbers cannot be ordered against anything`
-    }
-  }
-  if (!ahead) {
-    if (read.labelled === false || read.open === false) {
-      return {
-        why: 'version_not_ahead',
-        defer: read.labelled === false ? `${LABEL} is no longer on it` : 'it is closed, merged or a draft',
-        detail: `the branch declares devloop plugin version ${branch} and origin/master holds ${master}, which is not strictly greater`
-      }
-    }
-    if (read.labelled !== true || read.open !== true) {
-      return {
-        why: 'version_unreadable',
-        detail: `the branch declares devloop plugin version ${branch} and origin/master holds ${master}, which is not strictly greater - but the step did not report whether the pull request still carries ${LABEL} and is still open, and a refusal that un-queues a pull request must not act on a queue state nobody read`
-      }
-    }
-    return {
-      why: 'version_not_ahead',
-      detail: `the branch declares devloop plugin version ${branch} and origin/master holds ${master}, which is not strictly greater. Bump ${PLUGIN_MANIFEST} and ${MARKETPLACE_MANIFEST} above ${master} and push again.`
+      detail: `origin/master declares devloop plugin version '${master}' in ${PLUGIN_MANIFEST}, which is not three numbers, and the number this merge lands is counted up from it - so nothing can be incremented and ${MARKETPLACE_MANIFEST} cannot be made to agree with it. The branch's own number is not used.`
     }
   }
   return null
@@ -689,9 +656,11 @@ a report to the supervisor, not a problem for you to solve.
 
      bash ${SKILL_DIR}/land-one.sh --repo-path ${path} --slug ${slug(pr.repo)} --pr ${pr.number} --branch ${pr.branch}
 
-   It checks master is green, rebases onto master only if the branch is behind, force-pushes
-   with the guard, and waits for CI on the pushed head by BLOCKING rather than polling. Then it
-   re-reads the rollup, refuses an empty one, and refuses one that describes a stale head.
+   It checks master is green, rebases onto master only if the branch is behind, assigns the next
+   devloop plugin version when the branch ships a file under plugins/ or .claude-plugin/,
+   force-pushes with the guard, and waits for CI on the pushed head by BLOCKING rather than
+   polling. Then it re-reads the rollup, refuses an empty one, and refuses one that describes a
+   stale head.
 
    Read its EXIT CODE, not its prose:
 
@@ -1415,11 +1384,6 @@ try {
         label: `version:${keyOf(pr)}`, phase: 'Land', schema: VERSION, model: 'haiku', effort: 'low'
       })
       const stale = versionVerdict(declared)
-      if (stale && stale.defer) {
-        seen.delete(keyOf(pr))
-        log(`DEFERRED ${keyOf(pr)} - ${stale.detail}, and the version step reports ${stale.defer}, so nothing is un-queued and no merge is delegated; it goes back for a later round`)
-        continue
-      }
       if (stale) {
         stopped.push({ ...pr, why: stale.why, detail: stale.detail })
         log(`STOPPED ${keyOf(pr)} - ${stale.why}\n    ${stale.detail}`)
@@ -1430,6 +1394,9 @@ try {
       }
       if (declared && declared.status === 'read' && !declared.touchesPlugin) {
         log(`${keyOf(pr)} - declares devloop plugin version ${trimmed(declared.branchVersion) || '(none)'} against origin/master's ${trimmed(declared.masterVersion) || '(none)'}, and its diff lists no path under plugins/ or .claude-plugin/, so the versions are not compared`)
+      }
+      if (declared && declared.status === 'read' && declared.touchesPlugin) {
+        log(`${keyOf(pr)} - ships a plugin file and declares devloop plugin version ${trimmed(declared.branchVersion) || '(none)'}; that number is not used. land-one.sh assigns the one after origin/master's ${trimmed(declared.masterVersion)} when it pushes, so two plugin pull requests in one pass get consecutive versions instead of the same one`)
       }
       if (declared.status === 'no_manifest') {
         log(`${keyOf(pr)} - origin/master carries no ${PLUGIN_MANIFEST}, so this repository has no published plugin version to walk backwards`)
@@ -1510,7 +1477,7 @@ try {
 
   // Before anything else, un-queue what could not be landed - including when nothing landed at
   // all, which is exactly the run whose findings would otherwise be repeated in full.
-  const dead = stopped.filter((sp) => sp.why === 'conflict' || sp.why === 'red_after_rebase' || sp.why === 'version_not_ahead')
+  const dead = stopped.filter((sp) => sp.why === 'conflict' || sp.why === 'red_after_rebase')
   if (dead.length) {
     phase('Deploy')
     const rt = await agent(retirePrompt(dead), { label: `retire:${dead.length}`, phase: 'Deploy', schema: RETIRE, model: 'sonnet' })

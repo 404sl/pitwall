@@ -789,9 +789,24 @@ see its worktrees and you cannot.
 It is SHARED. Every workspace on this machine runs the version on disk, and sessions
 already running loaded the previous one and will never notice on their own.
 
-So: add an entry to `CHANGELOG.md`, and message the live sessions. `whatsnew.sh` covers
-the ones that start later and the ones that tick; the message covers the one that is
-mid-run right now. Neither substitutes for the other.
+So: record an entry, and message the live sessions. `whatsnew.sh` covers the ones that
+start later and the ones that tick; the message covers the one that is mid-run right now.
+Neither substitutes for the other.
 
 Record what a session should DO differently, not what the diff was. A new script nobody
 is told to run is a file, not a capability.
+
+**A lane writes the entry in its PULL REQUEST BODY, under a `## Plugin changelog`
+heading, and touches none of the three version files** - `.claude-plugin/marketplace.json`,
+`plugins/devloop/.claude-plugin/plugin.json`, or the version heading of `CHANGELOG.md`.
+`assign-plugin-version.sh` copies that section into `CHANGELOG.md` under the version the
+lander assigns at merge time. A lane that picks its own number picks the number every
+other lane in the pass picked: the first to land moves master past the rest, and the rest
+are refused for a reason that has nothing to do with their content.
+
+A body the lander cannot read at all stops the merge rather than moving the number: a
+version whose heading has nothing under it is the entry this whole section exists to
+deliver, and the next pass reads the body again.
+
+Editing the skill by hand, outside the pipeline, you write the `CHANGELOG.md` entry and
+the version yourself - there is no lander in that path to do it for you.

@@ -32,7 +32,8 @@ set -u
 # Default from the WORKSPACE, not from one workspace's prefix. This decides which
 # /tmp/<prefix>-worktrees a merge writes into, so a wrong one silently operates in
 # another project's scratch space rather than failing.
-PREFIX="$(bash "$(dirname "${BASH_SOURCE[0]}")/config.sh" lockPrefix 2>/dev/null || echo devloop)"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PREFIX="$(bash "$HERE/config.sh" lockPrefix 2>/dev/null || echo devloop)"
 LABEL=lane-verified
 REPO_PATH=""; SLUG=""; PR=""; BRANCH=""
 
@@ -93,14 +94,20 @@ case "$master_state" in
   *) say "master_red: master is $master_state - nothing touched"; exit 5 ;;
 esac
 
-# 2. Is the branch already on top of master? If so there is nothing to rebase and nothing to
-#    push, and re-pushing an unchanged head would start a second CI run for no reason.
+# 2. Is there anything to do to the branch before it merges? Two things can be: a rebase when
+#    master has moved under it, and the plugin version when the branch changes a file the
+#    marketplace serves. A branch needing neither is not pushed, and re-pushing an unchanged
+#    head would start a second CI run for no reason.
 behind=$(git rev-list --count "origin/${BRANCH}..origin/master" 2>/dev/null || echo unknown)
 case "$behind" in ''|*[!0-9]*) say "usage: no such branch origin/${BRANCH}"; exit 6 ;; esac
 
-if [ "$behind" = "0" ]; then
-  say "current: ${BRANCH} is already on top of master, no rebase needed"
+plugin_paths=$(git diff --name-only "origin/master...origin/${BRANCH}" 2>/dev/null \
+  | grep -E '^(plugins/|\.claude-plugin/)' | head -3 | tr '\n' ' ')
+
+if [ "$behind" = "0" ] && [ -z "$plugin_paths" ]; then
+  say "current: ${BRANCH} is already on top of master and ships no plugin file, no rebase needed"
 else
+  head_before=$(git rev-parse "origin/${BRANCH}" 2>/dev/null)
   rm -rf "$WT" 2>/dev/null
   mkdir -p "/tmp/${PREFIX}-worktrees"
   git worktree add --force "$WT" "origin/${BRANCH}" >/dev/null 2>/dev/null || {
@@ -108,7 +115,25 @@ else
   cd "$WT" || { cleanup; exit 6; }
   git checkout -B "$BRANCH" "origin/${BRANCH}" >/dev/null 2>/dev/null
 
-  if ! git_with_identity rebase origin/master >/dev/null 2>/dev/null; then
+  dropped=0
+  while [ "$dropped" -lt 20 ]; do
+    case "$(git log -1 --format=%s HEAD 2>/dev/null)" in
+      "Set devloop plugin version "*) ;;
+      *) break ;;
+    esac
+    git rev-parse --verify --quiet HEAD~1 >/dev/null 2>/dev/null || break
+    [ "$(git rev-list --count "origin/master..HEAD~1" 2>/dev/null || echo 0)" -ge 1 ] || break
+    changed=$(git diff --name-only HEAD~1 HEAD 2>/dev/null)
+    [ -n "$changed" ] || break
+    printf '%s\n' "$changed" \
+      | grep -qvE '^(\.claude-plugin/marketplace\.json|plugins/devloop/\.claude-plugin/plugin\.json|plugins/devloop/skills/devloop/CHANGELOG\.md)$' \
+      && break
+    git reset --hard HEAD~1 >/dev/null 2>/dev/null || break
+    dropped=$((dropped + 1))
+  done
+  [ "$dropped" = "0" ] || say "dropped: ${dropped} version commit(s) an earlier round wrote onto ${BRANCH} - the number is counted again from master as it is now"
+
+  if [ "$behind" != "0" ] && ! git_with_identity rebase origin/master >/dev/null 2>/dev/null; then
     # A conflict is a decision, not a task. Report WHAT disagrees and hand it back; guessing
     # here is how a merge that is green on both sides breaks the product.
     files=$(git diff --name-only --diff-filter=U 2>/dev/null | tr '\n' ' ')
@@ -119,15 +144,41 @@ else
     exit 3
   fi
 
-  # Never force-push a default branch; this is not one, and the guard proves it rather than
-  # trusting that the cd above went where it was meant to.
-  if ! git-guard --dir="$WT" --branch="$BRANCH" -- git push --force-with-lease >/dev/null 2>/dev/null; then
-    cd "$REPO_PATH" || true; cleanup
-    say "usage: push --force-with-lease was refused for ${BRANCH}"; exit 6
+  version_note=""
+  if [ -n "$plugin_paths" ]; then
+    version_out=$(bash "$HERE/assign-plugin-version.sh" --worktree "$WT" --slug "$SLUG" --pr "$PR" 2>/dev/null)
+    version_code=$?
+    case "$version_code" in
+      0) version_note=$(printf '%s\n' "$version_out" | head -1) ;;
+      2) version_note=$(printf '%s\n' "$version_out" | head -1) ;;
+      *) cd "$REPO_PATH" || true; cleanup
+         say "usage: the devloop plugin version could not be assigned for ${BRANCH} - ${version_out:-assign-plugin-version.sh printed nothing}"
+         exit 6 ;;
+    esac
   fi
-  cd "$REPO_PATH" || true
-  cleanup
-  say "rebased: ${BRANCH} was ${behind} behind, rebased and pushed"
+
+  head_after=$(git rev-parse HEAD 2>/dev/null)
+  tree_after=$(git rev-parse "HEAD^{tree}" 2>/dev/null)
+  tree_before=$(git rev-parse "origin/${BRANCH}^{tree}" 2>/dev/null)
+  if [ "$head_after" = "$head_before" ] \
+     || { [ "$behind" = "0" ] && [ -n "$tree_after" ] && [ "$tree_after" = "$tree_before" ]; }; then
+    git reset --hard "origin/${BRANCH}" >/dev/null 2>/dev/null
+    cd "$REPO_PATH" || true
+    cleanup
+    say "current: ${BRANCH} needs no rebase and already carries the version it would be assigned, nothing pushed"
+    [ -n "$version_note" ] && say "version: ${version_note}"
+  else
+    # Never force-push a default branch; this is not one, and the guard proves it rather than
+    # trusting that the cd above went where it was meant to.
+    if ! git-guard --dir="$WT" --branch="$BRANCH" -- git push --force-with-lease >/dev/null 2>/dev/null; then
+      cd "$REPO_PATH" || true; cleanup
+      say "usage: push --force-with-lease was refused for ${BRANCH}"; exit 6
+    fi
+    cd "$REPO_PATH" || true
+    cleanup
+    say "pushed: ${BRANCH} was ${behind} behind master, rebased where it had to be, and pushed"
+    [ -n "$version_note" ] && say "version: ${version_note}"
+  fi
 fi
 
 # 3. WAIT FOR CI ON THE HEAD THAT IS ACTUALLY THERE NOW, and wait by blocking rather than by

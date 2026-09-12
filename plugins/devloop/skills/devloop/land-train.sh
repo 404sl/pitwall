@@ -31,6 +31,7 @@
 
 set -u
 
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PREFIX=devloop
 LABEL=lane-verified
 MAX=8
@@ -137,7 +138,7 @@ say ""
 #    reaches master. Squashing rewrites the commits, so without that keyword GitHub cannot match
 #    them and every pull request would sit open looking unlanded. The caller verifies rather than
 #    assuming, because a keyword only fires on merge into the DEFAULT branch.
-included=""; skipped=""; body_lines=""
+included=""; skipped=""; body_lines=""; plugin_prs=""
 msgfile=$(mktemp "${TMPDIR:-/tmp}/train-msg.XXXXXX")
 
 while IFS="$(printf '\t')" read -r num branch title; do
@@ -165,6 +166,9 @@ while IFS="$(printf '\t')" read -r num branch title; do
   }
   say "  added   #${num} ${branch}"
   included="${included}${num} "
+  if git show --name-only --format= HEAD 2>/dev/null | grep -qE '^(plugins/|\.claude-plugin/)'; then
+    plugin_prs="${plugin_prs}${num} "
+  fi
   body_lines="${body_lines}- #${num} ${title}
 "
 done <<EOF
@@ -179,6 +183,25 @@ if [ -z "$included" ]; then
   say ""
   say "empty: every candidate was skipped, no train to open"
   exit 2
+fi
+
+if [ -n "$plugin_prs" ]; then
+  pr_args=""; pr_list=""
+  for num in $plugin_prs; do
+    pr_args="${pr_args}--pr ${num} "
+    pr_list="${pr_list}#${num} "
+  done
+  version_out=$(bash "$HERE/assign-plugin-version.sh" --worktree "$WT" --slug "$SLUG" $pr_args 2>/dev/null)
+  version_code=$?
+  case "$version_code" in
+    0|2) say ""
+         say "version: $(printf '%s\n' "$version_out" | head -1)" ;;
+    *) cd "$REPO_PATH" || true; cleanup
+       git push origin --delete "$TRAIN" >/dev/null 2>/dev/null
+       say ""
+       say "usage: the devloop plugin version could not be assigned to ${TRAIN}, whose plugin change(s) are ${pr_list% } - ${version_out:-assign-plugin-version.sh printed nothing}"
+       exit 6 ;;
+  esac
 fi
 
 # 4. Push and open the pull request. Guard the push: this is not a default branch and the guard

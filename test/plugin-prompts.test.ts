@@ -161,3 +161,31 @@ test("the handoff brief carries no backticks of its own", () => {
     `a backtick inside the brief closes its template literal early. Use 'single quotes':\n${found.join("\n")}`,
   );
 });
+
+test("the brief tells a lane to leave the three plugin version files alone", () => {
+  const fix = promptTemplate(readFileSync(join(SKILL, "task.js"), "utf8"), "fixPrompt");
+  for (const path of [
+    ".claude-plugin/marketplace.json",
+    "plugins/devloop/.claude-plugin/plugin.json",
+    "plugins/devloop/skills/devloop/CHANGELOG.md",
+  ]) {
+    assert.ok(
+      fix.includes(path),
+      `the brief does not name ${path}, so a lane still reads master and picks a number every other ` +
+        "lane in the pass picked - the first to land moves master past the rest, and the rest are " +
+        "refused for a reason that has nothing to do with their content",
+    );
+  }
+});
+
+test("the changelog heading the brief asks a lane for is the one the lander looks for", () => {
+  const fix = promptTemplate(readFileSync(join(SKILL, "task.js"), "utf8"), "fixPrompt");
+  const script = readFileSync(join(SKILL, "assign-plugin-version.sh"), "utf8");
+  const declared = /^HEADING='(.+)'$/m.exec(script);
+  assert.ok(declared, "assign-plugin-version.sh declares no HEADING - update this test rather than deleting it");
+  assert.ok(
+    fix.includes(declared[1] as string),
+    `the brief asks for a section the lander does not read. The entry would be silently replaced by ` +
+      `the pull request title, and nothing would fail: the lander looks for '${declared[1]}'`,
+  );
+});

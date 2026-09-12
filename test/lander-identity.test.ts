@@ -173,7 +173,7 @@ test("a rebase with no identity to borrow is not reported as a conflict with mas
       `sends a branch back to a person for a reason that is not true:\n${ran.out}`,
   );
   assert.equal(ran.code, 0, `${ran.out}\n${ran.err}`);
-  assert.match(ran.out, /^rebased: devloop\/zz-aaa1 was 1 behind, rebased and pushed$/m, ran.out);
+  assert.match(ran.out, /^pushed: devloop\/zz-aaa1 was 1 behind master, rebased where it had to be, and pushed$/m, ran.out);
   assert.equal(
     git(box.bare, "log", "-1", "--format=%cn <%ce>", "devloop/zz-aaa1"),
     `${AUTHOR.name} <${AUTHOR.email}>`,
