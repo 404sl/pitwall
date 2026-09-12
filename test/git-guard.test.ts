@@ -4,17 +4,15 @@ import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { GIT_ENV, spawnGit } from "./support/git.js";
 
 const SKILL = join(import.meta.dirname, "..", "plugins", "devloop", "skills", "devloop");
 const GUARD = join(SKILL, "git-guard.sh");
 
-const GIT_ENV = { GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
-
 function git(cwd: string, ...argv: string[]): string {
-  const run = spawnSync(
-    "git",
+  const run = spawnGit(
     ["-c", "user.name=Guard Test", "-c", "user.email=guard@example.invalid", ...argv],
-    { cwd, encoding: "utf8", env: { ...process.env, ...GIT_ENV } },
+    { cwd },
   );
   assert.equal(run.status, 0, `git ${argv.join(" ")} in ${cwd} failed: ${run.stderr}`);
   return (run.stdout || "").trim();
