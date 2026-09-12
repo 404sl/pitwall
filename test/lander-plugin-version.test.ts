@@ -67,6 +67,7 @@ function stubs(root: string, bare: string, body: string | null, perPr = false, q
 case "$1 $2" in
   "run list")  echo '[{"status":"completed","conclusion":"success"}]' ;;
   "pr checks") exit 0 ;;
+  "api repos/"*) echo '{"total_count":1,"check_runs":[{"name":"CI"}]}' ;;
   "pr list")   printf '%s\\n' ${JSON.stringify(queue)} ;;
   "pr create") echo "https://github.com/acme/site/pull/200" ;;
   "pr view")

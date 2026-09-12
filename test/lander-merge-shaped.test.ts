@@ -39,6 +39,7 @@ function stubs(root: string, bare: string): string {
 case "$1 $2" in
   "run list")  echo '[{"status":"completed","conclusion":"success"}]' ;;
   "pr checks") exit 0 ;;
+  "api repos/"*) echo '{"total_count":1,"check_runs":[{"name":"CI"}]}' ;;
   "pr view")   echo '{"labels":[{"name":"lane-verified"}],"statusCheckRollup":[{"name":"CI","conclusion":"SUCCESS"}],"headRefOid":"'"$(git --git-dir=${JSON.stringify(bare)} rev-parse "refs/heads/$BRANCH_UNDER_TEST" 2>/dev/null)"'"}' ;;
   *) exit 0 ;;
 esac

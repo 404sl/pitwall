@@ -725,6 +725,9 @@ a report to the supervisor, not a problem for you to solve.
 
      bash ${SKILL_DIR}/land-one.sh --repo-path ${path} --slug ${slug(pr.repo)} --pr ${pr.number} --branch ${pr.branch}
 
+   Pass timeout: 600000 on the tool call. The Bash tool's default is two minutes, and after a
+   rebase push this script now blocks for check registration plus the full CI run.
+
    It checks master is green, rebases onto master only if the branch is behind, assigns the next
    devloop plugin version when the branch ships a file under plugins/ or .claude-plugin/,
    force-pushes with the guard, and waits for CI on the pushed head by BLOCKING rather than
