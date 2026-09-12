@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.29
+## 0.1.36
 
 **A release train acted on one repository and its result could not say so.** `land-train.js` took
 one `repo` key on the way in, resolved the path and the slug once, and every later step used those
@@ -56,11 +56,9 @@ relaunch, the survey is ordered before the release, every configured key is pres
 counts, the same number labelled in two repositories is counted in both, a pull request still
 labelled in the train's own repository is explained rather than left as a bare count, and an
 unreadable, an omitted, a slugless and an unnumbered repository each come back unknown rather than
-clean. All fourteen fail against the previous revision.
-
-**Not changed here:** the lock diagnostics in this file name `/tmp/devloop-merge.lock` literally,
-but so does the `mkdir` that takes it, so they describe the lock the run actually holds. Making
-that path configurable belongs to the ticket that owns it.
+clean. All fourteen fail against the previous revision. The two existing suites that drive the
+train - `lander-lock` and `prefix` - pass `repo` in their shared args, which is the newly
+required input supplied rather than any assertion relaxed.
 
 ## 0.1.36
 
