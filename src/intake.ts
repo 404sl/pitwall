@@ -1,13 +1,16 @@
 export const INTAKE_ROUTE = "/api/intake";
 export const INTAKE_DIR = ".pitwall-intake";
 export const INTAKE_LABEL = "unrefined";
-export const INTAKE_TYPE = "feature";
+export const INTAKE_TYPE = "task";
 export const PLANNING_SUFFIX = "-planning-session";
 
-export const MAX_FILE_BYTES = 10 * 1024 * 1024;
-export const MAX_REQUEST_BYTES = 25 * 1024 * 1024;
+const KILOBYTE = 1024;
+const MEGABYTE = KILOBYTE * KILOBYTE;
+
+export const MAX_FILE_BYTES = 10 * MEGABYTE;
+export const MAX_REQUEST_BYTES = 25 * MEGABYTE;
 export const MAX_FILES = 10;
-export const MAX_BODY_BYTES = MAX_REQUEST_BYTES + 1024 * 1024;
+export const MAX_BODY_BYTES = MAX_REQUEST_BYTES + MEGABYTE;
 
 export const TITLE_LIMIT = 120;
 const ELLIPSIS = "…";
@@ -31,8 +34,15 @@ export function planningSession(projectId: string): string {
   return `${projectId}${PLANNING_SUFFIX}`;
 }
 
-export function megabytes(bytes: number): string {
-  const scaled = (bytes / (1024 * 1024)).toFixed(1);
+export function fileSize(bytes: number): string {
+  if (bytes < KILOBYTE) {
+    return `${String(bytes)} B`;
+  }
+  const kilobytes = Math.round(bytes / KILOBYTE);
+  if (kilobytes < KILOBYTE) {
+    return `${String(kilobytes)} KB`;
+  }
+  const scaled = (bytes / MEGABYTE).toFixed(1);
   return `${scaled.endsWith(".0") ? scaled.slice(0, -2) : scaled} MB`;
 }
 
