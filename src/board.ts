@@ -14,6 +14,7 @@ import {
 } from "@404sl/pitwall-schema";
 import { parentIdOf, type ClassificationReason } from "./classify.js";
 import { priorityLabel } from "./format.js";
+import { problemKey, shownProblems, type ProblemRow } from "./problems.js";
 import {
   STALENESS_SOURCE,
   UNRESOLVED_KINDS,
@@ -25,7 +26,8 @@ import {
 
 export type NeedsYouKind = "decision" | "access";
 export type RunningState = "working" | "awaiting-lander" | "stranded";
-export type ProblemScope = "run" | "console" | "project";
+
+export { problemKey, type ProblemRow, type ProblemScope } from "./problems.js";
 
 export const REFRESH_SOURCE = "pitwall serve: re-collection";
 export const NOTICE_SOURCE = "pitwall serve: outbound notice";
@@ -90,18 +92,6 @@ export interface ParkedCount {
   reason: string;
   count: number;
   total?: number;
-}
-
-export interface ProblemRow {
-  scope: ProblemScope;
-  name: string;
-  source: string;
-  message: string;
-  at: string;
-}
-
-export function problemKey(row: ProblemRow): string {
-  return [row.scope, row.name, row.source, row.at, row.message].join("\u0000");
 }
 
 export type ProblemEntry =
@@ -601,7 +591,7 @@ export function buildBoard(snapshot: Snapshot, filter: FilterState = {}): Board 
     readyCount: ready.length,
     readyShown: Math.min(ready.length, READY_LIMIT),
     parked,
-    problems: problemRows(snapshot),
+    problems: shownProblems(problemRows(snapshot), generatedAt),
     filter,
     filtered,
     options: filterOptions(projects),

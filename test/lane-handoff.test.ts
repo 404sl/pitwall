@@ -36,6 +36,7 @@ interface Second {
   body: string;
   mergeable?: string;
   mergeState?: string;
+  message?: string;
   listFails?: boolean;
   omitPath?: boolean;
   editFails?: boolean;
@@ -114,7 +115,7 @@ function harness(seededNotes: string, second?: Second, detached?: boolean): Harn
     git(other, "update-ref", "refs/remotes/origin/master", otherBase);
     writeFileSync(join(other, "b.txt"), "two\n");
     git(other, "add", "b.txt");
-    git(other, "commit", "--quiet", "-m", "Regenerate the artwork from the same source");
+    git(other, "commit", "--quiet", "-m", second.message ?? "Regenerate the artwork from the same source");
     otherHead = git(other, "rev-parse", "HEAD");
     git(other, "update-ref", `refs/remotes/origin/${BRANCH}`, otherHead);
     git(other, "checkout", "--quiet", otherBase);
@@ -401,6 +402,75 @@ test("a second repository's pull request whose body names the pipeline leaves NO
   assert.equal(ran.status, 2, ran.stdout + ran.stderr);
   assert.match(ran.stdout, /non-compliant: acme\/other#7/);
   assert.equal(ran.labelled, false, "a pull request was labelled despite a non-compliant sibling");
+});
+
+test("a commit message naming the plugin manifest and skill directories is compliant", () => {
+  const box = harness("", {
+    list: '[{"number":7}]',
+    rollup: READY,
+    body: CLEAN,
+    message: "Bump the manifests\n\n.claude-plugin/marketplace.json, plugins/devloop/.claude-plugin/plugin.json and plugins/devloop/skills/devloop/CHANGELOG.md all moved together.",
+  });
+  const ran = handoff(box, [...required(box), "--issue", "acme-1", "--note-file", box.notePath], true);
+
+  assert.equal(ran.status, 0, ran.stdout + ran.stderr);
+  assert.doesNotMatch(ran.stdout, /non-compliant/);
+  assert.match(ran.calls, /pr edit 7 --repo acme\/other/);
+});
+
+test("a body claiming a machine author leaves NOTHING labelled", () => {
+  const box = harness("", {
+    list: '[{"number":7}]',
+    rollup: READY,
+    body: '{"title":"Regenerate the artwork","body":"Generated with Claude Code."}',
+  });
+  const ran = handoff(box, [...required(box), "--issue", "acme-1", "--note-file", box.notePath], true);
+
+  assert.equal(ran.status, 2, ran.stdout + ran.stderr);
+  assert.match(ran.stdout, /non-compliant: acme\/other#7/);
+  assert.equal(ran.labelled, false, "a pull request was labelled despite an authorship claim");
+});
+
+test("a commit carrying an authorship trailer leaves NOTHING labelled", () => {
+  const box = harness("", {
+    list: '[{"number":7}]',
+    rollup: READY,
+    body: CLEAN,
+    message: "Regenerate the artwork\n\nCo-Authored-By: Nobody <nobody@example.invalid>",
+  });
+  const ran = handoff(box, [...required(box), "--issue", "acme-1", "--note-file", box.notePath], true);
+
+  assert.equal(ran.status, 2, ran.stdout + ran.stderr);
+  assert.match(ran.stdout, /non-compliant: acme\/other#7/);
+  assert.equal(ran.labelled, false, "a pull request was labelled despite an authorship trailer");
+});
+
+test("a commit message naming a scratch checkout path leaves NOTHING labelled", () => {
+  const box = harness("", {
+    list: '[{"number":7}]',
+    rollup: READY,
+    body: CLEAN,
+    message: "Regenerate the artwork\n\nCaptured under /tmp/lanes/acme-14/repo while checking.",
+  });
+  const ran = handoff(box, [...required(box), "--issue", "acme-1", "--note-file", box.notePath], true);
+
+  assert.equal(ran.status, 2, ran.stdout + ran.stderr);
+  assert.match(ran.stdout, /non-compliant: acme\/other#7/);
+  assert.equal(ran.labelled, false, "a pull request was labelled despite a scratch path");
+});
+
+test("a bare pipeline noun outside a path is still not compliant", () => {
+  const box = harness("", {
+    list: '[{"number":7}]',
+    rollup: READY,
+    body: CLEAN,
+    message: "Regenerate the artwork\n\nThe devloop takes ready work and lands it.",
+  });
+  const ran = handoff(box, [...required(box), "--issue", "acme-1", "--note-file", box.notePath], true);
+
+  assert.equal(ran.status, 2, ran.stdout + ran.stderr);
+  assert.match(ran.stdout, /non-compliant: acme\/other#7/);
+  assert.equal(ran.labelled, false, "a pull request was labelled despite a bare pipeline noun");
 });
 
 test("a repository whose open pull requests cannot be read is refused, not read as having none", () => {

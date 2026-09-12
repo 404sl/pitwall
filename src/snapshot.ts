@@ -22,6 +22,7 @@ import { recordSnapshot, type HistoryMetrics } from "./history.js";
 import { deliver, noticesFor, type Delivered, type Noter, type Sender } from "./notify.js";
 import { issueMatcher, readPipeline } from "./pipeline.js";
 import { preconditionProbe, pullLookup } from "./probes.js";
+import { carryFailingSince } from "./problems.js";
 import { sessionRefOf, unlistedNotifiers, workspaceSender } from "./sender.js";
 import { readSnapshot, writeSnapshot } from "./state.js";
 import {
@@ -473,9 +474,10 @@ export async function emitSnapshot(options: SnapshotOptions = {}): Promise<Snaps
     ),
     errors: history.error === undefined ? snapshot.errors : [...snapshot.errors, history.error],
   });
-  const written = keptBoard(recorded, previous, gathered);
-  const path = writeSnapshot(written, options);
+  const written = carryFailingSince(keptBoard(recorded, previous, gathered), previous);
   const delivered = await announce(gathered, previous, roots, options);
+  const upstream = await closeUpstreamIssues(gathered, previous, roots, options);
+  const path = writeSnapshot(written, options);
   return {
     snapshot: written,
     path,
@@ -483,6 +485,6 @@ export async function emitSnapshot(options: SnapshotOptions = {}): Promise<Snaps
     read: true,
     delivered,
     unlisted: unlistedReport(roots, options),
-    upstream: await closeUpstreamIssues(gathered, previous, roots, options),
+    upstream,
   };
 }

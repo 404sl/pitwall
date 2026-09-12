@@ -20,7 +20,10 @@ function Row({ row }: { row: ProblemRow }) {
         {scopeLabel(row)}
       </th>
       <td className="pw-cell pw-cell--source">{row.source}</td>
-      <td className="pw-cell pw-cell--title">{row.message}</td>
+      <td className="pw-cell pw-cell--title">
+        {row.message}
+        {preventedText(row.prevented)}
+      </td>
       <td className="pw-cell pw-cell--at" title={stamp(row.at)}>
         {clock(row.at)}
       </td>
@@ -87,6 +90,15 @@ function Group({ entry, open, onToggle }: GroupProps) {
       </tbody>
     </Fragment>
   );
+}
+
+function preventedText(count: number | undefined): string {
+  if (count === undefined) {
+    return "";
+  }
+  return count === 1
+    ? ` ${strings.problems.prevented.one}`
+    : ` ${fill(strings.problems.prevented.many, { count: String(count) })}`;
 }
 
 export function Problems({ rows }: { rows: ProblemRow[] }) {

@@ -16,7 +16,7 @@ import {
 import { tmpdir } from "node:os";
 import { execPath } from "node:process";
 import type { AddressInfo } from "node:net";
-import { SCHEMA_VERSION, isYours, parseSnapshot } from "@404sl/pitwall-schema";
+import { SCHEMA_VERSION, isYours, parseSnapshot, type Snapshot } from "@404sl/pitwall-schema";
 import type { Notice } from "../src/notify.ts";
 import { KEPT_SOURCE, PARTIAL_SOURCE, REFRESH_SOURCE, buildBoard } from "../src/board.ts";
 import { consoleCollector, createConsoleServer, listen } from "../src/serve.ts";
@@ -42,6 +42,7 @@ const PATH_WITH_BD = `${join(FIXTURES, "bd", "ok")}:/usr/bin:/bin`;
 const PATH_WITH_GH = `${join(FIXTURES, "bd", "ok")}:${join(FIXTURES, "gh", "ok")}:/usr/bin:/bin`;
 const RECORDED = join(FIXTURES, "gh", "recorded");
 const PATH_WITH_UNAUTH_GH = `${join(FIXTURES, "bd", "ok")}:${join(FIXTURES, "gh", "unauth")}:/usr/bin:/bin`;
+const PATH_WITH_SLOW_NPM = `${join(FIXTURES, "npm", "slow")}:${join(FIXTURES, "bd", "ok")}:/usr/bin:/bin`;
 
 function pathWithoutGh(): string {
   const bin = mkdtempSync(join(tmpdir(), "pitwall-nogh-"));
@@ -324,6 +325,41 @@ test("nothing is announced to the session that closed the work itself", async ()
   const result = await announced.run();
   assert.deepEqual(announced.sent, []);
   assert.deepEqual(result.delivered, []);
+});
+
+test("a run killed while it is announcing leaves the transition for the next run", async () => {
+  const place = workspace([TRACKER]);
+  const first = await emitSnapshot(options(place));
+  const source = fileURLToPath(new URL("../src/snapshot.ts", import.meta.url));
+  const probe = [
+    `const { emitSnapshot } = await import(${JSON.stringify(source)});`,
+    `await emitSnapshot({`,
+    `  env: ${JSON.stringify({ ...place.env, BD_LIST_FIXTURE: "landed" })},`,
+    `  home: ${JSON.stringify(place.home)},`,
+    `  cwd: ${JSON.stringify(join(place.home, "work", "here"))},`,
+    `  lockRoot: ${JSON.stringify(mkdtempSync(join(tmpdir(), "pitwall-killed-lock-")))},`,
+    `  sender: () => { process.kill(process.pid, "SIGKILL"); return new Promise(() => {}); },`,
+    `  note: () => Promise.reject(new Error("no note should be needed")),`,
+    `});`,
+  ].join("\n");
+  const killed = spawnSync(
+    process.execPath,
+    ["--import", "tsx", "--input-type=module", "-e", probe],
+    { encoding: "utf8" },
+  );
+  assert.equal(killed.signal, "SIGKILL", `the announcing run was not killed: ${killed.stderr}`);
+  const onDisk = readSnapshot({ env: place.env, home: place.home }).snapshot;
+  assert.equal(
+    onDisk?.generatedAt,
+    first.snapshot.generatedAt,
+    "the killed run wrote its snapshot before its notices went out",
+  );
+  const announced = announcing(place);
+  await announced.run();
+  assert.deepEqual(
+    announced.sent.map((notice) => notice.issueId),
+    ["mw-1", "mw-1.1"],
+  );
 });
 
 function notifyingRoot(place: Workspace): { root: string; log: string } {
@@ -612,6 +648,52 @@ test("a bead that closed carrying an external-ref closes the issue it came from"
     [true],
   );
   assert.deepEqual(upstreamReport(result.upstream), []);
+});
+
+test("a run killed while it is closing upstream leaves the closure for the next run", async () => {
+  const place = workspace([pipelineRoot("https://github.com/acme/site.git")]);
+  const env = { ...place.env, PATH: PATH_WITH_GH, GH_OUTPUT: RECORDED };
+  const first = await emitSnapshot({ ...options(place), env });
+  const source = fileURLToPath(new URL("../src/snapshot.ts", import.meta.url));
+  const probe = [
+    `const { emitSnapshot } = await import(${JSON.stringify(source)});`,
+    `await emitSnapshot({`,
+    `  env: ${JSON.stringify({ ...env, BD_LIST_FIXTURE: "shipped" })},`,
+    `  home: ${JSON.stringify(place.home)},`,
+    `  cwd: ${JSON.stringify(join(place.home, "work", "here"))},`,
+    `  lockRoot: ${JSON.stringify(mkdtempSync(join(tmpdir(), "pitwall-killed-lock-")))},`,
+    `  sender: () => Promise.resolve({ delivered: true }),`,
+    `  note: () => Promise.reject(new Error("no note should be needed")),`,
+    `  closer: () => { process.kill(process.pid, "SIGKILL"); return new Promise(() => {}); },`,
+    `});`,
+  ].join("\n");
+  const killed = spawnSync(
+    process.execPath,
+    ["--import", "tsx", "--input-type=module", "-e", probe],
+    { encoding: "utf8" },
+  );
+  assert.equal(killed.signal, "SIGKILL", `the closing run was not killed: ${killed.stderr}`);
+  const onDisk = readSnapshot({ env: place.env, home: place.home }).snapshot;
+  assert.equal(
+    onDisk?.generatedAt,
+    first.snapshot.generatedAt,
+    "the killed run wrote its snapshot before its upstream closures went out",
+  );
+  const asked: Closure[] = [];
+  await emitSnapshot({
+    ...options(place),
+    env: { ...env, BD_LIST_FIXTURE: "shipped" },
+    sender: () => Promise.resolve({ delivered: true as const }),
+    note: () => Promise.reject(new Error("no note should be needed")),
+    closer: (closure: Closure) => {
+      asked.push(closure);
+      return Promise.resolve({ closed: true as const });
+    },
+  });
+  assert.deepEqual(
+    asked.map((closure) => [closure.issueId, closure.issue.url]),
+    [["mw-1", "https://github.com/acme/site/issues/7"]],
+  );
 });
 
 test("a workspace found by scanning closes nothing on GitHub", async () => {
@@ -1148,4 +1230,37 @@ test("the run-level problem describes what became of each project it names", asy
     buildBoard(stored).refreshFailure?.message,
     `2 of 3 projects could not be read: ${id} (issues kept from the last snapshot), plain (issues missing from this board).`,
   );
+});
+
+test("a probe that is still failing on the next run is dated from the first, so six hours of it reaches the board", async () => {
+  const place = workspace([TRACKER]);
+  const env = { ...place.env, PATH: PATH_WITH_SLOW_NPM, BD_LIST_FIXTURE: "stale" };
+  const state = { env: place.env, home: place.home };
+  const first = await emitSnapshot({ ...options(place), env, timeoutMs: 300 });
+  const probed = (error: { source: string }) => error.source === "npm whoami";
+  assert.ok(
+    first.snapshot.projects[0]?.errors.some(probed),
+    "the precondition probe must have been the thing that timed out",
+  );
+  const started = new Date(Date.now() - 7 * 60 * 60_000).toISOString();
+  writeFileSync(
+    snapshotPath(state),
+    JSON.stringify({
+      ...first.snapshot,
+      projects: first.snapshot.projects.map((project) => ({
+        ...project,
+        errors: project.errors.map((error) => (probed(error) ? { ...error, at: started } : error)),
+      })),
+    }),
+  );
+  await emitSnapshot({ ...options(place), env, timeoutMs: 300 });
+  const written = readSnapshot(state).snapshot;
+  assert.equal(
+    written?.projects[0]?.errors.find(probed)?.at,
+    started,
+    "the written snapshot keeps the instant the probe first failed",
+  );
+  const shown = buildBoard(written as Snapshot).problems.filter(probed);
+  assert.equal(shown.length, 1, "a probe that has not healed in seven hours is somebody's");
+  assert.ok((shown[0]?.prevented ?? 0) > 0, "the checks it prevented are counted against it");
 });

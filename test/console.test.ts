@@ -1124,7 +1124,7 @@ test("the staleness band states its method once and never lists what it could no
   const method = "It cannot see anything outside that.";
   assert.ok(strings.issue.stale.method.endsWith(method));
   assert.equal(markup.split(method).length - 1, 1, "the method is stated once, not once per finding");
-  assert.match(markup, /3 references could not be checked; they are recorded under Problems\./);
+  assert.match(markup, /3 references could not be checked; they are recorded in the snapshot\./);
   assert.doesNotMatch(markup, /could not resolve/);
 
   const one = pageMarkup(
@@ -1137,7 +1137,7 @@ test("the staleness band states its method once and never lists what it could no
       },
     }),
   );
-  assert.match(one, /1 reference could not be checked; it is recorded under Problems\./);
+  assert.match(one, /1 reference could not be checked; it is recorded in the snapshot\./);
 
   const none = pageMarkup(aPreview());
   assert.doesNotMatch(none, /could not be checked/);
@@ -1154,7 +1154,7 @@ test("a precondition nobody could run is named as one, not as a reference nobody
       },
     }),
   );
-  assert.match(only, /1 precondition could not be run; it is recorded under Problems\./);
+  assert.match(only, /1 precondition could not be run; it is recorded in the snapshot\./);
   assert.doesNotMatch(only, /could not be checked/, "there was no reference, so none is claimed");
   assert.doesNotMatch(only, /reference/);
 
@@ -1171,8 +1171,8 @@ test("a precondition nobody could run is named as one, not as a reference nobody
       },
     }),
   );
-  assert.match(both, /2 references could not be checked; they are recorded under Problems\./);
-  assert.match(both, /3 preconditions could not be run; they are recorded under Problems\./);
+  assert.match(both, /2 references could not be checked; they are recorded in the snapshot\./);
+  assert.match(both, /3 preconditions could not be run; they are recorded in the snapshot\./);
 });
 
 test("a verdict with no evidence to act on says so rather than showing an empty list", () => {
@@ -1304,7 +1304,7 @@ test("two failures the run recorded at one instant are still two rows a reader c
         errors: [
           {
             source: "staleness",
-            message: "nothing records when an issue stopped, so a note written since cannot be recognised",
+            message: "the project records no issue id prefix, so referenced issues cannot be recognised",
             at,
           },
           {
@@ -1319,7 +1319,7 @@ test("two failures the run recorded at one instant are still two rows a reader c
   const keys = board.problems.map((row) => problemKey(row));
   assert.equal(new Set(keys).size, board.problems.length, "a row a React list drops is a failure nobody reads");
   const markup = renderToStaticMarkup(createElement(Problems, { rows: board.problems }));
-  assert.equal(markup.match(/nothing records when an issue stopped/g)?.length, 1);
+  assert.equal(markup.match(/records no issue id prefix/g)?.length, 1);
   assert.equal(markup.match(/no pull request host is configured/g)?.length, 1);
 });
 

@@ -370,8 +370,9 @@ NON-NEGOTIABLE RULES. They outrank speed, and they outrank finishing the task.
    points at", which is the assumption that is wrong when a run has been routed to the wrong
    checkout - and pull request numbers overlap across the repositories here, so a bare number
    returns a real answer rather than an error. There is no failing case to catch it.
-   The slug for this run is given above. If a command needs a number from another repository,
-   name that repository explicitly too.
+   A brief that sends you to 'gh' names this run's slug above, or the command that reads it from
+   the checkout. If a command needs a number from another repository, name that repository
+   explicitly too.
 
 ${SHELL_FIRST}
 `
@@ -765,10 +766,12 @@ function fixPrompt(task, attempt, feedback, laneIndex, brief) {
   // same failure as two runs sharing a test database, in a place nobody thought to look.
   const scratch = `${SCRATCH}/${task.id}`
   const again = attempt > 1
+  const slug = (REPOS[task.repo] || {}).slug
   return `${again ? 'REWORK' : 'Fix'} one tracker issue end to end and open a pull request.
 
 Issue: ${task.id} - ${task.title}
 Repo: ${task.repo} (${repoPath(task.repo)})
+Slug: ${slug || 'not configured - read it with \'git -C ' + repoPath(task.repo) + ' remote get-url origin\', drop a trailing .git and a git@github.com: or https://github.com/ prefix, and use only an owner/name result, rather than guessing one'}
 Worktree: ${wtPath}
 Branch: ${branch}
 Scratch: ${scratch} - every temporary file you write goes in here. Test output, diffs,

@@ -177,7 +177,7 @@ leakage='(devloop|lane-verified|/tmp/|/private/tmp)'
 # site/CLAUDE.md says about lazy lookups' - names a documentation file, exactly as naming
 # Gemfile or schema.rb would. It is not a claim about who wrote the code, and it tripped
 # \bclaude\b on 2026-08-29. Neutralised before the test rather than excused after it.
-neutral='s#[A-Za-z/._-]*CLAUDE\.md#REPO-DOC#g; s#[A-Za-z/._-]*AGENTS\.md#REPO-DOC#g'
+neutral='s#[A-Za-z/._-]*CLAUDE\.md#REPO-DOC#g; s#[A-Za-z/._-]*AGENTS\.md#REPO-DOC#g; s#\.claude-plugin#DOT-PLUGIN-DIR#g; s#plugins/devloop#PLUGIN-DIR#g; s#skills/devloop#SKILL-DIR#g'
 
 # 1. COMPLIANCE, read back from where the text is actually stored rather than from what anybody
 #    meant to write. GitHub and git both add and rewrite text.

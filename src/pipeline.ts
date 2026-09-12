@@ -9,7 +9,7 @@ const run = promisify(execFile);
 const MAX_OUTPUT = 16 * 1024 * 1024;
 const TIMEOUT_MS = 30_000;
 export const LIST_LIMIT = 200;
-const LIST_FIELDS = "number,title,labels,headRefName,url,statusCheckRollup,body";
+const LIST_FIELDS = "number,title,labels,headRefName,url,statusCheckRollup,body,isDraft";
 
 type Checks = PullRequest["checks"];
 
@@ -211,6 +211,7 @@ async function pullsOf(
         issueId:
           (branch === undefined ? undefined : match(branch)) ?? match(textOf(row["body"]) ?? ""),
         checks: rollupChecks(row["statusCheckRollup"]),
+        draft: row["isDraft"] === true,
         labels: labelsOf(row["labels"]),
         url: textOf(row["url"]),
       }),
