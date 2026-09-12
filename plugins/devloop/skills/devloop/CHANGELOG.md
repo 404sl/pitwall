@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.47
+## 0.1.50
 
 The handoff gate's survey of sibling pull requests no longer uses GraphQL, so a
 handoff is no longer blocked by the shared per-account secondary rate limiter
@@ -9,6 +9,31 @@ with "could not list the open pull requests of <repo>" during a limiter outage
 should re-run it rather than labelling anything by hand. Note that compliance,
 status-rollup and label calls still use GraphQL, so a total outage can still stop
 a handoff — later in the run, and with a different message.
+
+## 0.1.49
+
+Re-running a node-role lane's setup step is now safe. The link command is a no-op when the
+worktree already holds the link, so a rework attempt no longer writes a
+`node_modules/node_modules` loop into the main checkout the way a bare `ln -s` did,
+silently and invisibly to `git status`.
+
+If such a directory already exists in a main checkout it is residue from before this
+change. Leave it alone and say so in your result - a main checkout is never a lane's to
+write to or tidy, whatever is in it.
+
+## 0.1.48
+
+The queue scripts can now take only the work assigned to this loop, and do so only where the workspace asks for it. Add `"actor": "<the project's queue name>"` to `.pitwall.json` and both `dispatchable.sh` and `queue.sh` offer, count and claim only issues whose assignee is that name - unassigned work is skipped too, since an unassigned ticket is nobody's queue and the pipeline merges unattended. Without the field nothing changes, and `dispatchable.sh` prints one line on stderr saying the gate is off and how to turn it on.
+
+The name is read from the config and never derived from `idPrefix`: in some workspaces the two are the same string and in others the project name is not the prefix at all, so a derived name matches nothing and does it without an error.
+
+`queue.sh`'s "ready to start" line names the queue it counted when the gate is on, so it and `watch.sh`'s DISPATCH line keep meaning the same thing, and `--next` stamps its claims with that same name - without it bd resolves a different actor and its ownership guard refuses every claim. When nothing is dispatchable, `dispatchable.sh` names the queues the ready work is actually sitting in, counting only the tickets the assignee gate itself withheld.
+
+## 0.1.47
+
+A rails lane is now given four runnable setup commands before it runs anything else: symlink `config/master.key`, `.env` and `node_modules` from the main checkout, then `bundle exec rails dartsass:build` in the worktree. Each symlink is guarded with `test -L`, because the step is handed out on every attempt and a bare `ln -s` onto an existing symlinked directory silently creates the link inside the main checkout instead of failing. Do not copy the main checkout's compiled CSS - it is usually older than the branch and fails brand-token specs the branch never touched. The rails brief resolves the main checkout from the configured repo path rather than assuming a directory called `site`.
+
+Refs pitwall-r8mt
 
 ## 0.1.46
 

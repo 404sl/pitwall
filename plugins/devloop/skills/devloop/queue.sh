@@ -17,6 +17,20 @@
 # device), blocked-tooling (a gap in this pipeline, not a question for anyone), watch (an
 # observation over time) - plus umbrella (a parent whose
 # work lives in its children) and roadmap (a feature build, not a defect).
+#
+# A workspace that declares "actor" in its config also gets an assignee gate, matching
+# dispatchable.sh: "ready to start" and `--next` then count and claim only the issues assigned
+# to that queue, and the line says which queue it counted. Without the field nothing is
+# filtered by assignee, which is what every workspace that has never assigned a ticket needs.
+#
+# The two scripts share the rule because watch.sh builds its DISPATCH line from the number
+# printed here - a gate in one and not the other is the second answer to "is this workable"
+# that this file exists to avoid.
+#
+# The field is also the loop's IDENTITY, so `--next` carries it as `bd --actor <name>` on the
+# writes it makes. bd resolves its actor from the flag, then BEADS_ACTOR, then git user.name,
+# and its ownership guard refuses a claim made under a name that is not the assignee - so a
+# gated count with an unstamped claim would print work it then hands out none of.
 
 # ROOT DECIDES WHOSE TRACKER THIS READS, AND WHOSE ISSUES `--next` CLAIMS.
 #
@@ -38,6 +52,7 @@ ROOT="${ROOT:-the workspace root}"
 # with the same prefix collide on the lane locks, and the lane lock is the only thing stopping
 # two lanes from sharing a test database.
 PFX="$(bash "$CFG" lockPrefix 2>/dev/null || echo devloop)"
+ACTOR="$(bash "$CFG" actor 2>/dev/null)" || ACTOR=""
 
 cd "$ROOT" || exit 1
 
@@ -62,7 +77,7 @@ bd list --status closed --json 2>/dev/null      > "$AQ/closed.json"
 WANT="${2:-0}"
 [ "$1" = "--next" ] || WANT=0
 
-python3 - "$WANT" "$PFX" "$AQ" <<'PY'
+python3 - "$WANT" "$PFX" "$AQ" "$ACTOR" <<'PY'
 import json, sys, os, datetime, subprocess
 
 PFX = sys.argv[2] if len(sys.argv) > 2 else "devloop"
@@ -77,6 +92,8 @@ def load(p):
     return d if isinstance(d, list) else d.get("issues", [])
 
 AQ = sys.argv[3] if len(sys.argv) > 3 else f"/tmp/{PFX}-aq"
+ACTOR = sys.argv[4] if len(sys.argv) > 4 else ""
+BD = ["bd"] + (["--actor", ACTOR] if ACTOR else [])
 open_, running, blocked, closed = (load(f"{AQ}/{n}.json") for n in ("open", "run", "blocked", "closed"))
 blocked_ids = {i["id"] for i in blocked}
 
@@ -126,6 +143,8 @@ def eligible(i):
     # id prefix is the fact; the label is only documentation of it.
     if i["id"] in live_children_of:
         return False
+    if ACTOR and (i.get("assignee") or "") != ACTOR:
+        return False
     return (i.get("issue_type") != "epic"
             and not parked(i)
             and i["id"] not in blocked_ids)
@@ -174,7 +193,7 @@ _handed_off = len(running) - len(_working)
 print(f" running now      {len(_working)}")
 if _handed_off:
     print(f" awaiting lander  {_handed_off}  claimed and green, not yet live")
-print(f" ready to start   {len(ready)}")
+print(f" ready to start   {len(ready)}" + (f"  assigned to {ACTOR}" if ACTOR else ""))
 
 # Report the parked issues BY REASON, never as one total.
 #
@@ -239,7 +258,11 @@ print(" NEXT UP")
 for i in ready[:8]:
     print(f"   {i['id']:<10} P{i.get('priority','?')}  {i.get('issue_type',''):<7} {i['title'][:55]}")
 if not ready:
-    print("   (nothing - every open issue needs a person, is blocked, or is claimed)")
+    if ACTOR:
+        print(f"   (nothing in {ACTOR}'s queue - every open issue is in another queue, needs a "
+              "person, is blocked, or is claimed)")
+    else:
+        print("   (nothing - every open issue needs a person, is blocked, or is claimed)")
 print()
 
 if waiting:
@@ -298,7 +321,7 @@ if want > 0:
     for i in ready:
         if len(handed) >= want:
             break
-        r = subprocess.run(["bd", "update", i["id"], "--claim"],
+        r = subprocess.run(BD + ["update", i["id"], "--claim"],
                            capture_output=True, text=True)
         if r.returncode != 0:
             continue
@@ -306,7 +329,7 @@ if want > 0:
         if slot is None:
             # Every lane is busy. Give the claim back rather than handing out a lane that is
             # not there - a caller asking for more than there is should be told so.
-            subprocess.run(["bd", "update", i["id"], "--status", "open"], capture_output=True, text=True)
+            subprocess.run(BD + ["update", i["id"], "--status", "open"], capture_output=True, text=True)
             break
         taken[slot] = i["id"]
         with open(os.path.join(SLOTDIR, str(slot)), "w") as f:
