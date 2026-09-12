@@ -12,6 +12,7 @@ const HARDCODED = ["devloop-merge.lock", "devloop-worktrees", "devloop-slots", "
 const LAND_ARGS = {
   skillDir: "/skill",
   root: "/root",
+  lockToken: "lander-1788964650-29574",
   lockPrefix: "pw",
   repo: "site",
   repos: { site: { path: "cli", slug: "owner/name" } },

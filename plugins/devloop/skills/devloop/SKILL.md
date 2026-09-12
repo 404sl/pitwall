@@ -156,6 +156,14 @@ Launch it when any repo has a labelled PR and no lander run is already going. It
 person merging by hand both wait rather than collide - but two launches still waste a run,
 so check first. Without this step the pipeline's output is labelled PRs sitting forever.
 
+**Pass the object `config.sh --land` printed, never one assembled by hand.** Among the fields it
+carries is `lockToken`, the string that run writes into the holder file, and `land.js` refuses to
+start without one rather than minting its own. The reason is that a minted one proves nothing: a
+lock step whose answer is replayed reports a token, a holder and a status that all agree with each
+other while the lock on disk belongs to somebody else, and no comparison inside the script can see
+it. A token minted per launch cannot be replayed - it is stable if the same run resumes and
+different on the next.
+
 **Run that middle command for every queued PR before launching, in this session's own
 transcript.** It is not a formality and it is not the lander's job done twice.
 
