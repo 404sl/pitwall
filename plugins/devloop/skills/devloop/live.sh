@@ -72,7 +72,12 @@ done
 
 echo
 echo "WORKFLOW DIRECTORIES BY LAST WRITE"
-for d in $(ls -t "$WF" 2>/dev/null | head -14); do
+shown=0
+for run in $(ls -dt "$WF"/*/subagents/workflows/*/ "$WF"/*/ 2>/dev/null); do
+  [ -f "$run/journal.jsonl" ] || continue
+  [ "$shown" -lt 14 ] || break
+  shown=$((shown + 1))
+  d="${run#"$WF"/}"; d="${d%/}"
   age=$(( (now - $(date -r "$WF/$d" +%s)) / 60 ))
   # Take the issue id from any agent transcript, not a guessed filename, and strip the
   # trailing punctuation that a sentence leaves on it. An unidentified run is reported as
@@ -83,7 +88,7 @@ for d in $(ls -t "$WF" 2>/dev/null | head -14); do
   [ -n "$labelled" ] && iid=$labelled
   state="idle"
   [ "$age" -lt 10 ] && state="working"
-  printf "  %-20s %-14s %-8s last write %dmin ago\n" "$d" "$iid" "$state" "$age"
+  printf "  %-20s %-14s %-8s last write %dmin ago\n" "${d##*/}" "$iid" "$state" "$age"
 done
 
 echo

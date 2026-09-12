@@ -108,7 +108,7 @@ freshest_for() {
 transcript_age() {
   local id="$1" newest=0 m d
   [ -d "$WF" ] || { echo ""; return; }
-  for d in "$WF"/*/; do
+  for d in "$WF"/*/subagents/workflows/*/ "$WF"/*/; do
     [ -f "$d/journal.jsonl" ] || continue
     grep -q -- "$id" "$d/journal.jsonl" 2>/dev/null || continue
     for f in "$d"/agent-*.jsonl "$d/journal.jsonl"; do

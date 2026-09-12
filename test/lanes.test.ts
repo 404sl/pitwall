@@ -727,3 +727,75 @@ test("lanes.sh clears a quiet worktree by its transcript age under GNU stat, ins
     dropScriptWorkspace(space);
   }
 });
+
+function suspectClaim(prefix: string, issueId: string): string {
+  const slots = `/tmp/${prefix}-slots`;
+  mkdirSync(slots, { recursive: true });
+  const claim = join(slots, "1");
+  writeFileSync(claim, `${issueId}\n`);
+  const when = new Date(Date.now() - 30 * 60_000);
+  utimesSync(claim, when, when);
+  return slots;
+}
+
+function journalAt(dir: string, issueId: string): void {
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "journal.jsonl"), `${JSON.stringify({ type: "started", issue: issueId })}\n`);
+}
+
+function runLanesAgainst(
+  wf: string,
+  prefix: string,
+): { status: number; out: string; err: string } {
+  const root = mkdtempSync(join(tmpdir(), "pitwall-lanes-wf-"));
+  const env: Record<string, string | undefined> = {
+    ...process.env,
+    ...GIT_ENV,
+    DEVLOOP_ROOT: root,
+    DEVLOOP_WF: wf,
+    LOCK_PREFIX: prefix,
+  };
+  const ran = spawnSync("bash", [LANES_SH, "--stale-minutes", "5"], {
+    encoding: "utf8",
+    cwd: root,
+    env,
+    timeout: 5000,
+  });
+  return { status: ran.status ?? -1, out: ran.stdout ?? "", err: ran.stderr ?? "" };
+}
+
+function uniquePrefix(): string {
+  return `pwtest${process.pid}${Date.now().toString(36)}`;
+}
+
+test("lanes.sh finds a transcript under a session's subagents/workflows", () => {
+  const prefix = uniquePrefix();
+  const wf = mkdtempSync(join(tmpdir(), "pitwall-lanes-nested-"));
+  journalAt(join(wf, "11111111-aaaa-4bbb-8ccc-000000000001", "subagents", "workflows", "wf_aaa"), "pw-nested");
+  const slots = suspectClaim(prefix, "pw-nested");
+  try {
+    const { status, out, err } = runLanesAgainst(wf, prefix);
+
+    assert.equal(status, 0, `${out}${err}`);
+    assert.match(out, /pw-nested \(transcript 0m ago\)/);
+    assert.doesNotMatch(out, /no workflow transcript found/);
+  } finally {
+    rmSync(slots, { recursive: true, force: true });
+  }
+});
+
+test("lanes.sh still finds a transcript under the flat layout", () => {
+  const prefix = uniquePrefix();
+  const wf = mkdtempSync(join(tmpdir(), "pitwall-lanes-flat-"));
+  journalAt(join(wf, "wf_flat"), "pw-flat");
+  const slots = suspectClaim(prefix, "pw-flat");
+  try {
+    const { status, out, err } = runLanesAgainst(wf, prefix);
+
+    assert.equal(status, 0, `${out}${err}`);
+    assert.match(out, /pw-flat \(transcript 0m ago\)/);
+    assert.doesNotMatch(out, /no workflow transcript found/);
+  } finally {
+    rmSync(slots, { recursive: true, force: true });
+  }
+});
