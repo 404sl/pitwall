@@ -237,11 +237,18 @@ The rebase stops at each commit that conflicts. Resolve inside the conflict regi
 you resolved, and continue:
 
   cd ${WT_PATH} && git add <the files you resolved>
-  cd ${WT_PATH} && git -c user.name="$(git log -1 --format=%an origin/master)" -c user.email="$(git log -1 --format=%ae origin/master)" rebase --continue
+  cd ${WT_PATH} && git -c user.name="$(git log -1 --format=%an origin/master)" -c user.email="$(git log -1 --format=%ae origin/master)" -c core.editor=true rebase --continue
 
 THE IDENTITY GOES ON '--continue' TOO, not only on the first command. Continuing is what writes
 the replayed commit, so without it the rebase stops again with 'unable to auto-detect email
 address' and leaves the branch mid-rebase.
+
+AND SO DOES AN EDITOR IT CAN RUN, for the same reason and on the same line. '--continue' opens an
+editor on the replayed commit's message, and the exports take core.editor away with the rest of
+the home config, so git falls back to vi - which with no terminal prints 'Vim: Error reading
+input, exiting...', exits 1 and leaves the branch mid-rebase exactly as a missing identity does.
+'-c core.editor=true' accepts the message unchanged. Do not reach for 'git commit' with a message
+of your own instead: that REPLACES the message the replayed commit already carries.
 
 REBASE, NOT MERGE, AND THE REASON IS THE LANDER. land-one.sh runs a plain rebase onto
 origin/master on whatever branch it is handed, and a rebase replays the branch's OWN commits - a
@@ -286,7 +293,7 @@ generator would emit, and the next person to run the generator gets a diff nobod
 
   db/schema.rb        take master's version wholesale, then re-run the migrations and let Rails
                       rewrite it:
-                        git checkout --theirs db/schema.rb   # or: git checkout origin/master -- db/schema.rb
+                        git checkout origin/master -- db/schema.rb
                         TEST_ENV_NUMBER=${LANE} RAILS_ENV=test bundle exec rails db:migrate
                       The version line at the top must end up naming the LATEST migration across
                       both sides. Check that before committing - a schema.rb whose version is

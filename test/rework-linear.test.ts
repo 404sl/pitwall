@@ -8,8 +8,6 @@ import test from "node:test";
 import { GIT_ENV, spawnGit } from "./support/git.js";
 import { runScript } from "./support/workflow.js";
 
-process.env["GIT_EDITOR"] = "true";
-
 const ID = "zz-aaa1";
 const WHO = ["-c", "user.name=Pat Lane", "-c", "user.email=pat@example.com"];
 
@@ -59,7 +57,24 @@ function fixture(): { root: string; wt: string; seed: string } {
   return { root, wt, seed };
 }
 
-async function bringMasterIn(worktrees: string): Promise<string> {
+function withoutAnEditor(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env, ...GIT_ENV };
+  for (const name of ["GIT_EDITOR", "EDITOR", "VISUAL"]) delete env[name];
+  return env;
+}
+
+function onlyLine(prompt: string, what: RegExp, describe: string): string {
+  const named = prompt.split("\n").filter((line) => what.test(line));
+  assert.equal(
+    named.length,
+    1,
+    `the resolve brief no longer names exactly one command that ${describe} - update this test ` +
+      `rather than deleting it. Found:\n${named.join("\n")}`,
+  );
+  return named[0]!;
+}
+
+async function resolveBrief(worktrees: string): Promise<string> {
   const args = {
     id: ID,
     pr: 739,
@@ -75,24 +90,26 @@ async function bringMasterIn(worktrees: string): Promise<string> {
     n === 1 ? { status: "blocked", notes: "stopped after the brief was read" } : { lane: "released", slot: "released" },
   );
   await done;
-  const named = calls[0]!.prompt
-    .split("\n")
-    .filter((line) => /^ {2}cd \S+ && git .*origin\/master$/.test(line))
-    .filter((line) => /\b(merge|rebase|cherry-pick)\b/.test(line));
-  assert.equal(
-    named.length,
-    1,
-    "the resolve brief no longer names exactly one command that brings master into the branch - " +
-      `update this test rather than deleting it. Found:\n${named.join("\n")}`,
+  return calls[0]!.prompt;
+}
+
+function bringsMasterIn(prompt: string): string {
+  return onlyLine(
+    prompt,
+    /^ {2}cd \S+ && git .*\b(merge|rebase|cherry-pick)\b.*origin\/master$/,
+    "brings master into the branch",
   );
-  return named[0]!;
+}
+
+function finishesTheRebase(prompt: string): string {
+  return onlyLine(prompt, /^ {2}cd \S+ && git .*\brebase --continue$/, "finishes a stopped rebase");
 }
 
 test("the brief brings master in without leaving a merge commit the lander's rebase would drop", async () => {
   const { root, wt, seed } = fixture();
-  const command = await bringMasterIn(root);
+  const brief = await resolveBrief(root);
 
-  const brought = spawnSync("bash", ["-c", command], {
+  const brought = spawnSync("bash", ["-c", bringsMasterIn(brief)], {
     encoding: "utf8",
     env: { ...process.env, ...GIT_ENV },
   });
@@ -109,7 +126,28 @@ test("the brief brings master in without leaving a merge commit the lander's reb
   } else {
     const stopped = ["rebase-merge", "rebase-apply"].some((dir) => existsSync(join(wt, ".git", dir)));
     assert.ok(stopped, "the command the brief names left neither a merge nor a rebase in progress");
-    git(wt, ...WHO, "rebase", "--continue");
+
+    const continued = spawnSync("bash", ["-c", finishesTheRebase(brief)], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      env: withoutAnEditor(),
+      timeout: 20_000,
+      killSignal: "SIGKILL",
+    });
+    assert.equal(
+      continued.status,
+      0,
+      "the command the brief names to finish the rebase did not succeed, and the branch is left " +
+        "mid-rebase. A lane has no terminal and no home config, so --continue has no core.editor " +
+        "to open the replayed message with and falls back to vi, which then either dies on the " +
+        `terminal it cannot read or sits there until this timeout:\n${continued.error ?? ""}${continued.stderr ?? ""}`,
+    );
+    assert.equal(
+      spawnGit(["log", "-1", "--format=%s"], { cwd: wt }).stdout.trim(),
+      "Change the shared file on the branch",
+      "the replayed commit no longer carries its own message. The brief tells the lane it composes " +
+        "no message here, so finishing the rebase must not be done by writing one",
+    );
   }
 
   const merges = spawnGit(["rev-list", "--merges", "origin/master..HEAD"], { cwd: wt });

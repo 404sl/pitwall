@@ -149,7 +149,7 @@ test("the lander's version step carries them, which is the step an unreadable co
   );
 });
 
-test("a rework brief carries them too, for the merge commit it has to write by hand", async () => {
+test("a rework brief carries them too, for the commits its rebase has to replay", async () => {
   const { calls, done } = runScript(
     "rework.js",
     { ...LAND_ARGS, pr: 80, id: "pitwall-maz", repo: "site", slot: 3, lockPrefix: "pw" },
