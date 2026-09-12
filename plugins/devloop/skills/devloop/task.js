@@ -507,6 +507,28 @@ you fail, and in this order - the owner file first, so the directory is never le
   rm -f /tmp/${LOCK_PREFIX}-lane-${laneIndex + 2}.owner
   rmdir /tmp/${LOCK_PREFIX}-lane-${laneIndex + 2}.lock
 
+THEN MAKE THE WORKTREE BOOT. Four things this app needs to start are gitignored, so none of them
+can reach a checkout and a worktree cut from origin/master cannot boot Rails at all. Run these
+before any other command, in this order; a link that is already there is fine, leave it:
+
+  ln -s ${repoPath(repo)}/config/master.key ${wtPath}/config/master.key
+  ln -s ${repoPath(repo)}/.env ${wtPath}/.env
+  ln -s ${repoPath(repo)}/node_modules ${wtPath}/node_modules
+  export GIT_CONFIG_GLOBAL=/dev/null BUNDLE_USER_CONFIG=/dev/null && cd ${wtPath} && bundle exec rails dartsass:build
+
+SKIP ONE AND THE FAILURE DOES NOT LOOK LIKE SETUP. Without config/master.key the credentials
+will not decrypt, so config/cable.yml renders 'undefined method url for nil' and every rails
+command dies before loading a single spec - under RAILS_ENV=test as well, because that file
+evaluates ERB for every environment whatever the test adapter needs. Without node_modules the
+asset manifest link_trees into it and every view-rendering spec fails with 'link_tree argument
+must be a directory'. With app/assets/builds unbuilt, stylesheet_link_tag falls through to
+compiling sass and raises 'cannot load such file -- sassc', which reads as a missing gem rather
+than a missing build. Measured 2026-09-12 on pristine origin/master: 427 of 1471 examples fail
+with none of these done, and 0 fail with all four. A lane that does not know this reads 427
+failures on a four-line change as a broken branch.
+
+They are gitignored and must not end up in your commit; check 'git status' before committing.
+
 Then carry the variable on every command:
   cd ${wtPath} && TEST_ENV_NUMBER=${laneIndex + 2} bundle exec rails db:test:prepare
   cd ${wtPath} && TEST_ENV_NUMBER=${laneIndex + 2} bash ${SKILL_DIR}/rspec-quiet.sh
@@ -588,12 +610,8 @@ IF YOU EDIT A FILE WITH THE Edit TOOL, READ IT WITH THE Read TOOL FIRST. Inspect
 is wasted. Either Read then Edit, or skip Edit and write the change with a python heredoc -
 both work, mixing them does not.
 
-A fresh worktree needs .env,
-config/master.key and node_modules SYMLINKED from ${ROOT}/site to boot. They are gitignored
-and must not end up in your commit; check 'git status' before committing.
-
 .env IS A SYMLINK TO THE OWNER'S OWN FILE, SO NEVER WRITE TO IT. Appending a line in your
-worktree writes straight through into ${ROOT}/site/.env and changes how their development
+worktree writes straight through into ${repoPath(repo)}/.env and changes how their development
 machine behaves. On 2026-08-30 exactly that happened while trying to silence browser popups,
 and the owner's .env had to be restored. If you need an environment variable, export it for
 your command - FOO=bar bundle exec ... - never edit the file.
@@ -611,19 +629,23 @@ to them like their own test suite has gone haywire.
 The mail still gets written under tmp/my_mails, so nothing is lost and you can still read what
 was sent. Only the window is suppressed.
 
-app/assets/builds IS DIFFERENT - COPY IT, NEVER SYMLINK IT. The directory is tracked (it
-holds a .keep), so replacing it with a link makes git report the .keep deleted and the
-directory untracked, and 'git check-ignore' fails outright with "pathspec is beyond a
+app/assets/builds IS DIFFERENT - BUILD IT, NEVER SYMLINK IT AND NEVER COPY IT. The directory is
+tracked (it holds a .keep), so replacing it with a link makes git report the .keep deleted and
+the directory untracked, and 'git check-ignore' fails outright with "pathspec is beyond a
 symbolic link". The result is a dirty tree that blocks a rebase, for a reason that looks
-nothing like its cause. Copy it, or just run dartsass:build in the worktree and let it
-populate:
-  cp -R ${ROOT}/site/app/assets/builds/. ${wtPath}/app/assets/builds/
+nothing like its cause.
+
+Copying it is the quieter mistake and it costs more. The main checkout's CSS was compiled from
+whatever commit that checkout sits on, which is usually behind yours: on 2026-09-12 a copy from
+a checkout three commits back left 14 dark-mode brand-token system specs failing, on tokens the
+branch had never touched, and they read as a real regression rather than stale output. Only
+dartsass:build in your own worktree produces CSS that matches your branch.
 If you inherit a worktree where it is already a symlink, remove ONLY the link - never the
 target, which is the main checkout's compiled CSS - then recreate the directory and restore
 the tracked .keep.
 
-app/assets/builds is COMPILED OUTPUT, and the copy you inherit was built from whatever that
-checkout last had. If it is EMPTY (just .keep), request specs fail too, not only system specs -
+app/assets/builds is COMPILED OUTPUT, and whatever you inherit was built from whatever that
+worktree last had. If it is EMPTY (just .keep), request specs fail too, not only system specs -
 stylesheet_link_tag raises 'LoadError: cannot load such file -- sassc', which reads like a
 missing gem rather than a missing build. Run dartsass:build before concluding anything from it. Any system spec that reads a computed style then tests stylesheets older
 than your branch. That is a false red, and it looks exactly like a real one: an assertion
