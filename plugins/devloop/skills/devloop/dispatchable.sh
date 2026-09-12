@@ -1,5 +1,5 @@
 #!/bin/bash
-# What can actually be dispatched to a lane right now. Three filters, and each one exists because
+# What can actually be dispatched to a lane right now. Four filters, and each one exists because
 # skipping it cost a real dispatch.
 #
 # 1. PARK LABELS. bd ready ignores them entirely, so the caller's filter is the only gate. And
@@ -18,6 +18,24 @@
 #    umbrella and still has nothing to build.
 #
 # 3. EPIC TYPE, which is the case bd does model explicitly.
+#
+# 4. ASSIGNEE, and this one is OPT-IN because the skill is shared. A workspace turns it on by
+#    declaring "actor" in its config; without that field nothing is filtered by assignee and a
+#    line on stderr says so. The reason it is not on for everybody: most workspaces on this
+#    machine have never assigned a ticket to anything, so a gate that excludes unassigned work
+#    would take their whole backlog to zero dispatchable with nothing of their own changed.
+#
+#    Where it IS declared, it is the queue discipline the workspace already documents: the loop
+#    takes only what is assigned to it. pitwall-t785 and pitwall-a8s were both offered here on
+#    2026-09-12 while sitting in pitwall-planning-session's queue, and a slot was reserved for
+#    a8s before a person cross-checked it by hand. bd update --claim does refuse on contact, so
+#    nothing was stolen - but the claim was the only thing catching it, and by then the dispatch
+#    is already spent.
+#
+#    THE NAME IS DECLARED, NEVER DERIVED. Deriving it from idPrefix looks right in a workspace
+#    whose prefix and project name coincide and matches nothing anywhere else - session-replay
+#    assigns to session-replay-devloop while its idPrefix is "sr", so a derived name would offer
+#    that workspace none of its own work and would do it silently.
 #
 # Usage:  dispatchable.sh [--limit N]
 # Output: one issue per line - id, priority, title. Nothing else, so it can be read by eye or cut.
@@ -47,13 +65,21 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ -n "${DEVLOOP_ROOT:-}" ]; then
   ROOT="$DEVLOOP_ROOT"
 elif ! ROOT="$(bash "$HERE/config.sh" root 2>/dev/null)" || [ -z "$ROOT" ]; then
-  echo "dispatchable.sh: no .autofix.json found from $PWD, and DEVLOOP_ROOT is unset." >&2
+  echo "dispatchable.sh: no .pitwall.json or .autofix.json found from $PWD," >&2
+  echo "                 and DEVLOOP_ROOT is unset." >&2
   echo "dispatchable.sh: refusing to guess - the ids this prints are claimable, and" >&2
   echo "                 guessing means offering another project's work as if it were yours." >&2
   exit 6
 fi
 LOCK_PREFIX="${LOCK_PREFIX:-$(bash "$HERE/config.sh" lockPrefix 2>/dev/null || echo devloop)}"
 cd "$ROOT" || { echo "not a directory: $ROOT" >&2; exit 6; }
+
+ACTOR="$(bash "$HERE/config.sh" actor 2>/dev/null)" || ACTOR=""
+if [ -z "$ACTOR" ]; then
+  echo "dispatchable.sh: assignee gate OFF - no \"actor\" in this workspace's config, so" >&2
+  echo "                 every ready issue is offered whatever queue it sits in. Add" >&2
+  echo "                 \"actor\": \"<project>-devloop\" to the config to turn it on." >&2
+fi
 
 # VIA FILES, NOT THE ENVIRONMENT. These payloads carry every issue's notes field, and this
 # tracker's notes run to tens of kilobytes each - passing them as environment variables dies with
@@ -102,7 +128,7 @@ bd list --all --json >"$TMP/every.json" 2>/dev/null
 
 [ -s "$TMP/ready.json" ] || { echo "bd ready returned nothing - is bd on PATH and this the workspace root?" >&2; exit 6; }
 
-LIMIT="$LIMIT" TMP="$TMP" python3 <<'PY'
+LIMIT="$LIMIT" TMP="$TMP" ACTOR="$ACTOR" python3 <<'PY'
 import json, os, re, sys
 
 tmp = os.environ["TMP"]
@@ -112,6 +138,7 @@ try:
 except Exception:
     every = []
 limit = int(os.environ["LIMIT"] or 0)
+actor = os.environ["ACTOR"]
 
 park = {"umbrella", "needs-access", "needs-decision", "watch", "blocked-tooling", "roadmap"}
 
@@ -136,6 +163,7 @@ for i in ids:
         parents.add(i.rsplit(".", 1)[0])
 
 out = []
+elsewhere = {}
 for r in ready:
     labels = set(r.get("labels") or [])
     if labels & park:
@@ -146,6 +174,11 @@ for r in ready:
         continue
     if r["id"] in inflight:
         continue
+    if actor:
+        assignee = r.get("assignee") or "nobody"
+        if assignee != actor:
+            elsewhere[assignee] = elsewhere.get(assignee, 0) + 1
+            continue
     out.append(r)
 
 if limit:
@@ -155,7 +188,12 @@ for r in out:
     print("%-14s P%-3s %s" % (r["id"], r.get("priority"), (r.get("title") or "")[:66]))
 
 if not out:
-    print("(nothing dispatchable - every ready issue is parked, an epic, or a parent)")
+    if elsewhere:
+        held = ", ".join("%s (%d)" % (who, n) for who, n in sorted(elsewhere.items()))
+        print("(nothing dispatchable - this loop takes only work assigned to %s, and every "
+              "ready issue is in another queue: %s)" % (actor, held))
+    else:
+        print("(nothing dispatchable - every ready issue is parked, an epic, or a parent)")
 
 # 4. RESEMBLES SOMETHING ALREADY RUNNING. dupes.sh does this properly and against closed work
 # too, but nothing ran it - a check that lives in its own script only fires when somebody
