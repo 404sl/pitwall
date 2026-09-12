@@ -24,6 +24,10 @@
 #                 registering. NOT a failure and NOT the same as 4: the caller must retry this
 #                 one in a later round rather than retiring it, which is what the separate
 #                 verify agent used to be for.
+#   8  merge_shaped the branch carries a merge commit of its own and master has moved under it, so
+#                 a rebase would replay only its own commits and drop whatever exists solely in
+#                 that merge's resolution. Nothing was touched. Like 7 this is not a failure of
+#                 the work: it needs rework, not retiring.
 #   5  master_red master was not green before starting. Nothing was touched.
 #   6  usage      bad arguments, or the repository/branch does not exist.
 
@@ -100,6 +104,15 @@ esac
 #    head would start a second CI run for no reason.
 behind=$(git rev-list --count "origin/${BRANCH}..origin/master" 2>/dev/null || echo unknown)
 case "$behind" in ''|*[!0-9]*) say "usage: no such branch origin/${BRANCH}"; exit 6 ;; esac
+
+if [ "$behind" != "0" ]; then
+  merges=$(git rev-list --merges --count "origin/master..origin/${BRANCH}" 2>/dev/null || echo 0)
+  case "$merges" in ''|*[!0-9]*) merges=0 ;; esac
+  if [ "$merges" != "0" ]; then
+    say "merge_shaped: ${BRANCH} carries ${merges} merge commit(s) of its own and is ${behind} behind master - a rebase would keep none of them and drop whatever exists only in the resolution, so nothing was touched. Rework it onto master."
+    exit 8
+  fi
+fi
 
 plugin_paths=$(git diff --name-only "origin/master...origin/${BRANCH}" 2>/dev/null \
   | grep -E '^(plugins/|\.claude-plugin/)' | head -3 | tr '\n' ' ')
