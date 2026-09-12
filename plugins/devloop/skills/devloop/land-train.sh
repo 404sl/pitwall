@@ -147,7 +147,7 @@ while IFS="$(printf '\t')" read -r num branch title; do
   dropped=0
   while [ "$dropped" -lt 20 ]; do
     case "$(git log -1 --format=%s "$squash_ref" 2>/dev/null)" in
-      "Set devloop plugin version "*) ;;
+      "Set the plugin version "*|"Set devloop plugin version "*) ;;
       *) break ;;
     esac
     parent=$(git rev-parse --verify --quiet "${squash_ref}^1" 2>/dev/null)

@@ -1,5 +1,50 @@
 # Changelog
 
+## 0.1.47
+
+A rails lane is now given four runnable setup commands before it runs anything else: symlink `config/master.key`, `.env` and `node_modules` from the main checkout, then `bundle exec rails dartsass:build` in the worktree. Each symlink is guarded with `test -L`, because the step is handed out on every attempt and a bare `ln -s` onto an existing symlinked directory silently creates the link inside the main checkout instead of failing. Do not copy the main checkout's compiled CSS - it is usually older than the branch and fails brand-token specs the branch never touched. The rails brief resolves the main checkout from the configured repo path rather than assuming a directory called `site`.
+
+Refs pitwall-r8mt
+
+## 0.1.46
+
+The version commit written at merge time no longer carries the plugin's own label in its subject - it now reads "Set the plugin version" followed by the number. Nothing a session does changes, but a merge commit on public master is now neutral text, which is what the handoff compliance check assumes and could not previously enforce. `land-one.sh` recognises both the new subject and the one it replaces, so a branch that an earlier round already prepared is still recognised and its stale version commit still dropped rather than replayed into a changelog conflict.
+
+Refs pitwall-zrbu
+
+## 0.1.45
+
+The handoff command now carries your repository's slug - you are no longer asked to supply `<owner/name>` yourself, and rule 12 no longer shows one either. Do not guess a slug from anywhere: a guess that names a real pull request in another repository is how the handoff label reaches the wrong one.
+
+A refusal from lane-handoff.sh is never worked around by labelling the pull request by hand. Every non-zero exit except 5 and 8 means nothing was labelled anywhere, and that includes any code not yet described in the brief. If you believe the script is wrong rather than your arguments, file a ticket quoting the exact command and exit code, say so in your notes, and return blocked.
+
+## 0.1.44
+
+**Triage now routes a lane from the paths its ticket names, against the repositories this
+workspace actually has.** It used to decide from one sentence naming another workspace's
+repositories - "site (Rails app), extension (Chrome extension), integration (npm library)" -
+and was never shown the checkouts in the configuration it was handed, so it chose from the
+schema's shared list. Four misroutes in one day, a dispatch each.
+
+- **A repo key the workspace configuration does not have is refused before a worktree is cut.**
+  The key is checked the moment triage returns, so it never reaches the fix step, the handoff or
+  the lander. The issue comes back parked through the handover with the configured keys named.
+  **Read that as a mis-key, not as a broken ticket** - triage runs cheap and a one-off bad key is
+  possible. Clear it by saying which configured repository the ticket's paths are in, or by
+  adding the missing key to the workspace configuration, then dispatch it again. No retry is
+  attempted, deliberately: loud here beats a run cutting a worktree from a path that does not
+  exist, then handing a pull request number to a repository it does not belong to.
+- **A `Repo:` line is confirmation now, not authority, and disagreement is a stop.** Derive the
+  repository from which checkout contains the paths the ticket names; use the line to confirm it
+  when the author wrote one. When the line and the paths name different checkouts, triage returns
+  ineligible naming both rather than breaking the tie. So a ticket with no `Repo:` line still
+  routes, and one with a wrong line no longer routes wrongly in silence.
+- **When you split a ticket, open every child's description with its own routing.** First line,
+  before anything else: `Repo: <key> (<checkout path>)`, derived per child from that child's own
+  paths and never copied from the parent. Routing is the second thing a child silently fails to
+  inherit, after metadata, and the child is the thing that ships - a correctly routed parent's
+  child was sent to a TypeScript package for a ticket about a Rails spec and could not begin.
+
 ## 0.1.43
 
 A refusal from the handoff compliance check is terminal. Your judgement picks how to

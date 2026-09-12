@@ -856,7 +856,6 @@ test("the snapshot reports whether the reason an issue stopped is still true", a
       asked.push([...command]);
       return true;
     },
-    pullFacts: async () => undefined,
   });
   const byId = new Map((snapshot.projects[0]?.issues ?? []).map((issue) => [issue.id, issue]));
   assert.equal(byId.get("mw-20")?.staleness.verdict, "resolved");
@@ -887,7 +886,6 @@ test("the snapshot reads the note time from the tracker, and says once which tim
     ...options(place, new Date("2026-09-08T09:00:00Z")),
     env: { ...place.env, BD_LIST_FIXTURE: "noted" },
     probe: async () => true,
-    pullFacts: async () => undefined,
   });
   const project = snapshot.projects[0];
   const errors = project?.errors ?? [];
@@ -945,24 +943,6 @@ test("a history store that cannot be opened costs the metrics, not the snapshot"
   assert.equal(readSnapshot({ env: place.env, home: place.home }).error, undefined);
 });
 
-test("an issue left in progress after its pull request merged is reported, not left running", async () => {
-  const place = workspace([TRACKER]);
-  const snapshot = await collectSnapshot({
-    ...options(place, new Date("2026-09-08T09:00:00Z")),
-    env: { ...place.env, BD_LIST_FIXTURE: "stale" },
-    probe: async () => true,
-    pullFacts: async (reference) =>
-      reference.text === "site#16" ? { state: "merged", issueId: "mw-26" } : undefined,
-  });
-  const byId = new Map((snapshot.projects[0]?.issues ?? []).map((issue) => [issue.id, issue]));
-  assert.equal(byId.get("mw-26")?.classification, "landing");
-  assert.equal(byId.get("mw-26")?.staleness.verdict, "likely-stale");
-  assert.ok(
-    byId.get("mw-26")?.staleness.evidence.some((line) => line.includes("site#16")),
-    "the verdict does not name the pull request that merged",
-  );
-});
-
 test("a staleness probe that could not be run reaches the project as one error", async () => {
   const place = workspace([TRACKER]);
   const snapshot = await collectSnapshot({
@@ -987,33 +967,6 @@ test("a staleness probe that could not be run reaches the project as one error",
   );
 });
 
-test("references the run could not resolve leave the evidence and reach the project errors", async () => {
-  const place = workspace([TRACKER]);
-  const snapshot = await collectSnapshot({
-    ...options(place, new Date("2026-09-08T09:00:00Z")),
-    env: { ...place.env, BD_LIST_FIXTURE: "stale" },
-    probe: async () => true,
-    pullFacts: async () => undefined,
-  });
-  const project = snapshot.projects[0];
-  const unresolved = (project?.errors ?? []).filter((error) => error.source.startsWith("staleness "));
-  assert.ok(unresolved.length > 0, "a reference nobody could look up is recorded somewhere");
-  for (const error of unresolved) {
-    assert.match(error.message, /^\d+ references? could not be checked: /);
-  }
-  for (const issue of project?.issues ?? []) {
-    assert.ok(
-      !issue.staleness.evidence.some((line) => line.includes("could not resolve")),
-      `${issue.id} still renders a failed lookup as a finding`,
-    );
-  }
-  assert.equal(
-    (project?.errors ?? []).filter((error) => error.source === "staleness").length,
-    0,
-    "a configured run records no run-level staleness failure",
-  );
-});
-
 test("a staleness failure of the run itself is recorded once, not once per issue", async () => {
   const place = workspace([degradedRoot()]);
   const snapshot = await collectSnapshot({
@@ -1025,23 +978,69 @@ test("a staleness failure of the run itself is recorded once, not once per issue
   const run = (project?.errors ?? []).filter((error) => error.source === "staleness");
   assert.deepEqual(run.map((error) => error.message), [
     "the project records no issue id prefix, so referenced issues cannot be recognised",
-    "no pull request host is configured, so pull requests could not be looked up",
   ]);
 });
 
-test("a project whose references could not be looked up is not an unreadable project", async () => {
+test("a project whose preconditions could not be run is not an unreadable project", async () => {
   const place = workspace([TRACKER]);
   const result = await emitSnapshot({
     ...options(place, new Date("2026-09-08T09:00:00Z")),
-    env: { ...place.env, BD_LIST_FIXTURE: "stale" },
-    probe: async () => true,
-    pullFacts: async () => undefined,
+    env: { ...place.env, PATH: pathWithoutGh(), BD_LIST_FIXTURE: "stale" },
   });
   assert.ok(
     (result.snapshot.projects[0]?.errors ?? []).some((error) => error.source.startsWith("staleness ")),
-    "the run recorded at least one reference it could not check",
+    "the run recorded at least one precondition it could not run",
   );
   assert.equal(result.code, 0);
+});
+
+test("a collection asks the host for no pull request state at all", async () => {
+  const place = workspace([TRACKER]);
+  const log = join(mkdtempSync(join(tmpdir(), "pitwall-ghlog-")), "asked");
+  const snapshot = await collectSnapshot({
+    ...options(place, new Date("2026-09-08T09:00:00Z")),
+    env: {
+      ...place.env,
+      PATH: PATH_WITH_GH,
+      GH_OUTPUT: RECORDED,
+      GH_LOG: log,
+      BD_LIST_FIXTURE: "stale",
+    },
+  });
+  const project = snapshot.projects[0];
+  assert.ok((project?.issues ?? []).length > 1, "more than one issue was assessed");
+  const asked = existsSync(log) ? readFileSync(log, "utf8").trim().split("\n") : [];
+  assert.deepEqual(
+    asked.filter((line) => line.startsWith("pr view")),
+    [],
+    "a collection spent the host's budget on pull request state",
+  );
+  assert.deepEqual(
+    (project?.errors ?? [])
+      .filter((error) => /could not be checked/.test(error.message))
+      .map((error) => error.message),
+    [],
+    "a check nobody runs still filled the problems band with its own failure",
+  );
+  for (const issue of project?.issues ?? []) {
+    assert.ok(
+      !issue.staleness.evidence.some((line) => /pull request|not merged/.test(line)),
+      `${issue.id} reports a verdict read off a pull request`,
+    );
+  }
+  const byId = new Map((project?.issues ?? []).map((issue) => [issue.id, issue]));
+  assert.equal(byId.get("mw-20")?.staleness.verdict, "resolved");
+  assert.ok(
+    byId.get("mw-20")?.staleness.evidence.some((line) => line.includes("mw-9")),
+    "the checks that read the tracker alone stopped firing too",
+  );
+  assert.equal(byId.get("mw-26")?.classification, "landing");
+  assert.equal(byId.get("mw-26")?.staleness.verdict, "unchecked");
+  assert.deepEqual(
+    (project?.errors ?? []).filter((error) => error.source === "staleness mw-26"),
+    [],
+    "an issue nothing can assess is left unassessed, not recorded as a check that failed",
+  );
 });
 
 test("a collection that reads nothing leaves the board that is stored where it is", async () => {

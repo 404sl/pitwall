@@ -144,14 +144,20 @@ const TRIAGE = {
         required: ['title', 'repo', 'scope', 'autonomous'],
         properties: {
           title: { type: 'string' },
-          repo: { enum: ['site', 'extension', 'integration', 'docs'] },
+          repo: {
+            enum: ['site', 'extension', 'integration', 'docs'],
+            description: 'routed per child from the paths that child names, and a key this workspace has configured. A child does not inherit the parent routing.'
+          },
           scope: { type: 'string', description: 'what this child covers, traceable to the parent text' },
           autonomous: { type: 'boolean', description: 'false if this child still needs a person' },
           whyNotAutonomous: { type: 'string' }
         }
       }
     },
-    repo: { enum: ['site', 'extension', 'integration', 'docs', 'unknown'] },
+    repo: {
+      enum: ['site', 'extension', 'integration', 'docs', 'unknown'],
+      description: 'must be a key this workspace has configured - the brief lists them with their checkouts. The list above is a wire format shared with other projects and holds keys this workspace does not have.'
+    },
     title: { type: 'string' },
     priority: { type: 'integer' },
     ui: { type: 'boolean' },
@@ -365,7 +371,7 @@ NON-NEGOTIABLE RULES. They outrank speed, and they outrank finishing the task.
    they failed every commit. Do NOT run 'bd hooks install' to repair them - it also installs
    a prepare-commit-msg hook that appends agent identity trailers to commit messages, which
    rule 1 forbids. If a commit is blocked by a hook, say so and stop.
-12. EVERY 'gh pr' COMMAND CARRIES ITS REPOSITORY. Use '--repo <owner/name>' on every one,
+12. EVERY 'gh pr' COMMAND CARRIES ITS REPOSITORY. Use '--repo' with this run's slug on every one,
    including inside the checkout. A bare number means "whichever repository this directory
    points at", which is the assumption that is wrong when a run has been routed to the wrong
    checkout - and pull request numbers overlap across the repositories here, so a bare number
@@ -380,6 +386,22 @@ ${SHELL_FIRST}
 // The config may place a repo anywhere under the workspace; falling back to the repo's own name
 // keeps a bare dispatch working for the common case where they match.
 function repoPath(repo) { return `${ROOT}/${(REPOS[repo] || {}).path || repo}` }
+
+const REPO_KEYS = Object.keys(REPOS)
+function reposTable() {
+  if (!REPO_KEYS.length) {
+    return `This workspace's configuration lists no repositories at all, so nothing can be routed.
+Return eligible:false saying so.`
+  }
+  const rows = REPO_KEYS.map((k) => {
+    const slug = (REPOS[k] || {}).slug
+    return `  ${k}  ->  ${repoPath(k)}${slug ? `  (${slug})` : ''}`
+  })
+  return rows.join('\n')
+}
+
+function unconfigured(repo) { return !Object.prototype.hasOwnProperty.call(REPOS, String(repo)) }
+function configuredList() { return REPO_KEYS.length ? REPO_KEYS.join(', ') : '(none)' }
 
 // HOW A LANE CHECKS ITS OWN WORK.
 //
@@ -485,6 +507,38 @@ you fail, and in this order - the owner file first, so the directory is never le
   rm -f /tmp/${LOCK_PREFIX}-lane-${laneIndex + 2}.owner
   rmdir /tmp/${LOCK_PREFIX}-lane-${laneIndex + 2}.lock
 
+THEN MAKE THE WORKTREE BOOT. Four things this app needs to start are gitignored, so none of them
+can reach a checkout and a worktree cut from origin/master cannot boot Rails at all. Run these
+before any other command, in this order:
+
+  test -L ${wtPath}/config/master.key || ln -s ${repoPath(repo)}/config/master.key ${wtPath}/config/master.key
+  test -L ${wtPath}/.env || ln -s ${repoPath(repo)}/.env ${wtPath}/.env
+  test -L ${wtPath}/node_modules || ln -s ${repoPath(repo)}/node_modules ${wtPath}/node_modules
+  export GIT_CONFIG_GLOBAL=/dev/null BUNDLE_USER_CONFIG=/dev/null && cd ${wtPath} && bundle exec rails dartsass:build
+
+THE GUARD IS THE POINT, AND A SENTENCE CANNOT REPLACE IT. You are handed this step on every
+attempt, including a retry onto a worktree that already has all three links. 'ln -s SRC DEST'
+where DEST is an existing symlink to a directory does NOT fail: it follows DEST and
+creates SRC's basename INSIDE the target. A bare re-run of the node_modules line therefore writes
+${repoPath(repo)}/node_modules/node_modules into the MAIN CHECKOUT - exit 0, no output, and
+invisible to 'git status' because node_modules is gitignored - leaving a self-referential loop in
+the one directory the asset manifest link_trees into. Keep the 'test -L' guard rather than
+reaching for a flag: the overwrite flag is 'ln -sfn' on GNU and 'ln -sfh' on BSD, so neither
+spelling is portable and the guard is.
+
+SKIP ONE AND THE FAILURE DOES NOT LOOK LIKE SETUP. Without config/master.key the credentials
+will not decrypt, so config/cable.yml renders 'undefined method url for nil' and every rails
+command dies before loading a single spec - under RAILS_ENV=test as well, because that file
+evaluates ERB for every environment whatever the test adapter needs. Without node_modules the
+asset manifest link_trees into it and every view-rendering spec fails with 'link_tree argument
+must be a directory'. With app/assets/builds unbuilt, stylesheet_link_tag falls through to
+compiling sass and raises 'cannot load such file -- sassc', which reads as a missing gem rather
+than a missing build. Measured 2026-09-12 on pristine origin/master: 427 of 1471 examples fail
+with none of these done, and 0 fail with all four. A lane that does not know this reads 427
+failures on a four-line change as a broken branch.
+
+They are gitignored and must not end up in your commit; check 'git status' before committing.
+
 Then carry the variable on every command:
   cd ${wtPath} && TEST_ENV_NUMBER=${laneIndex + 2} bundle exec rails db:test:prepare
   cd ${wtPath} && TEST_ENV_NUMBER=${laneIndex + 2} bash ${SKILL_DIR}/rspec-quiet.sh
@@ -566,12 +620,8 @@ IF YOU EDIT A FILE WITH THE Edit TOOL, READ IT WITH THE Read TOOL FIRST. Inspect
 is wasted. Either Read then Edit, or skip Edit and write the change with a python heredoc -
 both work, mixing them does not.
 
-A fresh worktree needs .env,
-config/master.key and node_modules SYMLINKED from ${ROOT}/site to boot. They are gitignored
-and must not end up in your commit; check 'git status' before committing.
-
 .env IS A SYMLINK TO THE OWNER'S OWN FILE, SO NEVER WRITE TO IT. Appending a line in your
-worktree writes straight through into ${ROOT}/site/.env and changes how their development
+worktree writes straight through into ${repoPath(repo)}/.env and changes how their development
 machine behaves. On 2026-08-30 exactly that happened while trying to silence browser popups,
 and the owner's .env had to be restored. If you need an environment variable, export it for
 your command - FOO=bar bundle exec ... - never edit the file.
@@ -589,19 +639,23 @@ to them like their own test suite has gone haywire.
 The mail still gets written under tmp/my_mails, so nothing is lost and you can still read what
 was sent. Only the window is suppressed.
 
-app/assets/builds IS DIFFERENT - COPY IT, NEVER SYMLINK IT. The directory is tracked (it
-holds a .keep), so replacing it with a link makes git report the .keep deleted and the
-directory untracked, and 'git check-ignore' fails outright with "pathspec is beyond a
+app/assets/builds IS DIFFERENT - BUILD IT, NEVER SYMLINK IT AND NEVER COPY IT. The directory is
+tracked (it holds a .keep), so replacing it with a link makes git report the .keep deleted and
+the directory untracked, and 'git check-ignore' fails outright with "pathspec is beyond a
 symbolic link". The result is a dirty tree that blocks a rebase, for a reason that looks
-nothing like its cause. Copy it, or just run dartsass:build in the worktree and let it
-populate:
-  cp -R ${ROOT}/site/app/assets/builds/. ${wtPath}/app/assets/builds/
+nothing like its cause.
+
+Copying it is the quieter mistake and it costs more. The main checkout's CSS was compiled from
+whatever commit that checkout sits on, which is usually behind yours: on 2026-09-12 a copy from
+a checkout three commits back left 14 dark-mode brand-token system specs failing, on tokens the
+branch had never touched, and they read as a real regression rather than stale output. Only
+dartsass:build in your own worktree produces CSS that matches your branch.
 If you inherit a worktree where it is already a symlink, remove ONLY the link - never the
 target, which is the main checkout's compiled CSS - then recreate the directory and restore
 the tracked .keep.
 
-app/assets/builds is COMPILED OUTPUT, and the copy you inherit was built from whatever that
-checkout last had. If it is EMPTY (just .keep), request specs fail too, not only system specs -
+app/assets/builds is COMPILED OUTPUT, and whatever you inherit was built from whatever that
+worktree last had. If it is EMPTY (just .keep), request specs fail too, not only system specs -
 stylesheet_link_tag raises 'LoadError: cannot load such file -- sassc', which reads like a
 missing gem rather than a missing build. Run dartsass:build before concluding anything from it. Any system spec that reads a computed style then tests stylesheets older
 than your branch. That is a false red, and it looks exactly like a real one: an assertion
@@ -1288,9 +1342,18 @@ PR: ${work.prUrl || work.prNumber}
 
    STEPS 1 TO 5 OF THIS HANDOFF ARE ONE COMMAND. Prefer it:
 
-     bash ${SKILL_DIR}/lane-handoff.sh --repo-path ${repo} --slug <owner/name> \
+     bash ${SKILL_DIR}/lane-handoff.sh --repo-path ${repo} --slug ${slug} \
        --pr ${work.prNumber} --branch <your branch> --issue ${task.id} \
        --note-file <a file holding your tracker note> --worktree ${wtPath}
+
+   A REFUSAL IS NEVER WORKED AROUND BY LABELLING BY HAND. Every non-zero exit EXCEPT 5 and 8 is a
+   refusal: nothing was labelled anywhere, and putting the label on yourself asserts exactly the
+   judgement this script exists to withhold. 5 and 8 are the only two where the label may already
+   be on, and each has its own paragraph below - so read any other code as a refusal, including
+   one not yet described here. If you believe the script is wrong rather than your arguments,
+   file a ticket quoting the exact command and exit code, say so in 'notes', and return 'blocked'.
+   A lane has already read a correct refusal as a defect and labelled its pull request by hand:
+   the script was right, and the slug it had been given was not.
 
    --worktree, --lane-lock and --note-file are ALL OPTIONAL. Leave out any you do not have and
    the script skips that step. It needs only --repo-path, --slug, --pr and --branch. A lane read
@@ -1683,8 +1746,40 @@ Rules for a split, because a bad one is worse than asking:
 - If splitting would leave a child that is still ambiguous, do not split. Ask instead.
 - Do NOT split merely because an issue is large. Size is not a reason; independence is.
 
-Otherwise eligible:true. Set 'repo' from the paths and subject matter: site (Rails app),
-extension (Chrome extension), integration (npm library).
+Otherwise eligible:true.
+
+ROUTE IT FROM THE PATHS THE TICKET NAMES, AND CHECK THE ANSWER. These are the repositories this
+workspace has, with the checkout each key resolves to:
+
+${reposTable()}
+
+1. ONLY A KEY FROM THAT TABLE MAY BE RETURNED. The schema's list of words is a wire format shared
+   with other projects and contains keys this workspace does not have. A key that is in the list
+   and absent from the table is not a choice - it is a dispatch whose worktree is cut from a path
+   that does not exist. If the work belongs somewhere with no key here, return eligible:false and
+   say which repository it needs.
+2. DERIVE THE KEY FROM THE SOURCE PATHS THE TICKET NAMES. For each path it names, find which
+   checkout actually contains it:
+     ls <checkout>/<the path it names> 2>/dev/null
+     git -C <checkout> ls-files 'the path it names' 2>/dev/null
+   The assigned repo must be one where those paths exist. A ticket whose subject is a spec under
+   spec/ does not belong in a TypeScript package that has no spec/ directory, whatever its
+   wording suggests.
+3. A 'Repo:' LINE IN THE TICKET IS CONFIRMATION, NOT AUTHORITY. Most tickets here open with one
+   and it is usually right, so use it to confirm what the paths already told you. Do NOT require
+   it: tickets are written by several sessions and by hand, and a rule that only works when the
+   author remembered it fails the same way one level up. A child split off a parent does not
+   inherit the line at all, which is how the routing gets lost on the ticket that actually ships.
+4. WHEN THE LINE AND THE PATHS DISAGREE, THAT IS A STOP, NOT A TIEBREAK. Return eligible:false and
+   name both - the key the line claims and the checkout the paths are in. Guessing between them is
+   how a lane ends up labelling an unrelated pull request that happens to share a number.
+
+FOUR LIVE MISROUTES IN ONE DAY, every one recovered by the lane rather than by the pipeline, and
+they cost a dispatch each: a ticket naming src/notify.ts routed to the contract repo; a child
+whose parent was routed correctly sent to a package with no spec/ directory; a handoff graded
+against a checkout that had nothing to do with the branch, which reported a green pull request as
+not-green; and a key chosen from the enum for a checkout this workspace does not have. The paths
+were in every one of those tickets.
 
 Set 'ui' true only when somebody has to DECIDE HOW SOMETHING LOOKS OR READS: new or changed
 layout, styling, components, states, or on-screen wording. Those go through a designer.
@@ -1702,6 +1797,23 @@ Report 'title' and 'priority' as the tracker has them. Do not modify anything. N
 
 if (!triage) return { id: ID, outcome: 'agent_error', at: 'triage' }
 
+const wouldSplit = !triage.eligible && triage.splittable && (triage.splitPlan || []).length > 1
+const misrouted = triage.eligible
+  ? (unconfigured(triage.repo) ? [triage.repo] : [])
+  : wouldSplit ? triage.splitPlan.map((c) => c.repo).filter(unconfigured) : []
+if (misrouted.length) {
+  const named = [...new Set(misrouted)].map((r) => `'${r}'`).join(', ')
+  const where = triage.eligible ? 'this issue' : 'a child of this split'
+  triage.eligible = false
+  triage.splittable = false
+  triage.reason = `triage routed ${where} to ${named}, which is not a repository in this ` +
+    `workspace's configuration - it has ${configuredList()}. The key came from the schema's ` +
+    `shared list rather than from the config, so there is no checkout behind it and nothing ` +
+    `downstream would notice: a bare pull request number resolves in whichever repository it is ` +
+    `handed, and the numbers overlap. Say which configured repository the paths in this ticket ` +
+    `are in, or add the missing one to the configuration, and dispatch it again.`
+}
+
 if (!triage.eligible && triage.splittable && (triage.splitPlan || []).length > 1) {
   phase('Split')
   const plan = triage.splitPlan
@@ -1717,6 +1829,7 @@ Create the title as it should read, not as it was pasted.
 
 Children to create, in order:
 ${plan.map((c, i) => `${i + 1}. [${c.repo}] ${c.title}
+   repo: ${c.repo} (${repoPath(c.repo)})
    scope: ${c.scope}
    ${c.autonomous ? 'can be done unattended' : `needs a person: ${c.whyNotAutonomous}`}`).join('\n')}
 
@@ -1726,6 +1839,14 @@ For each, from ${ROOT}:
   what done looks like. Carry across the concrete detail the parent already established -
   file and line references, reproductions, ids - rather than pointing at the parent for it.>"
   --acceptance "<what must be true, for this child only>"
+OPEN EVERY CHILD'S DESCRIPTION WITH ITS ROUTING, on its own first line, before anything else:
+  Repo: <the key listed for that child above> (<that repository's checkout path>)
+ROUTING IS THE SECOND THING A CHILD SILENTLY FAILS TO INHERIT, after metadata. A parent that
+opens with its own Repo line produces children that open straight into the work, so triage has
+nothing to confirm against and guesses - and the child is the thing that actually ships. That
+cost a whole dispatch on 2026-09-10: a correctly routed parent's child was sent to a TypeScript
+package for a ticket whose subject was a Rails spec, and the lane could not begin. Write the
+line per child from the list above; do not copy the parent's, which may name a different repo.
 CHOOSE <type> PER CHILD - bug, feature or task - from what the child actually is, not from the
 parent's type and not from a fixed value. A child that builds something new is a feature even
 when the parent is a bug; a child that is somebody running a command or reading a dashboard is

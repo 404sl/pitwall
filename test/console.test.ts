@@ -1012,19 +1012,14 @@ test("a call is a sentence about what to do, one per classification and verdict"
   });
   assert.equal(callFor("parked:tooling", "unchecked", false).text, "Nothing for you — it is parked: tooling.");
   assert.equal(callFor("in-flight", "unchecked", false).text, strings.issue.call.inFlight);
-  assert.equal(callFor("landing", "unchecked", false).text, strings.issue.call.landing.standing);
-  assert.deepEqual(callFor("landing", "still-blocking", false), {
-    text: strings.issue.call.landing.standing,
-    tone: "waiting",
-  });
-  assert.deepEqual(callFor("landing", "likely-stale", false), {
-    text: strings.issue.call.landing.stale,
-    tone: "yours",
-  });
-  assert.deepEqual(callFor("landing", "resolved", false), {
-    text: strings.issue.call.landing.stale,
-    tone: "yours",
-  });
+  assert.equal(callFor("landing", "unchecked", false).text, strings.issue.call.landing);
+  for (const verdict of ["still-blocking", "likely-stale", "resolved"] as const) {
+    assert.deepEqual(
+      callFor("landing", verdict, false),
+      { text: strings.issue.call.landing, tone: "waiting" },
+      verdict,
+    );
+  }
   assert.equal(callFor("ready", "unchecked", false).text, strings.issue.call.ready);
   assert.equal(callFor("blocked", "unchecked", false).text, strings.issue.call.blocked);
   assert.equal(callFor(undefined, "unchecked", true).text, strings.issue.call.closed);
@@ -1036,21 +1031,15 @@ test("a call is a sentence about what to do, one per classification and verdict"
   }
 });
 
-test("a landing issue whose pull request merged asks the reader to close it", () => {
+test("a landing issue asks nothing of the reader, whatever verdict it carries", () => {
   const markup = pageMarkup(
     aPreview({
       classification: "landing",
-      staleness: {
-        verdict: "likely-stale",
-        checked: true,
-        checkedAt: "2026-09-10T09:40:00Z",
-        evidence: ["the pull request it waits on has merged: #91"],
-        unresolved: [],
-      },
+      staleness: { verdict: "unchecked", checked: false, evidence: [], unresolved: [] },
     }),
   );
-  assert.match(markup, /class="pw-call pw-call--yours">Its pull request merged\./);
-  assert.doesNotMatch(markup, /Nothing for you/, "the call no longer disagrees with the staleness band");
+  assert.match(markup, /class="pw-call pw-call--waiting">Nothing for you/);
+  assert.doesNotMatch(markup, /pull request/, "no call offers a pull request state");
   assert.match(markup, /pw-reason__token">landing</, "the classification is unchanged");
   assert.doesNotMatch(markup, /pw-call__ask/, "a landing issue still quotes no note");
 });
@@ -1116,14 +1105,14 @@ test("the staleness band states its method once and never lists what it could no
         checked: true,
         checkedAt: "2026-09-08T13:00:00Z",
         evidence: ["it names sr-tot5, still open"],
-        unresolved: [{ kind: "reference", count: 3 }],
+        unresolved: [{ kind: "precondition", count: 3 }],
       },
     }),
   );
   const method = "It cannot see anything outside that.";
   assert.ok(strings.issue.stale.method.endsWith(method));
   assert.equal(markup.split(method).length - 1, 1, "the method is stated once, not once per finding");
-  assert.match(markup, /3 references could not be checked; they are recorded in the snapshot\./);
+  assert.match(markup, /3 preconditions could not be run; they are recorded in the snapshot\./);
   assert.doesNotMatch(markup, /could not resolve/);
 
   const one = pageMarkup(
@@ -1132,18 +1121,18 @@ test("the staleness band states its method once and never lists what it could no
         verdict: "still-blocking",
         checked: true,
         evidence: ["a"],
-        unresolved: [{ kind: "reference", count: 1 }],
+        unresolved: [{ kind: "precondition", count: 1 }],
       },
     }),
   );
-  assert.match(one, /1 reference could not be checked; it is recorded in the snapshot\./);
+  assert.match(one, /1 precondition could not be run; it is recorded in the snapshot\./);
 
   const none = pageMarkup(aPreview());
-  assert.doesNotMatch(none, /could not be checked/);
+  assert.doesNotMatch(none, /could not be run/);
 });
 
-test("a precondition nobody could run is named as one, not as a reference nobody checked", () => {
-  const only = pageMarkup(
+test("the staleness band never claims a pull request nobody looked at", () => {
+  const markup = pageMarkup(
     aPreview({
       staleness: {
         verdict: "unchecked",
@@ -1153,25 +1142,10 @@ test("a precondition nobody could run is named as one, not as a reference nobody
       },
     }),
   );
-  assert.match(only, /1 precondition could not be run; it is recorded in the snapshot\./);
-  assert.doesNotMatch(only, /could not be checked/, "there was no reference, so none is claimed");
-  assert.doesNotMatch(only, /reference/);
-
-  const both = pageMarkup(
-    aPreview({
-      staleness: {
-        verdict: "still-blocking",
-        checked: true,
-        evidence: ["a"],
-        unresolved: [
-          { kind: "reference", count: 2 },
-          { kind: "precondition", count: 3 },
-        ],
-      },
-    }),
-  );
-  assert.match(both, /2 references could not be checked; they are recorded in the snapshot\./);
-  assert.match(both, /3 preconditions could not be run; they are recorded in the snapshot\./);
+  assert.match(markup, /1 precondition could not be run; it is recorded in the snapshot\./);
+  assert.doesNotMatch(markup, /could not be checked/, "there was no reference, so none is claimed");
+  assert.doesNotMatch(markup, /reference/);
+  assert.doesNotMatch(strings.issue.stale.method, /pull request/);
 });
 
 test("a verdict with no evidence to act on says so rather than showing an empty list", () => {
@@ -1187,10 +1161,10 @@ test("a verdict with no evidence to act on says so rather than showing an empty 
 test("the preview a click starts from is the snapshot's own record of the issue", () => {
   const snapshot = snapshotOf([
     project("session-replay", {
-      issues: [issue("sr-15s2", "yours:decision", { labels: ["needs-access"], staleness: { verdict: "still-blocking", checkedAt: "2026-09-08T13:00:00Z", evidence: ["site#1128 is closed, not merged"] } })],
+      issues: [issue("sr-15s2", "yours:decision", { labels: ["needs-access"], staleness: { verdict: "still-blocking", checkedAt: "2026-09-08T13:00:00Z", evidence: ["it names sr-9, still open"] } })],
       errors: [
-        { source: "staleness sr-15s2", message: "3 references could not be checked: ext#144, ext#148, ext#150", at: GENERATED_AT },
-        { source: "staleness sr-other", message: "1 reference could not be checked: ext#9", at: GENERATED_AT },
+        { source: "staleness sr-15s2", message: "2 preconditions could not be run: `npm whoami`, `gh auth status`", at: GENERATED_AT },
+        { source: "staleness sr-other", message: "1 precondition could not be run: `npm whoami`", at: GENERATED_AT },
       ],
     }),
   ]);
@@ -1199,48 +1173,32 @@ test("the preview a click starts from is the snapshot's own record of the issue"
   assert.equal(preview?.projectName, "session-replay");
   assert.equal(preview?.classification, "yours:decision");
   assert.equal(preview?.closed, false);
-  assert.deepEqual(preview?.staleness.evidence, ["site#1128 is closed, not merged"]);
+  assert.deepEqual(preview?.staleness.evidence, ["it names sr-9, still open"]);
   assert.deepEqual(
     preview?.staleness.unresolved,
-    [{ kind: "reference", count: 3 }],
-    "only this issue's own failed lookups are counted",
+    [{ kind: "precondition", count: 2 }],
+    "only this issue's own failed checks are counted",
   );
   assert.equal(previewIssue(snapshot, "session-replay", "sr-nope"), undefined);
   assert.equal(previewIssue(snapshot, "nowhere", "sr-15s2"), undefined);
 });
 
-test("each kind of failed check is counted as its own kind, never summed into references", () => {
+test("a failed check is counted under the kind its message names, and an uncounted failure adds nothing", () => {
   const view = buildIssueView({
-    ...payload({ staleness: { verdict: "still-blocking", evidence: ["site#1128 is closed, not merged"] } }),
+    ...payload({ staleness: { verdict: "still-blocking", evidence: ["it names sr-9, still open"] } }),
     errors: [
-      { source: "staleness sr-i6yt", message: "2 references could not be checked: ext#144, ext#148", at: GENERATED_AT },
-      { source: "staleness sr-i6yt", message: "1 precondition could not be run: `npm whoami`", at: GENERATED_AT },
+      { source: "staleness sr-i6yt", message: "2 preconditions could not be run: `npm whoami`, `gh auth status`", at: GENERATED_AT },
     ],
   });
-  assert.deepEqual(view.staleness.unresolved, [
-    { kind: "reference", count: 2 },
-    { kind: "precondition", count: 1 },
-  ]);
-  assert.deepEqual(view.staleness.evidence, ["site#1128 is closed, not merged"]);
-
-  const probed = buildIssueView({
-    ...payload(),
-    errors: [
-      { source: "staleness sr-i6yt", message: "1 precondition could not be run: `npm whoami`", at: GENERATED_AT },
-    ],
-  });
-  assert.deepEqual(
-    probed.staleness.unresolved,
-    [{ kind: "precondition", count: 1 }],
-    "a probe nobody could run is no reference at all",
-  );
+  assert.deepEqual(view.staleness.unresolved, [{ kind: "precondition", count: 2 }]);
+  assert.deepEqual(view.staleness.evidence, ["it names sr-9, still open"]);
 
   const unnumbered = buildIssueView({
     ...payload(),
     errors: [
       {
         source: "staleness sr-i6yt",
-        message: "no pull request host is configured, so pull requests could not be looked up",
+        message: "the project records no issue id prefix, so referenced issues cannot be recognised",
         at: GENERATED_AT,
       },
     ],

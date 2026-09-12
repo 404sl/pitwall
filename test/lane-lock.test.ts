@@ -183,7 +183,10 @@ const TASK_ARGS = {
   root: "/root",
   skillDir: "/skill",
   lockPrefix: "pw",
-  repos: { site: { path: "repo", test: "npm test", role: "node" } },
+  repos: {
+    site: { path: "repo", test: "npm test", role: "node" },
+    integration: { path: "contract", test: "npm test", role: "node" },
+  },
 };
 
 const LANE_LOCK = "/tmp/pw-lane-4.lock";

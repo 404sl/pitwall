@@ -118,7 +118,7 @@ else
   dropped=0
   while [ "$dropped" -lt 20 ]; do
     case "$(git log -1 --format=%s HEAD 2>/dev/null)" in
-      "Set devloop plugin version "*) ;;
+      "Set the plugin version "*|"Set devloop plugin version "*) ;;
       *) break ;;
     esac
     git rev-parse --verify --quiet HEAD~1 >/dev/null 2>/dev/null || break
