@@ -177,6 +177,53 @@ const LEFT_BEHIND = {
   },
 }
 
+const ON_BRANCH = {
+  type: 'object',
+  required: ['status', 'branches', 'asked', 'open'],
+  properties: {
+    status: { type: 'string', enum: ['read', 'unreadable'], description: "'read' only when every command printed something you could read an answer out of - a repository with nothing on a branch counts" },
+    branches: {
+      type: 'array',
+      description: 'one entry per pull request number you were given, with the branch gh printed for it. A number missing from here is a pull request whose branch nobody established, and the close is held for it.',
+      items: {
+        type: 'object',
+        required: ['number', 'branch'],
+        properties: {
+          number: { type: 'number' },
+          branch: { type: 'string', description: 'the headRefName gh printed, copied exactly - it is how a sibling pull request is matched to this one' },
+        },
+      },
+    },
+    asked: {
+      type: 'array',
+      description: 'one entry per command you actually ran and read an answer from - one repository and one branch each, so every repository in the list times every branch you found. A pair missing from here is read as a repository nobody asked about that branch, and the close is held rather than reading silence as nothing there.',
+      items: {
+        type: 'object',
+        required: ['slug', 'branch'],
+        properties: {
+          slug: { type: 'string', description: "the repository's owner/name, copied from the list you were given" },
+          branch: { type: 'string', description: 'the branch you passed to --head, copied from the branch you found' },
+        },
+      },
+    },
+    open: {
+      type: 'array',
+      description: 'every OPEN pull request on any of those branches, in any of the repositories, labelled or not. An empty array only when every repository answered and none of them held one.',
+      items: {
+        type: 'object',
+        required: ['slug', 'number', 'branch', 'labelled'],
+        properties: {
+          slug: { type: 'string', description: "the repository's owner/name, copied from the list you were given" },
+          number: { type: 'number' },
+          branch: { type: 'string', description: 'the headRefName gh printed, copied exactly' },
+          labelled: { type: 'boolean', description: "true only when gh printed lane-verified among that pull request's labels. A label list you could not read is not a false - report status 'unreadable' instead." },
+        },
+      },
+    },
+    notes: { type: 'string' },
+  },
+}
+
 function versionAhead(branch, master) {
   const a = SEMVER.exec(branch)
   const b = SEMVER.exec(master)
@@ -488,6 +535,113 @@ deploying, so if you are not that train, confirm no other run is in flight befor
 THIS STEP MERGES NOTHING. Everything is already on master.`
 }
 
+function surveySlugs() {
+  return [...new Set(Object.values(REPOS).map((r) => r.slug).filter(Boolean))]
+}
+
+function onBranchPrompt(landed) {
+  const lines = Object.entries(REPOS)
+    .filter(([, r]) => r.slug)
+    .map(([name, r]) => `  ${name}  ${r.slug}`)
+    .join('\n')
+  return `Report the branch each of these merged pull requests came from, and every OPEN pull request
+on those branches anywhere in this workspace.
+
+${landed.map((n) => `  ${SLUG}#${n}`).join('\n')}
+
+FIRST, read the branch of each one:
+
+  gh pr view <n> --repo ${SLUG} --json number,headRefName
+
+Report every number and the headRefName it printed in 'branches', copied exactly. A number you
+cannot get a branch for is a number you leave out - say so in notes.
+
+THEN, for EVERY branch you just read, ask EVERY one of these repositories about it:
+${lines}
+
+  gh pr list --repo <that repository's owner/name> --state open --head <branch> --json number,headRefName,title,labels
+
+Run it from ${ROOT}. --repo names the repository and gh needs no checkout to list it, so a
+directory that is not there is not a reason to skip a repository.
+
+REPORT EVERY PAIR YOU RAN IT FOR IN 'asked' - one entry per repository per branch, whether it
+printed a pull request or nothing. That list is checked against the one above: any pair missing
+from it holds the close, because a repository nobody asked about and a repository with nothing on
+the branch both print nothing here, and reading the first as the second is the whole defect this
+step exists to catch.
+
+WHY YOU ARE BEING ASKED. A ticket that spans two repositories opens a pull request in each, both
+on the same branch name, and the handoff labels all of them in one pass. When that pass fails
+part-way the first is labelled and the rest are not - and lane-verified is the only thing a train's
+queue reads, so the labelled half rides the train, nothing anywhere reads the second half, and the
+ticket closes on the half that landed.
+
+REPORT WHAT YOU FIND, LABELLED OR NOT, and decide nothing about it. An unlabelled pull request is
+not yours to label, close or judge - it may be a lane's work in progress - and this run only needs
+to know that it is there.
+
+IF ANY COMMAND FAILED - a rate limit, an expired token, a slug gh did not recognise - REPORT
+status 'unreadable' AND NAME WHAT FAILED. A failed list and a branch with no second half both
+print nothing, this step cannot tell them apart, and an empty read is not a clean read. The run
+holds the close rather than guessing which one it got: 'unreadable' costs a ticket one more cycle,
+and 'read' over a failed command closes it wrongly and invisibly.
+
+CHANGE NOTHING. This step runs while the train still holds the merge lock and it exists only to
+report. Do not label, do not unlabel, do not merge, do not close, do not comment, and do not touch
+any working tree.
+
+Never use 2>&1 - it makes some commands fail outright. Use absolute paths, never relative ones.`
+}
+
+function heldByBranch(landed, read) {
+  const held = new Map()
+  if (!landed.length) return held
+  const hold = (n, why) => { if (!held.has(n)) held.set(n, why) }
+  if (!read || read.status !== 'read') {
+    const why = `the branch survey ${read ? `answered '${trimmed(read.status) || 'nothing'}'` : 'reported nothing'}, so whether a pull request on this branch is open and unlabelled in another configured repository was never established${read && trimmed(read.notes) ? ` - ${trimmed(read.notes)}` : ''}`
+    for (const n of landed) hold(n, why)
+    return held
+  }
+  const branchOf = new Map()
+  for (const b of (Array.isArray(read.branches) ? read.branches : [])) {
+    if (!b || !Number.isInteger(b.number) || !landed.includes(b.number) || !trimmed(b.branch)) continue
+    branchOf.set(b.number, trimmed(b.branch))
+  }
+  for (const n of landed) {
+    if (!branchOf.has(n)) {
+      hold(n, `the branch survey did not report which branch ${SLUG}#${n} came from, so nothing could be looked for on it - a pull request whose branch nobody read is one whose unlabelled sibling nobody could have found`)
+    }
+  }
+  const holdBranch = (branch, why) => {
+    for (const [n, b] of branchOf) if (b === branch) hold(n, why)
+  }
+  const asked = new Set()
+  for (const a of (Array.isArray(read.asked) ? read.asked : [])) {
+    if (!a || typeof a.slug !== 'string' || typeof a.branch !== 'string') continue
+    asked.add(`${a.slug.trim()} ${trimmed(a.branch)}`)
+  }
+  const configured = surveySlugs()
+  for (const branch of new Set(branchOf.values())) {
+    const unasked = configured.filter((s) => !asked.has(`${s} ${branch}`))
+    if (unasked.length) {
+      holdBranch(branch, `the survey did not report asking ${unasked.join(' ')} about ${branch}, and a ` +
+        `repository nobody asked about is one whose orphan nobody looked for - an unasked repository ` +
+        `and a clean one both come back empty, so this close is held rather than taken on a survey ` +
+        `that may never have looked where the orphan sits`)
+    }
+  }
+  for (const p of (Array.isArray(read.open) ? read.open : [])) {
+    if (!p || p.labelled === true) continue
+    const branch = trimmed(p.branch)
+    if (!branch) continue
+    const key = `${trimmed(p.slug) || '(a repository the survey did not name)'}#${Number.isInteger(p.number) ? p.number : '(no number)'}`
+    holdBranch(branch, p.labelled === false
+      ? `${key} is open on ${branch} and does not carry lane-verified, so no train's queue has ever seen it and half of this ticket has not landed`
+      : `${key} is open on ${branch} and the survey did not report whether it carries lane-verified`)
+  }
+  return held
+}
+
 function closePrompt(landed, mergeSha) {
   return `These changes are on master at ${mergeSha} and deployed to staging and production:
 
@@ -628,6 +782,7 @@ const skipped = new Set()
 let lastSha = null
 let outcome = { stopped: null }
 let stranded = []
+let heldOpen = []
 const perRepo = {}
 let released = null
 let lockState = `LEAKED - the release step never reported. Read ${MERGE_LOCK}/holder before touching anything.`
@@ -745,7 +900,17 @@ if (landed.length && lastSha && !masterIsRed) {
   }
 
   phase('Close')
-  await agent(closePrompt(landed, lastSha), { model: 'sonnet', phase: 'Close', label: 'close' })
+  const onBranch = await agent(onBranchPrompt(landed), {
+    schema: ON_BRANCH, model: 'haiku', effort: 'low', phase: 'Close', label: 'branch-survey',
+  })
+  heldOpen = [...heldByBranch(landed, onBranch).entries()].map(([number, why]) => ({ number, slug: SLUG, why }))
+  for (const h of heldOpen) {
+    log(`NOT CLOSED ${SLUG}#${h.number} - ${h.why}. What it carried is merged and deployed and stays that way; the ticket is left open because something on its branch has not landed.`)
+  }
+  const clear = landed.filter((n) => !heldOpen.some((h) => h.number === n))
+  if (clear.length) {
+    await agent(closePrompt(clear, lastSha), { model: 'sonnet', phase: 'Close', label: 'close' })
+  }
 }
 
 // SAY WHICH BRANCHES WERE DROPPED, ON THE PULL REQUESTS THEMSELVES. Anything landed in this run
@@ -895,6 +1060,7 @@ return {
   // reads as "#739 simply was not ready" rather than "#739 needs a rebase and nothing will do
   // it". An empty rejected list must not be able to hide work that went nowhere.
   stranded,
+  heldOpen,
   mergeSha: lastSha,
   stopped: outcome.stopped || null,
   notes: outcome.notes || null,
