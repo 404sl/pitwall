@@ -11,13 +11,39 @@ export interface UpdateCheck {
   refresh: () => Promise<void>;
 }
 
-export interface UpdateCheckOptions {
-  running?: string;
+export interface PublishedOptions {
   url?: string;
-  everyMs?: number;
   timeoutMs?: number;
   fetch?: typeof globalThis.fetch;
+}
+
+export interface UpdateCheckOptions extends PublishedOptions {
+  running?: string;
+  everyMs?: number;
   now?: () => number;
+}
+
+export async function readPublished(options: PublishedOptions = {}): Promise<string | undefined> {
+  const url = options.url ?? REGISTRY_URL;
+  const timeoutMs = options.timeoutMs ?? CHECK_TIMEOUT_MS;
+  const get = options.fetch ?? globalThis.fetch;
+  try {
+    const response = await get(url, {
+      signal: AbortSignal.timeout(timeoutMs),
+      headers: { accept: "application/json" },
+    });
+    if (!response.ok) {
+      return undefined;
+    }
+    const body: unknown = await response.json();
+    if (typeof body !== "object" || body === null) {
+      return undefined;
+    }
+    const { version } = body as { version?: unknown };
+    return typeof version === "string" ? version : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function parts(version: string): [number, number, number] | undefined {
@@ -60,24 +86,9 @@ export function createUpdateCheck(options: UpdateCheckOptions = {}): UpdateCheck
   let inFlight: Promise<void> | undefined;
 
   const read = async (): Promise<void> => {
-    try {
-      const response = await get(url, {
-        signal: AbortSignal.timeout(timeoutMs),
-        headers: { accept: "application/json" },
-      });
-      if (!response.ok) {
-        return;
-      }
-      const body: unknown = await response.json();
-      if (typeof body !== "object" || body === null) {
-        return;
-      }
-      const { version } = body as { version?: unknown };
-      if (typeof version === "string" && newerThan(version, published ?? running)) {
-        published = version;
-      }
-    } catch {
-      return;
+    const version = await readPublished({ url, timeoutMs, fetch: get });
+    if (version !== undefined && newerThan(version, published ?? running)) {
+      published = version;
     }
   };
 

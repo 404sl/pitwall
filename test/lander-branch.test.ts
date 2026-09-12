@@ -15,6 +15,7 @@ const ARGS = {
 };
 
 const NO_PLUGIN = {
+  fetched: true,
   status: "no_manifest",
   masterVersion: "",
   branchVersion: "",

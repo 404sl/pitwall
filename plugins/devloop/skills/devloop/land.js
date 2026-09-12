@@ -237,15 +237,17 @@ const LAND = {
 
 const VERSION = {
   type: 'object',
-  required: ['status', 'masterVersion', 'branchVersion', 'touchesPlugin', 'labelled', 'open', 'notes'],
+  required: ['fetched', 'status', 'prStatus', 'masterVersion', 'branchVersion', 'touchesPlugin', 'labelled', 'open', 'notes'],
   additionalProperties: false,
   properties: {
-    status: { enum: ['read', 'no_manifest', 'unreadable'], description: "'read' only when both git show calls printed a manifest you could copy a version string out of" },
+    fetched: { type: 'boolean', description: "the FETCH, and nothing else: true only when the git fetch printed FETCHED. False when it did not, whatever the commands after it printed - every ref this step and the merge after it read is then whatever the checkout already held." },
+    status: { enum: ['read', 'no_manifest', 'unreadable'], description: "the MANIFEST read, and nothing else: 'read' only when both git show calls printed a manifest you could copy a version string out of. What gh printed does not touch this field." },
+    prStatus: { enum: ['read', 'unreadable'], description: "the PULL REQUEST read: 'read' when gh pr view printed an answer, 'unreadable' when it failed for any reason - a rate limit, a network error, no authentication. Say which in notes." },
     masterVersion: { type: 'string', description: `the "version" string in origin/master's ${PLUGIN_MANIFEST}, verbatim. An empty string when you could not read one.` },
     branchVersion: { type: 'string', description: `the "version" string in the branch's ${PLUGIN_MANIFEST}, verbatim. An empty string when you could not read one.` },
-    touchesPlugin: { type: 'boolean', description: 'true when the branch changes any file under plugins/ or .claude-plugin/ - that is what the marketplace serves' },
-    labelled: { type: 'boolean', description: `true when gh pr view printed ${LABEL} among the pull request's labels just now` },
-    open: { type: 'boolean', description: "true when gh pr view printed state OPEN and isDraft false - a closed, merged or draft pull request is not one this run is being asked to merge" },
+    touchesPlugin: { type: 'boolean', description: 'true when the branch changes any file under plugins/ or .claude-plugin/ - that is what the marketplace serves. True when the diff could not be read at all, because an unknown answer here must not read as out of scope.' },
+    labelled: { type: 'boolean', description: `true when gh pr view printed ${LABEL} among the pull request's labels just now. Meaningless unless prStatus is 'read' - report false when gh printed nothing.` },
+    open: { type: 'boolean', description: "true when gh pr view printed state OPEN and isDraft false - a closed, merged or draft pull request is not one this run is being asked to merge. Meaningless unless prStatus is 'read' - report false when gh printed nothing." },
     notes: { type: 'string' }
   }
 }
@@ -569,14 +571,20 @@ function versionVerdict(read) {
   if (!read) {
     return { why: 'version_unreadable', detail: 'the version step answered nothing, and a number nobody read is not a number the next one can be counted from' }
   }
+  if (read.fetched !== true) {
+    return {
+      why: 'fetch_failed',
+      detail: `the version step did not fetch origin - ${trimmed(read.notes) || 'FETCHED did not print'}. Every ref read after that is whatever the checkout already held, so origin/master may be behind what has already merged: the manifest read, the diff that decides whether the version guard applies, and the rebase land-one.sh does not do when it reads the branch as not behind. Nothing was merged and the label was left on, so the next run takes it when the fetch works.`
+    }
+  }
   if (read.status === 'no_manifest') return null
+  if (!read.touchesPlugin) return null
   if (read.status !== 'read') {
     return {
       why: 'version_unreadable',
-      detail: `the version step could not read what it needs - ${trimmed(read.notes) || `it reported only '${read.status}'`}`
+      detail: `the version step could not read ${PLUGIN_MANIFEST} - ${trimmed(read.notes) || `it reported only '${read.status}'`}`
     }
   }
-  if (!read.touchesPlugin) return null
   const master = trimmed(read.masterVersion)
   if (!SEMVER.test(master)) {
     return {
@@ -585,6 +593,14 @@ function versionVerdict(read) {
     }
   }
   return null
+}
+
+function prVerdict(read) {
+  if (!read || read.prStatus !== 'unreadable') return null
+  return {
+    why: 'pr_unreadable',
+    detail: `gh could not read pull request state - ${trimmed(read.notes) || 'the version step reported no answer from gh pr view'}. Nothing is known about the version here: this says the PULL REQUEST could not be read, not that a number could not be. Nothing was merged, the label was left on, and the next run picks it up when gh answers again.`
+  }
 }
 
 function versionPrompt(pr) {
@@ -612,22 +628,35 @@ switch, do not reset, and do not stash.
 
 REPORT, DO NOT JUDGE. Whether this may merge is decided from what you report, not by you:
 
-  status 'read'         FETCHED printed, ls-tree printed the path, both git show calls printed a
-                        manifest, and gh pr view printed an answer. Copy the "version" string out
-                        of each manifest into masterVersion and branchVersion, verbatim - do not
-                        normalise them, pad them, or correct one to look like the other.
+  status 'read'         ls-tree printed the path and both git show calls printed a manifest. Copy
+                        the "version" string out of each manifest into masterVersion and
+                        branchVersion, verbatim - do not normalise them, pad them, or correct one
+                        to look like the other.
   status 'no_manifest'  ls-tree printed NOTHING. ${PLUGIN_MANIFEST} is not in master's tree, so
                         this repository ships no plugin and has no published number to walk
                         backwards. Skip the two git show calls - there is nothing there to read,
                         and their error is the expected result rather than a problem.
-  status 'unreadable'   FETCHED did not print, or ls-tree printed the path and a git show then
-                        failed anyway, or the manifest it printed carries no "version" string, or
-                        gh pr view printed no answer. Say which in notes.
+  status 'unreadable'   ls-tree printed the path and a git show then failed anyway, or the manifest
+                        it printed carries no "version" string. Say which in notes.
 
-AN UNREADABLE MASTER IS NOT A CLEAR ROAD. If the fetch did not work, or the manifest is in the
-tree and you still cannot get a number out of it, report 'unreadable' and say why. Guessing a
-number turns a guard into a green light, and the merge that follows is the thing the guard exists
-to stop.
+THE FETCH HAS ITS OWN FIELD TOO. Report fetched true when the first command printed FETCHED and
+false when it did not, and say in notes what it printed instead. A failed fetch does not move
+status: the commands after it still run, and status reports what THEY printed. It is reported
+separately because it is the one failure that makes every other answer here quietly stale - the
+refs are whatever this checkout already held, so origin/master can be behind work that has already
+merged, and a branch that looks up to date against it has never been tested against master at all.
+
+status IS ABOUT THE MANIFEST AND NOTHING ELSE. gh has its own field, prStatus, and what gh printed
+never moves status. Report prStatus 'read' when gh pr view printed an answer and 'unreadable' when
+it failed for any reason - a rate limit, a network error, no authentication - and say which in
+notes. The two reads fail for unrelated causes and have unrelated remedies: an unreadable manifest
+is a number to fix, an unreadable pull request is a read to try again later, and reporting the
+second as the first sent a reader looking at version arithmetic that was never wrong.
+
+AN UNREADABLE MASTER IS NOT A CLEAR ROAD. If the fetch did not work, report fetched false; if the
+manifest is in the tree and you still cannot get a number out of it, report status 'unreadable'.
+Say why in either case. Guessing a number turns a guard into a green light, and the merge that
+follows is the thing the guard exists to stop.
 
 WHAT ls-tree PRINTS IS WHAT DECIDES BETWEEN THE OTHER TWO, and nothing else decides it. Empty
 output means 'no_manifest'. Do not reach for 'no_manifest' because some other command errored, and
@@ -636,14 +665,17 @@ and the pull request is refused either way on a verdict that was never about the
 
 touchesPlugin is true when the git diff lists ANY path under plugins/ or .claude-plugin/.
 Those are the files the marketplace serves, so a branch changing one of them ships under whatever
-number it declares. It is false when the diff lists none of them.
+number it declares. It is false when the diff lists none of them, and TRUE when the diff command
+itself did not print - an answer nobody could read must not read as out of scope, because the
+version guard is skipped entirely for a branch reported false.
 
 labelled and open come from gh pr view, and they say whether this pull request is still the thing
 the run was asked to merge. labelled is true when ${LABEL} is among the labels it printed. open is
 true when state is OPEN and isDraft is false. Report what that command printed and nothing else -
-if it printed no answer at all, report status 'unreadable' and say so in notes, because a refusal
-decided here takes a pull request out of the queue and reopens somebody's tracker issue, and
-neither is safe to do to a pull request that is no longer in the queue to refuse.
+if it printed no answer at all, report prStatus 'unreadable', labelled false and open false, and
+say in notes what gh printed instead, because a refusal decided here takes a pull request out of
+the queue and reopens somebody's tracker issue, and neither is safe to do to a pull request that
+is no longer in the queue to refuse.
 
 ${LAW}`
 }
@@ -1104,8 +1136,11 @@ ${LAW}`
 //
 // NOT retired: 'master_red' (nothing is wrong with the PR), 'blocked' (CI simply had not
 // finished - a timing accident that the next round should retry), 'version_unreadable' (the
-// number could not be read at all, which is ignorance rather than a finding), and 'agent_error'
-// (we do not know what happened, and un-queueing on ignorance loses work silently).
+// number could not be read at all, which is ignorance rather than a finding), 'pr_unreadable'
+// (gh could not be asked about the PR, which is the same ignorance about a different read),
+// 'fetch_failed' (the refs everything else was read from may be stale, which is ignorance about
+// all of them at once), and 'agent_error' (we do not know what happened, and un-queueing on
+// ignorance loses work silently).
 const RETIRE = { type: 'object', required: ['status'], additionalProperties: false, properties: {
   status: { enum: ['retired', 'partial', 'nothing_to_do'] },
   retired: { type: 'array', items: { type: 'string' } },
@@ -1503,7 +1538,7 @@ try {
       const declared = await agent(versionPrompt(pr), {
         label: `version:${keyOf(pr)}`, phase: 'Land', schema: VERSION, model: 'haiku', effort: 'low'
       })
-      const stale = versionVerdict(declared)
+      const stale = versionVerdict(declared) || prVerdict(declared)
       if (stale) {
         stopped.push({ ...pr, why: stale.why, detail: stale.detail })
         log(`STOPPED ${keyOf(pr)} - ${stale.why}\n    ${stale.detail}`)
@@ -1512,8 +1547,9 @@ try {
       if (declared && (declared.labelled === false || declared.open === false)) {
         log(`${keyOf(pr)} - the version step reports it is no longer the pull request this run was asked to merge (${LABEL} ${declared.labelled === false ? 'is gone' : 'still on'}, ${declared.open === false ? 'closed, merged or draft' : 'open'}), and its declared version raises no objection, so land-one.sh decides in shell whether it still merges`)
       }
-      if (declared && declared.status === 'read' && !declared.touchesPlugin) {
-        log(`${keyOf(pr)} - declares devloop plugin version ${trimmed(declared.branchVersion) || '(none)'} against origin/master's ${trimmed(declared.masterVersion) || '(none)'}, and its diff lists no path under plugins/ or .claude-plugin/, so the versions are not compared`)
+      if (declared && declared.status !== 'no_manifest' && !declared.touchesPlugin) {
+        const unread = declared.status === 'read' ? '' : `, and the manifest read reported '${declared.status}'${trimmed(declared.notes) ? `: ${trimmed(declared.notes)}` : ''}`
+        log(`${keyOf(pr)} - declares devloop plugin version ${trimmed(declared.branchVersion) || '(none)'} against origin/master's ${trimmed(declared.masterVersion) || '(none)'}, and its diff lists no path under plugins/ or .claude-plugin/, so the versions are not compared${unread}`)
       }
       if (declared && declared.status === 'read' && declared.touchesPlugin) {
         log(`${keyOf(pr)} - ships a plugin file and declares devloop plugin version ${trimmed(declared.branchVersion) || '(none)'}; that number is not used. land-one.sh assigns the one after origin/master's ${trimmed(declared.masterVersion)} when it pushes, so two plugin pull requests in one pass get consecutive versions instead of the same one`)

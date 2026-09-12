@@ -112,6 +112,7 @@ test("the lander's version step carries them, which is the step an unreadable co
     if (call.label.startsWith("survey")) return n === 2 ? { prs: [PR] } : { prs: [] };
     if (call.label.startsWith("version:")) {
       return {
+        fetched: true,
         status: "read",
         masterVersion: "0.1.23",
         branchVersion: "0.1.25",
