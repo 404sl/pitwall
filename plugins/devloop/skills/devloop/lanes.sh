@@ -19,7 +19,9 @@ set -u
 STALE=20
 while [ $# -gt 0 ]; do
   case "$1" in
-    --stale-minutes) STALE="${2:-20}"; shift 2 ;;
+    --stale-minutes)
+      [ $# -ge 2 ] || { echo "--stale-minutes needs a value" >&2; exit 6; }
+      STALE="${2:-20}"; shift 2 ;;
     *) echo "unknown argument: $1" >&2; exit 6 ;;
   esac
 done

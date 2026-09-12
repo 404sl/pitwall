@@ -37,18 +37,28 @@ LOCK_PREFIX="${LOCK_PREFIX:-$(bash "$HERE/config.sh" lockPrefix 2>/dev/null || e
 PFX="${LOCK_PREFIX}"
 SLOT=""; ID=""; REPO="site"; DRY=""; FORCE=""
 
+usage() {
+  echo "usage: kill-lane.sh --slot N --id app-xxxx [--repo site] [--dry-run] [--force]" >&2
+}
+
 while [ $# -gt 0 ]; do
   case "$1" in
-    --slot) SLOT="${2:-}"; shift 2 ;;
-    --id) ID="${2:-}"; shift 2 ;;
-    --repo) REPO="${2:-site}"; shift 2 ;;
+    --slot)
+      [ $# -ge 2 ] || { echo "--slot needs a value" >&2; usage; exit 6; }
+      SLOT="${2:-}"; shift 2 ;;
+    --id)
+      [ $# -ge 2 ] || { echo "--id needs a value" >&2; usage; exit 6; }
+      ID="${2:-}"; shift 2 ;;
+    --repo)
+      [ $# -ge 2 ] || { echo "--repo needs a value" >&2; usage; exit 6; }
+      REPO="${2:-site}"; shift 2 ;;
     --dry-run) DRY=1; shift ;;
     --force) FORCE=1; shift ;;
     *) echo "unknown argument: $1" >&2; exit 6 ;;
   esac
 done
 
-[ -n "$SLOT" ] && [ -n "$ID" ] || { echo "usage: kill-lane.sh --slot N --id app-xxxx [--repo site] [--dry-run] [--force]" >&2; exit 6; }
+[ -n "$SLOT" ] && [ -n "$ID" ] || { usage; exit 6; }
 
 LANE=$((SLOT + 1))
 
