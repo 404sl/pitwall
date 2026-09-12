@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.46
+
+The version commit written at merge time no longer carries the plugin's own label in its subject - it now reads "Set the plugin version" followed by the number. Nothing a session does changes, but a merge commit on public master is now neutral text, which is what the handoff compliance check assumes and could not previously enforce. `land-one.sh` recognises both the new subject and the one it replaces, so a branch that an earlier round already prepared is still recognised and its stale version commit still dropped rather than replayed into a changelog conflict.
+
+Refs pitwall-zrbu
+
 ## 0.1.45
 
 The handoff command now carries your repository's slug - you are no longer asked to supply `<owner/name>` yourself, and rule 12 no longer shows one either. Do not guess a slug from anywhere: a guess that names a real pull request in another repository is how the handoff label reaches the wrong one.
