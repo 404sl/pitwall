@@ -65,7 +65,15 @@ interface Ran {
 }
 
 function args(box: Harness, ...rest: string[]): Ran {
-  const ran = spawnSync("bash", [SCRIPT, "--args", ...rest], {
+  return dispatch(box, "--args", ...rest);
+}
+
+function rework(box: Harness, ...rest: string[]): Ran {
+  return dispatch(box, "--rework", ...rest);
+}
+
+function dispatch(box: Harness, mode: string, ...rest: string[]): Ran {
+  const ran = spawnSync("bash", [SCRIPT, mode, ...rest], {
     encoding: "utf8",
     cwd: box.root,
     env: {
@@ -153,6 +161,114 @@ test("a full pool stops the dispatch instead of printing a guessed lane", () => 
     assert.notEqual(ran.status, 0);
     assert.equal(ran.stdout, "");
     assert.match(ran.stderr, /dispatch stops/);
+  } finally {
+    clean(box);
+  }
+});
+
+interface Rework {
+  id: string;
+  pr: number;
+  repo: string;
+  slot: number;
+  scriptPath: string;
+  skillDir: string;
+  root: string;
+}
+
+function reworkOf(ran: Ran): Rework {
+  assert.equal(ran.status, 0, ran.stderr);
+  return JSON.parse(ran.stdout) as Rework;
+}
+
+test("a rework dispatch reserves the lane it reports and carries the pull request", () => {
+  const box = harness(2);
+  try {
+    const built = reworkOf(rework(box, "zz-aaa1", "739", "site"));
+    assert.equal(built.slot, 1);
+    assert.equal(holder(box, 1), "zz-aaa1");
+    assert.equal(built.id, "zz-aaa1");
+    assert.equal(built.pr, 739);
+    assert.equal(built.repo, "site");
+    assert.equal(built.root, box.root);
+    assert.match(built.scriptPath, /\/rework\.js$/);
+    assert.ok(existsSync(built.scriptPath), "the staged rework.js is not where scriptPath says");
+    assert.ok(existsSync(join(built.skillDir, "release-lane.sh")));
+  } finally {
+    clean(box);
+  }
+});
+
+test("reworking the same issue twice hands back the one reservation", () => {
+  const box = harness(2);
+  try {
+    assert.equal(reworkOf(rework(box, "zz-aaa1", "739", "site")).slot, 1);
+    assert.equal(reworkOf(rework(box, "zz-aaa1", "739", "site")).slot, 1);
+    assert.ok(!existsSync(join(box.slots, "2")));
+  } finally {
+    clean(box);
+  }
+});
+
+test("a rework dispatch takes no slot from the caller", () => {
+  const box = harness(2);
+  try {
+    const ran = rework(box, "zz-aaa1", "739", "site", "2");
+    assert.notEqual(ran.status, 0);
+    assert.equal(ran.stdout, "");
+    assert.match(ran.stderr, /usage: config.sh --rework/);
+    assert.ok(!existsSync(join(box.slots, "1")));
+  } finally {
+    clean(box);
+  }
+});
+
+test("a rework for a repository the config does not name reserves nothing", () => {
+  const box = harness(2);
+  try {
+    const ran = rework(box, "zz-aaa1", "739", "extension");
+    assert.notEqual(ran.status, 0);
+    assert.equal(ran.stdout, "");
+    assert.match(ran.stderr, /no repository extension/);
+    assert.ok(!existsSync(join(box.slots, "1")));
+  } finally {
+    clean(box);
+  }
+});
+
+test("a rework whose pull request is not a number reserves nothing", () => {
+  const box = harness(2);
+  try {
+    const ran = rework(box, "zz-aaa1", "#739", "site");
+    assert.notEqual(ran.status, 0);
+    assert.equal(ran.stdout, "");
+    assert.match(ran.stderr, /pull request must be a number/);
+    assert.ok(!existsSync(join(box.slots, "1")));
+  } finally {
+    clean(box);
+  }
+});
+
+test("a locked lane is never handed to a rework", () => {
+  const box = harness(2);
+  try {
+    mkdirSync(join(LOCK_ROOT, `${box.prefix}-lane-2.lock`), { recursive: true });
+    assert.equal(reworkOf(rework(box, "zz-bbb1", "740", "site")).slot, 2);
+    assert.ok(!existsSync(join(box.slots, "1")));
+  } finally {
+    clean(box);
+  }
+});
+
+test("a full pool stops the rework instead of printing a guessed lane", () => {
+  const box = harness(1);
+  try {
+    assert.equal(slotOf(args(box, "zz-aaa1")), 1);
+    const ran = rework(box, "zz-bbb1", "740", "site");
+    assert.notEqual(ran.status, 0);
+    assert.equal(ran.stdout, "");
+    assert.match(ran.stderr, /dispatch stops/);
+    assert.equal(holder(box, 1), "zz-aaa1");
   } finally {
     clean(box);
   }

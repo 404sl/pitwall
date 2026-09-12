@@ -42,7 +42,7 @@ const SKILL_DIR = input.skillDir
 // Silent degradation into a manual path that usually works is worse than a broken one that
 // stops, because nothing downstream can tell the difference.
 if (!SKILL_DIR) {
-  return { status: 'error', notes: 'skillDir was not supplied. config.sh --args emits it; a hand-built args object must too. Refusing rather than running lanes against `undefined`.' }
+  return { status: 'error', notes: 'skillDir was not supplied. config.sh --rework emits it; a hand-built args object must too. Refusing rather than running lanes against `undefined`.' }
 }
 
 const WT = input.worktrees || `/tmp/${LOCK_PREFIX}-worktrees`
@@ -52,15 +52,18 @@ const REPOS = input.repos
 const PR = input.pr
 const ID = input.id
 const REPO_KEY = input.repo || 'site'
-const SLOT = input.slot || 1
+const SLOT = input.slot
+if (!Number.isInteger(SLOT) || SLOT < 1) {
+  return { status: 'error', notes: `slot was ${JSON.stringify(SLOT)}, which no reservation names. config.sh --rework <id> <pr> <repo> reserves a lane through slot.sh and emits the number it got; a hand-built args object has no reservation, and slot 1 belongs to whichever run actually holds it. Refusing rather than running on a lane this run does not hold.` }
+}
 const LANE = SLOT + 1 // slot N takes lane N+1; the lane number is also TEST_ENV_NUMBER
 const LANE_LOCK = `/tmp/${LOCK_PREFIX}-lane-${LANE}.lock`
 const OWNER_FILE = `/tmp/${LOCK_PREFIX}-lane-${LANE}.owner`
-const SLOT_FILE = input.slot ? `/tmp/${LOCK_PREFIX}-slots/${SLOT}` : null
+const SLOT_FILE = `/tmp/${LOCK_PREFIX}-slots/${SLOT}`
 const GIVEN_BACK = new Set(['released', 'already_gone'])
 
 const repo = REPOS[REPO_KEY]
-if (!PR) return { error: 'no pull request number given - call with args: { pr: 739, id: "sr-x", repo: "site", slot: 4 }' }
+if (!PR) return { error: 'no pull request number given - build the args with config.sh --rework <id> <pr> <repo>' }
 if (!repo) return { error: `unknown repo ${REPO_KEY} - expected one of ${Object.keys(REPOS).join(', ')}` }
 
 const SLUG = repo.slug
@@ -137,13 +140,9 @@ const RESOLVE = {
   },
 }
 
-const SLOT_ARG = SLOT_FILE ? ` --slot ${SLOT_FILE}` : ''
-const SLOT_SAID = SLOT_FILE ? ` and slot ${SLOT}` : ''
-const NO_SLOT = 'not_reserved - this run carried no slot, so it has no reservation to give back'
-
 const LANE_BACK = {
   type: 'object',
-  required: SLOT_FILE ? ['lane', 'slot'] : ['lane'],
+  required: ['lane', 'slot'],
   properties: {
     lane: { enum: ['released', 'not_mine', 'already_gone', 'still_held'], description: 'the word release-lane.sh printed after lane:, lowercased - it reports its own outcome and you are not asked to judge it' },
     slot: { enum: ['released', 'not_mine', 'already_gone', 'still_held'], description: 'the word it printed after slot:, lowercased' },
@@ -152,21 +151,20 @@ const LANE_BACK = {
 }
 
 function releaseLanePrompt() {
-  return `Give lane ${LANE}${SLOT_SAID} back. Run this command once, exactly as it stands, and
+  return `Give lane ${LANE} and slot ${SLOT} back. Run this command once, exactly as it stands, and
 report what it printed:
 
-  bash ${SKILL_DIR}/release-lane.sh --lane ${LANE_LOCK}${SLOT_ARG} --owner '${OWNER}'
+  bash ${SKILL_DIR}/release-lane.sh --lane ${LANE_LOCK} --slot ${SLOT_FILE} --owner '${OWNER}'
 
 Every value is already in the command. There is nothing to look up, substitute or confirm first,
-and nothing for you to judge: the script proves ownership itself - the owner file beside the lock${SLOT_FILE ? `
-and the id in the slot file` : ''} - and removes only what names this run. An earlier release step of
+and nothing for you to judge: the script proves ownership itself - the owner file beside the lock
+and the id in the slot file - and removes only what names this run. An earlier release step of
 this shape was told to supply a value it had already been given, went looking for it, found none
 and declined to touch the lock at all, which left every other lane waiting on it.
 
-Report the word after 'lane:' as 'lane'${SLOT_FILE ? `, the word after 'slot:' as 'slot'` : ''}, lowercased, and
-everything it printed as 'notes'.${SLOT_FILE ? '' : ` This run carried no slot, so the command names none, the
-script prints no slot line, and there is nothing to report for one.`} Remove nothing by hand, run no other
-command, and never use 2>&1.`
+Report the word after 'lane:' as 'lane', the word after 'slot:' as 'slot', lowercased, and
+everything it printed as 'notes'. Remove nothing by hand, run no other command, and never use
+2>&1.`
 }
 
 function settle(path, answer) {
@@ -176,7 +174,7 @@ function settle(path, answer) {
 }
 
 let laneLock = `LEAKED - the release step never reported. Read ${LANE_LOCK} before touching anything.`
-let slotClaim = SLOT_FILE ? `LEAKED - the release step never reported. Read ${SLOT_FILE} before touching anything.` : NO_SLOT
+let slotClaim = `LEAKED - the release step never reported. Read ${SLOT_FILE} before touching anything.`
 let result = null
 
 try {
@@ -476,9 +474,9 @@ result = {
 } finally {
   const back = await agent(releaseLanePrompt(), { label: ID ? `release:${ID}#${PR}` : `release:#${PR}`, phase: 'Handoff', schema: LANE_BACK, model: 'haiku', effort: 'low' })
   laneLock = settle(LANE_LOCK, back && back.lane)
-  if (SLOT_FILE) slotClaim = settle(SLOT_FILE, back && back.slot)
-  if (!GIVEN_BACK.has(back && back.lane) || (SLOT_FILE && !GIVEN_BACK.has(back && back.slot))) {
-    log(`lane ${LANE}: ${laneLock}${SLOT_FILE ? `\n    slot ${SLOT}: ${slotClaim}` : ''}${back && back.notes ? `\n    ${back.notes}` : ''}`)
+  slotClaim = settle(SLOT_FILE, back && back.slot)
+  if (!GIVEN_BACK.has(back && back.lane) || !GIVEN_BACK.has(back && back.slot)) {
+    log(`lane ${LANE}: ${laneLock}\n    slot ${SLOT}: ${slotClaim}${back && back.notes ? `\n    ${back.notes}` : ''}`)
   }
 }
 

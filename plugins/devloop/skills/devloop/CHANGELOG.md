@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.61
+
+Dispatch a rework with `config.sh --rework <id> <pr> <repo>` and pass the object it prints straight to `Workflow`, with the `scriptPath` it carries. That one command validates, stages `rework.js`, reserves the lane and emits it; when no lane can be reserved it prints nothing and exits non-zero, and the dispatch stops. `rework.js` now refuses an args object with no slot instead of running on slot 1, so the old two-command recipe - `--args` spread by hand with `pr` and `repo` added - no longer starts a run.
+
 ## 0.1.60
 
 `lane-running.sh`, `lanes.sh` and `kill-lane.sh` now refuse a flag that takes a value when none is given - `--stale-minutes`, `--slot`, `--id`, `--repo` - naming the flag and exiting 6 instead of hanging. A session that sees one of these scripts never return should no longer suspect a dropped value.
