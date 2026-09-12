@@ -19,7 +19,9 @@
 #                                   instead of it.
 #   config.sh --land [repo#n ...]   stage the workflow scripts and print the args object for a
 #                                   land.js run, naming the pre-flighted PRs it is allowed to
-#                                   merge and the scriptPath to dispatch
+#                                   merge, the scriptPath to dispatch, and the merge-lock token
+#                                   that run writes into the holder file - minted here, one per
+#                                   launch, because land.js refuses to mint its own.
 #   config.sh --check               validate the file and report what is missing
 #
 # WHERE IT LOOKS, in order: $DEVLOOP_CONFIG, then .autofix.json walking up from the cwd. Walking
@@ -201,7 +203,7 @@ PY
       exit 1
     }
     python3 - "$CONFIG" "$SKILL_DIR" "$SCRIPT_PATH" "$@" <<'PY'
-import json, sys
+import json, os, sys, time
 cfg = json.load(open(sys.argv[1]))
 repos = cfg.get("repos", {})
 out = {
@@ -211,6 +213,7 @@ out = {
     "idPrefix": cfg.get("idPrefix", "sr"),
     "lockPrefix": cfg.get("lockPrefix", "devloop"),
     "deployEvery": cfg.get("deployEvery", 3),
+    "lockToken": "lander-%d-%d" % (int(time.time()), os.getpid()),
     "repos": repos,
 }
 slugs = {name: (r or {}).get("slug") for name, r in repos.items()}

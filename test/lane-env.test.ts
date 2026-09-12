@@ -95,6 +95,7 @@ test("the reviewer is told the same thing, because it reverts the fix and re-run
 const LAND_ARGS = {
   skillDir: "/skill",
   root: "/root",
+  lockToken: "lander-1",
   repos: { site: { path: "cli", slug: "404sl/pitwall" } },
 };
 
