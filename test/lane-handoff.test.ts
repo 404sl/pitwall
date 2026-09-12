@@ -457,6 +457,59 @@ test("a commit message naming the plugin manifest and skill directories is compl
   assert.match(ran.calls, /pr edit 7 --repo acme\/other/);
 });
 
+test("a refusal tells a lane the exit is terminal and that its judgement only picks the rewording", () => {
+  const box = harness("", {
+    list: '[{"number":7}]',
+    rollup: READY,
+    body: '{"title":"Regenerate the artwork","body":"Green and labelled lane-verified, awaiting the lander."}',
+  });
+  const ran = handoff(box, [...required(box), "--issue", "acme-1", "--note-file", box.notePath], true);
+
+  assert.equal(ran.status, 2, ran.stdout + ran.stderr);
+  assert.match(ran.stdout, /non-compliant: acme\/other#7/);
+  assert.match(ran.stdout, /THIS REFUSAL IS TERMINAL/);
+  assert.match(ran.stdout, /HOW TO REWORD a hit, never whether to proceed past it/);
+  assert.match(ran.stdout, /the only way to a label is a re-run of this script that exits 0/);
+  assert.equal(ran.labelled, false, "a pull request was labelled despite naming its own pipeline state");
+});
+
+test("the handoff label typeset as a code span is refused, and the refusal names the rewrite", () => {
+  const box = harness("", {
+    list: '[{"number":7}]',
+    rollup: READY,
+    body: '{"title":"Refuse a guessed pull request number","body":"A guess that names a real pull request in another repository is how the `lane-verified` label reaches the wrong one."}',
+  });
+  const ran = handoff(box, [...required(box), "--issue", "acme-1", "--note-file", box.notePath], true);
+
+  assert.equal(ran.status, 2, ran.stdout + ran.stderr);
+  assert.equal(
+    ran.labelled,
+    false,
+    "typesetting the token as a code span carried it past the leakage check - a spelling the gate " +
+      "lets through is a spelling a forged status report can use",
+  );
+  assert.match(ran.stdout, /NO SUCH\n?EXEMPTION AND NO COMPLIANT SPELLING/);
+  assert.match(ran.stdout, /naming the label in words/);
+});
+
+test("a refusal on the handoff label gives documentation the same rewrite as a self-report", () => {
+  const box = harness("", {
+    list: '[{"number":7}]',
+    rollup: READY,
+    body: '{"title":"Document the lander queue","body":"The lander only reads pull requests labelled `lane-verified`."}',
+  });
+  const ran = handoff(box, [...required(box), "--issue", "acme-1", "--note-file", box.notePath], true);
+
+  assert.equal(ran.status, 2, ran.stdout + ran.stderr);
+  assert.equal(ran.labelled, false);
+  assert.match(
+    ran.stdout,
+    /whether the sentence reports THIS pull request's own state or is documentation about the\n?handoff mechanics - both are reworded the same way/,
+    "a lane quoting the repository's own documentation is refused with advice written only for a " +
+      "self-report, which is the framework gap that invited the by-hand label on 2026-09-12",
+  );
+});
+
 test("a body claiming a machine author leaves NOTHING labelled", () => {
   const box = harness("", {
     list: '[{"number":7}]',

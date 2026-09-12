@@ -162,6 +162,77 @@ test("the handoff brief carries no backticks of its own", () => {
   );
 });
 
+test("the handoff brief says a compliance refusal is terminal, not a judgement about proceeding", () => {
+  const source = promptTemplate(readFileSync(join(SKILL, "task.js"), "utf8"), "handoffPrompt");
+  const handoff = source.replace(/\s+/g, " ");
+  for (const phrase of [
+    "DECIDES HOW TO REWORD A HIT, NEVER WHETHER TO PROCEED PAST IT",
+    "Exit 2 is TERMINAL",
+    "never in a label applied by hand",
+  ]) {
+    assert.ok(
+      handoff.includes(phrase),
+      `the handoff brief invites a lane holding a hit on its own subject matter to read the refusal as ` +
+        `advisory and label by hand, which is how a pull request carried the label with no verdict behind ` +
+        `it on 2026-09-12. Missing: ${phrase}`,
+    );
+  }
+});
+
+function complianceRefusal(): string {
+  const source = readFileSync(join(SKILL, "lane-handoff.sh"), "utf8");
+  const start = source.indexOf('echo "Fix the PR body or the commit message');
+  const end = source.indexOf("return 2", start);
+  assert.ok(start > 0 && end > start, "the compliance refusal block moved; this guard no longer reads it");
+  return [...source.slice(start, end).matchAll(/^\s*echo "(.*)"$/gm)]
+    .map((m) => m[1])
+    .join(" ")
+    .replace(/\s+/g, " ");
+}
+
+test("the handoff brief tells a lane the label token has no exemption and names the rewrite", () => {
+  const source = promptTemplate(readFileSync(join(SKILL, "task.js"), "utf8"), "handoffPrompt");
+  const handoff = source.replace(/\s+/g, " ");
+  for (const phrase of [
+    "NO SUBJECT-MATTER EXEMPTION AND NO COMPLIANT SPELLING",
+    "name the label in words rather than writing the token",
+  ]) {
+    assert.ok(
+      handoff.includes(phrase),
+      `a lane holding a leakage hit on its own subject matter needs the brief to say both that there is ` +
+        `no spelling that passes and what to write instead; without the second half 'do not proceed' is ` +
+        `an instruction with nowhere to go. Missing: ${phrase}`,
+    );
+  }
+});
+
+test("neither the brief nor the refusal offers a typeset spelling or claims a check that is not there", () => {
+  const handoff = promptTemplate(readFileSync(join(SKILL, "task.js"), "utf8"), "handoffPrompt").replace(
+    /\s+/g,
+    " ",
+  );
+  const refusal = complianceRefusal();
+
+  assert.ok(refusal.includes("NO SUCH EXEMPTION AND NO COMPLIANT SPELLING"), refusal);
+  assert.ok(refusal.includes("naming the label in words"), refusal);
+
+  for (const [surface, text] of [
+    ["the handoff brief", handoff],
+    ["the compliance refusal", refusal],
+  ] as const) {
+    for (const claim of [/code span/i, /neutralis/i, /raw text/i]) {
+      assert.doesNotMatch(
+        text,
+        claim,
+        `${surface} describes a carve-out for the label token that the compliance check does not ` +
+          `implement - it greps the literal token and nothing subtracts a spelling from it first. A ` +
+          `surface that promises one teaches the next lane a spelling that is refused, or worse, one ` +
+          `that passes. Offending pattern: ${claim}`,
+      );
+    }
+  }
+});
+
 test("the brief tells a lane to leave the three plugin version files alone", () => {
   const fix = promptTemplate(readFileSync(join(SKILL, "task.js"), "utf8"), "fixPrompt");
   for (const path of [

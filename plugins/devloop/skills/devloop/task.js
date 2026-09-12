@@ -1366,9 +1366,29 @@ PR: ${work.prUrl || work.prNumber}
    tell the difference - that judgement is yours, and 'sends automatically', 'the model' and
    'regenerated' have all been correctly kept before.
 
+   THAT JUDGEMENT DECIDES HOW TO REWORD A HIT, NEVER WHETHER TO PROCEED PAST IT. Exit 2 is
+   TERMINAL: the only route to a label is a re-run of the script that exits 0. 'This hit is my
+   own subject matter, therefore it is fine' ends in a rewording that keeps the meaning - never
+   in a label applied by hand.
+
+   THE HANDOFF LABEL TOKEN HAS NO SUBJECT-MATTER EXEMPTION AND NO COMPLIANT SPELLING. The check
+   is a grep for the literal token, so typesetting changes nothing: backticks, a code fence and a
+   quotation from a file in this repository all still hit. A change whose own subject is the
+   handoff mechanics is not the exception to that, it is the case that meets it most often, and
+   the rewrite is the same one either way - name the label in words rather than writing the
+   token. 'The handoff label' carries the meaning and passes.
+
+   That is measured. On 2026-09-12 a lane took exit 2 on a pull request whose whole subject was
+   the handoff script, judged its single hit a false positive, and added the label by hand - to
+   a pull request whose own text said that a refusal is never worked around by labelling by
+   hand. The label is the only signal the lander reads and nothing re-checks it before the
+   merge, so what it published was a verdict no gate had given.
+
    Use --check-only to see the verdict without changing anything.
 
-   If the script is missing, do it by hand with the steps below, which are the same sequence:
+   If the script is missing, do it by hand with the steps below, which are the same sequence.
+   MISSING means the file is not there. A refusal is not a missing script, and these steps are
+   never the answer to one:
      cd ${repo} && gh pr edit ${work.prNumber} --repo ${slug} --add-label lane-verified
 
    If that fails because the label does not exist in this repository, create it once and
