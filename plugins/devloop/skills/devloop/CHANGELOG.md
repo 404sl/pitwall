@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.49
+
+Re-running a node-role lane's setup step is now safe. The link command is a no-op when the
+worktree already holds the link, so a rework attempt no longer writes a
+`node_modules/node_modules` loop into the main checkout the way a bare `ln -s` did,
+silently and invisibly to `git status`.
+
+If such a directory already exists in a main checkout it is residue from before this
+change. Leave it alone and say so in your result - a main checkout is never a lane's to
+write to or tidy, whatever is in it.
+
 ## 0.1.48
 
 The queue scripts can now take only the work assigned to this loop, and do so only where the workspace asks for it. Add `"actor": "<the project's queue name>"` to `.pitwall.json` and both `dispatchable.sh` and `queue.sh` offer, count and claim only issues whose assignee is that name - unassigned work is skipped too, since an unassigned ticket is nobody's queue and the pipeline merges unattended. Without the field nothing changes, and `dispatchable.sh` prints one line on stderr saying the gate is off and how to turn it on.
