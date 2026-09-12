@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.42
+
+The lander no longer calls a failed `gh pr view` a version problem. A pull
+request whose labels and state could not be read now stops as `pr_unreadable`,
+with the gh error attached, and keeps its label so the next pass retries it -
+the remedy is to wait, not to bump a number. A branch that changes nothing under
+`plugins/` or `.claude-plugin/` is no longer refused over a manifest the version
+guard would never have compared for it.
+
+A fetch that did not print `FETCHED` is now reported in its own field and stops
+the pull request as `fetch_failed`, whatever the branch touches. Every ref read
+after a failed fetch is whatever the checkout already held, so a branch can read
+as up to date against a master that has moved, and the merge step rebases
+nothing. Nothing merges on it, the label stays on, and the next run takes it.
+
 ## 0.1.41
 
 **A release train's deploy brief named a script that does not exist and two hosts nobody owns.**
