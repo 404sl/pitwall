@@ -105,12 +105,12 @@ export function isAssessable(classification: Classification): boolean {
   return stoppedForAReason(classification);
 }
 
-const STAMP = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z) \S+$/;
+export const NOTE_STAMP = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z) \S+$/;
 
 function withoutStampLines(text: string): string {
   return text
     .split("\n")
-    .filter((line) => !STAMP.test(line.trim()))
+    .filter((line) => !NOTE_STAMP.test(line.trim()))
     .join("\n")
     .trim();
 }
@@ -141,7 +141,7 @@ export function noteSaid(block: string): { said: string; at?: string } {
   if (said === "") {
     return { said: block };
   }
-  const at = STAMP.exec(block.split("\n")[0]?.trim() ?? "")?.[1];
+  const at = NOTE_STAMP.exec(block.split("\n")[0]?.trim() ?? "")?.[1];
   return at === undefined ? { said } : { said, at };
 }
 

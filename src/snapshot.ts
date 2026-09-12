@@ -374,7 +374,8 @@ async function announce(
         sessionRef,
       });
     const note =
-      options.note ?? noteAppender(root, { env: options.env, timeoutMs: options.timeoutMs });
+      options.note ??
+      noteAppender(root, { env: options.env, timeoutMs: options.timeoutMs, lockRoot: options.lockRoot });
     delivered.push(...(await deliver(notices, { sender, note })));
   }
   return delivered;
@@ -417,7 +418,11 @@ async function closeUpstreamIssues(
       options.closer ?? githubCloser({ env: options.env, timeoutMs: options.timeoutMs });
     const note =
       options.note ??
-      noteAppender(entry.project.root, { env: options.env, timeoutMs: options.timeoutMs });
+      noteAppender(entry.project.root, {
+        env: options.env,
+        timeoutMs: options.timeoutMs,
+        lockRoot: options.lockRoot,
+      });
     run.reported.push(...(await closeUpstream(work.closures, { closer, note })));
   }
   return run;

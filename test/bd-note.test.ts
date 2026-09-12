@@ -5,6 +5,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { GIT_ENV } from "./support/git.js";
+import { stampNote, writerOf } from "../src/beads.ts";
 
 const SCRIPT = join(
   import.meta.dirname,
@@ -174,4 +175,17 @@ test("a lost note is not passed off as landed by an earlier note carrying the sa
   assert.equal(ran.status, 1, ran.stdout + ran.stderr);
   assert.match(ran.stderr, /did NOT land/);
   assert.match(ran.stderr, /Kept both sides of the merge/);
+});
+
+test("the script and the CLI's own writer stamp a note byte for byte the same", () => {
+  const frozen = "2026-09-10T14:22:31Z";
+  const session = " lane\tacme 1\n";
+  const box = harness("", frozen);
+  const ran = append(box, ["acme-1", NOTE], session);
+
+  assert.equal(ran.status, 0, ran.stdout + ran.stderr);
+  const byScript = readFileSync(box.notesFile, "utf8");
+  const byCli = stampNote(NOTE, writerOf({ PITWALL_SESSION: session }), new Date(frozen));
+  assert.equal(byScript, `${byCli}\n`);
+  assert.equal(writerOf({}), "unknown");
 });

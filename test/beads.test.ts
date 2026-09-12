@@ -1,12 +1,25 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { Issue, type CollectionError, type Lane } from "@404sl/pitwall-schema";
-import { appendNotesArgs, noteAppender, readIssue, readIssues, showArgs } from "../src/beads.ts";
+import {
+  appendNotesArgs,
+  issueActor,
+  noteAppender,
+  noteLockPath,
+  noteToken,
+  readIssue,
+  readIssues,
+  showArgs,
+  stampNote,
+  writerOf,
+  type NoteOptions,
+} from "../src/beads.ts";
 import type { UnclassifiedIssue } from "../src/classify.ts";
+import { NOTE_STAMP, lastNoteAt } from "../src/staleness.ts";
 
 const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "bd");
 const TRACKER = join(FIXTURES, "tracker");
@@ -570,18 +583,177 @@ test("reading one issue runs nothing that could write to the tracker", async () 
   assert.deepEqual(showArgs("mw-1"), ["show", "--id", "mw-1", "--json", "--include-dependents"]);
 });
 
+const STAMP_LINE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z \S+$/;
+const QUICK = { lockWaitMs: 200, lockPollMs: 10, settleMs: 0, retryMs: 0 };
+
+interface NoteBox {
+  log: string;
+  calls: string;
+  lockRoot: string;
+  warned: string[];
+  options: (extra?: Record<string, string>) => NoteOptions;
+}
+
+function noting(bin = "ok"): NoteBox {
+  const room = mkdtempSync(join(tmpdir(), "pitwall-notes-"));
+  const log = join(room, "notes.log");
+  const calls = join(room, "calls.log");
+  const lockRoot = join(room, "locks");
+  mkdirSync(lockRoot);
+  const warned: string[] = [];
+  return {
+    log,
+    calls,
+    lockRoot,
+    warned,
+    options: (extra = {}) => ({
+      env: { ...env(bin), BD_NOTES_LOG: log, BD_CALL_LOG: calls, ...extra },
+      lockRoot,
+      pace: QUICK,
+      warn: (line) => warned.push(line),
+    }),
+  };
+}
+
+function updates(calls: string): string[] {
+  return existsSync(calls)
+    ? readFileSync(calls, "utf8")
+        .split("\n")
+        .filter((line) => line.startsWith("update "))
+    : [];
+}
+
 test("an undelivered notice is appended to the issue rather than dropped", async () => {
-  const log = join(mkdtempSync(join(tmpdir(), "pitwall-notes-")), "notes.log");
-  const append = noteAppender(TRACKER, { env: { ...env("ok"), BD_NOTES_LOG: log } });
+  const box = noting();
+  const append = noteAppender(TRACKER, box.options({ PITWALL_SESSION: "pitwall-devloop" }));
   await append("mw-1", "could not be delivered to c1796a");
-  assert.equal(readFileSync(log, "utf8"), "mw-1 could not be delivered to c1796a\n");
+
+  const recorded = readFileSync(box.log, "utf8").split("\n");
+  assert.equal(recorded[0], "mw-1 ", "the note does not start its own block");
+  assert.match(recorded[1] ?? "", /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z pitwall-devloop$/);
+  assert.equal(recorded[2], "could not be delivered to c1796a");
+  assert.deepEqual(box.warned, []);
   assert.deepEqual(appendNotesArgs("mw-1", "text"), ["update", "mw-1", "--append-notes", "text"]);
 });
 
-test("a tracker that refuses the note says what it ran", async () => {
-  const append = noteAppender(TRACKER, { env: env("ok") });
+test("the stamp a note carries is the one the staleness reader dates a block by", () => {
+  const at = new Date("2026-09-10T14:22:31.789Z");
+  const stamped = stampNote("Kept both sides of the merge.", "lane-acme-1", at);
+  assert.equal(stamped, "\n2026-09-10T14:22:31Z lane-acme-1\nKept both sides of the merge.");
+  assert.match(stamped.split("\n")[1] ?? "", NOTE_STAMP);
+  assert.equal(lastNoteAt(`An older note.\n${stamped}`), "2026-09-10T14:22:31Z");
+  assert.throws(() => stampNote("x", "two words", at), /not one a reader recognises/);
+});
+
+test("the writer is the session, else the user, else unknown, and always one word", () => {
+  assert.equal(writerOf({ PITWALL_SESSION: "pitwall-devloop", USER: "vlad" }), "pitwall-devloop");
+  assert.equal(writerOf({ USER: "vlad" }), "vlad");
+  assert.equal(writerOf({}), "unknown");
+  assert.equal(writerOf({ PITWALL_SESSION: "", USER: "" }), "unknown");
+  assert.equal(writerOf({ PITWALL_SESSION: " lane\tacme 1\n" }), "lane-acme-1");
+  assert.equal(writerOf({ PITWALL_SESSION: " \t " }), "unknown");
+});
+
+test("the token a write is verified by survives wrapping and punctuation", () => {
+  assert.equal(noteToken("Kept both sides of the merge."), "Keptbothsidesofthemerge");
+  assert.equal(noteToken("a".repeat(40)), "a".repeat(24));
+  assert.equal(noteToken("!!! ??? ... --- *** ###"), "!!! ??? ... ");
+});
+
+test("a tracker that refuses the note says what it ran, and is not asked again", async () => {
+  const box = noting();
+  const append = noteAppender(TRACKER, { ...box.options(), env: { ...env("ok"), BD_CALL_LOG: box.calls } });
   await assert.rejects(
     () => append("mw-1", "could not be delivered"),
-    /bd update mw-1 --append-notes: /,
+    /^Error: bd update mw-1 --append-notes: /,
+  );
+  assert.equal(updates(box.calls).length, 1, "a refusal was retried as if it were a lost write");
+});
+
+test("a write the tracker accepts and loses is retried, then reported with its text", async () => {
+  const box = noting();
+  const append = noteAppender(TRACKER, box.options({ BD_NOTES_DROP: "1", PITWALL_SESSION: "pitwall-devloop" }));
+  await assert.rejects(
+    () => append("mw-1", "could not be delivered to c1796a"),
+    /^Error: bd update mw-1 --append-notes: the note did not land after 3 attempts$/,
+  );
+  assert.equal(updates(box.calls).length, 3);
+  assert.match(box.warned[0] ?? "", /mw-1 did NOT land after 3 attempts/);
+  assert.match(box.warned[1] ?? "", /^\n\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z pitwall-devloop\ncould not be delivered to c1796a$/);
+  assert.equal(existsSync(box.log), false);
+});
+
+test("a lost first write that lands on a retry is landed, and says so", async () => {
+  const box = noting();
+  let dropped = 0;
+  const append = noteAppender(TRACKER, {
+    ...box.options(),
+    env: {
+      ...env("ok"),
+      BD_NOTES_LOG: box.log,
+      BD_CALL_LOG: box.calls,
+      get BD_NOTES_DROP() {
+        return dropped++ === 0 ? "1" : "0";
+      },
+    },
+  });
+  await append("mw-1", "could not be delivered to c1796a");
+  assert.equal(updates(box.calls).length, 2);
+  assert.deepEqual(box.warned, ["note on mw-1 landed on attempt 2"]);
+  assert.equal(readFileSync(box.log, "utf8").split("\n").filter((line) => STAMP_LINE.test(line)).length, 1);
+});
+
+test("a note that cannot be read back is not written again, and the doubt is said", async () => {
+  const box = noting();
+  const append = noteAppender(TRACKER, box.options());
+  await append("mw-99", "could not be delivered to c1796a");
+  assert.equal(updates(box.calls).length, 1);
+  assert.equal(box.warned.length, 1);
+  assert.match(box.warned[0] ?? "", /could not read mw-99 back to verify the note .* not retrying/);
+});
+
+test("appends are serialised behind the workspace's lock, and a held lock is waited on", async () => {
+  const root = mkdtempSync(join(tmpdir(), "pitwall-locked-"));
+  cpSync(join(TRACKER, "bd-output"), join(root, "bd-output"), { recursive: true });
+  writeFileSync(join(root, ".pitwall.json"), JSON.stringify({ idPrefix: "mw", lockPrefix: "acme" }));
+  const box = noting();
+  const lock = noteLockPath("acme", box.lockRoot);
+  assert.equal(lock, join(box.lockRoot, "acme-bd-write.lock"));
+  assert.equal(noteLockPath("devloop"), "/tmp/devloop-bd-write.lock");
+
+  mkdirSync(lock);
+  const append = noteAppender(root, box.options());
+  const writing = append("mw-1", "could not be delivered to c1796a");
+  await new Promise((done) => setTimeout(done, 50));
+  assert.equal(updates(box.calls).length, 0, "the write went ahead while another writer held the lock");
+  rmdirSync(lock);
+  await writing;
+  assert.equal(updates(box.calls).length, 1);
+  assert.deepEqual(box.warned, []);
+  assert.equal(existsSync(lock), false, "the lock was left behind after the write");
+});
+
+test("a lock that never frees is reported and the write goes ahead unserialised", async () => {
+  const box = noting();
+  const lock = noteLockPath("devloop", box.lockRoot);
+  mkdirSync(lock);
+  const append = noteAppender(TRACKER, box.options());
+  await append("mw-1", "could not be delivered to c1796a");
+  assert.equal(updates(box.calls).length, 1);
+  assert.match(box.warned[0] ?? "", new RegExp(`^${lock} busy after 200ms, writing mw-1 unserialised`));
+  assert.equal(existsSync(lock), true, "a lock another writer holds was removed");
+});
+
+test("a console action writes its note through the same stamped, verified path", async () => {
+  const box = noting();
+  const act = issueActor(TRACKER, box.options({ PITWALL_SESSION: "console" }));
+  await act("mw-3", { note: "Answered from the console: credit the account", removeLabels: ["needs-decision"] });
+  const recorded = readFileSync(box.log, "utf8").split("\n");
+  assert.equal(recorded[0], "mw-3 ");
+  assert.match(recorded[1] ?? "", /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z console$/);
+  assert.equal(recorded[2], "Answered from the console: credit the account");
+  assert.deepEqual(
+    updates(box.calls).map((line) => line.split(" ").slice(0, 3).join(" ")),
+    ["update mw-3 --append-notes", "update mw-3 --remove-label"],
   );
 });

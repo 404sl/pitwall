@@ -405,6 +405,7 @@ function trackerServer(
   return createConsoleServer({
     env: { ...env, PATH: `${join(BD_FIXTURES, bin)}:/usr/bin:/bin`, ...extra },
     uiDir: builtConsole(),
+    lockRoot: mkdtempSync(join(tmpdir(), "pitwall-serve-lock-")),
   });
 }
 
@@ -1014,6 +1015,12 @@ function logged(path: string): string[] {
     : [];
 }
 
+const STAMPED = "\\n\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z \\S+\\n";
+
+function noted(id: string, text: string): RegExp {
+  return new RegExp(`^${id} ${STAMPED}${text}$`, "m");
+}
+
 function writtenTo(path: string): string[] {
   return logged(path).filter(
     (line) => line.includes("--append-notes") || line.includes("--remove-label"),
@@ -1079,7 +1086,7 @@ test("an answer lands on the ticket before the labels that park it are cleared",
   assert.equal(answered.status, 200, answered.body);
   assert.match(
     readFileSync(box.notes, "utf8"),
-    /mw-3 Answered from the console: credit the account, and record the amount on the ticket/,
+    noted("mw-3", "Answered from the console: credit the account, and record the amount on the ticket"),
   );
   const writes = writtenTo(box.log);
   assert.equal(writes.length, 2);
@@ -1096,7 +1103,7 @@ test("marking it ready clears both labels and says the console did it", async (t
   const ready = await box.post("/api/issue/mw/mw-3/ready");
 
   assert.equal(ready.status, 200, ready.body);
-  assert.match(readFileSync(box.notes, "utf8"), /mw-3 Marked ready from the console\./);
+  assert.match(readFileSync(box.notes, "utf8"), noted("mw-3", "Marked ready from the console\\."));
   assert.deepEqual((JSON.parse(ready.body) as { removedLabels: string[] }).removedLabels, [
     "needs-decision",
     "needs-access",
@@ -1112,7 +1119,10 @@ test("pushing an issue off the owner's queue records the classification it is co
   assert.equal(returned.status, 200, returned.body);
   assert.match(
     readFileSync(box.notes, "utf8"),
-    /mw-3 Not mine — the console classified this yours:decision\. Reason: any engineer can pick the refund path/,
+    noted(
+      "mw-3",
+      "Not mine — the console classified this yours:decision\\. Reason: any engineer can pick the refund path",
+    ),
   );
 });
 
@@ -1161,7 +1171,7 @@ test("a write that got the note on but not the labels off says so, rather than '
   const tried = await box.post("/api/issue/mw/mw-3/ready");
 
   assert.equal(tried.status, 502);
-  assert.match(readFileSync(box.notes, "utf8"), /mw-3 Marked ready from the console\./);
+  assert.match(readFileSync(box.notes, "utf8"), noted("mw-3", "Marked ready from the console\\."));
   assert.match(tried.body, /mw-3 carries the note but is still parked/);
   assert.match(tried.body, /--remove-label/);
   assert.doesNotMatch(
