@@ -38,6 +38,8 @@ interface Second {
   mergeState?: string;
   message?: string;
   listFails?: boolean;
+  rollupFails?: boolean;
+  rollupGarbled?: boolean;
   omitPath?: boolean;
   editFails?: boolean;
   labelMissing?: boolean;
@@ -135,9 +137,15 @@ function harness(seededNotes: string, second?: Second, detached?: boolean): Harn
                 ? ` echo "gh: could not read acme/other" >&2; exit 1 ;;`
                 : ` printf '%s\\n' '${second.list}' ;;`
             }`,
-            `  *"--repo acme/other"*statusCheckRollup*) printf '{"statusCheckRollup":%s,"headRefOid":"%s"${
-              second.mergeable ? `,"mergeable":"${second.mergeable}"` : ""
-            }${second.mergeState ? `,"mergeStateStatus":"${second.mergeState}"` : ""}}\\n' '${second.rollup}' '${otherHead}' ;;`,
+            `  *"--repo acme/other"*statusCheckRollup*)${
+              second.rollupFails
+                ? ` echo "gh: API rate limit exceeded for acme/other" >&2; exit 1 ;;`
+                : second.rollupGarbled
+                  ? ` printf 'error connecting to api.github.com\\n' ;;`
+                  : ` printf '{"statusCheckRollup":%s,"headRefOid":"%s"${
+                      second.mergeable ? `,"mergeable":"${second.mergeable}"` : ""
+                    }${second.mergeState ? `,"mergeStateStatus":"${second.mergeState}"` : ""}}\\n' '${second.rollup}' '${otherHead}' ;;`
+            }`,
             `  *"--repo acme/other --json title,body"*) printf '%s\\n' '${second.body}' ;;`,
             `  "label list --repo acme/other"*)${
               second.labelListFails
@@ -374,6 +382,37 @@ test("a failing check is reported as red, not as a conflict", () => {
   assert.match(ran.stdout, /not-green: BAD:ci on acme\/other#7/);
   assert.doesNotMatch(ran.stdout, /conflicted/);
   assert.equal(ran.labelled, false, "a red pull request was labelled");
+});
+
+test("a rollup gh could not fetch is reported as unreadable, not as not-green", () => {
+  const box = harness("", { list: '[{"number":7}]', rollup: READY, body: CLEAN, rollupFails: true });
+  const ran = handoff(box, [...required(box), "--issue", "acme-1", "--note-file", box.notePath], true);
+
+  assert.equal(ran.status, 9, ran.stdout + ran.stderr);
+  assert.match(ran.stdout, /unreadable: could not read the status rollup for acme\/other#7/);
+  assert.match(
+    ran.stdout,
+    /attempted: gh pr view 7 --repo acme\/other --json statusCheckRollup,headRefOid,mergeable,mergeStateStatus/,
+  );
+  assert.match(ran.stdout, /gh exited 1 and said: gh: API rate limit exceeded for acme\/other/);
+  assert.doesNotMatch(ran.stdout, /not-green/);
+  assert.doesNotMatch(ran.stdout, /conflicted/);
+  assert.equal(ran.labelled, false, "a pull request whose rollup was never read was labelled");
+});
+
+test("a rollup that does not parse is reported as unreadable, not as not-green", () => {
+  const box = harness("", { list: '[{"number":7}]', rollup: READY, body: CLEAN, rollupGarbled: true });
+  const ran = handoff(box, [...required(box), "--issue", "acme-1", "--note-file", box.notePath], true);
+
+  assert.equal(ran.status, 9, ran.stdout + ran.stderr);
+  assert.match(ran.stdout, /unreadable: the status rollup for acme\/other#7 did not parse/);
+  assert.match(
+    ran.stdout,
+    /attempted: gh pr view 7 --repo acme\/other --json statusCheckRollup,headRefOid,mergeable,mergeStateStatus/,
+  );
+  assert.match(ran.stdout, /beginning: error connecting to api.github.com/);
+  assert.doesNotMatch(ran.stdout, /not-green/);
+  assert.equal(ran.labelled, false, "a pull request whose rollup did not parse was labelled");
 });
 
 test("a green pull request that conflicts with master is still handed off for the lander to rebase", () => {
