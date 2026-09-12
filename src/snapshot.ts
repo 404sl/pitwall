@@ -474,8 +474,9 @@ export async function emitSnapshot(options: SnapshotOptions = {}): Promise<Snaps
     errors: history.error === undefined ? snapshot.errors : [...snapshot.errors, history.error],
   });
   const written = keptBoard(recorded, previous, gathered);
-  const path = writeSnapshot(written, options);
   const delivered = await announce(gathered, previous, roots, options);
+  const upstream = await closeUpstreamIssues(gathered, previous, roots, options);
+  const path = writeSnapshot(written, options);
   return {
     snapshot: written,
     path,
@@ -483,6 +484,6 @@ export async function emitSnapshot(options: SnapshotOptions = {}): Promise<Snaps
     read: true,
     delivered,
     unlisted: unlistedReport(roots, options),
-    upstream: await closeUpstreamIssues(gathered, previous, roots, options),
+    upstream,
   };
 }
