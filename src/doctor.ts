@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { LEGACY_WORKSPACE_FILE, WORKSPACE_FILE, WORKSPACE_FILES, workspaceFile } from "./autofix.js";
 import { BEADS_DIR, BEADS_DIR_VAR } from "./beads.js";
@@ -102,12 +102,43 @@ function timesListed(roots: ResolvedRoots): Map<string, number> {
   return counted;
 }
 
-function repeatedRootChecks(roots: ResolvedRoots, counted: ReadonlyMap<string, number>): Check[] {
+function segmentsOf(dir: string): string[] {
+  return dir.split(sep).filter((segment) => segment !== "");
+}
+
+function sharedTail(a: readonly string[], b: readonly string[]): number {
+  let shared = 0;
+  while (shared < a.length && shared < b.length && a[a.length - 1 - shared] === b[b.length - 1 - shared]) {
+    shared += 1;
+  }
+  return shared;
+}
+
+function labelsOf(dirs: readonly string[]): Map<string, string> {
+  const segments = new Map(dirs.map((dir) => [dir, segmentsOf(dir)]));
+  const labels = new Map<string, string>();
+  for (const [dir, own] of segments) {
+    let depth = 1;
+    for (const [other, theirs] of segments) {
+      if (other !== dir) {
+        depth = Math.max(depth, sharedTail(own, theirs) + 1);
+      }
+    }
+    labels.set(dir, depth > own.length ? dir : own.slice(-depth).join(sep));
+  }
+  return labels;
+}
+
+function repeatedRootChecks(
+  roots: ResolvedRoots,
+  counted: ReadonlyMap<string, number>,
+  labels: ReadonlyMap<string, string>,
+): Check[] {
   return [...counted]
     .filter(([, times]) => times > 1)
     .map(([dir, times]) => ({
       severity: "fail" as const,
-      name: `${basename(dir)} listed`,
+      name: `${labels.get(dir) ?? dir} listed`,
       tried: triedOf(roots),
       result: `${dir} is listed ${times} times · it is read once, so the extra entries do nothing`,
     }));
@@ -280,11 +311,13 @@ interface WorkspaceReading {
   lockPrefix?: string;
 }
 
-async function workspaceChecks(root: string, options: DoctorOptions): Promise<WorkspaceReading> {
+async function workspaceChecks(
+  dir: string,
+  id: string,
+  options: DoctorOptions,
+): Promise<WorkspaceReading> {
   const env = options.env ?? process.env;
   const timeoutMs = options.timeoutMs ?? PROBE_TIMEOUT_MS;
-  const dir = resolve(root);
-  const id = basename(dir);
   const checks: Check[] = [];
   if (!isDirectory(dir)) {
     checks.push({ severity: "fail", name: id, tried: `stat ${dir}`, result: "no directory here" });
@@ -349,17 +382,19 @@ export async function diagnose(options: DoctorOptions = {}): Promise<Diagnosis> 
   const timeoutMs = options.timeoutMs ?? PROBE_TIMEOUT_MS;
   const roots = resolveRoots(options);
   const counted = timesListed(roots);
+  const dirs = [...new Set(roots.roots.map((root) => resolve(root)))];
+  const labels = labelsOf(dirs);
   const checks: Check[] = [
     rootsCheck(roots),
-    ...repeatedRootChecks(roots, counted),
+    ...repeatedRootChecks(roots, counted, labels),
     await ghCheck(env, timeoutMs),
   ];
   const claims = new Map<string, string[]>();
-  for (const root of roots.roots) {
-    const reading = await workspaceChecks(root, options);
+  for (const dir of dirs) {
+    const reading = await workspaceChecks(dir, labels.get(dir) ?? dir, options);
     checks.push(...reading.checks);
     if (reading.lockPrefix !== undefined) {
-      claims.set(reading.lockPrefix, [...(claims.get(reading.lockPrefix) ?? []), resolve(root)]);
+      claims.set(reading.lockPrefix, [...(claims.get(reading.lockPrefix) ?? []), dir]);
     }
   }
   checks.push(...sharedPrefixChecks(claims, options.lockRoot));

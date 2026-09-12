@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { cpSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WORKSPACE_FILE } from "../src/autofix.ts";
 import { diagnose, renderDoctor, type Check, type Diagnosis } from "../src/doctor.ts";
@@ -62,8 +62,8 @@ function root(): string {
   return mkdtempSync(join(tmpdir(), "pitwall-doctor-root-"));
 }
 
-function healthy(lockPrefix = "doctor"): string {
-  const dir = root();
+function healthy(lockPrefix = "doctor", dir = root()): string {
+  mkdirSync(dir, { recursive: true });
   tracker(dir);
   checkout(dir, "cli");
   describe(dir, { root: dir, idPrefix: "doc", lockPrefix, repos: { _: "ignored", site: { path: "cli" } } });
@@ -261,6 +261,70 @@ test("a workspace whose repos is not an object fails without abandoning the rest
     assert.equal(named(diagnosis, `${basename(well)} repo site`).severity, "ok");
     assert.equal(diagnosis.code, 1);
   }
+});
+
+test("two roots sharing a basename are named by the shortest suffix that tells them apart", async () => {
+  const work = healthy("work", join(root(), "pitwall"));
+  const archive = healthy("archive", join(root(), "pitwall"));
+  const diagnosis = await diagnose(options([work, archive]));
+  const workName = `${basename(dirname(work))}/pitwall`;
+  const archiveName = `${basename(dirname(archive))}/pitwall`;
+  for (const suffix of ["", " tracker", " bd", " repo site", " lanes", " root"]) {
+    assert.equal(named(diagnosis, `${workName}${suffix}`).severity, "ok");
+    assert.equal(named(diagnosis, `${archiveName}${suffix}`).severity, "ok");
+  }
+  assert.equal(
+    diagnosis.checks.filter((check) => check.name === "pitwall" || check.name.startsWith("pitwall ")).length,
+    0,
+  );
+  assert.equal(diagnosis.code, 0);
+});
+
+test("two roots sharing a basename and a parent name are told apart by the grandparent", async () => {
+  const parent = root();
+  const shorter = healthy("shorter", join(parent, "work", "pitwall"));
+  const longer = healthy("longer", join(parent, "x", "work", "pitwall"));
+  const diagnosis = await diagnose(options([shorter, longer]));
+  const names = new Set(diagnosis.checks.map((check) => check.name));
+  assert.ok(names.has(`${basename(parent)}/work/pitwall bd`), [...names].join(", "));
+  assert.ok(names.has("x/work/pitwall bd"), [...names].join(", "));
+  assert.equal(diagnosis.checks.filter((check) => check.name === "work/pitwall bd").length, 0);
+  assert.equal(diagnosis.code, 0);
+});
+
+test("a root whose whole path is the tail of another root's path is named in full, and the other by one segment more", async () => {
+  const base = root();
+  const shorter = healthy("shorter", join(base, "work", "pitwall"));
+  const longer = healthy("longer", join(base, ...base.split(sep).filter(Boolean), "work", "pitwall"));
+  const diagnosis = await diagnose(options([shorter, longer]));
+  const longerName = [basename(base), ...shorter.split(sep).filter(Boolean)].join(sep);
+  assert.equal(named(diagnosis, `${shorter} bd`).severity, "ok");
+  assert.equal(named(diagnosis, `${longerName} bd`).severity, "ok");
+  const bd = diagnosis.checks.filter((check) => check.name.endsWith(" bd")).map((check) => check.name);
+  assert.deepEqual(bd, [`${shorter} bd`, `${longerName} bd`]);
+  assert.equal(diagnosis.checks.filter((check) => check.name === `${shorter.slice(1)} bd`).length, 0);
+  assert.equal(diagnosis.code, 0);
+});
+
+test("a root is named in full only when its whole path is the tail of another root's path", async () => {
+  const tail = await diagnose(options(["/a/work/pitwall", "/x/a/work/pitwall"]));
+  assert.equal(named(tail, "/a/work/pitwall").severity, "fail");
+  assert.equal(named(tail, "x/a/work/pitwall").severity, "fail");
+  assert.equal(tail.checks.filter((check) => check.name === "/x/a/work/pitwall").length, 0);
+  const shallow = await diagnose(options(["/home/pitwall", "/srv/pitwall"]));
+  assert.equal(named(shallow, "home/pitwall").severity, "fail");
+  assert.equal(named(shallow, "srv/pitwall").severity, "fail");
+  assert.equal(shallow.checks.filter((check) => check.name.startsWith("/")).length, 0);
+});
+
+test("a colliding root listed twice is reported as listed under its disambiguated name", async () => {
+  const work = healthy("work", join(root(), "pitwall"));
+  const archive = healthy("archive", join(root(), "pitwall"));
+  const diagnosis = await diagnose(options([work, archive, work]));
+  const repeated = named(diagnosis, `${basename(dirname(work))}/pitwall listed`);
+  assert.equal(repeated.severity, "fail");
+  assert.ok(repeated.result.includes(work));
+  assert.equal(diagnosis.checks.filter((check) => check.name === "pitwall listed").length, 0);
 });
 
 test("the same root listed twice is checked once and is reported as listed twice", async () => {
