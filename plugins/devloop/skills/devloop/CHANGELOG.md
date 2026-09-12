@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.1.36
+
+**The fix brief told a lane the slug for its run was named above, and named only the path.** Rule
+12 asks for `--repo <owner/name>` on every `gh pr` command and then says the value is given above.
+That is true of the handoff brief, which interpolates `REPOS[task.repo].slug` into its own
+commands, and false of the fix brief, which printed `Repo: <key> (<path>)` and nothing more - so
+the step that runs `gh pr create` carried the rule with nothing behind it. For a rails-role
+repository the slug did appear once, inside a troubleshooting command in the checks block, with a
+`<owner/name>` fallback beside it; for a node-role repository it appeared nowhere.
+
+A wrong slug at that step does not fail. Pull request numbers overlap across the repositories of
+one workspace, so `gh pr create --repo` naming the wrong one opens the pull request in the wrong
+place and reports success - and on 2026-09-11 a handoff run given the wrong repository evaluated
+`404sl/pitwall#45`, a real unrelated merged pull request, instead of `404sl/pitwall-site#45`.
+
+The fix brief now prints `Slug:` beside the path it already printed, read with the accessor the
+handoff brief already uses. A repository entry that declares no slug - possible in any workspace
+this plugin is installed into - is handed the command that reads one from the checkout instead:
+`git -C <path> remote get-url origin`, a trailing `.git` and the host prefix dropped, the result
+used only if it is owner/name. That is what `lane-handoff.sh` already does when its `--slug` is
+missing, and it is the whole point of not printing a dead end beside a step that needs the value.
+
+Rule 12's second sentence covers both branches - a brief that sends a run to `gh` names this run's
+slug above, or the command that reads it from the checkout - which makes it true of all three
+briefs that carry the rules, configured or not: the fix and handoff briefs name the value or the
+way to it, and the split brief hands out no `gh` command of its own.
+
+Three tests in `test/lane-slug.test.ts`, each failing before: the fix brief rendered for each
+configured repository names that repository's slug on a line of its own, matched to the line
+boundary because `404sl/pitwall` is a prefix of `404sl/pitwall-site`; every brief of a run that
+carries the rules block and hands out a `gh` command of its own names the slug above it; and the
+brief for a repository with no configured slug names `remote get-url origin` against that
+repository's own path and hands out no placeholder to substitute. The second is the invariant
+rather than the instance - the next brief to carry the rules fails it until it names a slug too.
+
 ## 0.1.35
 
 **The compliance gate could not pass a commit in this repository, because this repository's own
