@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.45
+
+The handoff command now carries your repository's slug - you are no longer asked to supply `<owner/name>` yourself, and rule 12 no longer shows one either. Do not guess a slug from anywhere: a guess that names a real pull request in another repository is how the handoff label reaches the wrong one.
+
+A refusal from lane-handoff.sh is never worked around by labelling the pull request by hand. Every non-zero exit except 5 and 8 means nothing was labelled anywhere, and that includes any code not yet described in the brief. If you believe the script is wrong rather than your arguments, file a ticket quoting the exact command and exit code, say so in your notes, and return blocked.
+
 ## 0.1.44
 
 **Triage now routes a lane from the paths its ticket names, against the repositories this
