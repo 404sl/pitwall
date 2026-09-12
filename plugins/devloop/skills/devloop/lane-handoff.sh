@@ -37,7 +37,8 @@
 #   6  usage         bad arguments. Nothing was read and nothing was labelled.
 #   7  not-surveyed  the set of pull requests on the branch could not be established, or the
 #                    label could not be prepared in one of the repositories holding them, or
-#                    one of their texts could not be read. Nothing was labelled anywhere.
+#                    one of their texts could not be read, or GitHub would not say what sha the
+#                    branch is at. Nothing was labelled anywhere.
 #                    Fix what it names, then re-run.
 #   8  half-labelled labelling began and could not be finished. It prints which pull requests
 #                    carry the label and which do not. Adding a label is idempotent and this
@@ -188,7 +189,7 @@ neutral='s#[A-Za-z/._-]*CLAUDE\.md#REPO-DOC#g; s#[A-Za-z/._-]*AGENTS\.md#REPO-DO
 #    meant to write. GitHub and git both add and rewrite text.
 check_one() {
   local _path="$1" _slug="$2" _pr="$3"
-  local body msgs trailers hits head_sha state verdict rollup_head
+  local body msgs trailers hits head_sha state verdict rollup_head msgs_rc trailers_rc
   local attempt rollup_json rollup_err gh_rc read_rc said began
 
   body=$(gh pr view "$_pr" --repo "$_slug" --json title,body 2>/dev/null \
@@ -204,8 +205,16 @@ check_one() {
     echo "                 may not exist. An empty read is not a clean read." >&2
     return 7
   fi
-  msgs=$(git -C "$_path" log "origin/master..origin/${BRANCH}" --format=%B 2>/dev/null)
-  trailers=$(git -C "$_path" log "origin/master..origin/${BRANCH}" --format='%an <%ae>%n%(trailers)' 2>/dev/null)
+  msgs=$(git -C "$_path" log "origin/master..origin/${BRANCH}" --format=%B 2>/dev/null); msgs_rc=$?
+  trailers=$(git -C "$_path" log "origin/master..origin/${BRANCH}" --format='%an <%ae>%n%(trailers)' 2>/dev/null); trailers_rc=$?
+  if [ "$msgs_rc" != 0 ] || [ "$trailers_rc" != 0 ]; then
+    echo "lane-handoff.sh: could not read origin/master..origin/${BRANCH} in ${_path}, so the" >&2
+    echo "                 commit messages and trailers of ${_slug}#${_pr} cannot be read. A" >&2
+    echo "                 compliance pass over the pull request body alone is not a compliance" >&2
+    echo "                 pass, so nothing was labelled. Point --repo-path at a checkout that" >&2
+    echo "                 fetches ${BRANCH}, then re-run." >&2
+    return 7
+  fi
 
   hits=$(printf '%s\n%s\n%s\n' "$body" "$msgs" "$trailers" \
     | sed "$neutral" \
@@ -233,8 +242,20 @@ check_one() {
 
   # 2. Is it actually green? An empty rollup is not a pass, and a rollup describing an older head
   #    says nothing about what is on the branch now.
-  head_sha=$(git -C "$_path" rev-parse "origin/${BRANCH}" 2>/dev/null)
+  head_sha=$(gh api "repos/${_slug}/git/ref/heads/${BRANCH}" 2>/dev/null \
+    | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+if not isinstance(d,dict): raise SystemExit(1)
+print((d.get('object') or {}).get('sha') or '')
+" 2>/dev/null)
   HEAD_OF="$head_sha"
+  if [ -z "$head_sha" ]; then
+    echo "lane-handoff.sh: could not read what sha ${BRANCH} is at in ${_slug} from GitHub, so" >&2
+    echo "                 whether the rollup describes the current head is unknown. An empty" >&2
+    echo "                 read is not a clean read. Nothing was labelled." >&2
+    return 7
+  fi
   attempt="gh pr view ${_pr} --repo ${_slug} --json statusCheckRollup,headRefOid,mergeable,mergeStateStatus"
   rollup_err=$(mktemp "${TMPDIR:-/tmp}/lane-handoff-rollup.XXXXXX")
   rollup_json=$(gh pr view "$_pr" --repo "$_slug" --json statusCheckRollup,headRefOid,mergeable,mergeStateStatus 2>"$rollup_err")

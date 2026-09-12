@@ -1382,7 +1382,8 @@ PR: ${work.prUrl || work.prNumber}
    5 labelled and cleaned up but the tracker note could not be confirmed, 6 bad arguments,
    7 the set of pull requests on the branch could not be established - the config could not be
    read, a repository's pull requests or labels could not be listed, the label could not be
-   created in one of them, or a checkout named by the config has no origin/<branch> (nothing was
+   created in one of them, a checkout named by the config or by --repo-path cannot supply the
+   branch's commit messages, or GitHub would not say what sha the branch is at (nothing was
    labelled anywhere), 8 labelling began and stopped part-way, 9 a pull request's status rollup
    could not be READ at all.
 
@@ -1410,8 +1411,17 @@ PR: ${work.prUrl || work.prNumber}
    requests or labels, with gh's reason quoted: that one may be transient, so re-run it. A
    repository with no lane-verified label that it could not create one in: that is a permissions
    answer, not a transient one - somebody with write access there creates the label once, and no
-   number of re-runs will do it. Do NOT label by hand instead, whichever it is: labelling the half
-   you know about is the defect this script exists to prevent.
+   number of re-runs will do it. A branch whose sha GitHub would not report: two remedies hide
+   behind that one message and it cannot tell you which, so ask the same question yourself with
+   'gh api repos/<slug>/git/ref/heads/<branch>'. An error or a rate limit is transient and a
+   re-run is right; a 404 means the remote has no such branch, because the push did not happen or
+   because that is not the name the pull request is on, and re-running never answers differently.
+   A --repo-path whose checkout does not carry the branch: the compliance step reads the branch's
+   commit messages and trailers out of that checkout and there are none to read there, and grading
+   a pull request on its body alone is not a compliance pass. Point --repo-path at a checkout that
+   fetches the branch - the lane worktree you pushed from - and re-run. Do NOT label by hand
+   instead, whichever it is: labelling the half you know about is the defect this script exists to
+   prevent.
 
    EXIT 8 MEANS RE-RUN IT, once the cause it quotes is gone. It prints which pull requests carry
    the label and which do not. Adding a label is idempotent and it stops before the worktree
