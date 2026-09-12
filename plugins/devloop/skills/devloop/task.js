@@ -710,7 +710,7 @@ db/schema.rb to match.`
   }
   if (role === 'node') {
     return `Share dependencies instead of reinstalling:
-  ln -s ${repoPath(repo)}/node_modules ${wtPath}/node_modules
+  test -L ${wtPath}/node_modules || ln -s ${repoPath(repo)}/node_modules ${wtPath}/node_modules
 
 ${repoCommands(repo)}
 
