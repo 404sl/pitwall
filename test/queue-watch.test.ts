@@ -348,3 +348,107 @@ test("the land gate announces that it cannot tell whether a lane is running", ()
   assert.match(out, /cannot be established - site#61/);
   assert.match(out, /not 'no lanes running'/);
 });
+
+interface Prefixed {
+  idPrefix?: string;
+  dispatchable: string;
+  stuck: string;
+  ack?: string;
+}
+
+function prefixedWorkspace(shape: Prefixed): { root: string; skill: string } {
+  const root = mkdtempSync(join(tmpdir(), "pitwall-queue-watch-prefix-"));
+  const skill = join(root, "skill");
+  const bin = join(root, "bin");
+  mkdirSync(skill);
+  mkdirSync(bin);
+  writeFileSync(join(skill, "queue-watch.sh"), readFileSync(join(SKILL, "queue-watch.sh"), "utf8"));
+  const idPrefix = shape.idPrefix === undefined ? "exit 1" : `echo ${JSON.stringify(shape.idPrefix)}`;
+  writeFileSync(
+    join(skill, "config.sh"),
+    [
+      "#!/bin/bash",
+      'case "${1:-}" in',
+      `  idPrefix) ${idPrefix} ;;`,
+      `  lockPrefix) echo pitwall-queue-watch-test-${process.pid} ;;`,
+      "  *) exit 1 ;;",
+      "esac",
+      "",
+    ].join("\n"),
+  );
+  for (const [name, text] of [
+    ["dispatchable", shape.dispatchable],
+    ["triage-scan", shape.stuck],
+  ] as const) {
+    writeFileSync(join(skill, `${name}.txt`), `${text}\n`);
+    writeFileSync(join(skill, `${name}.sh`), `#!/bin/bash\ncat "$(dirname "$0")/${name}.txt"\n`);
+  }
+  writeFileSync(join(skill, "lane-running.sh"), "#!/bin/bash\nexit 1\n");
+  writeFileSync(join(bin, "sleep"), "#!/bin/bash\nkill $PPID\n");
+  chmodSync(join(bin, "sleep"), 0o755);
+  if (shape.ack !== undefined) writeFileSync(join(root, ".devloop-triage-ack"), shape.ack);
+  return { root, skill };
+}
+
+function oneTick(space: { root: string; skill: string }): { stdout: string; stderr: string; status: number | null } {
+  const ran = spawnSync("bash", [join(space.skill, "queue-watch.sh"), "--root", space.root, "--interval", "300"], {
+    encoding: "utf8",
+    cwd: space.root,
+    timeout: 20_000,
+    env: {
+      ...process.env,
+      ...GIT_ENV,
+      PATH: `${join(space.root, "bin")}:${process.env.PATH ?? ""}`,
+    },
+  });
+  return { stdout: `${ran.stdout ?? ""}`.trim(), stderr: `${ran.stderr ?? ""}`.trim(), status: ran.status };
+}
+
+test("new work is announced under the workspace's own id prefix", () => {
+  const out = oneTick(
+    prefixedWorkspace({
+      idPrefix: "pitwall",
+      dispatchable: "pitwall-76x        P2  queue-watch.sh cannot see new work\npitwall-4b5.1  P3  a child",
+      stuck: "",
+    }),
+  );
+  assert.match(out.stdout, /^QUEUE: new work ready to dispatch - pitwall-4b5\.1 pitwall-76x$/m);
+});
+
+test("a triage finding is announced under the workspace's own id prefix", () => {
+  const out = oneTick(
+    prefixedWorkspace({
+      idPrefix: "pitwall",
+      dispatchable: "(nothing dispatchable - every ready issue is parked, an epic, or a parent)",
+      stuck: "STUCK: parked with no reason\n  pitwall-90b  needs-decision and no note\n  site#61  a labelled pull request",
+    }),
+  );
+  assert.match(out.stdout, /^QUEUE: triage found something stuck - pitwall-90b site#61$/m);
+  assert.match(out.stdout, /pitwall-90b  needs-decision and no note/);
+  assert.doesNotMatch(out.stdout, /new work ready/);
+});
+
+test("an adjudicated finding under the workspace's own id prefix is suppressed, not re-announced", () => {
+  const out = oneTick(
+    prefixedWorkspace({
+      idPrefix: "pitwall",
+      dispatchable: "",
+      stuck: "STUCK: parked with no reason\n  pitwall-90b  needs-decision and no note\n  pitwall-76x  needs-access and no note",
+      ack: "pitwall-90b adjudicated 2026-09-11\n",
+    }),
+  );
+  assert.match(out.stdout, /^QUEUE: triage found something stuck - pitwall-76x$/m);
+  assert.match(out.stdout, /1 known finding\(s\) suppressed, already adjudicated: pitwall-90b/);
+});
+
+test("the watcher refuses to start when the id prefix cannot be resolved", () => {
+  const out = oneTick(
+    prefixedWorkspace({
+      dispatchable: "pitwall-76x        P2  queue-watch.sh cannot see new work",
+      stuck: "STUCK: parked with no reason\n  pitwall-90b  needs-decision and no note",
+    }),
+  );
+  assert.equal(out.status, 3);
+  assert.match(out.stderr, /idPrefix/);
+  assert.equal(out.stdout, "");
+});
