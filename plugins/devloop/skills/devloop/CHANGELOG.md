@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.40
+
+Report a rollup the handoff could not read as unread, not as not-green
+
 ## 0.1.39
 
 Say when a journal age could not be measured, instead of printing it as fresh
