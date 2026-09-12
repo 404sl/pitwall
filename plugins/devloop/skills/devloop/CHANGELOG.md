@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.1.44
+
+**Triage now routes a lane from the paths its ticket names, against the repositories this
+workspace actually has.** It used to decide from one sentence naming another workspace's
+repositories - "site (Rails app), extension (Chrome extension), integration (npm library)" -
+and was never shown the checkouts in the configuration it was handed, so it chose from the
+schema's shared list. Four misroutes in one day, a dispatch each.
+
+- **A repo key the workspace configuration does not have is refused before a worktree is cut.**
+  The key is checked the moment triage returns, so it never reaches the fix step, the handoff or
+  the lander. The issue comes back parked through the handover with the configured keys named.
+  **Read that as a mis-key, not as a broken ticket** - triage runs cheap and a one-off bad key is
+  possible. Clear it by saying which configured repository the ticket's paths are in, or by
+  adding the missing key to the workspace configuration, then dispatch it again. No retry is
+  attempted, deliberately: loud here beats a run cutting a worktree from a path that does not
+  exist, then handing a pull request number to a repository it does not belong to.
+- **A `Repo:` line is confirmation now, not authority, and disagreement is a stop.** Derive the
+  repository from which checkout contains the paths the ticket names; use the line to confirm it
+  when the author wrote one. When the line and the paths name different checkouts, triage returns
+  ineligible naming both rather than breaking the tie. So a ticket with no `Repo:` line still
+  routes, and one with a wrong line no longer routes wrongly in silence.
+- **When you split a ticket, open every child's description with its own routing.** First line,
+  before anything else: `Repo: <key> (<checkout path>)`, derived per child from that child's own
+  paths and never copied from the parent. Routing is the second thing a child silently fails to
+  inherit, after metadata, and the child is the thing that ships - a correctly routed parent's
+  child was sent to a TypeScript package for a ticket about a Rails spec and could not begin.
+
 ## 0.1.43
 
 A refusal from the handoff compliance check is terminal. Your judgement picks how to
