@@ -1412,7 +1412,7 @@ try {
       if (declared && (declared.labelled === false || declared.open === false)) {
         log(`${keyOf(pr)} - the version step reports it is no longer the pull request this run was asked to merge (${LABEL} ${declared.labelled === false ? 'is gone' : 'still on'}, ${declared.open === false ? 'closed, merged or draft' : 'open'}), and its declared version raises no objection, so land-one.sh decides in shell whether it still merges`)
       }
-      if (declared && declared.status === 'read' && !declared.touchesPlugin) {
+      if (declared && declared.status !== 'no_manifest' && !declared.touchesPlugin) {
         log(`${keyOf(pr)} - declares devloop plugin version ${trimmed(declared.branchVersion) || '(none)'} against origin/master's ${trimmed(declared.masterVersion) || '(none)'}, and its diff lists no path under plugins/ or .claude-plugin/, so the versions are not compared`)
       }
       if (declared && declared.status === 'read' && declared.touchesPlugin) {

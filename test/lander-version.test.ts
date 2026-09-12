@@ -407,7 +407,7 @@ test("land.js refuses an unreadable master even when the step also reports the l
 });
 
 test("land.js lands a branch touching no plugin file when the manifest could not be read, because the guard does not govern it", async () => {
-  const { calls, done } = lander(
+  const { calls, logs, done } = lander(
     declared({ status: "unreadable", masterVersion: "", branchVersion: "", touchesPlugin: false, notes: "git show origin/master exited 128" }),
   );
   const out = await done;
@@ -420,6 +420,11 @@ test("land.js lands a branch touching no plugin file when the manifest could not
   );
   assert.deepEqual(out.stopped, []);
   assert.equal(out.landed.length, 1);
+  assert.ok(
+    logs.some((l) => /plugins\/ or \.claude-plugin\//.test(l)),
+    `the versions were left uncompared and the run log says nothing about it, so a wrong ` +
+      `touchesPlugin on an unreadable manifest passes silently: ${logs.join("\n")}`,
+  );
 });
 
 test("land.js calls an unreadable pull request pr_unreadable, and does not spend a merge agent on it", async () => {
