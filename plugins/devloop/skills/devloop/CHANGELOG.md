@@ -1,5 +1,60 @@
 # Changelog
 
+## 0.1.52
+
+**A handoff called a green pull request not-green because the checkout it was pointed at did not
+carry the branch.** `lane-handoff.sh`'s green check read the sha it compares against the CI rollup
+from a local git - `rev-parse origin/<branch>` inside `--repo-path`. That read only means anything
+when the path happens to be a tree which fetches the branch. Point it at another repository, or at
+a main checkout sitting on master, and it comes back empty; an empty sha matches no rollup head, so
+the script exits 4 - "not green" on a pull request that is green. One way in was structural rather
+than accidental: the check wanted the lane worktree to still be on the branch, and that worktree is
+the one this same script removes a few steps later.
+
+The head sha now comes from GitHub, which is the authority for what sha a branch is at:
+`repos/<slug>/git/ref/heads/<branch>`, compared against the `headRefOid` the rollup request already
+asks for. No local tree is consulted for it, so a wrong `--repo-path` can no longer produce a false
+not-green.
+
+It is refused instead, at exit 7, and that is the other half of the same change. The compliance
+step still reads the branch's commit messages and trailers out of `--repo-path`, and a checkout
+which does not carry the branch cannot supply them - both reads come back empty at git's exit 128.
+Before this, the false not-green stopped such a run for a person; with the sha read fixed and
+nothing else, the same run would have graded the grep over the pull request body ALONE and labelled
+the branch with the handoff label for an unattended merge. A compliance pass that read no commit text is not
+a compliance pass, so each of those two reads is now checked for git's exit status - a genuinely
+empty range exits 0, a missing ref 128 - and a nonzero one names the path and the range it could
+not read and labels nothing. The remedy is a `--repo-path` pointing at a checkout that fetches the
+branch, which is the lane worktree the branch was pushed from.
+
+The staleness check itself is unchanged in substance. A rollup describing an older head still
+refuses, because it says nothing about what is on the branch now - only where the current sha comes
+FROM has changed.
+
+Exit 7 has two new causes, because a read that failed is not a verdict about the checks:
+
+    7  not-surveyed  GitHub would not say what sha <branch> is at in <slug>, so whether the rollup
+                     describes the current head is unknown. Nothing was labelled anywhere.
+    7  not-surveyed  origin/master..origin/<branch> could not be read in <path>, so the commit
+                     messages and trailers the compliance grep grades are missing. Nothing was
+                     labelled anywhere.
+
+Two remedies hide behind the first of those, and it cannot tell you which, so ask the same question
+by hand: `gh api repos/<slug>/git/ref/heads/<branch>`. An error or a rate limit is transient and a
+re-run is right. A 404 means the remote has no such branch - the push did not happen, or `--branch`
+is not the name the pull request is on - and no number of re-runs answers differently.
+
+The second names the path and the range it could not read, and it is not transient: point
+`--repo-path` at a checkout that fetches the branch and run it again. Never label by hand instead.
+
+Ask it with the SINGULAR `git/ref`. The plural `git/refs` prefix-matches and answers with an array
+at exit 0 when the exact ref is gone but a sibling remains, which reads as a head sha of nothing.
+
+Four tests: the head sha reported is the one GitHub gave and not the one the checkout is at, a
+`--repo-path` whose checkout does not carry the branch exits 7 without reporting not-green and
+without labelling anything, a head sha GitHub will not report exits 7 and is never dressed up as
+not-green, and a rollup describing an older head is still refused.
+
 ## 0.1.51
 
 A release train no longer closes tracker issues on the strength of a deploy step nobody read. The
