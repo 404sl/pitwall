@@ -423,7 +423,7 @@ WHEN IT IS GREEN, hand off with the script rather than by hand:
     --worktree ${WT_PATH} \\
     --lane-lock ${LANE_LOCK}
 
-It reads the title, body and commit messages back from GitHub and git, runs the compliance check
+It reads the title, body and commit messages back from GitHub, runs the compliance check
 over them, refuses to label anything whose rollup is empty or stale, applies lane-verified, reads
 the label back, removes the worktree, appends your tracker note with --append-notes, and drops
 the lane lock last. It does that for EVERY open pull request whose head is this branch across the

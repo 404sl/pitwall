@@ -1365,8 +1365,8 @@ PR: ${work.prUrl || work.prNumber}
    it to is refused as a bad argument, before anything is labelled, rather than skipped in
    silence the way it used to be.
 
-   It reads the title and body back from GitHub and the commit messages back from git, runs the
-   compliance grep over both, checks the rollup is non-empty and describes the head that is
+   It reads the title, body and commit messages back from GitHub, runs the compliance grep over
+   all of them, checks the rollup is non-empty and describes the head that is
    actually on the branch, labels, reads the label back, removes YOUR worktree, appends your
    note with --append-notes and reads it back, and drops your lane lock last.
 
@@ -1382,9 +1382,9 @@ PR: ${work.prUrl || work.prNumber}
    5 labelled and cleaned up but the tracker note could not be confirmed, 6 bad arguments,
    7 the set of pull requests on the branch could not be established - the config could not be
    read, a repository's pull requests or labels could not be listed, the label could not be
-   created in one of them, a checkout named by the config or by --repo-path cannot supply the
-   branch's commit messages, or GitHub would not say what sha the branch is at (nothing was
-   labelled anywhere), 8 labelling began and stopped part-way, 9 a pull request's status rollup
+   created in one of them, or GitHub would not report a pull request's commits or what sha the
+   branch is at (nothing was labelled anywhere), 8 labelling began and stopped part-way, 9 a
+   pull request's status rollup
    could not be READ at all.
 
    EXIT 9 IS NOT A FAILING PULL REQUEST. It means gh would not answer - throttled, an expired
@@ -1416,12 +1416,12 @@ PR: ${work.prUrl || work.prNumber}
    'gh api repos/<slug>/git/ref/heads/<branch>'. An error or a rate limit is transient and a
    re-run is right; a 404 means the remote has no such branch, because the push did not happen or
    because that is not the name the pull request is on, and re-running never answers differently.
-   A --repo-path whose checkout does not carry the branch: the compliance step reads the branch's
-   commit messages and trailers out of that checkout and there are none to read there, and grading
-   a pull request on its body alone is not a compliance pass. Point --repo-path at a checkout that
-   fetches the branch - the lane worktree you pushed from - and re-run. Do NOT label by hand
-   instead, whichever it is: labelling the half you know about is the defect this script exists to
-   prevent.
+   A pull request whose commits GitHub would not report: the compliance step reads the branch's
+   commit messages and trailers from GitHub, the same place the body comes from, and grading a
+   pull request on its body alone is not a compliance pass. No local checkout is consulted for
+   them, so --repo-path need not carry the branch; that read is transient the way the sha read is,
+   so re-run it. Do NOT label by hand instead, whichever it is: labelling the half you know about
+   is the defect this script exists to prevent.
 
    EXIT 8 MEANS RE-RUN IT, once the cause it quotes is gone. It prints which pull requests carry
    the label and which do not. Adding a label is idempotent and it stops before the worktree
