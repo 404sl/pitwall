@@ -452,3 +452,35 @@ test("the watcher refuses to start when the id prefix cannot be resolved", () =>
   assert.match(out.stderr, /idPrefix/);
   assert.equal(out.stdout, "");
 });
+
+const pathCarryingFinding = [
+  "STUCK: 1 finding(s)",
+  "",
+  "[G lane died holding its worktree] pitwall-eb9i P2 - Test pitwall-site's CI",
+  "    in_progress, /private/tmp/pitwall-worktrees/pitwall-eb9i untouched for 30+ min, no live run names it",
+].join("\n");
+
+test("a worktree path or a prefixed repo name inside a finding is not scraped as an issue id", () => {
+  const out = oneTick(
+    prefixedWorkspace({
+      idPrefix: "pitwall",
+      dispatchable: "",
+      stuck: pathCarryingFinding,
+    }),
+  );
+  assert.match(out.stdout, /^QUEUE: triage found something stuck - pitwall-eb9i$/m);
+  assert.doesNotMatch(out.stdout, /stuck - .*pitwall-(worktrees|site)/);
+});
+
+test("acknowledging the one real id in a path-carrying finding silences it entirely", () => {
+  const out = oneTick(
+    prefixedWorkspace({
+      idPrefix: "pitwall",
+      dispatchable: "",
+      stuck: pathCarryingFinding,
+      ack: "pitwall-eb9i adjudicated 2026-09-12\n",
+    }),
+  );
+  assert.doesNotMatch(out.stdout, /triage found something stuck/);
+  assert.doesNotMatch(out.stdout, /pitwall-worktrees/);
+});

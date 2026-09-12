@@ -39,6 +39,11 @@ case "$ID_PFX" in
     exit 3 ;;
 esac
 ID_RE="${ID_PFX}-[a-z0-9.]+"
+ID_TOKEN="$ID_RE([^a-z0-9.'/]|\$)"
+REF_RE="$ID_TOKEN|[a-z]+#[0-9]+"
+ref_ids() {
+  grep -oE "$REF_RE" | grep -oE "^($ID_RE|[a-z]+#[0-9]+)"
+}
 [ -n "$ack_file" ] || ack_file="$root/.devloop-triage-ack"
 
 # Ids currently offered as ready work. dispatchable.sh prints its "nothing dispatchable"
@@ -257,12 +262,12 @@ while true; do
   # train being launched and that train taking the lock, reporting "nobody is landing" about a
   # train that was already running.
   stuck=$(printf '%s\n' "$stuck" | sed '/LANDER IDLE/,$d')
-  [ -n "$(printf '%s' "$stuck" | grep -oE "$ID_RE")" ] || stuck=""
+  [ -n "$(printf '%s' "$stuck" | grep -oE "$ID_TOKEN")" ] || stuck=""
   if [ -n "$stuck" ]; then
     acked=""
-    [ -f "$ack_file" ] && acked=$(grep -oE "^($ID_RE|[a-z]+#[0-9]+)" "$ack_file" | tr '\n' ' ')
+    [ -f "$ack_file" ] && acked=$(grep -oE "^($REF_RE)" "$ack_file" | ref_ids | tr '\n' ' ')
     new_ids=""
-    for id in $(printf '%s\n' "$stuck" | grep -oE "$ID_RE|[a-z]+#[0-9]+" | sort -u); do
+    for id in $(printf '%s\n' "$stuck" | ref_ids | sort -u); do
       case " $acked " in *" $id "*) ;; *) new_ids="$new_ids $id" ;; esac
     done
     if [ -n "${new_ids// /}" ] && [ "$new_ids" != "$prev_stuck" ]; then
