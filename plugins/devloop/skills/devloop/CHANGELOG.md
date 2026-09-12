@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.39
+
+Say when a journal age could not be measured, instead of printing it as fresh
+
 ## 0.1.38
 
 **A lane no longer chooses the plugin version, and must not touch the three files that carry

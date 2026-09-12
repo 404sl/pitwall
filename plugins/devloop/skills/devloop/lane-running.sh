@@ -39,6 +39,12 @@ for as long as the file sits there. The age is what lets a caller say so out lou
 of waiting on it forever. --stale-minutes sets the window, default 20, which is the one
 lanes.sh uses under the same name.
 
+The age is a third state, not a flag. A line carrying no annotation was written inside the
+window; one carrying , journal silent Nm was not; one carrying , journal age unknown could
+not be measured at all - no journal to stat, or the stat faulted - and is evidence in
+neither direction. A caller that folds the third into either of the first two is reading a
+failed measurement as a verdict.
+
   RUNNING       a task for this issue is in flight - exit 0
   NOT-RUNNING   nothing in flight is this issue's - exit 1
   UNKNOWN       the scan could not establish it - exit 2, never read as dead
@@ -250,11 +256,15 @@ done
 if [ -n "$running" ]; then
   if [ "$QUIET" = 1 ]; then echo "RUNNING"; exit 0; fi
   silent=0
+  unmeasured=0
   for pair in $running; do
     journal="$(journal_for "${pair#*:}")" || journal=""
     age="$(silent_minutes "$journal")" || age=""
     silence=""
-    if [ -n "$age" ] && [ "$age" -gt "$STALE" ]; then
+    if [ -z "$age" ]; then
+      silence=", journal age unknown"
+      unmeasured=1
+    elif [ "$age" -gt "$STALE" ]; then
       silence=", journal silent ${age}m"
       silent=1
     fi
@@ -269,6 +279,11 @@ if [ -n "$running" ]; then
     echo "  run writes nothing for half an hour - so the verdict stays RUNNING. It can also be a"
     echo "  task that was dispatched and orphaned, which reads this way forever. Read it, and only"
     echo "  then kill-lane.sh it."
+  fi
+  if [ "$unmeasured" = 1 ]; then
+    echo "  'journal age unknown' is no reading at all - nothing under the workflow directory could"
+    echo "  be stat'd. It is not silence and not proof of writing, so it settles nothing either way:"
+    echo "  judge that run by its pull request and its worktree instead."
   fi
   if [ "$ANY" = 1 ]; then
     echo "  A lane still writing is a passenger a train started now would leave behind."

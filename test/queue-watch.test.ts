@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -78,6 +78,7 @@ interface Dispatch {
   run: string;
   minutesAgo: number;
   label?: string;
+  unmeasurable?: boolean;
 }
 
 function dispatches(runs: readonly Dispatch[]): Workspace {
@@ -123,7 +124,18 @@ function dispatches(runs: readonly Dispatch[]): Workspace {
     );
   }
   writeFileSync(join(wf, "session-1.jsonl"), `${records.join("\n")}\n`);
+  for (const dispatch of runs) {
+    if (!dispatch.unmeasurable) continue;
+    chmodSync(join(wf, "session-1", "subagents", "workflows", dispatch.run), 0o111);
+  }
   return { root, wf, tasks };
+}
+
+function readable(space: Workspace, runs: readonly Dispatch[]): void {
+  for (const dispatch of runs) {
+    if (!dispatch.unmeasurable) continue;
+    chmodSync(join(space.wf, "session-1", "subagents", "workflows", dispatch.run), 0o755);
+  }
 }
 
 function shellFunction(name: string): string {
@@ -287,6 +299,49 @@ test("a run whose labels carry no issue id is judged alone, not against another 
   assert.doesNotMatch(out, /wf_two/);
   assert.doesNotMatch(out, /newest of/);
 });
+
+const AS_ROOT = process.getuid?.() === 0;
+const ROOT_SKIP = AS_ROOT
+  ? "root reads a directory whatever its mode, so no journal age can be made unmeasurable"
+  : false;
+
+test(
+  "a run whose age cannot be measured does not settle the issue for the run whose age can",
+  { skip: ROOT_SKIP },
+  () => {
+    const runs: readonly Dispatch[] = [
+      { task: "w111", run: "wf_f80fcf95", minutesAgo: 93 },
+      { task: "w222", run: "wf_92bb050e", minutesAgo: 0, unmeasurable: true },
+    ];
+    const space = dispatches(runs);
+    try {
+      const out = landGate(space, "site#80");
+      assert.match(out, /gone silent - site#80/);
+      assert.match(out, /task w111, workflow wf_f80fcf95/);
+      assert.match(out, /journal silent 9[0-9]m/);
+      assert.match(out, /, newest of 2$/m);
+      assert.doesNotMatch(out, /wf_92bb050e/);
+    } finally {
+      readable(space, runs);
+    }
+  },
+);
+
+test(
+  "a lane whose age cannot be measured is not reported as silent either",
+  { skip: ROOT_SKIP },
+  () => {
+    const runs: readonly Dispatch[] = [
+      { task: "w111", run: "wf_92bb050e", minutesAgo: 0, unmeasurable: true },
+    ];
+    const space = dispatches(runs);
+    try {
+      assert.equal(landGate(space, "site#80"), "");
+    } finally {
+      readable(space, runs);
+    }
+  },
+);
 
 test("the land gate announces that it cannot tell whether a lane is running", () => {
   const out = landGate(workspace("unattributable"), "site#61");
