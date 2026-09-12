@@ -13,6 +13,7 @@ const LAND_ARGS = {
   skillDir: "/skill",
   root: "/root",
   lockPrefix: "pw",
+  repo: "site",
   repos: { site: { path: "cli", slug: "owner/name" } },
 };
 
