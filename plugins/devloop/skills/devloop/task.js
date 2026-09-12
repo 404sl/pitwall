@@ -1314,7 +1314,7 @@ PR: ${work.prUrl || work.prNumber}
        --pr ${work.prNumber} --branch <your branch> --issue ${task.id} \
        --note-file <a file holding your tracker note> --worktree ${wtPath}
 
-   A REFUSAL IS NEVER WORKED AROUND BY LABELLING BY HAND. A refusal - exits 2, 4, 6 and 7 - means
+   A REFUSAL IS NEVER WORKED AROUND BY LABELLING BY HAND. A refusal - exits 2, 3, 4, 6 and 7 - means
    nothing was labelled anywhere, and putting the label on yourself asserts exactly the judgement
    this script exists to withhold. Exits 5 and 8 are not refusals and the label may already be
    on; each of those has its own paragraph below. If you believe the script is wrong rather
