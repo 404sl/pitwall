@@ -16,6 +16,19 @@ import {
 import { createBuildCheck, type BuildCheck } from "./build.js";
 import { collectionError } from "./errors.js";
 import {
+  INTAKE_LABEL,
+  INTAKE_ROUTE,
+  MAX_BODY_BYTES,
+  MAX_FILES,
+  MAX_FILE_BYTES,
+  MAX_REQUEST_BYTES,
+  fileSize,
+  planningSession,
+  sift,
+} from "./intake.js";
+import { boundaryOf, parseMultipart } from "./multipart.js";
+import { recordRequest, type DroppedFile } from "./recording.js";
+import {
   collectionFailedNotice,
   collectionRecoveredNotice,
   type CollectionNotice,
@@ -678,6 +691,184 @@ async function serveAction(
   });
 }
 
+export class BodyTooLarge extends Error {}
+
+function readBytes(req: IncomingMessage, limit: number): Promise<Buffer> {
+  return new Promise((done, failed) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    let over = false;
+    req.on("data", (chunk: Buffer) => {
+      if (over) {
+        return;
+      }
+      size += chunk.length;
+      if (size > limit) {
+        over = true;
+        chunks.length = 0;
+        failed(new BodyTooLarge(`it carries more than ${fileSize(limit)}`));
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => done(Buffer.concat(chunks)));
+    req.on("error", (cause: Error) => failed(cause));
+  });
+}
+
+interface Dropped {
+  raw: string;
+  project: string;
+  files: DroppedFile[];
+}
+
+function droppedIn(body: Buffer, boundary: string): Dropped {
+  const parts = parseMultipart(body, boundary);
+  const files = parts.flatMap((part) =>
+    part.filename === undefined || part.filename === ""
+      ? []
+      : [{ name: part.filename, body: part.body }],
+  );
+  const fieldOf = (name: string) =>
+    parts.find((part) => part.name === name && part.filename === undefined)?.body.toString("utf8") ??
+    "";
+  return {
+    raw: fieldOf("text").replace(/\r\n/g, "\n"),
+    project: fieldOf("project"),
+    files,
+  };
+}
+
+function overCap(files: readonly DroppedFile[]): string | undefined {
+  const { refused } = sift(files.map((file) => ({ name: file.name, bytes: file.body.length })));
+  const first = refused[0];
+  if (first === undefined) {
+    return undefined;
+  }
+  if (first.kind === "size") {
+    return `${first.name} is ${fileSize(first.bytes)}, over the ${fileSize(MAX_FILE_BYTES)} cap`;
+  }
+  if (first.kind === "count") {
+    return `it carried more than ${String(MAX_FILES)} files`;
+  }
+  return `the files together are over the ${fileSize(MAX_REQUEST_BYTES)} cap`;
+}
+
+function intakeProject(snapshot: Snapshot, named: string): Project | { message: string } {
+  if (named !== "") {
+    return projectIn(snapshot, named) ?? { message: `the snapshot names no project ${named}` };
+  }
+  const only = snapshot.projects[0];
+  if (only === undefined || snapshot.projects.length > 1) {
+    return { message: "it named no project, and the snapshot does not hold exactly one" };
+  }
+  return only;
+}
+
+async function serveIntake(
+  req: IncomingMessage,
+  res: ServerResponse,
+  options: ServeOptions,
+): Promise<void> {
+  const refusal = refusalOf(req);
+  if (refusal !== undefined) {
+    sendJson(res, 403, {
+      message: `Nothing was recorded - ${refusal}, so it was not sent by the console. Recording a request must carry the ${ACTION_HEADER} header and come from the console's own origin.`,
+    });
+    return;
+  }
+  const boundary = boundaryOf(req.headers["content-type"]);
+  if (boundary === undefined) {
+    sendJson(res, 400, {
+      message:
+        "Nothing was recorded - a recorded request is sent as multipart/form-data, and this was not.",
+    });
+    return;
+  }
+  let dropped: Dropped;
+  try {
+    dropped = droppedIn(await readBytes(req, MAX_BODY_BYTES), boundary);
+  } catch (cause) {
+    const reason = cause instanceof Error ? cause.message : String(cause);
+    sendJson(res, cause instanceof BodyTooLarge ? 413 : 400, {
+      message:
+        cause instanceof BodyTooLarge
+          ? `Nothing was recorded - ${reason}, over the ${fileSize(MAX_REQUEST_BYTES)} cap on the files in one request.`
+          : `Nothing was recorded - the request body could not be read: ${reason}`,
+    });
+    return;
+  }
+  if (dropped.raw === "" && dropped.files.length === 0) {
+    sendJson(res, 400, {
+      message:
+        "Nothing was recorded - a request needs some text or at least one file, and this carried neither.",
+    });
+    return;
+  }
+  const over = overCap(dropped.files);
+  if (over !== undefined) {
+    sendJson(res, 400, { message: `Nothing was recorded - ${over}.` });
+    return;
+  }
+  const stored = readSnapshot(options);
+  if (stored.snapshot === undefined) {
+    sendJson(res, 503, {
+      message: `Nothing was recorded - ${stored.error.source} could not be read: ${stored.error.message}`,
+      source: stored.error.source,
+      tried: [stored.path],
+    });
+    return;
+  }
+  const chosen = intakeProject(stored.snapshot, dropped.project);
+  if ("message" in chosen) {
+    sendJson(res, 400, { message: `Nothing was recorded - ${chosen.message}.` });
+    return;
+  }
+  if (chosen.authority.kind !== "beads") {
+    sendJson(res, 400, {
+      message: `Nothing was recorded - ${chosen.name} is tracked in ${chosen.authority.kind}, and the console records into beads only.`,
+    });
+    return;
+  }
+  const recording = await recordRequest(
+    { id: chosen.id, root: chosen.root },
+    { raw: dropped.raw, files: dropped.files },
+    { env: options.env, timeoutMs: options.timeoutMs },
+  );
+  if (recording.kind === "unrecorded") {
+    sendJson(res, 502, { message: `Nothing was recorded - ${recording.reason}` });
+    return;
+  }
+  const recorded = {
+    id: recording.id,
+    project: chosen.id,
+    assignee: planningSession(chosen.id),
+    label: INTAKE_LABEL,
+    files: recording.files,
+  };
+  if (recording.kind === "partial") {
+    sendJson(res, 502, {
+      ...recorded,
+      reason: recording.reason,
+      message:
+        recording.files.length === 0
+          ? `${recording.id} was recorded, but its files were not saved: ${recording.reason} The text is safe on the ticket.`
+          : `${recording.id} was recorded and its files are on disk, but the ticket does not list them: ${recording.reason} The text is safe on the ticket.`,
+    });
+    return;
+  }
+  sendJson(res, 200, recorded);
+}
+
+export function sendIntakeFailure(res: ServerResponse, cause: unknown): void {
+  const message = `A request may or may not have been recorded - it failed after it began: ${cause instanceof Error ? cause.message : String(cause)}`;
+  if (res.headersSent) {
+    process.stderr.write(`pitwall serve: ${message}, after the response had gone out\n`);
+    return;
+  }
+  sendJson(res, 500, { message });
+}
+
 export function sendActionFailure(
   res: ServerResponse,
   route: { id: string; action: ActionName },
@@ -708,6 +899,12 @@ export function createConsoleServer(options: ServeOptions = {}): Server {
     }
     if (pathname === VERSION_ROUTE) {
       serveVersion(res, updates, builds);
+      return;
+    }
+    if (req.method === "POST" && pathname === INTAKE_ROUTE) {
+      void serveIntake(req, res, options).catch((cause: unknown) => {
+        sendIntakeFailure(res, cause);
+      });
       return;
     }
     if (req.method === "POST" && pathname.startsWith(ISSUE_PREFIX)) {

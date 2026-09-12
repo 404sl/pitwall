@@ -424,6 +424,14 @@ body {
   text-decoration-color: var(--pw-ink);
 }
 
+button.pw-link {
+  font: inherit;
+  background: none;
+  border: 0;
+  padding-inline: 0;
+  cursor: pointer;
+}
+
 .pw-link--chip {
   padding-block: 3px;
   margin-block: -3px;
@@ -718,7 +726,12 @@ body {
 .pw-actions__scope,
 .pw-actions__label,
 .pw-actions__hint,
-.pw-actions__state {
+.pw-actions__state,
+.pw-intake__scope,
+.pw-intake__label,
+.pw-intake__hint,
+.pw-intake__state,
+.pw-intake__refusals {
   margin: 0;
   font-family: var(--pw-font-data);
   font-size: 12px;
@@ -739,6 +752,86 @@ body {
   inline-size: 100%;
   max-inline-size: 60ch;
   resize: vertical;
+}
+
+.pw-intake {
+  border-inline-start: var(--pw-rail) solid transparent;
+  padding-inline-start: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pw-console--dropping .pw-intake {
+  outline: 2px dashed var(--pw-ink);
+  outline-offset: 4px;
+}
+
+.pw-intake__row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.pw-intake__panel {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: start;
+}
+
+.pw-intake__file {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.pw-intake__file:focus-within {
+  outline: 2px solid var(--pw-ink);
+  outline-offset: 2px;
+}
+
+.pw-intake__files {
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  inline-size: 100%;
+  max-inline-size: 60ch;
+}
+
+.pw-intake__file-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+}
+
+.pw-intake__file-name {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.pw-intake__file-size {
+  font-family: var(--pw-font-data);
+  font-size: 12px;
+  line-height: 1.6;
+  letter-spacing: 0.02em;
+  color: var(--pw-muted);
+}
+
+.pw-intake__file-item .pw-link {
+  font-family: var(--pw-font-data);
+  font-size: 12px;
+  line-height: 1.6;
+  letter-spacing: 0.02em;
+}
+
+.pw-intake__file-item--refused,
+.pw-intake__file-item--refused .pw-intake__file-name {
+  color: var(--pw-muted);
 }
 
 .pw-notice--alert {
@@ -865,7 +958,8 @@ body {
     font-size: 12px;
   }
 
-  .pw-actions__row {
+  .pw-actions__row,
+  .pw-intake__row {
     flex-direction: column;
     align-items: stretch;
   }
@@ -878,6 +972,10 @@ body {
   .pw-actions__text {
     max-inline-size: none;
     font-size: 12px;
+  }
+
+  .pw-intake__files {
+    max-inline-size: none;
   }
 }
 

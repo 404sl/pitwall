@@ -21,6 +21,32 @@ case "$*" in
       exit 1
     fi
     ;;
+  "create "*)
+    if [ -n "$BD_CREATE_FAIL" ]; then
+      echo "Error: $BD_CREATE_FAIL" >&2
+      exit 1
+    fi
+    body=""
+    meta=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --body-file) body="$2"; shift ;;
+        --metadata) meta="${2#@}"; shift ;;
+      esac
+      shift
+    done
+    if [ -n "$BD_BODY_LOG" ] && [ -n "$body" ]; then cp "$body" "$BD_BODY_LOG"; fi
+    if [ -n "$BD_CREATE_META_LOG" ] && [ -n "$meta" ]; then cp "$meta" "$BD_CREATE_META_LOG"; fi
+    printf '%s\n' "${BD_CREATE_ID:-mw-new}"
+    ;;
+  "update "*" --metadata @"*)
+    if [ -n "$BD_METADATA_FAIL" ]; then
+      echo "Error: $BD_METADATA_FAIL" >&2
+      exit 1
+    fi
+    if [ -n "$BD_META_LOG" ]; then cp "${4#@}" "$BD_META_LOG"; fi
+    echo "✓ Updated issue: $2"
+    ;;
   "update "*" --append-notes "*)
     if [ -z "$BD_NOTES_LOG" ]; then
       echo "Error: nowhere to record notes" >&2
