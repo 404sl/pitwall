@@ -23,7 +23,9 @@ function write(dir: string, name: string, body: string) {
   writeFileSync(join(dir, name), body);
 }
 
-function stubs(root: string, view: string, checks: string): string {
+const MASTER_GREEN = `echo '[{"status":"completed","conclusion":"success"}]'`;
+
+function stubs(root: string, view: string, checks: string, runList = MASTER_GREEN): string {
   const bin = join(root, "bin");
   mkdirSync(bin);
   write(
@@ -31,7 +33,7 @@ function stubs(root: string, view: string, checks: string): string {
     "gh",
     `#!/bin/bash
 case "$1 $2" in
-  "run list")  echo '[{"status":"completed","conclusion":"success"}]' ;;
+  "run list")  ${runList} ;;
   "pr view")   ${view} ;;
   "pr checks") ${checks} ;;
   *)           exit 0 ;;
@@ -310,4 +312,53 @@ test("a rollup mixing check runs and commit statuses reads both kinds", () => {
   const ranGreen = run(third.root, third.repo, allGreen);
   assert.match(ranGreen.out, /^ready:/m, `a green check run beside a green status is not ready:\n${ranGreen.out}`);
   assert.equal(ranGreen.code, 0, ranGreen.out + ranGreen.err);
+});
+
+test("a master run list gh cannot answer is reported as unread, not as a red master", () => {
+  const box = workspace();
+  const bin = stubs(
+    box.root,
+    "exit 0",
+    "exit 0",
+    "echo 'HTTP 403: API rate limit exceeded for installation (https://api.github.com/graphql)' >&2; exit 1",
+  );
+
+  const ran = run(box.root, box.repo, bin);
+
+  assert.doesNotMatch(
+    ran.out,
+    /master_red/,
+    "a run list that could not be read at all is reported as a red master, which skips every " +
+      `pull request behind it and the deploy of anything already merged in the pass:\n${ran.out}`,
+  );
+  assert.match(ran.out, /^unreadable:/m, `the output does not say master's run could not be read:\n${ran.out}`);
+  assert.match(
+    ran.out,
+    /gh run list --branch master/,
+    `the output does not name the read that was attempted:\n${ran.out}`,
+  );
+  assert.match(ran.out, /rate limit/, `the reason the read failed is nowhere in the output:\n${ran.out}`);
+  assert.equal(ran.code, 9, `an unread master run does not exit 9:\n${ran.out}\n${ran.err}`);
+});
+
+test("a master run list that is not the JSON it should be is reported as unread, not as a red master", () => {
+  const box = workspace();
+  const bin = stubs(box.root, "exit 0", "exit 0", "echo 'Gateway Timeout'");
+
+  const ran = run(box.root, box.repo, bin);
+
+  assert.doesNotMatch(ran.out, /master_red/, `a run list that did not parse is reported as a red master:\n${ran.out}`);
+  assert.match(ran.out, /^unreadable:/m, `the output does not say master's run could not be read:\n${ran.out}`);
+  assert.equal(ran.code, 9, `a run list that did not parse does not exit 9:\n${ran.out}\n${ran.err}`);
+});
+
+test("a master run that was read and failed is still a red master", () => {
+  const box = workspace();
+  const bin = stubs(box.root, "exit 0", "exit 0", `echo '[{"status":"completed","conclusion":"failure"}]'`);
+
+  const ran = run(box.root, box.repo, bin);
+
+  assert.match(ran.out, /^master_red: master is completed\/failure/m, `a failed master run is no longer reported as red:\n${ran.out}`);
+  assert.doesNotMatch(ran.out, /^unreadable:/m, `a run that was read is reported as unread:\n${ran.out}`);
+  assert.equal(ran.code, 5, `a red master no longer exits 5:\n${ran.out}\n${ran.err}`);
 });

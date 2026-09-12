@@ -583,12 +583,9 @@ function versionVerdict(read) {
   return null
 }
 
-function prVerdict(read) {
+function prUnreadable(read) {
   if (!read || read.prStatus !== 'unreadable') return null
-  return {
-    why: 'pr_unreadable',
-    detail: `gh could not read pull request state - ${trimmed(read.notes) || 'the version step reported no answer from gh pr view'}. Nothing is known about the version here: this says the PULL REQUEST could not be read, not that a number could not be. Nothing was merged, the label was left on, and the next run picks it up when gh answers again.`
-  }
+  return `pr_unreadable - gh could not read pull request state - ${trimmed(read.notes) || 'the version step reported no answer from gh pr view'}. This says the PULL REQUEST could not be read, not that a number could not be, so the version raises no objection and land-one.sh decides in shell: it reads the rollup and the label itself, and exits without merging when gh still cannot answer, so the pull request goes back for a later round rather than being retired.`
 }
 
 const REFUSED_WHATEVER_THE_ROUND = [
@@ -755,12 +752,13 @@ a report to the supervisor, not a problem for you to solve.
                     with the line it printed in 'notes', VERBATIM - the label stays on and the
                     branch goes back for rework onto master. Do NOT rebase, merge or push it by
                     hand, and do not report this as a conflict.
-     9  unreadable  the rollup could not be READ - gh failed, was throttled, or returned
-                    something that did not parse. Nothing is known about the checks, which is
-                    not the same as knowing they failed. Return status 'blocked' with the
-                    sentences it printed, and do NOT report this as red or as a failing build:
-                    secondary rate limits read as full in 'gh api rate_limit', so a throttled
-                    read looks like nothing at all from here.
+     9  unreadable  the rollup, or master's latest run before it, could not be READ - gh
+                    failed, was throttled, or returned something that did not parse. Nothing
+                    is known about the checks or about master, which is not the same as
+                    knowing either failed. Return status 'blocked' with the sentences it
+                    printed, and do NOT report this as red, as a failing build or as a red
+                    master: secondary rate limits read as full in 'gh api rate_limit', so a
+                    throttled read looks like nothing at all from here.
      5  master_red  master was not green. Nothing was touched. Return status 'master_red'.
      6  usage       the arguments, the repository or the plugin version it had to assign are
                     wrong. Return status 'blocked' with the line it printed in 'notes',
@@ -1178,10 +1176,9 @@ ${LAW}`
 // finished - a timing accident that the next round should retry), 'merge_shaped' (the branch
 // needs rebuilding onto master, and un-queueing it would reopen an issue whose work is fine),
 // 'version_unreadable' (the number could not be read at all, which is ignorance rather than a
-// finding), 'pr_unreadable' (gh could not be asked about the PR, which is the same ignorance
-// about a different read), 'fetch_failed' (the refs everything else was read from may be stale,
-// which is ignorance about all of them at once), and 'agent_error' (we do not know what
-// happened, and un-queueing on ignorance loses work silently).
+// finding), 'fetch_failed' (the refs everything else was read from may be stale, which is
+// ignorance about all of them at once), and 'agent_error' (we do not know what happened, and
+// un-queueing on ignorance loses work silently).
 const RETIRE = { type: 'object', required: ['status'], additionalProperties: false, properties: {
   status: { enum: ['retired', 'partial', 'nothing_to_do'] },
   retired: { type: 'array', items: { type: 'string' } },
@@ -1535,13 +1532,17 @@ try {
       const declared = await agent(versionPrompt(pr), {
         label: `version:${keyOf(pr)}`, phase: 'Land', schema: VERSION, model: 'haiku', effort: 'low'
       })
-      const stale = versionVerdict(declared) || prVerdict(declared)
+      const stale = versionVerdict(declared)
       if (stale) {
         stopped.push({ ...pr, why: stale.why, detail: stale.detail })
         log(`STOPPED ${keyOf(pr)} - ${stale.why}\n    ${stale.detail}`)
         continue
       }
-      if (declared && (declared.labelled === false || declared.open === false)) {
+      const unreadPr = prUnreadable(declared)
+      if (unreadPr) {
+        log(`${keyOf(pr)} - ${unreadPr}`)
+      }
+      if (declared && declared.prStatus !== 'unreadable' && (declared.labelled === false || declared.open === false)) {
         log(`${keyOf(pr)} - the version step reports it is no longer the pull request this run was asked to merge (${LABEL} ${declared.labelled === false ? 'is gone' : 'still on'}, ${declared.open === false ? 'closed, merged or draft' : 'open'}), and its declared version raises no objection, so land-one.sh decides in shell whether it still merges`)
       }
       if (declared && declared.status !== 'no_manifest' && !declared.touchesPlugin) {
@@ -1583,7 +1584,8 @@ try {
       const detail = trimmed(r && (r.failureDetail || r.notes))
 
       // 'blocked' carries every reason land-one.sh exits without merging and nothing is wrong
-      // with the pull request: an empty, stale or unreadable rollup, and every usage refusal too.
+      // with the pull request: an empty, stale or unreadable rollup, a master run gh could not
+      // answer for, and every usage refusal too.
       // Only the attempt knows which, so its own sentences are what gets logged. Keeping it in
       // `seen` retires it from this whole run, and the rebase it already did is thrown away.
       // Put it back so a later round finds the run finished - but only when a later round could
