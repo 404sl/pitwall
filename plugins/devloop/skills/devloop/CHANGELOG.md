@@ -1,5 +1,123 @@
 # Changelog
 
+## 0.1.57
+
+**A reported deploy is now checked against what it says the hosts are serving.** The lander promoted
+a deploy on the step's own word - `deployed = (d && d.status) || 'unknown'` - and nothing compared a
+revision unless the step had gone silent. The rare silent path was the only one verified against
+what merged, while the ordinary one closed tracker issues unattended on an assertion. The deploy
+step now reports one entry per host it read - repository, environment and revision, the same keying
+the blind read-back uses - and `readHosts` compares each one against the sha that merged into that
+repository. Every revision the report names is compared, for an environment with a read-back
+command and for one without, and a `deployed` whose revisions are not those shas does not reach
+`deployed`, closes nothing, and logs which repository and environment is serving what.
+
+`repos.<name>.verify` is not new and is already read by 0.1.23: this release tightens where an
+existing read-back is reached, rather than introducing one.
+
+**What this flips, and which verdict each shape reaches.** A step whose revisions contradict what
+merged no longer closes anything, and the log names each repository and environment, the revision
+its host is serving and the sha that merged. Which verdict it reaches depends on whether anything
+that landed was left unread. Where every environment of every deploying repository that landed has a
+`verify` command and the report names a revision for each of them, a disagreement is `partial` if
+some of the revisions were the sha that merged and `failed` if none were. Anywhere an environment was
+left unread - a `verify` that omits one, no `verify` at all, an environment the report left silent, a
+host the report names twice - it is `unknown` instead. All three leave the issues in_progress; only
+`deployed` closes anything.
+
+**The flip reaches a repository with no `verify` at all,** and that is the upgrade to watch. Such a
+repository closed every run on the step's word before this release, and still does where the
+revisions the step names are the shas that merged - but a report naming a revision that is not what
+merged now holds the run at `unknown`. The lander has the step's own revisions to compare whether or
+not anything can read a host back, so `verify` keyed per environment is what lets a host be read at
+all, and that read happens where the report leaves an environment unsettled. It is not what makes
+this change reach you. The run that is affected says so at its own start, before it merges anything,
+rather than only in this note.
+
+An environment nothing configured can read back rests on the step's word, and not only where the
+step named nothing for it. Where the report does name a revision for such an environment, that
+revision is compared against the sha that merged like any other: one that disagrees holds the run
+and is logged, and one that agrees still closes on the step's word, because nothing read it back -
+the log says which of the two happened and names the configuration that would have checked it. An
+upgrade must not turn an unverifiable configuration into issues that never close again; a host
+nobody can ask is a configuration gap, not evidence of a bad deploy. A revision the step handed
+over is evidence, and the gap does not cover it.
+
+**The unit is the ENVIRONMENT, not the repository and not the run.** The step's word may stand for
+an environment only where nothing configured can read THAT environment back. Where some of what
+landed can be read and some cannot - a second repository with no `verify` at all, or a second
+environment of the same repository missing from its `verify` map - the readable hosts are read back
+FIRST, and the step's word then covers only the remainder nobody can ask, and only if nothing that
+was read disagreed. A host that answered and contradicted what merged holds the whole run; so does
+one that was asked and answered nothing, and so does a report that contradicts itself by naming one
+host twice with two revisions - for an environment the configuration can read, for one it cannot,
+and for a name nothing deploys to. A report that cannot agree with itself holds the run whatever the
+hosts that were read said, and the lines that found the contradiction are logged whatever verdict
+the run reached. An environment nobody can ask never speaks for one somebody could have.
+
+A `verify` map that names fewer environments than the repository has `deploy` commands is now read
+as exactly that: the commands it does name are run and compared, and the environments it omits are
+carried as unread rather than confirmed. Before this release a short map was read as "nobody can
+ask" for the whole repository, which skipped a runnable command and let a reported revision that
+disagreed with what merged close on the step's word.
+
+**The gap is named before anything merges, not only in the deploy summary.** A run opens by naming
+every deploying repository whose `verify` cannot be keyed to every environment it deploys to, one
+line each, before it takes the merge lock. A release note is read once by whoever upgrades and the
+consequence shows up afterwards as silence, so the run that is affected says so on its own.
+
+Set `repos.<name>.verify` to one command per deploy environment, keyed by the environment name,
+to get the comparison. Without it the lander reports what it was told.
+
+- **The deploy brief names the repository and environment beside every read-back command.** That is
+  what makes the comparison possible - a reported host is keyed by both names, and a step handed
+  bare commands invents names of its own that match no host. A repository whose `verify` is a single
+  string has one environment and it is printed as `only`, which is the key the comparison uses.
+- **A step that reports `deployed` and names no revision falls through to the blind read-back**
+  rather than straight to `unknown`, so a step that answers the status and forgets the hosts still
+  resolves - and resolves against a host read by a step that was never told the expected answer.
+  An environment nothing configured can read back closes on the step's word whether its report named
+  a revision for it or not: one left unnamed leaves nothing to compare, one named the sha that merged
+  was compared and agreed, and in both cases no host was read. An environment a command could have
+  read is compared the same way and read back only where the report leaves it unsettled, so a report
+  naming the sha that merged for every readable environment closes on those revisions with nothing
+  read either. What the word never covers, for a readable environment and an unreadable one alike, is
+  a reported revision that is not the sha that merged, or a host the report names twice: either of
+  those holds the whole run.
+- **A reported `partial` or `failed` is still taken as given.** A step that told us something is
+  acted on; this release is about the step that told us nothing it could be held to.
+- The host shape is one schema, shared by the deploy report and the read-back.
+- A revision the lander did not read is never printed as what a host is serving. The verdict line
+  carries the step's own revisions only where they confirmed every environment that deploys;
+  otherwise it carries what the read-back read, and nothing when it read nothing.
+
+Thirty-one tests cover it: a reported deploy naming another revision closes nothing and logs both
+shas, a reported deploy naming the merge sha still closes, an empty report is read back instead of
+believed, one of two environments is not the pair, the brief carries the keys the comparison needs,
+a run where nothing can be read back still closes on the report, and - where one repository can be
+read and another cannot - the readable one is read back and a confirming answer still closes, an
+answer that disagrees holds the run, a host asked and silent holds it, a reported host carrying an
+empty revision earns no credit, a report naming one host twice holds it, a revision that
+contradicts what merged is not laundered by a sibling repository nobody can read, and a step that
+named the sha for the repository anybody can read is not logged as having named nothing. Then the
+same cases one level down, where the unaskable half is another ENVIRONMENT of the repository that
+landed: the environment its `verify` names is read back rather than skipped, a reported revision
+that disagrees with what merged holds the run and closes nothing, a report naming no host at all is
+read back instead of believed, the environment nobody can ask closes on the step's word once the
+readable one confirms, a report contradicting itself about the unaskable environment is not believed
+about the rest, a revision nobody read is not printed as what a host is serving, the
+configuration gap is named before anything merges, a run that takes the step's word is not also
+told its revisions were refuted, and a `verify` written as one string against a repository that
+deploys twice reads the host it names rather than neither. And last, over the report's own entries:
+a wrong revision named for an environment nothing can read holds the run, a report whose revisions
+are wrong for every environment of a repository that configures no `verify` at all holds it, a wrong
+revision named for the repository nobody can read is not covered by a readable sibling that
+confirms, a report that names one host twice holds the run even where every host that was read
+confirms and the contradiction is printed, and - on the printed side - a run resting on the step's
+word is not told the report named no revision when it named one, nor that an environment left
+nothing to compare when its reported revision was compared and agreed - and the gap named before
+anything merges does not promise a close that the step's own revisions can still withdraw.
+
 ## 0.1.56
 
 A release train is now launched with `config.sh --train <repo>`, the way the serial lander is launched with `config.sh --land`. Pass the object it prints and nothing assembled by hand: it carries the merge-lock token the train writes into the holder file, and `land-train.js` refuses to start without one rather than minting its own. One launch per repository - the train still refuses to guess which. A lock step must never be asked to mint the token it reports; a replayed answer agrees with itself while the lock belongs to another run.

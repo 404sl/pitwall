@@ -164,7 +164,7 @@ test("a deploy the agent reports as failed stays failed, and is not read back", 
 
 test("a close step that reported nothing names the issues it left in_progress", async () => {
   const { logs, done } = landOnce({
-    deploy: { status: "deployed", staging: SHA, production: SHA, notes: "" },
+    deploy: { status: "deployed", hosts: hosts(SHA), notes: "" },
     close: null,
   });
   const result = await done;
@@ -181,7 +181,7 @@ test("a close step that reported nothing names the issues it left in_progress", 
 
 test("a close step that reports the ids it closed is not reported as drift", async () => {
   const { logs, done } = landOnce({
-    deploy: { status: "deployed", staging: SHA, production: SHA, notes: "" },
+    deploy: { status: "deployed", hosts: hosts(SHA), notes: "" },
     close: { status: "closed", closed: ["pitwall-7b1"] },
   });
   const result = await done;
@@ -285,7 +285,7 @@ test("a read-back with no endpoint to read is never run and never deployed", asy
 test("a run that closed everything it could says so quietly when nothing named an issue", async () => {
   const { logs, done } = landOnce({
     prs: [{ ...PR, issue: undefined }],
-    deploy: { status: "deployed", staging: SHA, production: SHA, notes: "" },
+    deploy: { status: "deployed", hosts: hosts(SHA), notes: "" },
     close: { status: "none", closed: [] },
   });
   const result = await done;
@@ -409,15 +409,15 @@ test("a repository with a verify command and no deploy is never read back", asyn
   );
 });
 
-test("a verify command that does not name every environment spawns no read-back", async () => {
+test("a verify command that does not name every environment still reads back the one it names", async () => {
   const oneCommandTwoEnvironments = {
     ...ARGS,
-    repos: { docs: { ...TWO_ENV.repos.docs, verify: "curl -s -m 20 https://staging.example.com/health" } },
+    repos: { docs: { ...TWO_ENV.repos.docs, verify: { staging: "curl -s -m 20 https://staging.example.com/health" } } },
   };
   const { calls, logs, done } = landOnce({
     args: oneCommandTwoEnvironments,
     deploy: null,
-    check: { status: "read", hosts: hosts(SHA), notes: "" },
+    check: { status: "read", hosts: hosts(SHA, "docs", "staging"), notes: "" },
   });
   const result = await done;
 
@@ -427,11 +427,16 @@ test("a verify command that does not name every environment spawns no read-back"
     "a repository deploying to two environments records one command to read a host back with, so one of the two can never " +
       "be confirmed - and the run resolved the deploy anyway.",
   );
-  assert.equal(
-    calls.filter((c) => c.label === "deploy-check").length,
-    0,
-    "a read-back was spawned for a repository whose environments cannot all be read. The verdict is unknown whatever it " +
-      "reports, so the step only costs a session.",
+  const check = calls.find((c) => c.label === "deploy-check");
+  assert.ok(
+    check,
+    "the environment that DOES configure a command to read a host back went unread because a sibling environment " +
+      "configures none. An environment nobody can ask is a gap in the configuration; it is not permission to skip the " +
+      `one anybody can. Steps: ${calls.map((c) => c.label).join(", ")}`,
+  );
+  assert.ok(
+    check.prompt.includes("https://staging.example.com/health"),
+    "the read-back was spawned without the one command it can actually run",
   );
   const said = logs.join("\n");
   assert.match(said, /docs/);
@@ -456,7 +461,7 @@ test("the close step is distinguishable from a close step that never ran", async
 });
 
 test("the merge sha a host is compared against is described as the squash commit", async () => {
-  const { calls, done } = landOnce({ deploy: { status: "deployed", staging: SHA, production: SHA, notes: "" }, close: { status: "closed", closed: ["pitwall-7b1"] } });
+  const { calls, done } = landOnce({ deploy: { status: "deployed", hosts: hosts(SHA), notes: "" }, close: { status: "closed", closed: ["pitwall-7b1"] } });
   await done;
 
   const land = calls.find((c) => c.label.startsWith("land:"));
@@ -512,4 +517,780 @@ test("a repository with no verify command keeps the deploy step's fallback instr
     "the deploy step was handed a sentence saying nothing can read what its environments serve, in place of the " +
       "instruction to find out. That replaces a task with a statement that the task is impossible.",
   );
+});
+
+test("a deploy step that reports deployed while serving another revision closes nothing", async () => {
+  const { calls, logs, done } = landOnce({
+    deploy: { status: "deployed", hosts: hosts(OTHER), notes: "deployed and verified" },
+    close: { status: "closed", closed: ["pitwall-7b1"] },
+  });
+  const result = await done;
+
+  assert.notEqual(
+    result.deployed,
+    "deployed",
+    "the deploy step said it deployed while its own read-back named a revision that is not what merged, and the run " +
+      "took the word and discarded the evidence beside it. The silent path has compared those shas since 0.1.20; the " +
+      "reported path is the ordinary one and was the only one still unchecked.",
+  );
+  assert.equal(
+    calls.filter((c) => c.label === "close").length,
+    0,
+    "issues were closed as deployed while the host the deploy step read was serving another revision",
+  );
+
+  const said = logs.join("\n");
+  assert.match(said, new RegExp(OTHER.slice(0, 12)), "the log does not say what the host is serving");
+  assert.match(said, new RegExp(SHA.slice(0, 12)), "the log does not say what merged");
+  assert.match(said, /docs/, "the log does not say which repository is serving it");
+});
+
+test("a deploy step that reports deployed and names the merged sha closes its issues", async () => {
+  const { calls, logs, done } = landOnce({
+    deploy: { status: "deployed", hosts: hosts(SHA), notes: "deployed and verified" },
+    close: { status: "closed", closed: ["pitwall-7b1"] },
+  });
+  const result = await done;
+
+  assert.equal(
+    result.deployed,
+    "deployed",
+    "the host the deploy step read was serving the merge sha and the run still would not call it deployed - which would " +
+      "hold every ordinary successful run's issues open forever.",
+  );
+  assert.equal(calls.filter((c) => c.label === "close").length, 1);
+  assert.match(logs.join("\n"), new RegExp(`deploy: deployed docs only ${SHA.slice(0, 8)}`));
+});
+
+test("a deploy step that reports deployed and names no revision is read back rather than believed", async () => {
+  const { calls, done } = landOnce({
+    deploy: { status: "deployed", hosts: [], notes: "mina said done" },
+    check: { status: "read", hosts: hosts(SHA), notes: "the host answered" },
+    close: { status: "closed", closed: ["pitwall-7b1"] },
+  });
+  const result = await done;
+
+  assert.ok(
+    calls.find((c) => c.label === "deploy-check"),
+    "a deploy step reported deployed with nothing to compare against what merged, and no host was read back. " +
+      `Steps: ${calls.map((c) => c.label).join(", ")}`,
+  );
+  assert.equal(
+    result.deployed,
+    "deployed",
+    "the blind read-back found the merge sha live and the run did not resolve the deploy, so a step that answers the " +
+      "status and forgets the hosts would strand its issues.",
+  );
+  assert.equal(calls.filter((c) => c.label === "close").length, 1);
+});
+
+test("a deploy step that reports deployed on one of two environments is not deployed", async () => {
+  const { calls, done } = landOnce({
+    args: TWO_ENV,
+    deploy: { status: "deployed", hosts: [{ repo: "docs", environment: "staging", revision: SHA }], notes: "staging is live" },
+    check: null,
+    close: { status: "closed", closed: ["pitwall-7b1"] },
+  });
+  const result = await done;
+
+  assert.notEqual(
+    result.deployed,
+    "deployed",
+    "the deploy step reported one of the two environments it deploys to and called the whole thing deployed. A change " +
+      "live in one environment and not the other is live in neither.",
+  );
+  assert.equal(calls.filter((c) => c.label === "close").length, 0);
+});
+
+test("the deploy step is told which repository and environment each read-back line belongs to", async () => {
+  const { calls, done } = landOnce({ args: TWO_ENV, deploy: null, check: null });
+  await done;
+
+  const deploy = calls.find((c) => c.label === "deploy");
+  assert.ok(deploy);
+  for (const line of ["docs  staging  curl", "docs  production  curl"]) {
+    assert.ok(
+      deploy.prompt.includes(line),
+      `the deploy brief does not name the repository and environment beside its read-back commands, so nothing it reports ` +
+        `can be matched to a host. Expected a line carrying '${line}'. Asked:\n${deploy.prompt}`,
+    );
+  }
+});
+
+test("a deploy step reading one unkeyed host is told the environment name the comparison uses", async () => {
+  const { calls, done } = landOnce({ deploy: null, check: null });
+  await done;
+
+  const deploy = calls.find((c) => c.label === "deploy");
+  assert.ok(deploy);
+  assert.ok(
+    deploy.prompt.includes("docs  only  curl"),
+    `a repository whose verify is a single command has one environment, and the comparison keys it by the name this brief ` +
+      `prints. A brief that prints no name gets an invented one back, which matches no host. Asked:\n${deploy.prompt}`,
+  );
+});
+
+test("the deploy step's schema carries the hosts its status is checked against", async () => {
+  const { calls, done } = landOnce({ deploy: { status: "deployed", hosts: hosts(SHA), notes: "" }, close: { status: "closed", closed: ["pitwall-7b1"] } });
+  await done;
+
+  const deploy = calls.find((c) => c.label === "deploy");
+  assert.ok(deploy && deploy.schema, "the deploy step was spawned with no schema");
+  const properties = deploy.schema.properties;
+  assert.ok(
+    properties.hosts,
+    "the deploy step is asked for a status and no per-repository revision, so a staging/production pair cannot be " +
+      "attributed to the repositories that landed and nothing can compare it.",
+  );
+  for (const field of ["repo", "environment", "revision"]) {
+    assert.ok(properties.hosts.items.properties[field], `a reported host carries no ${field}`);
+  }
+});
+
+test("a deploy step that reports deployed where no host can be read back still closes its issues", async () => {
+  const noVerify = {
+    ...ARGS,
+    repos: { docs: { path: "site", slug: "owner/site", deploy: TWO_ENV.repos.docs.deploy } },
+  };
+  const { calls, logs, done } = landOnce({
+    args: noVerify,
+    deploy: { status: "deployed", hosts: [], notes: "both deployed; the project offers nothing that prints a revision" },
+    check: null,
+    close: { status: "closed", closed: ["pitwall-7b1"] },
+  });
+  const result = await done;
+
+  assert.equal(
+    result.deployed,
+    "deployed",
+    "a repository that deploys and configures no verify has no host anybody can read, so there is no revision to " +
+      "contradict the step - and the run held its issues open anyway. Nothing was checked before this comparison " +
+      "existed either: turning an unverifiable config into a permanent hold on a patch release is the 2026-08-25 " +
+      "pile-up, issues sitting in_progress and invisible to the queue, reached by upgrading rather than by deploying.",
+  );
+  assert.equal(
+    calls.filter((c) => c.label === "close").length,
+    1,
+    "the close step was never spawned for a deploy nothing was able to check, so every issue this run merged stays in_progress forever",
+  );
+  assert.equal(
+    calls.filter((c) => c.label === "deploy-check").length,
+    0,
+    "a read-back was spawned with no host to read",
+  );
+
+  const said = logs.join("\n");
+  assert.match(said, /no verify command/, "the log does not name the configuration that would have checked it");
+  assert.match(
+    said,
+    /own word/,
+    "this close rests on the step's assertion and nothing else, and the log reads like any other deployed run. A " +
+      "reader must be able to tell a revision somebody compared from a status somebody asserted.",
+  );
+});
+
+test("a repository nothing can read back does not launder a revision that contradicts what merged", async () => {
+  const halfConfigured = {
+    ...ARGS,
+    repos: {
+      docs: ARGS.repos.docs,
+      site: { path: "cli", slug: "owner/cli", deploy: ["bash deploy-one.sh --label production"] },
+    },
+  };
+  const inSite = { slug: "owner/cli", number: 18, title: "Read the lock back", branch: "devloop/pitwall-7b3", issue: "pitwall-7b3" };
+  const { calls, logs, done } = landOnce({
+    args: halfConfigured,
+    prs: [PR, inSite],
+    deploy: { status: "deployed", hosts: hosts(OTHER), notes: "both live" },
+    check: null,
+    close: { status: "closed", closed: ["pitwall-7b1", "pitwall-7b3"] },
+  });
+  const result = await done;
+
+  assert.notEqual(
+    result.deployed,
+    "deployed",
+    "one repository is serving a revision that is not what merged into it, and the run took the step's word back " +
+      "because a DIFFERENT repository happened to have no verify configured. A host that answered and disagreed is " +
+      "evidence; a host nobody could ask is not, and an unaskable one must not cancel out an answered one.",
+  );
+  assert.equal(
+    calls.filter((c) => c.label === "close").length,
+    0,
+    "issues were closed while a host the deploy step read was serving another revision",
+  );
+  assert.match(logs.join("\n"), new RegExp(OTHER.slice(0, 12)), "the log does not say what the host is serving");
+});
+
+const HALF_CONFIGURED = {
+  ...ARGS,
+  repos: {
+    docs: ARGS.repos.docs,
+    site: { path: "cli", slug: "owner/cli", deploy: ["bash deploy-one.sh --label production"] },
+  },
+};
+
+const IN_SITE = { slug: "owner/cli", number: 18, title: "Read the lock back", branch: "devloop/pitwall-7b3", issue: "pitwall-7b3" };
+
+test("a reported deploy naming no revision still reads back the one repository that can be read", async () => {
+  const { calls, logs, done } = landOnce({
+    args: HALF_CONFIGURED,
+    prs: [PR, IN_SITE],
+    deploy: { status: "deployed", hosts: [], notes: "both live" },
+    check: { status: "read", hosts: hosts(SHA), notes: "the host answered" },
+    close: { status: "closed", closed: ["pitwall-7b1", "pitwall-7b3"] },
+  });
+  const result = await done;
+
+  assert.equal(
+    calls.filter((c) => c.label === "deploy-check").length,
+    1,
+    "one repository configures a verify command and it went unrun because a DIFFERENT repository configures none. " +
+      `A host that can be asked must be asked before the step's word is taken for the rest. Steps: ${calls.map((c) => c.label).join(", ")}`,
+  );
+  assert.equal(
+    result.deployed,
+    "deployed",
+    "the one readable host is serving the sha that merged and the other repository configures nothing that can be " +
+      "read, so there is no revision anywhere contradicting the step - and the run held its issues open anyway. " +
+      "That is the 2026-08-25 pile-up reached by upgrading.",
+  );
+  assert.equal(calls.filter((c) => c.label === "close").length, 1);
+
+  const said = logs.join("\n");
+  assert.match(said, /own word/, "the log does not say that the unreadable half rests on the step's assertion");
+  assert.match(said, /no verify command/, "the log does not name the configuration that would have checked the rest");
+});
+
+test("a reported deploy naming no revision is refused by the host it never mentioned", async () => {
+  const { calls, logs, done } = landOnce({
+    args: HALF_CONFIGURED,
+    prs: [PR, IN_SITE],
+    deploy: { status: "deployed", hosts: [], notes: "both live" },
+    check: { status: "read", hosts: hosts(OTHER), notes: "the host answered" },
+    close: { status: "closed", closed: ["pitwall-7b1", "pitwall-7b3"] },
+  });
+  const result = await done;
+
+  assert.notEqual(
+    result.deployed,
+    "deployed",
+    "a step reported deployed and named no host, a readable host came back serving another revision, and the run closed " +
+      "on the step's word anyway. Omitting the hosts is the cheaper failure than naming a wrong one and it must not pay better.",
+  );
+  assert.equal(
+    calls.filter((c) => c.label === "close").length,
+    0,
+    "issues were closed while a host that was read is serving another revision",
+  );
+  assert.match(logs.join("\n"), new RegExp(OTHER.slice(0, 12)), "the log does not say what the host is serving");
+});
+
+test("a reported host with an empty revision is not an answer the step can be credited with", async () => {
+  const { calls, done } = landOnce({
+    args: HALF_CONFIGURED,
+    prs: [PR, IN_SITE],
+    deploy: { status: "deployed", hosts: hosts(""), notes: "the health check timed out right after the deploy" },
+    check: { status: "read", hosts: hosts(OTHER), notes: "the host answered" },
+    close: { status: "closed", closed: ["pitwall-7b1", "pitwall-7b3"] },
+  });
+  const result = await done;
+
+  assert.equal(
+    calls.filter((c) => c.label === "deploy-check").length,
+    1,
+    "a host the step reported with no revision in it left the read-back unrun, so nothing asked the host itself",
+  );
+  assert.notEqual(result.deployed, "deployed", "a host that answered nothing was read as confirming the step");
+  assert.equal(calls.filter((c) => c.label === "close").length, 0);
+});
+
+test("a deploy step that reports one host twice with two revisions has contradicted itself", async () => {
+  const { calls, logs, done } = landOnce({
+    args: HALF_CONFIGURED,
+    prs: [PR, IN_SITE],
+    deploy: { status: "deployed", hosts: [...hosts(SHA), ...hosts(OTHER)], notes: "both live" },
+    check: { status: "read", hosts: hosts(SHA), notes: "the host answered" },
+    close: { status: "closed", closed: ["pitwall-7b1", "pitwall-7b3"] },
+  });
+  const result = await done;
+
+  assert.notEqual(
+    result.deployed,
+    "deployed",
+    "one step reported the same host serving two different revisions and the run still took its word for the " +
+      "repository nobody can read. A report that disagrees with itself is not evidence for anything else in it.",
+  );
+  assert.equal(calls.filter((c) => c.label === "close").length, 0);
+  assert.match(logs.join("\n"), /two different revisions/, "the log does not say the report contradicted itself");
+});
+
+test("a host that went quiet on the read-back does not hand the run back to the step's word", async () => {
+  const { calls, done } = landOnce({
+    args: HALF_CONFIGURED,
+    prs: [PR, IN_SITE],
+    deploy: { status: "deployed", hosts: [], notes: "both live" },
+    check: { status: "unreadable", hosts: hosts(""), notes: "the health check timed out" },
+    close: { status: "closed", closed: ["pitwall-7b1", "pitwall-7b3"] },
+  });
+  const result = await done;
+
+  assert.notEqual(
+    result.deployed,
+    "deployed",
+    "a repository that configures a verify command was asked, answered nothing, and the run closed on the step's word " +
+      "anyway. Only a repository nothing here can ask may rest on the report; one that was asked and did not answer " +
+      "is the unknown this comparison exists to hold.",
+  );
+  assert.equal(calls.filter((c) => c.label === "close").length, 0);
+});
+
+test("a step that names the merge sha for the repository it can read is not said to have named nothing", async () => {
+  const { calls, logs, done } = landOnce({
+    args: HALF_CONFIGURED,
+    prs: [PR, IN_SITE],
+    deploy: { status: "deployed", hosts: hosts(SHA), notes: "both live" },
+    check: { status: "read", hosts: hosts(SHA), notes: "the host answered" },
+    close: { status: "closed", closed: ["pitwall-7b1", "pitwall-7b3"] },
+  });
+  const result = await done;
+
+  assert.equal(calls.filter((c) => c.label === "deploy-check").length, 1);
+  assert.equal(result.deployed, "deployed");
+  assert.equal(calls.filter((c) => c.label === "close").length, 1);
+  assert.doesNotMatch(
+    logs.join("\n"),
+    /named no revision/,
+    "the step named the sha that merged into the one repository anybody can read, it was compared and it matched, and " +
+      "the log says it named nothing. This is the ordinary mixed run - a step doing its job while an unverifiable " +
+      "repository drags the status to unknown - so it is the line a supervisor reads most often.",
+  );
+});
+
+const PARTIAL_VERIFY = {
+  ...ARGS,
+  repos: {
+    docs: {
+      ...TWO_ENV.repos.docs,
+      verify: { production: "curl -s -m 20 https://example.com/health" },
+    },
+  },
+};
+
+test("a reported revision that disagrees is compared even where a sibling environment cannot be read", async () => {
+  const { calls, logs, done } = landOnce({
+    args: PARTIAL_VERIFY,
+    deploy: { status: "deployed", hosts: hosts(OTHER, "docs", "production"), notes: "both live" },
+    check: null,
+    close: { status: "closed", closed: ["pitwall-7b1"] },
+  });
+  const result = await done;
+
+  assert.notEqual(
+    result.deployed,
+    "deployed",
+    "a step reported deployed, named a revision for the one environment anybody can read, that revision is not what " +
+      "merged - and the run closed on the step's word because a SIBLING environment of the same repository configures " +
+      "no command. An environment nobody can ask never speaks for one somebody can, whether the unaskable one belongs " +
+      "to another repository or to this one.",
+  );
+  assert.equal(
+    calls.filter((c) => c.label === "close").length,
+    0,
+    "issues were closed while the only host anybody can read was reported serving another revision",
+  );
+  assert.equal(
+    calls.filter((c) => c.label === "deploy-check").length,
+    1,
+    "nothing read the host back. One environment of this repository configures a runnable command, and a reported " +
+      "revision that disagrees with what merged is the one case that must reach it.",
+  );
+  const said = logs.join("\n");
+  assert.match(said, new RegExp(`docs production is serving ${OTHER.slice(0, 12)}`), `the log does not say which repository is serving what. Logged:\n${said}`);
+  assert.match(said, new RegExp(SHA.slice(0, 12)), "the log does not say what merged, so the two revisions cannot be compared by whoever reads it");
+});
+
+test("a reported deploy naming no host still reads back the environment that can be read", async () => {
+  const { calls, done } = landOnce({
+    args: PARTIAL_VERIFY,
+    deploy: { status: "deployed", hosts: [], notes: "both live" },
+    check: { status: "read", hosts: hosts(OTHER, "docs", "production"), notes: "the host answered" },
+    close: { status: "closed", closed: ["pitwall-7b1"] },
+  });
+  const result = await done;
+
+  assert.equal(
+    calls.filter((c) => c.label === "deploy-check").length,
+    1,
+    "a step that reported deployed and named no host at all was believed for an environment with a runnable command. " +
+      "Omitting the hosts is the cheaper failure than naming a wrong one and it must not pay better.",
+  );
+  assert.notEqual(result.deployed, "deployed", "the host that was read is serving another revision and the run was called deployed");
+  assert.equal(calls.filter((c) => c.label === "close").length, 0);
+});
+
+test("the environment nobody can ask rests on the step's word once the readable one confirms", async () => {
+  const { calls, logs, done } = landOnce({
+    args: PARTIAL_VERIFY,
+    deploy: { status: "deployed", hosts: hosts(SHA, "docs", "production"), notes: "both live" },
+    check: { status: "read", hosts: hosts(SHA, "docs", "production"), notes: "the host answered" },
+    close: { status: "closed", closed: ["pitwall-7b1"] },
+  });
+  const result = await done;
+
+  assert.equal(
+    calls.filter((c) => c.label === "deploy-check").length,
+    1,
+    "the readable environment was never asked",
+  );
+  assert.equal(
+    result.deployed,
+    "deployed",
+    "the one environment anybody can read is serving the sha that merged, nothing disagreed, and the staging " +
+      "environment configures nothing that could be asked - so the run held its issues open on a configuration gap " +
+      "rather than on evidence. That is the 2026-08-25 pile-up reached by upgrading.",
+  );
+  assert.equal(calls.filter((c) => c.label === "close").length, 1);
+  assert.match(logs.join("\n"), /own word/, "the log does not say that the unreadable environment rests on the step's assertion");
+});
+
+test("a step that contradicts itself about an unreadable environment is not believed about the rest", async () => {
+  const { calls, logs, done } = landOnce({
+    args: PARTIAL_VERIFY,
+    deploy: {
+      status: "deployed",
+      hosts: [...hosts(SHA, "docs", "production"), ...hosts(SHA, "docs", "staging"), ...hosts(OTHER, "docs", "staging")],
+      notes: "both live",
+    },
+    check: { status: "read", hosts: hosts(SHA, "docs", "production"), notes: "the host answered" },
+    close: { status: "closed", closed: ["pitwall-7b1"] },
+  });
+  const result = await done;
+
+  assert.notEqual(
+    result.deployed,
+    "deployed",
+    "one report named the staging host twice with two different revisions and the run still took its word for staging, " +
+      "because staging is the environment nobody can ask. A report that cannot agree with itself is the weakest evidence " +
+      "in the system, not neutral - and an environment nobody can ask is the one place the report is all there is.",
+  );
+  assert.equal(calls.filter((c) => c.label === "close").length, 0);
+  assert.match(logs.join("\n"), /two different revisions/, "the log does not say the report contradicted itself");
+});
+
+test("a revision nobody read is not printed as what a host is serving", async () => {
+  const { logs, done } = landOnce({
+    args: HALF_CONFIGURED,
+    prs: [PR, IN_SITE],
+    deploy: { status: "deployed", hosts: hosts(SHA), notes: "both live" },
+    check: { status: "read", hosts: hosts(""), notes: "the health check timed out" },
+    close: { status: "closed", closed: ["pitwall-7b1", "pitwall-7b3"] },
+  });
+  const result = await done;
+
+  assert.notEqual(result.deployed, "deployed");
+  const line = logs.find((l) => l.startsWith("deploy: "));
+  assert.ok(line, `no verdict line was logged. Logged:\n${logs.join("\n")}`);
+  assert.doesNotMatch(
+    line,
+    new RegExp(SHA.slice(0, 8)),
+    "the verdict line reports a host serving a revision that came from the step's own claim, after the read-back was " +
+      `asked and answered nothing. A revision nobody read must never be printed as what a host is serving. Logged: ${line}`,
+  );
+});
+
+test("an environment nothing can read is named before anything merges", async () => {
+  const { calls, logs, done } = landOnce({
+    args: PARTIAL_VERIFY,
+    deploy: { status: "deployed", hosts: hosts(SHA, "docs", "production"), notes: "both live" },
+    check: { status: "read", hosts: hosts(SHA, "docs", "production"), notes: "the host answered" },
+    close: { status: "closed", closed: ["pitwall-7b1"] },
+  });
+  await done;
+
+  const warned = logs.find((l) => l.startsWith("BEFORE ANYTHING MERGES"));
+  assert.ok(
+    warned,
+    "a repository deploys to an environment nothing configured can read back, and the run said so only in the deploy " +
+      "summary at the end. A release note is read once by whoever upgrades and the consequence shows up later as " +
+      `silence, so the run names the gap before it merges anything. Logged:\n${logs.join("\n")}`,
+  );
+  assert.match(warned, /docs/);
+  assert.match(warned, /one command per environment/);
+  const merged = logs.findIndex((l) => /^MERGED|^landed /.test(l));
+  assert.ok(
+    merged < 0 || logs.indexOf(warned) < merged,
+    `the configuration gap was named after something had already merged. Logged:\n${logs.join("\n")}`,
+  );
+  assert.ok(calls.length > 0);
+});
+
+test("a run that takes the step's word is not also told the step was not confirmed", async () => {
+  const noVerify = {
+    ...ARGS,
+    repos: { docs: { path: "site", slug: "owner/site", deploy: TWO_ENV.repos.docs.deploy } },
+  };
+  const { logs, done } = landOnce({
+    args: noVerify,
+    deploy: { status: "deployed", hosts: [], notes: "both deployed; nothing here prints a revision" },
+    check: null,
+    close: { status: "closed", closed: ["pitwall-7b1"] },
+  });
+  const result = await done;
+
+  assert.equal(result.deployed, "deployed");
+  assert.doesNotMatch(
+    logs.join("\n"),
+    /do not confirm it/,
+    "the run logged that the revisions the step reported do not confirm it and then resolved the same run as deployed. " +
+      "Nothing disagreed here - the step named no revision and nothing configured can read one - and a log that says it " +
+      "was refuted beside a verdict that closed its issues is the defect this ticket is about, written into the report.",
+  );
+});
+
+test("a single verify command against two deploy environments reads the one host it can", async () => {
+  const oneStringTwoEnvironments = {
+    ...ARGS,
+    repos: { docs: { ...TWO_ENV.repos.docs, verify: ARGS.repos.docs.verify } },
+  };
+  const { calls, logs, done } = landOnce({
+    args: oneStringTwoEnvironments,
+    deploy: null,
+    check: { status: "read", hosts: hosts(SHA), notes: "the host answered" },
+  });
+  const result = await done;
+
+  const check = calls.find((c) => c.label === "deploy-check");
+  assert.ok(
+    check,
+    "a verify written as a single string against a repository that deploys twice names one environment and leaves one " +
+      `unaskable, and the one it names went unread. Steps: ${calls.map((c) => c.label).join(", ")}`,
+  );
+  assert.ok(
+    check.prompt.includes("https://staging.example.com/health"),
+    "the read-back was spawned without the one command a single-string verify provides",
+  );
+  assert.equal(
+    result.deployed,
+    "unknown",
+    "one of the two environments configures nothing that can be asked, so the host that answered confirms its own " +
+      "environment and not the repository. A single confirmed environment out of two is not a deploy.",
+  );
+  assert.match(logs.join("\n"), /one command per environment/);
+});
+
+const NO_VERIFY_TWO_ENV = {
+  ...ARGS,
+  repos: { docs: { path: "site", slug: "owner/site", deploy: TWO_ENV.repos.docs.deploy } },
+};
+
+test("a reported revision for an environment nothing can read is still compared against what merged", async () => {
+  const { calls, logs, done } = landOnce({
+    args: PARTIAL_VERIFY,
+    deploy: {
+      status: "deployed",
+      hosts: [...hosts(SHA, "docs", "production"), ...hosts(OTHER, "docs", "staging")],
+      notes: "both live",
+    },
+    check: { status: "read", hosts: hosts(SHA, "docs", "production"), notes: "the host answered" },
+    close: { status: "closed", closed: ["pitwall-7b1"] },
+  });
+  const result = await done;
+
+  assert.notEqual(
+    result.deployed,
+    "deployed",
+    "the step's own report names the staging host serving a revision that is not what merged, and the run closed on " +
+      "that same report because staging is the environment nothing configured can read back. Absence of a command is " +
+      "what may rest on the step's word; a revision the step itself handed over is evidence and it disagrees.",
+  );
+  assert.equal(
+    calls.filter((c) => c.label === "close").length,
+    0,
+    "issues were closed while the report itself said a host is serving another revision",
+  );
+  const said = logs.join("\n");
+  assert.match(said, new RegExp(`docs staging is serving ${OTHER.slice(0, 12)}`), `the log does not say which repository is serving what. Logged:\n${said}`);
+  assert.match(said, new RegExp(SHA.slice(0, 12)), "the log does not say what merged, so the two revisions cannot be compared by whoever reads it");
+});
+
+test("a report naming wrong revisions for every environment is not believed because none can be read", async () => {
+  const { calls, logs, done } = landOnce({
+    args: NO_VERIFY_TWO_ENV,
+    deploy: {
+      status: "deployed",
+      hosts: [...hosts(OTHER, "docs", "staging"), ...hosts(OTHER, "docs", "production")],
+      notes: "both live",
+    },
+    check: null,
+    close: { status: "closed", closed: ["pitwall-7b1"] },
+  });
+  const result = await done;
+
+  assert.notEqual(
+    result.deployed,
+    "deployed",
+    "a repository configures no verify at all, the step reported deployed, and the revisions it named for both " +
+      "environments are not what merged - and the run closed on that report anyway. Nothing here can read a host, so " +
+      "the only evidence in the run is the report, and the report disagrees with the run.",
+  );
+  assert.equal(calls.filter((c) => c.label === "close").length, 0, "issues were closed against the report's own revisions");
+  assert.equal(calls.filter((c) => c.label === "deploy-check").length, 0, "a read-back was spawned with no host to read");
+  const said = logs.join("\n");
+  assert.match(said, new RegExp(`docs staging is serving ${OTHER.slice(0, 12)}`), `the log does not say which repository is serving what. Logged:\n${said}`);
+  assert.match(said, new RegExp(SHA.slice(0, 12)), "the log does not say what merged");
+});
+
+test("the gap named before anything merges does not promise a close the report can still withdraw", async () => {
+  const { calls, logs, done } = landOnce({
+    args: NO_VERIFY_TWO_ENV,
+    deploy: {
+      status: "deployed",
+      hosts: [...hosts(SHA, "docs", "staging"), ...hosts(SHA, "docs", "production")],
+      notes: "both live",
+    },
+    check: null,
+    close: { status: "closed", closed: ["pitwall-7b1"] },
+  });
+  await done;
+
+  const warned = logs.find((l) => l.startsWith("BEFORE ANYTHING MERGES"));
+  assert.ok(warned, `the configuration gap was not named before anything merged. Logged:\n${logs.join("\n")}`);
+  assert.match(
+    warned,
+    /unless/,
+    "this is the one line an upgrading reader sees on the first run, and it says a repository with no verify closes " +
+      "on whatever the deploy step says, full stop. It no longer does: a revision the step itself names that is not " +
+      `the sha that merged holds the run, with no host read anywhere. Logged: ${warned}`,
+  );
+  assert.match(
+    warned,
+    /nothing closes/,
+    `the line does not say what happens when the step's own revisions disagree with what merged. Logged: ${warned}`,
+  );
+  assert.ok(calls.length > 0);
+});
+
+test("a wrong revision reported for the repository nobody can read is not covered by a sibling that confirms", async () => {
+  const { calls, logs, done } = landOnce({
+    args: HALF_CONFIGURED,
+    prs: [PR, IN_SITE],
+    deploy: {
+      status: "deployed",
+      hosts: [...hosts(SHA), ...hosts(OTHER, "site", "production")],
+      notes: "both live",
+    },
+    check: { status: "read", hosts: hosts(SHA), notes: "the host answered" },
+    close: { status: "closed", closed: ["pitwall-7b1", "pitwall-7b3"] },
+  });
+  const result = await done;
+
+  assert.notEqual(
+    result.deployed,
+    "deployed",
+    "the repository nobody can read back was reported serving a revision that is not what merged into it, and a " +
+      "readable sibling confirming its own host carried the run to deployed. A host that was read speaks for its own " +
+      "environment, never for a revision the report disagrees with somewhere else.",
+  );
+  assert.equal(calls.filter((c) => c.label === "close").length, 0, "issues were closed while the report disagreed about the unreadable repository");
+  const said = logs.join("\n");
+  assert.match(said, new RegExp(`site production is serving ${OTHER.slice(0, 12)}`), `the log does not say which repository is serving what. Logged:\n${said}`);
+  assert.match(said, new RegExp(SHA.slice(0, 12)), "the log does not say what merged");
+});
+
+test("a report that contradicts itself holds the run even where every host that was read confirms", async () => {
+  const { calls, logs, done } = landOnce({
+    args: TWO_ENV,
+    deploy: {
+      status: "deployed",
+      hosts: [
+        ...hosts(SHA, "docs", "staging"),
+        ...hosts(SHA, "docs", "production"),
+        ...hosts(OTHER, "docs", "prod"),
+        ...hosts(LATER, "docs", "prod"),
+      ],
+      notes: "both live",
+    },
+    check: {
+      status: "read",
+      hosts: [...hosts(SHA, "docs", "staging"), ...hosts(SHA, "docs", "production")],
+      notes: "both hosts answered",
+    },
+    close: { status: "closed", closed: ["pitwall-7b1"] },
+  });
+  const result = await done;
+
+  assert.notEqual(
+    result.deployed,
+    "deployed",
+    "the report named one host twice with two different revisions and the run closed anyway, because the part of the " +
+      "report that was checkable happened to agree. A report that cannot agree with itself is the weakest evidence in " +
+      "the system and a run may not rest on one, whatever else confirmed.",
+  );
+  assert.equal(calls.filter((c) => c.label === "close").length, 0, "issues were closed on a report that contradicts itself");
+  assert.match(
+    logs.join("\n"),
+    /two different revisions/,
+    "the contradiction was found and never printed, so a supervisor reading this run cannot tell it happened",
+  );
+  assert.doesNotMatch(
+    logs.join("\n"),
+    /read back instead - deploy is deployed/,
+    "the run logged the read-back verdict as deployed and the next line held the same run open. A log line that reports " +
+      "a verdict the run did not reach is the same defect as a run that reports what it did not check.",
+  );
+});
+
+test("the step's word is not described as the only revision when its report named one", async () => {
+  const { calls, logs, done } = landOnce({
+    args: NO_VERIFY_TWO_ENV,
+    deploy: {
+      status: "deployed",
+      hosts: [...hosts(SHA, "docs", "staging"), ...hosts(SHA, "docs", "production")],
+      notes: "both live",
+    },
+    check: null,
+    close: { status: "closed", closed: ["pitwall-7b1"] },
+  });
+  const result = await done;
+
+  assert.equal(
+    result.deployed,
+    "deployed",
+    "nothing configured can read either environment and every revision the report names is the sha that merged, so " +
+      "there is nothing disagreeing with the step and the close rests on its word as it always did",
+  );
+  assert.equal(calls.filter((c) => c.label === "close").length, 1);
+  const said = logs.join("\n");
+  assert.doesNotMatch(
+    said,
+    /no revision anybody here could read back/,
+    `the report named a revision for both environments and was told it named none. A run that reports what it did not check is this ticket's defect, and a log that reports what was not named is the same defect in the report. Logged:\n${said}`,
+  );
+  assert.match(said, new RegExp(SHA.slice(0, 12)), "the log does not say which revision the close is resting on");
+  assert.match(said, /own word/, "the log does not say the close rests on the step's assertion");
+});
+
+test("an unreadable environment whose reported revision agrees is not said to leave nothing to compare", async () => {
+  const { calls, logs, done } = landOnce({
+    args: PARTIAL_VERIFY,
+    deploy: {
+      status: "deployed",
+      hosts: [...hosts(SHA, "docs", "production"), ...hosts(SHA, "docs", "staging")],
+      notes: "both live",
+    },
+    check: { status: "read", hosts: hosts(SHA, "docs", "production"), notes: "the host answered" },
+    close: { status: "closed", closed: ["pitwall-7b1"] },
+  });
+  const result = await done;
+
+  assert.equal(result.deployed, "deployed", "every revision in the run is the sha that merged and the issues were held open");
+  assert.equal(calls.filter((c) => c.label === "close").length, 1);
+  const said = logs.join("\n");
+  assert.doesNotMatch(
+    said,
+    /leave no revision to compare/,
+    `the report named a revision for staging, it was compared against what merged and it agreed, and the log says staging left no revision to compare. Logged:\n${said}`,
+  );
+  assert.match(said, /own word/, "the log does not say the unreadable environment rests on the step's assertion");
 });
