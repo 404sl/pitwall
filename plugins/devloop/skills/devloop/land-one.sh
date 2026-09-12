@@ -15,6 +15,7 @@
 #
 # Usage:
 #   land-one.sh --repo-path <abs> --slug <owner/name> --pr <n> --branch <name> [--prefix devloop]
+#               [--register-wait 180] [--register-interval 15]
 #
 # Exit codes, which are the interface - stdout is for a human, the code is for the caller:
 #   0  ready      rebased if needed, pushed, CI green on the pushed head. Merge it.
@@ -45,6 +46,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PREFIX="$(bash "$HERE/config.sh" lockPrefix 2>/dev/null || echo devloop)"
 LABEL=lane-verified
 REPO_PATH=""; SLUG=""; PR=""; BRANCH=""
+REGISTER_WAIT=180; REGISTER_INTERVAL=15
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -66,6 +68,12 @@ while [ $# -gt 0 ]; do
     --label)
       [ $# -ge 2 ] || { echo "--label needs a value" >&2; exit 6; }
       LABEL="${2:-}"; shift 2 ;;
+    --register-wait)
+      [ $# -ge 2 ] || { echo "--register-wait needs a value" >&2; exit 6; }
+      REGISTER_WAIT="${2:-}"; shift 2 ;;
+    --register-interval)
+      [ $# -ge 2 ] || { echo "--register-interval needs a value" >&2; exit 6; }
+      REGISTER_INTERVAL="${2:-}"; shift 2 ;;
     *) echo "unknown argument: $1" >&2; exit 6 ;;
   esac
 done
@@ -76,6 +84,8 @@ for req in REPO_PATH SLUG PR BRANCH; do
 done
 [ -d "$REPO_PATH/.git" ] || [ -f "$REPO_PATH/.git" ] || { echo "not a git repository: $REPO_PATH" >&2; exit 6; }
 case "$PR" in ''|*[!0-9]*) echo "--pr must be a number, got: $PR" >&2; exit 6 ;; esac
+case "$REGISTER_WAIT" in ''|*[!0-9]*) echo "--register-wait must be a number of seconds, got: $REGISTER_WAIT" >&2; exit 6 ;; esac
+case "$REGISTER_INTERVAL" in ''|*[!0-9]*) echo "--register-interval must be a number of seconds, got: $REGISTER_INTERVAL" >&2; exit 6 ;; esac
 
 WT="/tmp/${PREFIX}-worktrees/land-${PR}"
 say() { printf '%s\n' "$*"; }
@@ -165,6 +175,7 @@ fi
 plugin_paths=$(git diff --name-only "origin/master...origin/${BRANCH}" 2>/dev/null \
   | grep -E '^(plugins/|\.claude-plugin/)' | head -3 | tr '\n' ' ')
 
+pushed_sha=""
 if [ "$behind" = "0" ] && [ -z "$plugin_paths" ]; then
   say "current: ${BRANCH} is already on top of master and ships no plugin file, no rebase needed"
 else
@@ -237,9 +248,34 @@ else
     fi
     cd "$REPO_PATH" || true
     cleanup
+    pushed_sha="$head_after"
     say "pushed: ${BRANCH} was ${behind} behind master, rebased where it had to be, and pushed"
     [ -n "$version_note" ] && say "version: ${version_note}"
   fi
+fi
+
+registered_checks() {
+  gh api "repos/${SLUG}/commits/${1}/check-runs" 2>/dev/null | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+print(d.get('total_count') or len(d.get('check_runs') or []))
+" 2>/dev/null
+}
+
+if [ -n "$pushed_sha" ]; then
+  register_started=$(date +%s)
+  while :; do
+    registered=$(registered_checks "$pushed_sha")
+    case "$registered" in ''|*[!0-9]*) registered=0 ;; esac
+    [ "$registered" -gt 0 ] && break
+    register_elapsed=$(( $(date +%s) - register_started ))
+    if [ "$register_elapsed" -ge "$REGISTER_WAIT" ]; then
+      say "not_ready: no check registered on ${pushed_sha} within ${REGISTER_WAIT}s of the push - nothing has run yet, which is not a pass"
+      exit 7
+    fi
+    sleep "$REGISTER_INTERVAL"
+  done
+  say "registered: ${registered} check(s) on ${pushed_sha} after $(( $(date +%s) - register_started ))s"
 fi
 
 # 3. WAIT FOR CI ON THE HEAD THAT IS ACTUALLY THERE NOW, and wait by blocking rather than by
