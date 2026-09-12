@@ -509,12 +509,22 @@ you fail, and in this order - the owner file first, so the directory is never le
 
 THEN MAKE THE WORKTREE BOOT. Four things this app needs to start are gitignored, so none of them
 can reach a checkout and a worktree cut from origin/master cannot boot Rails at all. Run these
-before any other command, in this order; a link that is already there is fine, leave it:
+before any other command, in this order:
 
-  ln -s ${repoPath(repo)}/config/master.key ${wtPath}/config/master.key
-  ln -s ${repoPath(repo)}/.env ${wtPath}/.env
-  ln -s ${repoPath(repo)}/node_modules ${wtPath}/node_modules
+  test -L ${wtPath}/config/master.key || ln -s ${repoPath(repo)}/config/master.key ${wtPath}/config/master.key
+  test -L ${wtPath}/.env || ln -s ${repoPath(repo)}/.env ${wtPath}/.env
+  test -L ${wtPath}/node_modules || ln -s ${repoPath(repo)}/node_modules ${wtPath}/node_modules
   export GIT_CONFIG_GLOBAL=/dev/null BUNDLE_USER_CONFIG=/dev/null && cd ${wtPath} && bundle exec rails dartsass:build
+
+THE GUARD IS THE POINT, AND A SENTENCE CANNOT REPLACE IT. You are handed this step on every
+attempt, including a retry onto a worktree that already has all three links. 'ln -s SRC DEST'
+where DEST is an existing symlink to a directory does NOT fail: it follows DEST and
+creates SRC's basename INSIDE the target. A bare re-run of the node_modules line therefore writes
+${repoPath(repo)}/node_modules/node_modules into the MAIN CHECKOUT - exit 0, no output, and
+invisible to 'git status' because node_modules is gitignored - leaving a self-referential loop in
+the one directory the asset manifest link_trees into. Keep the 'test -L' guard rather than
+reaching for a flag: the overwrite flag is 'ln -sfn' on GNU and 'ln -sfh' on BSD, so neither
+spelling is portable and the guard is.
 
 SKIP ONE AND THE FAILURE DOES NOT LOOK LIKE SETUP. Without config/master.key the credentials
 will not decrypt, so config/cable.yml renders 'undefined method url for nil' and every rails

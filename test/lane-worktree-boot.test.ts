@@ -44,11 +44,9 @@ async function railsBrief(): Promise<string> {
 
 test("a rails lane is given the commands that make its worktree boot", async () => {
   const prompt = await railsBrief();
-  for (const command of [
-    "ln -s /root/app/config/master.key /tmp/pw-worktrees/zz-aaa1/config/master.key",
-    "ln -s /root/app/.env /tmp/pw-worktrees/zz-aaa1/.env",
-    "ln -s /root/app/node_modules /tmp/pw-worktrees/zz-aaa1/node_modules",
-  ]) {
+  for (const target of ["config/master.key", ".env", "node_modules"]) {
+    const wt = `/tmp/pw-worktrees/zz-aaa1/${target}`;
+    const command = `test -L ${wt} || ln -s /root/app/${target} ${wt}`;
     assert.ok(
       prompt.includes(command),
       "the rails brief no longer hands a lane " +
@@ -56,7 +54,9 @@ test("a rails lane is given the commands that make its worktree boot", async () 
         ". All four pieces are gitignored, so a worktree cut from origin/master cannot boot the " +
         "app at all - without the key, credentials will not decrypt and every rails command dies " +
         "before loading a spec. Naming the files in prose is what failed: the commands have to be " +
-        "runnable.",
+        "runnable. The 'test -L' guard is part of the command, not tidiness: this step is emitted " +
+        "on every attempt, and on a retry a bare 'ln -s' onto an existing symlinked directory " +
+        "succeeds by creating the link inside the main checkout's own node_modules.",
     );
   }
   assert.ok(
