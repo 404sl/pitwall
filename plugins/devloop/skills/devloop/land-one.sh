@@ -86,6 +86,7 @@ done
 case "$PR" in ''|*[!0-9]*) echo "--pr must be a number, got: $PR" >&2; exit 6 ;; esac
 case "$REGISTER_WAIT" in ''|*[!0-9]*) echo "--register-wait must be a number of seconds, got: $REGISTER_WAIT" >&2; exit 6 ;; esac
 case "$REGISTER_INTERVAL" in ''|*[!0-9]*) echo "--register-interval must be a number of seconds, got: $REGISTER_INTERVAL" >&2; exit 6 ;; esac
+case "$BRANCH" in master|main) echo "usage: ${BRANCH} is a default branch and is never landed onto itself" >&2; exit 6 ;; esac
 
 WT="/tmp/${PREFIX}-worktrees/land-${PR}"
 say() { printf '%s\n' "$*"; }
@@ -180,12 +181,15 @@ if [ "$behind" = "0" ] && [ -z "$plugin_paths" ]; then
   say "current: ${BRANCH} is already on top of master and ships no plugin file, no rebase needed"
 else
   head_before=$(git rev-parse "origin/${BRANCH}" 2>/dev/null)
+  holder=$(git worktree list --porcelain 2>/dev/null | awk -v ref="branch refs/heads/${BRANCH}" '
+    /^worktree /{wt=substr($0, 10)} $0==ref{print wt; exit}')
+  [ -z "$holder" ] || say "held: ${BRANCH} is checked out in ${holder}, so this run works detached from origin/${BRANCH} and leaves that worktree alone"
   rm -rf "$WT" 2>/dev/null
   mkdir -p "/tmp/${PREFIX}-worktrees"
-  git worktree add --force "$WT" "origin/${BRANCH}" >/dev/null 2>/dev/null || {
-    say "usage: could not create a worktree for ${BRANCH}"; exit 6; }
+  git worktree add --force --detach "$WT" "origin/${BRANCH}" >/dev/null 2>"$gh_err" || {
+    said=$(tail -n 1 "$gh_err" 2>/dev/null)
+    say "usage: could not create a worktree for ${BRANCH} - git said: ${said:-nothing on stderr}"; exit 6; }
   cd "$WT" || { cleanup; exit 6; }
-  git checkout -B "$BRANCH" "origin/${BRANCH}" >/dev/null 2>/dev/null
 
   dropped=0
   while [ "$dropped" -lt 20 ]; do
@@ -240,11 +244,12 @@ else
     say "current: ${BRANCH} needs no rebase and already carries the version it would be assigned, nothing pushed"
     [ -n "$version_note" ] && say "version: ${version_note}"
   else
-    # Never force-push a default branch; this is not one, and the guard proves it rather than
-    # trusting that the cd above went where it was meant to.
-    if ! git-guard --dir="$WT" --branch="$BRANCH" -- git push --force-with-lease >/dev/null 2>/dev/null; then
+    # Never force-push a default branch; this is not one, and the guard proves the cd above went
+    # where it was meant to.
+    if ! git-guard --dir="$WT" -- git push --force-with-lease="refs/heads/${BRANCH}:${head_before}" origin "HEAD:refs/heads/${BRANCH}" >/dev/null 2>"$gh_err"; then
+      said=$(grep -v '^To \|^ *$' "$gh_err" 2>/dev/null | tail -n 1)
       cd "$REPO_PATH" || true; cleanup
-      say "usage: push --force-with-lease was refused for ${BRANCH}"; exit 6
+      say "usage: push --force-with-lease was refused for ${BRANCH} - git said: ${said:-nothing on stderr}"; exit 6
     fi
     cd "$REPO_PATH" || true
     cleanup
