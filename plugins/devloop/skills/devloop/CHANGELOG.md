@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.36
+## 0.1.37
 
 **A release train acted on one repository and its result could not say so.** `land-train.js` took
 one `repo` key on the way in, resolved the path and the slug once, and every later step used those
@@ -44,21 +44,27 @@ never OPENED.
   measure of how discoverable it was - `whenToUse` now says a train covers one repository and that
   the key is required.
 
-**The survey runs after the merge and the close, not at the top.** The halves of a two-repo ticket
-do not arrive together - the reported one arrived minutes after the first, which is what made the
-loss hard to see - so a survey taken before the train was built would miss exactly the case it
-exists for. A train that built nothing surveys too: that is the run most likely to be the one where
-another repository holds the only work in the workspace.
+**The survey runs after the merge and the close, not at the top, and the placement is held by a
+test that models the late arrival.** The halves of a two-repo ticket do not arrive together - the
+reported one arrived minutes after the first, which is what made the loss hard to see - so a survey
+taken before the train was built would miss exactly the case it exists for. A fixture with both
+repositories labelled from the first call cannot tell the two placements apart and would pass a
+survey moved to the top of the run, so the second repository's pull request is labelled only once
+the merge has been seen: it is absent from the queue the survey would have read early and present in
+the one it reads late. A train that built nothing surveys too: that is the run most likely to be the
+one where another repository holds the only work in the workspace.
 
-Fourteen tests drive the script as a function body: a train with no `repo` returns an error and takes
+Fifteen tests drive the script as a function body: a train with no `repo` returns an error and takes
 no lock, a labelled pull request in a second configured repository appears in the result with its
-relaunch, the survey is ordered before the release, every configured key is present with numeric
-counts, the same number labelled in two repositories is counted in both, a pull request still
-labelled in the train's own repository is explained rather than left as a bare count, and an
-unreadable, an omitted, a slugless and an unnumbered repository each come back unknown rather than
-clean. All fourteen fail against the previous revision. The two existing suites that drive the
-train - `lander-lock` and `prefix` - pass `repo` in their shared args, which is the newly
-required input supplied rather than any assertion relaxed.
+relaunch, the survey is ordered after the merge and the close and before the release, a pull request
+labelled during the run is still reported, every configured key is present with numeric counts, the
+same number labelled in two repositories is counted in both, a pull request still labelled in the
+train's own repository is explained rather than left as a bare count, and an unreadable, an omitted,
+a slugless and an unnumbered repository each come back unknown rather than clean. All fifteen fail
+against the previous revision. Moving the survey to the top of the run fails two of them, and moving
+it to between the merge and the close fails one - so neither placement passes on call order alone.
+The two existing suites that drive the train - `lander-lock` and `prefix` - pass `repo` in their
+shared args, which is the newly required input supplied rather than any assertion relaxed.
 
 ## 0.1.36
 

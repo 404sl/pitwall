@@ -121,21 +121,79 @@ test("a labelled pull request in another configured repo is reported, with the t
   );
 });
 
-test("the survey of the other repos runs before the lock is given back", async () => {
+test("the survey of the other repos runs after the merge and the close, before the lock goes back", async () => {
   const { calls, done } = train(oneLandedInSite(BOTH_LABELLED));
   await done;
 
   const order = calls.map((c) => c.label);
   const survey = order.indexOf("left-behind");
   const release = order.indexOf("release");
+  const merge = order.findIndex((l) => l.startsWith("merge:"));
+  const close = order.lastIndexOf("close");
   assert.ok(survey >= 0, `no survey of the other repositories ran: ${order.join(", ")}`);
   assert.ok(release >= 0, `no release step ran: ${order.join(", ")}`);
+  assert.ok(merge >= 0, `no merge step ran: ${order.join(", ")}`);
+  assert.ok(close >= 0, `no close step ran: ${order.join(", ")}`);
   assert.ok(
     survey < release,
-    `the lock was released before the run had looked at the other repositories: ${order.join(", ")}. ` +
-      "The survey has to be late rather than early: the halves of a two-repo ticket arrive minutes " +
-      "apart, so one taken before the train was built misses the case it exists for.",
+    `the lock was released before the run had looked at the other repositories: ${order.join(", ")}.`,
   );
+  assert.ok(
+    survey > merge && survey > close,
+    `the survey ran before this train had finished its own work: ${order.join(", ")}. It has to be ` +
+      "late rather than early: the halves of a two-repo ticket arrive minutes apart, so a survey " +
+      "taken before the merge misses the case it exists for.",
+  );
+});
+
+test("a pull request labelled in the other repo while this train ran is still reported", async () => {
+  let merged = false;
+  const { calls, done } = train((call: Call) => {
+    if (call.label.startsWith("build:")) {
+      return { status: "built", trainPr: 120, trainBranch: "release/train-1", included: [1287], skipped: [] };
+    }
+    if (call.label.startsWith("verify:")) return { status: "green", failingSpecs: [] };
+    if (call.label.startsWith("version:")) {
+      return {
+        status: "no_manifest",
+        masterVersion: "",
+        branchVersion: "",
+        touchesPlugin: false,
+        notes: "this repository carries no devloop plugin manifest on master",
+      };
+    }
+    if (call.label.startsWith("merge:")) {
+      merged = true;
+      return { status: "merged", mergeSha: SHA, masterGreen: true, notes: "" };
+    }
+    if (call.label === "left-behind") {
+      return {
+        repos: [
+          { repo: "site", status: "read", labelled: [1287] },
+          { repo: "docs", status: "read", labelled: merged ? [185] : [] },
+        ],
+      };
+    }
+    return { status: "released" };
+  });
+  const out = (await done) as Result;
+
+  const docs = account(out, "docs");
+  assert.equal(
+    docs.left,
+    1,
+    "the second repository's half was labelled while this train was still merging its own, and the " +
+      "survey read an empty queue for it. The halves of a two-repo ticket arrive MINUTES APART - " +
+      "that is what made this loss hard to see - so a survey taken at the top of the run, or " +
+      "anywhere before the merge, reports a clean zero for the repository that holds the work. A " +
+      "fixture with both repositories labelled from the first call cannot tell the two placements " +
+      `apart. Call order was: ${calls.map((c) => c.label).join(", ")}.`,
+  );
+  assert.deepEqual(docs.leftPrs, [185]);
+  assert.equal(docs.surveyed, 1);
+  assert.equal(docs.taken, 0);
+  assert.match(docs.relaunch || "", /repo: docs/);
+  assert.equal(account(out, "site").taken, 1);
 });
 
 test("a repo that yielded nothing says so with a zero rather than being absent", async () => {
