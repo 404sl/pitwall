@@ -586,6 +586,22 @@ function prVerdict(read) {
   }
 }
 
+const REFUSED_WHATEVER_THE_ROUND = [
+  /differs from \S+ in more than the version/,
+  /declares no version in \S+ that reads as three numbers/,
+  /no version strictly greater than/,
+]
+
+function refusalVerdict(detail) {
+  const said = trimmed(detail)
+  if (!/the devloop plugin version could not be assigned/.test(said)) return null
+  if (!REFUSED_WHATEVER_THE_ROUND.some((pattern) => pattern.test(said))) return null
+  return {
+    why: 'version_refused',
+    detail: `land-one.sh refused to assign the devloop plugin version, and a later round reads the same branch against the same ${PLUGIN_MANIFEST} and refuses it identically - ${said}`
+  }
+}
+
 function versionPrompt(pr) {
   const path = REPOS[pr.repo]
   return `Read two version numbers and report them. Nothing merges here, nothing is edited, and
@@ -724,11 +740,15 @@ a report to the supervisor, not a problem for you to solve.
                     failing examples in failureDetail.
      7  not_ready   the rollup is empty, describes an older head, or the label has gone. NOT a
                     failure: CI has probably not finished registering, or a lane pulled the
-                    label back. Return status 'blocked' - the run puts it back for a later
-                    round instead of retiring it. Do NOT report this as red.
+                    label back. Return status 'blocked' with the line it printed in 'notes',
+                    VERBATIM - the run puts it back for a later round instead of retiring it,
+                    and that line is the only record of why. Do NOT report this as red.
      5  master_red  master was not green. Nothing was touched. Return status 'master_red'.
-     6  usage       the arguments or the repository are wrong. Return status 'blocked' and say
-                    what it printed - do not work around it by hand.
+     6  usage       the arguments, the repository or the plugin version it had to assign are
+                    wrong. Return status 'blocked' with the line it printed in 'notes',
+                    VERBATIM - the run reads that line to tell a refusal a later round can
+                    clear from one it cannot. Do not work around it by hand, and do not
+                    summarise or reword what it said.
 
    IT DOES NOT MERGE, ON PURPOSE. The merge is yours, at step 6, because the evidence for it has
    to be in the transcript of whoever orders it. Do not ask the script to do it and do not add a
@@ -1322,6 +1342,7 @@ if (holder !== LOCK_TOKEN) {
 
 const landed = []
 const stopped = []
+const deferred = new Map()
 // Not dead, just not ready: a PR the pre-merge check found unlabelled, red or with an empty
 // rollup. Reported so a run that lands nothing says WHY rather than looking idle.
 const skipped = []
@@ -1480,19 +1501,29 @@ try {
       }
 
       const why = r ? r.status : 'agent_error'
+      const detail = trimmed(r && (r.failureDetail || r.notes))
 
-      // 'blocked' means CI had not finished in the time the attempt had, not that anything is
-      // wrong with the pull request. Keeping it in `seen` retires it from this whole run over a
-      // stopwatch, and the rebase it already did is thrown away. Put it back so a later round
-      // finds the run finished - by then it usually has.
+      // 'blocked' carries every reason land-one.sh exits without merging and nothing is wrong
+      // with the pull request: an empty or stale rollup, and every usage refusal too. Keeping it
+      // in `seen` retires it from this whole run, and the rebase it already did is thrown away.
+      // Put it back so a later round finds the run finished - but only when a later round could
+      // read something different, which a refused version never can.
       if (why === 'blocked') {
+        const refused = refusalVerdict(detail)
+        if (refused) {
+          stopped.push({ ...pr, why: refused.why, detail: refused.detail })
+          log(`STOPPED ${keyOf(pr)} - ${refused.why}\n    ${refused.detail}`)
+          continue
+        }
         seen.delete(keyOf(pr))
-        log(`DEFERRED ${keyOf(pr)} - CI had not finished; it goes back for a later round`)
+        const said = detail || 'the land step printed no reason, and CI had probably not finished'
+        deferred.set(keyOf(pr), said)
+        log(`DEFERRED ${keyOf(pr)} - it goes back for a later round: ${said}`)
         continue
       }
 
-      stopped.push({ ...pr, why, detail: r && (r.failureDetail || r.notes) })
-      log(`STOPPED ${keyOf(pr)} - ${why}\n    ${(r && (r.failureDetail || r.notes)) || 'the agent returned nothing'}`)
+      stopped.push({ ...pr, why, detail })
+      log(`STOPPED ${keyOf(pr)} - ${why}\n    ${detail || 'the agent returned nothing'}`)
 
       // A red master blocks everything behind it, so there is no point trying the rest.
       //
@@ -1503,7 +1534,6 @@ try {
       // would otherwise have to re-derive from a red run and a queue.
       if (why === 'master_red') {
         masterBroken = true
-        const detail = (r && (r.failureDetail || r.notes)) || ''
         const specs = (detail.match(/[\w./-]+_spec\.rb/g) || []).map((f) => f.split('/').pop())
         const suspects = specs.length
           ? queue.slice(i + 1).filter((q) => specs.some((f) => (q.title || '').includes(f.replace('_spec.rb', ''))))
@@ -1523,7 +1553,7 @@ try {
     if (acted.has(key)) continue
     const why = masterBroken
       ? 'not attempted - master was red in front of it, so nothing behind it was tried'
-      : `surveyed but not landed after ${MAX_ROUNDS} rounds - CI had not finished in the time this run had; still labelled, lands next run`
+      : `surveyed but not landed after ${MAX_ROUNDS} rounds - ${deferred.get(key) || 'CI had not finished in the time this run had'}; still labelled, lands next run`
     skipped.push({ ...pr, why })
     log(`NOT ACTED ON ${key} - ${why}`)
   }

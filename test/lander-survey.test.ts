@@ -133,8 +133,10 @@ test("a PR whose CI never finished is reported, not dropped", async () => {
   );
   assert.match(
     result.skipped[0]?.why || "",
-    /CI/,
-    "the run does not say why the PR was surveyed and not acted on",
+    /checks still running/,
+    "the run does not say why the PR was surveyed and not acted on, in the words the round that " +
+      "deferred it used. Every reason land-one.sh declines to merge for arrives as 'blocked', so a " +
+      "cause this line picks for itself describes most of them wrongly",
   );
 });
 
