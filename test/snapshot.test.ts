@@ -16,7 +16,7 @@ import {
 import { tmpdir } from "node:os";
 import { execPath } from "node:process";
 import type { AddressInfo } from "node:net";
-import { SCHEMA_VERSION, isYours, parseSnapshot } from "@404sl/pitwall-schema";
+import { SCHEMA_VERSION, isYours, parseSnapshot, type Snapshot } from "@404sl/pitwall-schema";
 import type { Notice } from "../src/notify.ts";
 import { KEPT_SOURCE, PARTIAL_SOURCE, REFRESH_SOURCE, buildBoard } from "../src/board.ts";
 import { consoleCollector, createConsoleServer, listen } from "../src/serve.ts";
@@ -42,6 +42,7 @@ const PATH_WITH_BD = `${join(FIXTURES, "bd", "ok")}:/usr/bin:/bin`;
 const PATH_WITH_GH = `${join(FIXTURES, "bd", "ok")}:${join(FIXTURES, "gh", "ok")}:/usr/bin:/bin`;
 const RECORDED = join(FIXTURES, "gh", "recorded");
 const PATH_WITH_UNAUTH_GH = `${join(FIXTURES, "bd", "ok")}:${join(FIXTURES, "gh", "unauth")}:/usr/bin:/bin`;
+const PATH_WITH_SLOW_NPM = `${join(FIXTURES, "npm", "slow")}:${join(FIXTURES, "bd", "ok")}:/usr/bin:/bin`;
 
 function pathWithoutGh(): string {
   const bin = mkdtempSync(join(tmpdir(), "pitwall-nogh-"));
@@ -1229,4 +1230,37 @@ test("the run-level problem describes what became of each project it names", asy
     buildBoard(stored).refreshFailure?.message,
     `2 of 3 projects could not be read: ${id} (issues kept from the last snapshot), plain (issues missing from this board).`,
   );
+});
+
+test("a probe that is still failing on the next run is dated from the first, so six hours of it reaches the board", async () => {
+  const place = workspace([TRACKER]);
+  const env = { ...place.env, PATH: PATH_WITH_SLOW_NPM, BD_LIST_FIXTURE: "stale" };
+  const state = { env: place.env, home: place.home };
+  const first = await emitSnapshot({ ...options(place), env, timeoutMs: 300 });
+  const probed = (error: { source: string }) => error.source === "npm whoami";
+  assert.ok(
+    first.snapshot.projects[0]?.errors.some(probed),
+    "the precondition probe must have been the thing that timed out",
+  );
+  const started = new Date(Date.now() - 7 * 60 * 60_000).toISOString();
+  writeFileSync(
+    snapshotPath(state),
+    JSON.stringify({
+      ...first.snapshot,
+      projects: first.snapshot.projects.map((project) => ({
+        ...project,
+        errors: project.errors.map((error) => (probed(error) ? { ...error, at: started } : error)),
+      })),
+    }),
+  );
+  await emitSnapshot({ ...options(place), env, timeoutMs: 300 });
+  const written = readSnapshot(state).snapshot;
+  assert.equal(
+    written?.projects[0]?.errors.find(probed)?.at,
+    started,
+    "the written snapshot keeps the instant the probe first failed",
+  );
+  const shown = buildBoard(written as Snapshot).problems.filter(probed);
+  assert.equal(shown.length, 1, "a probe that has not healed in seven hours is somebody's");
+  assert.ok((shown[0]?.prevented ?? 0) > 0, "the checks it prevented are counted against it");
 });

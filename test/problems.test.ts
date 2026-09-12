@@ -26,24 +26,29 @@ function unchecked(id: string, count: number, at = GENERATED_AT): CollectionErro
   };
 }
 
-function snapshotOf(errors: CollectionError[], runErrors: CollectionError[] = []): Snapshot {
+function snapshotOfProjects(
+  projects: { id: string; errors: CollectionError[] }[],
+  runErrors: CollectionError[] = [],
+): Snapshot {
   return parseSnapshot({
     schemaVersion: SCHEMA_VERSION,
     generatedAt: GENERATED_AT,
     agent: { version: VERSION, executor: "local" },
-    projects: [
-      {
-        id: "pitwall",
-        name: "pitwall",
-        root: "/projects/pitwall",
-        authority: { kind: "beads" },
-        metrics: {},
-        issues: [],
-        errors,
-      },
-    ],
+    projects: projects.map((project) => ({
+      id: project.id,
+      name: project.id,
+      root: `/projects/${project.id}`,
+      authority: { kind: "beads" },
+      metrics: {},
+      issues: [],
+      errors: project.errors,
+    })),
     errors: runErrors,
   });
+}
+
+function snapshotOf(errors: CollectionError[], runErrors: CollectionError[] = []): Snapshot {
+  return snapshotOfProjects([{ id: "pitwall", errors }], runErrors);
 }
 
 test("a rate limit that may still clear is not a problem, and nor are the checks it prevented", () => {
@@ -169,5 +174,57 @@ test("the status screen names the cause and counts the consequences", () => {
   const band = out.slice(out.indexOf("PROBLEMS"));
   assert.match(band, /gh pr view/);
   assert.match(band, /prevented 2 staleness checks/);
+  assert.doesNotMatch(band, /could not be checked/);
+});
+
+test("staleness checks nothing explains are one row per project with a count, not silence", () => {
+  const started = ago(3 * 60 * 60_000);
+  const board = buildBoard(
+    snapshotOfProjects([
+      { id: "pitwall", errors: [unchecked("pitwall-a", 15, started), unchecked("pitwall-b", 1), unchecked("pitwall-c", 4)] },
+      { id: "session-replay", errors: [unchecked("sr-a", 2)] },
+    ]),
+  );
+  assert.deepEqual(
+    board.problems.map((row) => [row.name, row.source, row.message]),
+    [
+      ["pitwall", "staleness", "3 staleness checks could not complete and nothing recorded why"],
+      ["session-replay", "staleness", "1 staleness check could not complete and nothing recorded why"],
+    ],
+  );
+  assert.equal(board.problems[0]?.at, started, "it has been failing since the earliest check it could not run");
+});
+
+test("a check its recorded cause explains is counted against it; one nothing explains still shows", () => {
+  const board = buildBoard(
+    snapshotOf([
+      { source: "gh pr view", message: "spawn gh ENOENT", at: GENERATED_AT },
+      unchecked("pitwall-a", 2),
+      {
+        source: "staleness pitwall-b",
+        message: "1 precondition could not be run: `npm whoami`",
+        at: GENERATED_AT,
+      },
+    ]),
+  );
+  assert.deepEqual(
+    board.problems.map((row) => [row.source, row.prevented]),
+    [
+      ["gh pr view", 1],
+      ["staleness", undefined],
+    ],
+  );
+  assert.equal(
+    board.problems[1]?.message,
+    "1 staleness check could not complete and nothing recorded why",
+  );
+});
+
+test("the status screen says what could not complete when nothing recorded why", () => {
+  const out = renderStatus(snapshotOf([unchecked("pitwall-a", 15), unchecked("pitwall-b", 1)]), {
+    now: NOW,
+  });
+  const band = out.slice(out.indexOf("PROBLEMS"));
+  assert.match(band, /2 staleness checks could not complete and nothing recorded why/);
   assert.doesNotMatch(band, /could not be checked/);
 });

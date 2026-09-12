@@ -1,4 +1,5 @@
 import type { CollectionError, Snapshot } from "@404sl/pitwall-schema";
+import { fill } from "./format.js";
 import {
   PRECONDITIONS,
   PULL_SOURCE,
@@ -28,6 +29,8 @@ const RUN_SCOPE = "";
 const ISSUE_STALENESS = `${STALENESS_SOURCE} `;
 
 const SELF_HEALING = [/rate limit/i, /^timed out after \d+ms$/];
+
+const UNACCOUNTED = "{count} staleness {checks} could not complete and nothing recorded why";
 
 const PROBE_SOURCES: readonly string[] = [
   PULL_SOURCE,
@@ -76,19 +79,50 @@ function causesOf(row: ProblemRow, named: Unresolved): readonly string[] {
   );
 }
 
-function preventedCounts(rows: readonly ProblemRow[]): Map<string, number> {
-  const counts = new Map<string, number>();
+interface Accounting {
+  prevented: Map<string, number>;
+  unaccounted: Map<string, ProblemRow[]>;
+}
+
+function accountingOf(rows: readonly ProblemRow[]): Accounting {
+  const recorded = new Set(rows.map((row) => causeKey(row.name, row.source)));
+  const prevented = new Map<string, number>();
+  const unaccounted = new Map<string, ProblemRow[]>();
   for (const row of rows) {
     const named = unresolvedOf(row.message);
     if (named === undefined || !isDerived(row)) {
       continue;
     }
-    for (const source of causesOf(row, named)) {
-      const key = causeKey(row.name, source);
-      counts.set(key, (counts.get(key) ?? 0) + 1);
+    const known = causesOf(row, named)
+      .map((source) => causeKey(row.name, source))
+      .filter((key) => recorded.has(key));
+    if (known.length === 0) {
+      unaccounted.set(row.name, [...(unaccounted.get(row.name) ?? []), row]);
+      continue;
+    }
+    for (const key of known) {
+      prevented.set(key, (prevented.get(key) ?? 0) + 1);
     }
   }
-  return counts;
+  return { prevented, unaccounted };
+}
+
+function earliest(rows: readonly ProblemRow[]): string {
+  return rows.reduce(
+    (known, row) => (Date.parse(row.at) < Date.parse(known) ? row.at : known),
+    rows[0]?.at ?? "",
+  );
+}
+
+function unaccountedRow(rows: readonly ProblemRow[]): ProblemRow {
+  const count = rows.length;
+  return {
+    scope: rows[0]?.scope ?? "project",
+    name: rows[0]?.name ?? "",
+    source: STALENESS_SOURCE,
+    message: fill(UNACCOUNTED, { count: String(count), checks: count === 1 ? "check" : "checks" }),
+    at: earliest(rows),
+  };
 }
 
 function persistedFor(at: string, generatedAt: string): number | undefined {
@@ -103,7 +137,7 @@ function stillHealing(row: ProblemRow, generatedAt: string): boolean {
 }
 
 export function shownProblems(rows: readonly ProblemRow[], generatedAt: string): ProblemRow[] {
-  const counts = preventedCounts(rows);
+  const { prevented, unaccounted } = accountingOf(rows);
   const shown: ProblemRow[] = [];
   for (const row of rows) {
     const disposition = dispositionOf(row);
@@ -113,8 +147,11 @@ export function shownProblems(rows: readonly ProblemRow[], generatedAt: string):
     if (disposition === "self-healing" && stillHealing(row, generatedAt)) {
       continue;
     }
-    const prevented = counts.get(causeKey(row.name, row.source));
-    shown.push(prevented === undefined ? row : { ...row, prevented });
+    const count = prevented.get(causeKey(row.name, row.source));
+    shown.push(count === undefined ? row : { ...row, prevented: count });
+  }
+  for (const group of unaccounted.values()) {
+    shown.push(unaccountedRow(group));
   }
   return shown;
 }
