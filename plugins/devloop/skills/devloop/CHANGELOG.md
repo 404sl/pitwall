@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.65
+
+A pull request whose state gh could not read no longer stops the landing pass. The read is logged as `pr_unreadable` and the pull request is handed to `land-one.sh`, which reads master, the rollup and the label itself and exits without merging when gh still cannot answer, so the pull request is deferred to a later round rather than stopped or retired. `land-one.sh` now reports a master run list gh could not answer as `unreadable` (exit 9) instead of as a red master, so a throttled or logged-out gh no longer stops a whole pass, skips its deploy or leaves merged issues open.
+
+Refs pitwall-ud80.
+
 ## 0.1.64
 
 `land-one.sh` and `lane-handoff.sh` now read a commit status (`StatusContext`: `context` + `state`) as well as a check run (`CheckRun`: `name` + `conclusion`) in a pull request's status rollup. A repository whose pull requests carry a Codecov, Vercel, Netlify or any other commit status no longer defers every round as "unreadable": all-success merges, a failed or errored status is red and names its context, and a pending or expected one is not ready.
