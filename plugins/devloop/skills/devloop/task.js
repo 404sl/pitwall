@@ -144,14 +144,20 @@ const TRIAGE = {
         required: ['title', 'repo', 'scope', 'autonomous'],
         properties: {
           title: { type: 'string' },
-          repo: { enum: ['site', 'extension', 'integration', 'docs'] },
+          repo: {
+            enum: ['site', 'extension', 'integration', 'docs'],
+            description: 'routed per child from the paths that child names, and a key this workspace has configured. A child does not inherit the parent routing.'
+          },
           scope: { type: 'string', description: 'what this child covers, traceable to the parent text' },
           autonomous: { type: 'boolean', description: 'false if this child still needs a person' },
           whyNotAutonomous: { type: 'string' }
         }
       }
     },
-    repo: { enum: ['site', 'extension', 'integration', 'docs', 'unknown'] },
+    repo: {
+      enum: ['site', 'extension', 'integration', 'docs', 'unknown'],
+      description: 'must be a key this workspace has configured - the brief lists them with their checkouts. The list above is a wire format shared with other projects and holds keys this workspace does not have.'
+    },
     title: { type: 'string' },
     priority: { type: 'integer' },
     ui: { type: 'boolean' },
@@ -380,6 +386,22 @@ ${SHELL_FIRST}
 // The config may place a repo anywhere under the workspace; falling back to the repo's own name
 // keeps a bare dispatch working for the common case where they match.
 function repoPath(repo) { return `${ROOT}/${(REPOS[repo] || {}).path || repo}` }
+
+const REPO_KEYS = Object.keys(REPOS)
+function reposTable() {
+  if (!REPO_KEYS.length) {
+    return `This workspace's configuration lists no repositories at all, so nothing can be routed.
+Return eligible:false saying so.`
+  }
+  const rows = REPO_KEYS.map((k) => {
+    const slug = (REPOS[k] || {}).slug
+    return `  ${k}  ->  ${repoPath(k)}${slug ? `  (${slug})` : ''}`
+  })
+  return rows.join('\n')
+}
+
+function unconfigured(repo) { return !Object.prototype.hasOwnProperty.call(REPOS, String(repo)) }
+function configuredList() { return REPO_KEYS.length ? REPO_KEYS.join(', ') : '(none)' }
 
 // HOW A LANE CHECKS ITS OWN WORK.
 //
@@ -1683,8 +1705,40 @@ Rules for a split, because a bad one is worse than asking:
 - If splitting would leave a child that is still ambiguous, do not split. Ask instead.
 - Do NOT split merely because an issue is large. Size is not a reason; independence is.
 
-Otherwise eligible:true. Set 'repo' from the paths and subject matter: site (Rails app),
-extension (Chrome extension), integration (npm library).
+Otherwise eligible:true.
+
+ROUTE IT FROM THE PATHS THE TICKET NAMES, AND CHECK THE ANSWER. These are the repositories this
+workspace has, with the checkout each key resolves to:
+
+${reposTable()}
+
+1. ONLY A KEY FROM THAT TABLE MAY BE RETURNED. The schema's list of words is a wire format shared
+   with other projects and contains keys this workspace does not have. A key that is in the list
+   and absent from the table is not a choice - it is a dispatch whose worktree is cut from a path
+   that does not exist. If the work belongs somewhere with no key here, return eligible:false and
+   say which repository it needs.
+2. DERIVE THE KEY FROM THE SOURCE PATHS THE TICKET NAMES. For each path it names, find which
+   checkout actually contains it:
+     ls <checkout>/<the path it names> 2>/dev/null
+     git -C <checkout> ls-files 'the path it names' 2>/dev/null
+   The assigned repo must be one where those paths exist. A ticket whose subject is a spec under
+   spec/ does not belong in a TypeScript package that has no spec/ directory, whatever its
+   wording suggests.
+3. A 'Repo:' LINE IN THE TICKET IS CONFIRMATION, NOT AUTHORITY. Most tickets here open with one
+   and it is usually right, so use it to confirm what the paths already told you. Do NOT require
+   it: tickets are written by several sessions and by hand, and a rule that only works when the
+   author remembered it fails the same way one level up. A child split off a parent does not
+   inherit the line at all, which is how the routing gets lost on the ticket that actually ships.
+4. WHEN THE LINE AND THE PATHS DISAGREE, THAT IS A STOP, NOT A TIEBREAK. Return eligible:false and
+   name both - the key the line claims and the checkout the paths are in. Guessing between them is
+   how a lane ends up labelling an unrelated pull request that happens to share a number.
+
+FOUR LIVE MISROUTES IN ONE DAY, every one recovered by the lane rather than by the pipeline, and
+they cost a dispatch each: a ticket naming src/notify.ts routed to the contract repo; a child
+whose parent was routed correctly sent to a package with no spec/ directory; a handoff graded
+against a checkout that had nothing to do with the branch, which reported a green pull request as
+not-green; and a key chosen from the enum for a checkout this workspace does not have. The paths
+were in every one of those tickets.
 
 Set 'ui' true only when somebody has to DECIDE HOW SOMETHING LOOKS OR READS: new or changed
 layout, styling, components, states, or on-screen wording. Those go through a designer.
@@ -1702,6 +1756,23 @@ Report 'title' and 'priority' as the tracker has them. Do not modify anything. N
 
 if (!triage) return { id: ID, outcome: 'agent_error', at: 'triage' }
 
+const wouldSplit = !triage.eligible && triage.splittable && (triage.splitPlan || []).length > 1
+const misrouted = triage.eligible
+  ? (unconfigured(triage.repo) ? [triage.repo] : [])
+  : wouldSplit ? triage.splitPlan.map((c) => c.repo).filter(unconfigured) : []
+if (misrouted.length) {
+  const named = [...new Set(misrouted)].map((r) => `'${r}'`).join(', ')
+  const where = triage.eligible ? 'this issue' : 'a child of this split'
+  triage.eligible = false
+  triage.splittable = false
+  triage.reason = `triage routed ${where} to ${named}, which is not a repository in this ` +
+    `workspace's configuration - it has ${configuredList()}. The key came from the schema's ` +
+    `shared list rather than from the config, so there is no checkout behind it and nothing ` +
+    `downstream would notice: a bare pull request number resolves in whichever repository it is ` +
+    `handed, and the numbers overlap. Say which configured repository the paths in this ticket ` +
+    `are in, or add the missing one to the configuration, and dispatch it again.`
+}
+
 if (!triage.eligible && triage.splittable && (triage.splitPlan || []).length > 1) {
   phase('Split')
   const plan = triage.splitPlan
@@ -1717,6 +1788,7 @@ Create the title as it should read, not as it was pasted.
 
 Children to create, in order:
 ${plan.map((c, i) => `${i + 1}. [${c.repo}] ${c.title}
+   repo: ${c.repo} (${repoPath(c.repo)})
    scope: ${c.scope}
    ${c.autonomous ? 'can be done unattended' : `needs a person: ${c.whyNotAutonomous}`}`).join('\n')}
 
@@ -1726,6 +1798,14 @@ For each, from ${ROOT}:
   what done looks like. Carry across the concrete detail the parent already established -
   file and line references, reproductions, ids - rather than pointing at the parent for it.>"
   --acceptance "<what must be true, for this child only>"
+OPEN EVERY CHILD'S DESCRIPTION WITH ITS ROUTING, on its own first line, before anything else:
+  Repo: <the key listed for that child above> (<that repository's checkout path>)
+ROUTING IS THE SECOND THING A CHILD SILENTLY FAILS TO INHERIT, after metadata. A parent that
+opens with its own Repo line produces children that open straight into the work, so triage has
+nothing to confirm against and guesses - and the child is the thing that actually ships. That
+cost a whole dispatch on 2026-09-10: a correctly routed parent's child was sent to a TypeScript
+package for a ticket whose subject was a Rails spec, and the lane could not begin. Write the
+line per child from the list above; do not copy the parent's, which may name a different repo.
 CHOOSE <type> PER CHILD - bug, feature or task - from what the child actually is, not from the
 parent's type and not from a fixed value. A child that builds something new is a feature even
 when the parent is a bug; a child that is somebody running a command or reading a dashboard is
