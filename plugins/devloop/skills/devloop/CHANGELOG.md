@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.69
+
+`triage-scan.sh` recognises a live run in every workspace, not only the one whose id prefix it used to hardcode: it builds the id pattern for `_live_ids()` from the workspace's `idPrefix`, so a lane that is alive but quiet for thirty minutes, or mid-merge with its worktree already removed, is no longer reported under E or G. It refuses to scan, exit 3, when `idPrefix` cannot be read from the config, because a default here would make every run invisible and every quiet lane read as dead.
+
 ## 0.1.68
 
 After `land-one.sh` rebases and pushes a branch, it waits up to three minutes for a check to register on the pushed head before reading the rollup, so a green branch that was behind master merges in the same round instead of being requeued as not_ready and landing a round later. An empty rollup on a branch the script did not push still exits 7 at once. Two new flags, `--register-wait` and `--register-interval`, set the window and the poll interval in seconds. The land brief now asks for a ten-minute tool timeout on the `land-one.sh` call, since after a rebase push the script blocks for check registration plus the full CI run and the Bash tool's two-minute default would kill it with no exit code to read.
