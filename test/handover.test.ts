@@ -81,6 +81,18 @@ function launcher(
   return { launch, started, running };
 }
 
+async function answering(port: number, version: string, tries = 10): Promise<string | undefined> {
+  let said: string | undefined;
+  for (let i = 0; i < tries; i += 1) {
+    said = await askVersion(port, 400);
+    if (said === version) {
+      return said;
+    }
+    await new Promise((done) => setTimeout(done, WAITS.probeEveryMs));
+  }
+  return said;
+}
+
 async function serving(version: string): Promise<{ server: Server; port: number }> {
   const port = await scratchPort();
   const server = reporting(version);
@@ -294,7 +306,7 @@ test("the port is taken back from a failed version that is still holding it, not
   assert.equal(started.length, 2);
   assert.deepEqual(started[1], { version: NEWER, port });
   assert.equal(server.listening, true);
-  assert.equal(await askVersion(port, 400), RUNNING);
+  assert.equal(await answering(port, RUNNING), RUNNING);
   assert.equal(
     lines.some((line) => line.includes(`Port ${String(port)} is back with ${RUNNING}`)),
     true,
