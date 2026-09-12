@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.47
+
+A rails lane is now given four runnable setup commands before it runs anything else: symlink `config/master.key`, `.env` and `node_modules` from the main checkout, then `bundle exec rails dartsass:build` in the worktree. Each symlink is guarded with `test -L`, because the step is handed out on every attempt and a bare `ln -s` onto an existing symlinked directory silently creates the link inside the main checkout instead of failing. Do not copy the main checkout's compiled CSS - it is usually older than the branch and fails brand-token specs the branch never touched. The rails brief resolves the main checkout from the configured repo path rather than assuming a directory called `site`.
+
+Refs pitwall-r8mt
+
 ## 0.1.46
 
 The version commit written at merge time no longer carries the plugin's own label in its subject - it now reads "Set the plugin version" followed by the number. Nothing a session does changes, but a merge commit on public master is now neutral text, which is what the handoff compliance check assumes and could not previously enforce. `land-one.sh` recognises both the new subject and the one it replaces, so a branch that an earlier round already prepared is still recognised and its stale version commit still dropped rather than replayed into a changelog conflict.
