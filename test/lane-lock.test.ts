@@ -499,3 +499,21 @@ test("a rework given a slot as a string releases the lane its own brief claimed"
       "it actually holds is left standing and reads already_gone",
   );
 });
+
+test("a rework given a slot as a string claims the lane that slot maps to", async () => {
+  const { calls, done } = runScript("rework.js", { ...REWORK_ARGS, slot: "3" }, (call, n) => {
+    if (n === 1) return { status: "blocked", notes: "the push was refused" };
+    return { lane: "released", slot: "released" };
+  });
+
+  await done;
+  assert.match(
+    calls[0]?.prompt ?? "",
+    /mkdir \/tmp\/pw-lane-4\.lock /,
+    "the lane number was built by string concatenation, so slot '3' claimed lane 31 rather than 4 - " +
+      "the brief and the release still agree, so the lock holds, but TEST_ENV_NUMBER then names a " +
+      "database no other lane is excluded from, which is what the lane lock exists to prevent",
+  );
+  assert.match(calls[0]?.prompt ?? "", /TEST_ENV_NUMBER 4"/, "the owner file records a different number from the lock");
+  assert.match(reworkRelease(calls).prompt, /--lane \/tmp\/pw-lane-4\.lock --slot \/tmp\/pw-slots\/3 /);
+});
