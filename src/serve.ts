@@ -18,11 +18,9 @@ import { collectionError } from "./errors.js";
 import {
   collectionFailedNotice,
   collectionRecoveredNotice,
-  lostNotices,
   type CollectionNotice,
   type Delivery,
 } from "./notify.js";
-import { failedClosures } from "./upstream.js";
 import { createUpdateCheck, type UpdateCheck } from "./registry.js";
 import { outboundPath, type OutboundOptions } from "./sender.js";
 import { emitSnapshot, type SnapshotOptions } from "./snapshot.js";
@@ -73,14 +71,12 @@ export function consoleAnnouncer(options: OutboundOptions = {}): Announcer {
 
 export function consoleCollector(options: SnapshotOptions = {}): Collector {
   return async () => {
-    const { snapshot, read, delivered, upstream } = await emitSnapshot(options);
+    const { snapshot, read } = await emitSnapshot(options);
     return {
       read,
       errors: [
         ...snapshot.errors,
         ...snapshot.projects.flatMap((project) => project.errors),
-        ...lostNotices(delivered),
-        ...failedClosures(upstream),
       ],
     };
   };
