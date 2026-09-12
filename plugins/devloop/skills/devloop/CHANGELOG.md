@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.53
+
+A pull request the lander defers now says in the run log what land-one.sh actually printed, instead of reporting every reason as unfinished CI. A plugin version refusal that no later round can clear - a version file changed beyond its version, or a master version that does not read as three numbers - is reported as stopped instead of being retried every round; the label stays on and the branch is untouched, so it is surveyed again next run. An empty or stale rollup is still deferred and still retried. When land-one.sh exits 6 or 7, put the line it printed into 'notes' verbatim: the run reads that line to tell a refusal it can wait out from one it cannot.
+
 ## 0.1.52
 
 **A handoff called a green pull request not-green because the checkout it was pointed at did not
