@@ -403,9 +403,21 @@ export const OWNER_LABELS = ["needs-decision", "needs-access"] as const;
 export interface IssueAction {
   note?: string;
   removeLabels?: readonly string[];
+  metadataFile?: string;
 }
 
 export type IssueActor = (id: string, action: IssueAction) => Promise<void>;
+
+export interface NewIssue {
+  title: string;
+  bodyFile: string;
+  metadataFile: string;
+  assignee: string;
+  labels: readonly string[];
+  issueType: string;
+}
+
+export type IssueCreator = (issue: NewIssue) => Promise<string>;
 
 export class IssueActionFailure extends Error {
   readonly noted: boolean;
@@ -421,30 +433,91 @@ export function removeLabelArgs(id: string, labels: readonly string[]): string[]
   return ["update", id, ...labels.flatMap((label) => ["--remove-label", label])];
 }
 
-export function issueActor(
+export function setMetadataArgs(id: string, file: string): string[] {
+  return ["update", id, "--metadata", `@${file}`];
+}
+
+export function createArgs(issue: NewIssue): string[] {
+  return [
+    "create",
+    issue.title,
+    "--type",
+    issue.issueType,
+    "--assignee",
+    issue.assignee,
+    ...issue.labels.flatMap((label) => ["--labels", label]),
+    "--body-file",
+    issue.bodyFile,
+    "--metadata",
+    `@${issue.metadataFile}`,
+    "--silent",
+  ];
+}
+
+const ANSI = /\u001b\[[0-9;]*m/g;
+const CREATED = /^(?:.*\bCreated issue:\s*)?([A-Za-z0-9][A-Za-z0-9._-]*)$/;
+
+export function createdId(stdout: string): string | undefined {
+  const lines = stdout.replace(ANSI, "").split("\n");
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const line = (lines[i] ?? "").trim();
+    if (line !== "") {
+      return CREATED.exec(line)?.[1];
+    }
+  }
+  return undefined;
+}
+
+function bdCaller(
   root: string,
-  options: Omit<ReadIssuesOptions, "errors"> = {},
-): IssueActor {
+  options: Omit<ReadIssuesOptions, "errors">,
+): (args: readonly string[], described: string) => Promise<string> {
   const beadsDir = join(resolve(root), BEADS_DIR);
   const env = options.env ?? process.env;
   const timeoutMs = options.timeoutMs ?? TIMEOUT_MS;
-  const call = async (args: readonly string[], described: string): Promise<void> => {
+  return async (args, described) => {
     try {
-      await run("bd", args as string[], {
+      const { stdout } = await run("bd", args as string[], {
         encoding: "utf8",
         env: { ...env, [BEADS_DIR_VAR]: beadsDir },
         maxBuffer: MAX_OUTPUT,
         timeout: timeoutMs,
       });
+      return stdout;
     } catch (cause) {
       throw new Error(`${described}: ${failureOf(cause, timeoutMs)}`);
     }
   };
+}
+
+export function issueCreator(
+  root: string,
+  options: Omit<ReadIssuesOptions, "errors"> = {},
+): IssueCreator {
+  const call = bdCaller(root, options);
+  return async (issue) => {
+    const stdout = await call(createArgs(issue), "bd create");
+    const id = createdId(stdout);
+    if (id === undefined) {
+      throw new Error(`bd create: it reported no issue id, only ${JSON.stringify(stdout)}`);
+    }
+    return id;
+  };
+}
+
+export function issueActor(
+  root: string,
+  options: Omit<ReadIssuesOptions, "errors"> = {},
+): IssueActor {
+  const call = bdCaller(root, options);
   return async (id, action) => {
-    const { note } = action;
+    const { note, metadataFile } = action;
     const labels = action.removeLabels ?? [];
     let noted = false;
     try {
+      if (metadataFile !== undefined) {
+        await call(setMetadataArgs(id, metadataFile), `bd update ${id} --metadata`);
+      }
       if (note !== undefined && note !== "") {
         await call(appendNotesArgs(id, note), `bd update ${id} --append-notes`);
         noted = true;

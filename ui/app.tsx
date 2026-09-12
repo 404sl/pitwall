@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import type { Snapshot } from "@404sl/pitwall-schema";
 import type { BuildStamp, BuildVerdict, CheckoutState, UnknownReason } from "../src/build.js";
 import {
@@ -15,6 +15,7 @@ import { BuildBanner } from "./components/Build.js";
 import { Failure } from "./components/Failure.js";
 import { Filters, filterSentence } from "./components/Filters.js";
 import { Header } from "./components/Header.js";
+import { Intake, type Drop } from "./components/Intake.js";
 import { NeedsYou } from "./components/NeedsYou.js";
 import { Parked } from "./components/Parked.js";
 import { Problems } from "./components/Problems.js";
@@ -173,7 +174,10 @@ export function App() {
   const [version, setVersion] = useState("");
   const [update, setUpdate] = useState<string | undefined>(undefined);
   const [build, setBuild] = useState<BuildState>(() => buildState({ kind: "waiting" }));
+  const [dropping, setDropping] = useState(false);
+  const [drop, setDrop] = useState<Drop | undefined>(undefined);
   const held = useRef<Snapshot | undefined>(undefined);
+  const dragging = useRef(0);
 
   const load = useCallback(async (signal: AbortSignal) => {
     const [snapshot, running] = await Promise.allSettled([readSnapshot(signal), readVersion(signal)]);
@@ -225,6 +229,26 @@ export function App() {
 
   const board = useMemo(() => (taken === undefined ? undefined : buildBoard(taken, filter)), [taken, filter]);
 
+  const onDragEnter = useCallback((event: DragEvent<HTMLElement>) => {
+    event.preventDefault();
+    dragging.current += 1;
+    setDropping(true);
+  }, []);
+
+  const onDragLeave = useCallback(() => {
+    dragging.current = Math.max(0, dragging.current - 1);
+    if (dragging.current === 0) {
+      setDropping(false);
+    }
+  }, []);
+
+  const onDrop = useCallback((event: DragEvent<HTMLElement>) => {
+    event.preventDefault();
+    dragging.current = 0;
+    setDropping(false);
+    setDrop({ files: Array.from(event.dataTransfer.files) });
+  }, []);
+
   if (route !== undefined) {
     return (
       <>
@@ -273,9 +297,21 @@ export function App() {
         build={build}
         refreshFailure={board.refreshFailure}
       />
-      <main className="pw-console">
+      <main
+        className={dropping ? "pw-console pw-console--dropping" : "pw-console"}
+        onDragEnter={onDragEnter}
+        onDragOver={(event) => event.preventDefault()}
+        onDragLeave={onDragLeave}
+        onDrop={onDrop}
+      >
         <BuildBanner build={build} />
         <Filters filter={filter} options={board.options} shown={board.issueCount} total={board.totals.issues} />
+        <Intake
+          projects={board.options.project}
+          selected={filter.project}
+          drop={drop}
+          dropping={dropping}
+        />
         <Band
           id="needs"
           label={strings.band.needsYou}
