@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { createServer as createSocket } from "node:net";
 import type { Server } from "node:http";
 import { SCHEMA_VERSION } from "@404sl/pitwall-schema";
+import { isCheckout } from "./build.js";
 import { newerThan, readPublished } from "./registry.js";
 import { HOST, VERSION_ROUTE, listen } from "./serve.js";
 import { VERSION } from "./version.js";
@@ -28,6 +29,7 @@ export type Ask = (port: number, timeoutMs: number) => Promise<string | undefine
 export type Handover =
   | { kind: "handed-over"; version: string; serving: Launch }
   | { kind: "nothing-newer" }
+  | { kind: "from-checkout" }
   | { kind: "already-tried"; version: string }
   | { kind: "in-flight" }
   | { kind: "unproven"; version: string; why: string }
@@ -41,6 +43,7 @@ export interface RestartOptions {
   ask?: Ask;
   published?: () => Promise<string | undefined>;
   scratchPort?: () => Promise<number>;
+  checkout?: () => boolean;
   proveWaitMs?: number;
   takeWaitMs?: number;
   probeEveryMs?: number;
@@ -54,6 +57,7 @@ export interface RestartOptions {
 
 export interface Restarter {
   consider: () => Promise<Handover>;
+  current: () => Launch | undefined;
 }
 
 export function scratchPort(): Promise<number> {
@@ -206,6 +210,7 @@ export function createRestarter(options: RestartOptions): Restarter {
   const launch = options.launch ?? npxLaunch;
   const published = options.published ?? (() => readPublished());
   const scratch = options.scratchPort ?? scratchPort;
+  const checkout = (options.checkout ?? isCheckout)();
   const proveWaitMs = options.proveWaitMs ?? PROVE_WAIT_MS;
   const takeWaitMs = options.takeWaitMs ?? TAKE_WAIT_MS;
   const closeGraceMs = options.closeGraceMs ?? CLOSE_GRACE_MS;
@@ -221,6 +226,26 @@ export function createRestarter(options: RestartOptions): Restarter {
   const refused = new Set<string>();
   let busy = false;
   let handed = false;
+  let told = false;
+  let held: Launch | undefined;
+
+  const start = (version: string, at: number): Launch => {
+    const made = launch(version, at);
+    held = made;
+    void made.ended.then(() => {
+      if (held === made) {
+        held = undefined;
+      }
+    });
+    return made;
+  };
+
+  const release = (made: Launch): void => {
+    made.stop();
+    if (held === made) {
+      held = undefined;
+    }
+  };
 
   const attempt = async (version: string): Promise<Handover> => {
     let scratched: number;
@@ -231,10 +256,10 @@ export function createRestarter(options: RestartOptions): Restarter {
       log(`${version} was not started - ${why}. ${running} keeps port ${String(port)}.`);
       return { kind: "unproven", version, why };
     }
-    const proving = launch(version, scratched);
+    const proving = start(version, scratched);
     const unproven = await answers(proving, scratched, version, proveWaitMs, waiting);
     if (unproven !== undefined) {
-      proving.stop();
+      release(proving);
       refused.add(version);
       log(
         `Port ${String(port)} stays with ${running}: ${version} was not handed it because ${unproven}. The console keeps serving and keeps showing ${version} as available.`,
@@ -244,30 +269,48 @@ export function createRestarter(options: RestartOptions): Restarter {
     log(
       `Port ${String(port)} goes to ${version}, which answered on port ${String(scratched)}. ${running} stops serving. A page loaded against snapshot contract ${SCHEMA_VERSION} is served by ${version} from here - across a major contract change that page can be sent a document shape its loaded script does not expect.`,
     );
-    proving.stop();
+    release(proving);
     await stopListening(server, closeGraceMs);
-    const serving = launch(version, port);
-    const notTaken = await answers(serving, port, version, takeWaitMs, waiting);
-    if (notTaken === undefined) {
+    let serving: Launch | undefined;
+    let notTaken: string | undefined;
+    try {
+      serving = start(version, port);
+      notTaken = await answers(serving, port, version, takeWaitMs, waiting);
+    } catch (cause) {
+      notTaken = `it could not be handed port ${String(port)}: ${causeText(cause)}`;
+    }
+    if (serving !== undefined && notTaken === undefined) {
       handed = true;
       return { kind: "handed-over", version, serving };
     }
-    serving.stop();
+    const why = notTaken ?? "it was not started";
     refused.add(version);
-    await Promise.race([serving.ended, waiting.sleep(closeGraceMs)]);
+    if (serving !== undefined) {
+      release(serving);
+      await Promise.race([serving.ended, waiting.sleep(closeGraceMs)]);
+    }
     const stuck = await giveBack(server, port, giveBackTries, waiting);
     log(
       stuck === undefined
-        ? `Port ${String(port)} is back with ${running}: ${version} did not take it because ${notTaken}. The console keeps showing ${version} as available.`
-        : `Port ${String(port)} could not be taken back by ${running}: ${stuck}. ${version} did not take it either, because ${notTaken}. The console is serving nothing - start it again.`,
+        ? `Port ${String(port)} is back with ${running}: ${version} did not take it because ${why}. The console keeps showing ${version} as available.`
+        : `Port ${String(port)} could not be taken back by ${running}: ${stuck}. ${version} did not take it either, because ${why}. The console is serving nothing - start it again.`,
     );
-    return { kind: "not-taken", version, why: notTaken };
+    return { kind: "not-taken", version, why };
   };
 
   return {
     consider: async (): Promise<Handover> => {
       if (busy || handed) {
         return { kind: "in-flight" };
+      }
+      if (checkout) {
+        if (!told) {
+          told = true;
+          log(
+            `Port ${String(port)} stays with ${running}: this copy is a git checkout, so it is never restarted onto a published release.`,
+          );
+        }
+        return { kind: "from-checkout" };
       }
       busy = true;
       try {
@@ -283,5 +326,6 @@ export function createRestarter(options: RestartOptions): Restarter {
         busy = false;
       }
     },
+    current: () => held,
   };
 }

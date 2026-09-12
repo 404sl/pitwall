@@ -101,6 +101,7 @@ function restarterOver(
     running: RUNNING,
     launch,
     published: () => Promise.resolve(published),
+    checkout: () => false,
     log: (line) => lines.push(line),
     ...WAITS,
   });
@@ -283,6 +284,7 @@ test("the port is taken back from a failed version that is still holding it, not
     running: RUNNING,
     launch,
     published: () => Promise.resolve(NEWER),
+    checkout: () => false,
     log: (line) => lines.push(line),
     ...WAITS,
     giveBackTries: 20,
@@ -301,4 +303,90 @@ test("the port is taken back from a failed version that is still holding it, not
     lines.some((line) => line.includes("serving nothing")),
     false,
   );
+});
+
+test("a console running from a git checkout is left alone, and says so once", async (t) => {
+  const { server, port } = await serving(RUNNING);
+  const lines: string[] = [];
+  const { launch, started } = launcher((version) => version);
+  t.after(() => server.close());
+  const restarter = createRestarter({
+    server,
+    port,
+    running: RUNNING,
+    launch,
+    published: () => Promise.resolve(NEWER),
+    checkout: () => true,
+    log: (line) => lines.push(line),
+    ...WAITS,
+  });
+
+  assert.equal((await restarter.consider()).kind, "from-checkout");
+  assert.equal((await restarter.consider()).kind, "from-checkout");
+
+  assert.deepEqual(started, []);
+  assert.equal(server.listening, true);
+  assert.equal(await askVersion(port, 400), RUNNING);
+  assert.equal(lines.length, 1);
+  assert.equal(lines[0]?.includes("git checkout"), true);
+  assert.equal(restarter.current(), undefined);
+});
+
+test("the child being proved is held, so a stop can reach it, and is let go when it fails", async (t) => {
+  const { server, port } = await serving(RUNNING);
+  const lines: string[] = [];
+  const { launch, started, running } = launcher(() => "0.0.1");
+  t.after(() => {
+    for (const made of running) {
+      made.stop();
+    }
+    server.close();
+  });
+  const restarter = createRestarter({
+    server,
+    port,
+    running: RUNNING,
+    launch,
+    published: () => Promise.resolve(NEWER),
+    checkout: () => false,
+    log: (line) => lines.push(line),
+    ...WAITS,
+    proveWaitMs: 60_000,
+  });
+
+  const considering = restarter.consider();
+  while (started.length === 0 || restarter.current() === undefined) {
+    await new Promise((done) => setTimeout(done, 10));
+  }
+  const proving = restarter.current();
+  assert.equal(proving, running[0]);
+  assert.notEqual(started[0]?.port, port);
+
+  proving?.stop();
+  const handover = await considering;
+
+  assert.equal(handover.kind, "unproven");
+  assert.equal(restarter.current(), undefined);
+  assert.equal(started.length, 1);
+  assert.equal(server.listening, true);
+  assert.equal(await askVersion(port, 400), RUNNING);
+});
+
+test("the version that took the real port is the child held after a handover", async (t) => {
+  const { server, port } = await serving(RUNNING);
+  const lines: string[] = [];
+  const { launch, running } = launcher((version) => version);
+  t.after(() => {
+    for (const made of running) {
+      made.stop();
+    }
+    server.close();
+  });
+  const restarter = restarterOver(server, port, launch, NEWER, lines);
+
+  const handover = await restarter.consider();
+
+  assert.equal(handover.kind, "handed-over");
+  assert.equal(restarter.current(), running[1]);
+  assert.equal(handover.kind === "handed-over" ? handover.serving : undefined, running[1]);
 });
