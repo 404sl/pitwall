@@ -377,6 +377,12 @@ reported out of one cached answer, so a replayed acquisition agrees with itself 
 disk belongs to somebody else, and no comparison inside the script can see it. A token minted per
 launch cannot be replayed - it is stable if the same run resumes and different on the next.
 
+**A resume passes `resumeFromRunId` together with the same args object the run was launched with,
+never a fresh `config.sh --train` output.** The token sits in the lock step's prompt, and a resume
+replays that step only when the prompt matches: a new token misses the cache, takes the lock a
+second time and cuts a second release branch for the same pull requests - the outcome the resume
+after `merge_refused` exists to avoid. Keep the object the launch used and hand it back unchanged.
+
 The train's token is prefixed `land-train-`, which is what tells a holder file apart from
 `land.js`'s `lander-` and from a person merging by hand. The repository is named on the command
 because the train refuses to guess one; run it again per repository, and its result names the

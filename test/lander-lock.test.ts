@@ -630,6 +630,25 @@ test("every instruction to launch a train goes through config.sh --train", async
     "the documented launch no longer passes the object config.sh printed, so a supervisor " +
       "following it assembles args by hand and leaves out the token",
   );
+  const section = skill.indexOf("## Launching a train");
+  const next = skill.indexOf("\n## ", section + 1);
+  assert.match(
+    skill.slice(section, next > 0 ? next : undefined),
+    /resumeFromRunId[^.]*same args/,
+    "the Launching a train section no longer says a resume passes resumeFromRunId with the same " +
+      "args object the run was launched with. land-train.js mandates a resume after " +
+      "merge_refused and caches each step by its prompt text; the token now sits in the lock " +
+      "prompt, so a supervisor who rebuilds args with config.sh --train on resume mints a new " +
+      "token, misses the cache from the first step, takes the lock again and cuts a second " +
+      "release branch for the same pull requests - the outcome the resume exists to prevent.",
+  );
+  const whenToUse = readFileSync(join(SKILL, "land-train.js"), "utf8").match(/^\s*whenToUse: '(.*)',$/m);
+  assert.match(
+    (whenToUse && whenToUse[1]) || "",
+    /resumeFromRunId[^.]*same args/i,
+    "land-train.js mandates the resume in whenToUse without saying it carries the same args " +
+      "object the launch used, which is where a supervisor reads the resume instruction",
+  );
 
   const { done } = runScript(
     "land-train.js",
