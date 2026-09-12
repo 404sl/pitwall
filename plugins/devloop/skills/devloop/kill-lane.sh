@@ -184,8 +184,8 @@ for raw in "/tmp/${PFX}-worktrees/${ID}" "/private/tmp/${PFX}-worktrees/${ID}" \
       # Emitting each against /dev/null keeps the whole file applicable as one patch.
       { echo "# rescued from $wt on $stamp"
         echo "# issue $ID, branch $(git -C "$wt" rev-parse --abbrev-ref HEAD 2>/dev/null)"
-        echo "# STAGED:"; git -C "$wt" diff --cached
-        echo "# UNSTAGED:"; git -C "$wt" diff
+        echo "# STAGED:"; git -C "$wt" diff --cached --binary
+        echo "# UNSTAGED:"; git -C "$wt" diff --binary
         echo "# UNTRACKED (new files the lane created):"
         git -C "$wt" ls-files --others --exclude-standard -z |
           while IFS= read -r -d '' f; do

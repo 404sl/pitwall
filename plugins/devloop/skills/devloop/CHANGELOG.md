@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.62
+
+A dead lane's changes to a tracked binary file are now rescued as a GIT binary patch, so the rescue diff `git apply`s as one patch. Previously such a file was saved as the one-line `Binary files a/x and b/x differ`, which counts as rescued but cannot be replayed.
+
 ## 0.1.61
 
 Dispatch a rework with `config.sh --rework <id> <pr> <repo>` and pass the object it prints straight to `Workflow`, with the `scriptPath` it carries. That one command validates, stages `rework.js`, reserves the lane and emits it; when no lane can be reserved it prints nothing and exits non-zero, and the dispatch stops. `rework.js` now refuses an args object with no slot instead of running on slot 1, so the old two-command recipe - `--args` spread by hand with `pr` and `repo` added - no longer starts a run.
