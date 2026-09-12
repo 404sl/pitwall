@@ -115,3 +115,157 @@ test("a repository that records no read-back is told to work out what is live, n
     `a repository with no verify command was given no instruction to confirm the deploy:\n${prompt}`,
   );
 });
+
+type Result = {
+  landed?: number[];
+  deployed?: string;
+  closed?: string;
+  unclosed?: number[];
+  heldBack?: number[];
+};
+
+function trainWith(steps: Record<string, unknown>, site: Record<string, unknown> = CONFIGURED) {
+  return runScript("land-train.js", argsFor(site), (call, n) => {
+    if (n === 1) return { status: "taken", token: TOKEN, holder: TOKEN };
+    if (call.label in steps) return steps[call.label];
+    return landed(call, n);
+  });
+}
+
+async function ran(steps: Record<string, unknown>, site: Record<string, unknown> = CONFIGURED) {
+  const { calls, logs, done } = trainWith(steps, site);
+  const out = (await done) as Result;
+  return { out, calls, logs };
+}
+
+test("the deploy step is given a schema, so its answer is something the train can read", async () => {
+  const { calls } = await ran({});
+  const deploy = calls.find((c) => c.label === "deploy");
+
+  assert.ok(deploy, "no deploy step ran");
+  assert.ok(
+    deploy.schema && deploy.schema.properties && deploy.schema.properties.status,
+    "the deploy step carries no schema, so whatever it reports is discarded and the close step " +
+      "runs regardless - a deploy that failed, reported partial, or was killed is then " +
+      "indistinguishable from one that worked.",
+  );
+  assert.deepEqual(
+    deploy.schema.properties.status.enum,
+    ["deployed", "partial", "failed", "not_needed"],
+    "the deploy status is not a closed set of answers, so nothing can be gated on it",
+  );
+});
+
+test("a deploy that failed closes nothing, and the run says which pull requests it left open", async () => {
+  const { out, calls, logs } = await ran({
+    deploy: { status: "failed", notes: "staging is still serving the previous release" },
+  });
+
+  assert.equal(out.deployed, "failed");
+  assert.ok(
+    !calls.some((c) => c.label === "close"),
+    "the close step ran after a failed deploy, so the train closed issues as landed-and-deployed " +
+      "when nothing deployed",
+  );
+  assert.deepEqual(out.heldBack, [1287], "the run does not name what it left open");
+  assert.equal(out.closed, "not_attempted");
+  assert.ok(
+    logs.some((l) => l.includes("404sl/pitwall#1287") && /stay open|left open/.test(l)),
+    `nothing in the run says which pull requests are open and what to check:\n${logs.join("\n")}`,
+  );
+});
+
+test("a deploy that reports nothing is settled by reading the hosts back, not guessed at", async () => {
+  const { out, calls } = await ran({
+    deploy: undefined,
+    "deploy-check": {
+      status: "read",
+      hosts: [
+        { environment: "staging", revision: SHA },
+        { environment: "production", revision: SHA },
+      ],
+      notes: "",
+    },
+  });
+
+  assert.ok(
+    calls.some((c) => c.label === "deploy-check"),
+    "a silent deploy step was not followed by a read of the hosts, so the answer was guessed",
+  );
+  assert.equal(out.deployed, "deployed");
+  assert.ok(calls.some((c) => c.label === "close"), "the hosts confirmed the merge sha and nothing closed");
+});
+
+test("a deploy that reports nothing is not rendered as a failure when the hosts cannot settle it", async () => {
+  const { out, calls, logs } = await ran({ deploy: undefined, "deploy-check": undefined });
+
+  assert.equal(
+    out.deployed,
+    "unknown",
+    "a deploy step that reported nothing was rendered as something it did not say. Silence is " +
+      "ignorance, not failure, and reporting it as failure sends somebody to fix a deploy that " +
+      "may well have worked.",
+  );
+  assert.notEqual(out.deployed, "failed");
+  assert.ok(!calls.some((c) => c.label === "close"), "an unknown deploy still closed issues");
+  assert.ok(
+    logs.some((l) => l.includes("THIS IS NOT A FAILURE")),
+    `the run does not distinguish an unknown deploy from a failed one:\n${logs.join("\n")}`,
+  );
+});
+
+test("a deploy step claiming not_needed for a repository that deploys is not taken at its word", async () => {
+  const { out, calls } = await ran({ deploy: { status: "not_needed", notes: "" }, "deploy-check": undefined });
+
+  assert.equal(
+    out.deployed,
+    "unknown",
+    "the deploy step was allowed to declare there was nothing to deploy for a repository whose " +
+      "config records deploy commands. That is the config's answer to give, and trusting the " +
+      "step's opens the close gate on the one report that means nobody looked.",
+  );
+  assert.ok(!calls.some((c) => c.label === "close"));
+});
+
+test("a repository with no deploy closes on the merge alone", async () => {
+  const { out, calls } = await ran({}, { deploy: [] });
+
+  assert.equal(out.deployed, "not_needed");
+  const close = calls.find((c) => c.label === "close");
+  assert.ok(close, "a repository with nothing to deploy to never closed its issues, so they sit in_progress");
+  assert.ok(
+    /no deploy to be live in/.test(close.prompt),
+    `the close brief still claims a deploy that never happened:\n${close.prompt}`,
+  );
+});
+
+test("a close step that reports nothing leaves the pull requests named, not counted as closed", async () => {
+  const { out, logs } = await ran({
+    deploy: { status: "deployed", notes: "", environments: [{ environment: "staging", revision: SHA }] },
+    close: undefined,
+  });
+
+  assert.equal(out.deployed, "deployed");
+  assert.equal(out.closed, "unknown");
+  assert.deepEqual(
+    out.unclosed,
+    [1287],
+    "a killed close step is indistinguishable from one that closed everything, so the issue sits " +
+      "in_progress with nothing reporting it",
+  );
+  assert.ok(
+    logs.some((l) => l.includes("404sl/pitwall#1287")),
+    `the run does not name what went unconfirmed:\n${logs.join("\n")}`,
+  );
+});
+
+test("a close step confirming only some of what landed reports the rest", async () => {
+  const { out } = await ran({
+    deploy: { status: "deployed", notes: "", environments: [] },
+    "build:full": { status: "built", trainPr: 120, trainBranch: "release/train-1", included: [1287, 1290], skipped: [] },
+    close: { status: "partial", closed: [{ pr: 1287, issue: "pitwall-80o" }], notes: "1290 named no issue" },
+  });
+
+  assert.equal(out.closed, "partial");
+  assert.deepEqual(out.unclosed, [1290]);
+});
