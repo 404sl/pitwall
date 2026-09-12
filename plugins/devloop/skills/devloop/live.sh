@@ -34,6 +34,16 @@ ROOT="${DEVLOOP_ROOT:-$(bash "$CFG" root 2>/dev/null)}"
 SLUG="$(printf '%s' "$ROOT" | sed 's|/|-|g')"
 WF="${DEVLOOP_WORKFLOW_DIR:-${DEVLOOP_WF:-$HOME/.claude/projects/$SLUG}}"
 TASKS="${DEVLOOP_TASKS:-$(ls -dt /private/tmp/claude-*/"$SLUG"/*/tasks 2>/dev/null | head -1)}"
+ID_PFX="$(bash "$CFG" idPrefix 2>/dev/null)"
+case "$ID_PFX" in
+  ''|*[!a-zA-Z0-9_-]*)
+    echo "$(basename "${BASH_SOURCE[0]}"): could not resolve idPrefix from the workspace config - refusing to run." >&2
+    echo "         Guessing it would scrape transcripts for another project's ids, so every run here" >&2
+    echo "         would read UNKNOWN. Run from the workspace root, and check the config is readable:" >&2
+    echo "           bash $CFG --check" >&2
+    exit 3 ;;
+esac
+ID_RE="${ID_PFX}-[a-z0-9][a-z0-9]*\(\.[0-9][0-9]*\)*"
 
 now=$(date +%s)
 
@@ -57,7 +67,7 @@ for d in $(ls -t "$WF" 2>/dev/null | head -14); do
   # Take the issue id from any agent transcript, not a guessed filename, and strip the
   # trailing punctuation that a sentence leaves on it. An unidentified run is reported as
   # unknown rather than skipped.
-  iid=$(cat "$WF/$d"/agent-*.jsonl 2>/dev/null | grep -oham1 'sr-[a-z0-9][a-z0-9]*\(\.[0-9][0-9]*\)*' | head -1)
+  iid=$(cat "$WF/$d"/agent-*.jsonl 2>/dev/null | grep -oham1 "$ID_RE" | head -1)
   [ -z "$iid" ] && iid="UNKNOWN - could not identify"
   state="idle"
   [ "$age" -lt 10 ] && state="working"

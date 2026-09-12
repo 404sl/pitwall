@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.70
+
+`live.sh` identifies runs in every workspace, not only the one whose id prefix it used to hardcode - it builds its id pattern from the workspace's `idPrefix`. It refuses to run, exit 3, when that prefix cannot be read from the config, because a listing defaulting to another project's prefix reports every run as unidentified and names no issue at all.
+
 ## 0.1.69
 
 `triage-scan.sh` recognises a live run in every workspace, not only the one whose id prefix it used to hardcode: it builds the id pattern for `_live_ids()` from the workspace's `idPrefix`, so a lane that is alive but quiet for thirty minutes, or mid-merge with its worktree already removed, is no longer reported under E or G. It refuses to scan, exit 3, when `idPrefix` cannot be read from the config, because a default here would make every run invisible and every quiet lane read as dead.
