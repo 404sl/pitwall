@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.47
+
+The handoff gate's survey of sibling pull requests no longer uses GraphQL, so a
+handoff is no longer blocked by the shared per-account secondary rate limiter
+when the branch has no sibling. A session that previously saw the gate exit 7
+with "could not list the open pull requests of <repo>" during a limiter outage
+should re-run it rather than labelling anything by hand. Note that compliance,
+status-rollup and label calls still use GraphQL, so a total outage can still stop
+a handoff — later in the run, and with a different message.
+
 ## 0.1.46
 
 The version commit written at merge time no longer carries the plugin's own label in its subject - it now reads "Set the plugin version" followed by the number. Nothing a session does changes, but a merge commit on public master is now neutral text, which is what the handoff compliance check assumes and could not previously enforce. `land-one.sh` recognises both the new subject and the one it replaces, so a branch that an earlier round already prepared is still recognised and its stale version commit still dropped rather than replayed into a changelog conflict.
