@@ -31,6 +31,8 @@
 
 set -u
 
+SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+GUARD="$SKILL_DIR/git-guard.sh"
 PREFIX=devloop
 LABEL=lane-verified
 MAX=8
@@ -62,6 +64,21 @@ cd "$REPO_PATH" || exit 6
 git fetch origin --quiet 2>/dev/null
 
 say() { printf '%s\n' "$*"; }
+
+guard_verdict() {
+  local rc=$1 errf=$2 what=$3 ref=$4 reason=""
+  reason=$(grep -m1 '^git-guard\.sh: ' "$errf" 2>/dev/null)
+  [ -n "$reason" ] || reason=$(grep -v '^[[:space:]]*$' "$errf" 2>/dev/null | tail -1)
+  cat "$errf" >&2
+  case "$rc" in
+    2)       printf 'usage: the guard refused %s for %s - %s\n' \
+               "$what" "$ref" "${reason:-it gave no reason}" ;;
+    126|127) printf 'usage: the guard %s could not be run, exit %s - %s. %s was never attempted for %s\n' \
+               "$GUARD" "$rc" "${reason:-it printed nothing}" "$what" "$ref" ;;
+    *)       printf 'usage: %s failed for %s, exit %s - %s\n' \
+               "$what" "$ref" "$rc" "${reason:-nothing was printed}" ;;
+  esac
+}
 
 ident_name=$(git log -1 --format=%an origin/master 2>/dev/null)
 ident_email=$(git log -1 --format=%ae origin/master 2>/dev/null)
@@ -183,10 +200,16 @@ fi
 
 # 4. Push and open the pull request. Guard the push: this is not a default branch and the guard
 #    proves it rather than trusting that the cd above went where it was meant to.
-if ! git-guard --dir="$WT" --branch="$TRAIN" -- git push -u origin "$TRAIN" >/dev/null 2>/dev/null; then
+guard_err=$(mktemp "${TMPDIR:-/tmp}/guard-err.XXXXXX")
+bash "$GUARD" --dir="$WT" --branch="$TRAIN" -- git push -u origin "$TRAIN" >/dev/null 2>"$guard_err"
+guard_rc=$?
+if [ "$guard_rc" != 0 ]; then
+  verdict=$(guard_verdict "$guard_rc" "$guard_err" "push -u origin ${TRAIN}" "$TRAIN")
+  rm -f "$guard_err"
   cd "$REPO_PATH" || true; cleanup
-  say "usage: push was refused for ${TRAIN}"; exit 6
+  say "$verdict"; exit 6
 fi
+rm -f "$guard_err"
 
 bodyfile=$(mktemp "${TMPDIR:-/tmp}/train-body.XXXXXX")
 {

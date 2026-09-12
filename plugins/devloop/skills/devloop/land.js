@@ -793,7 +793,7 @@ a report to the supervisor, not a problem for you to solve.
    is green on both sides breaks the product.
 
    Then push the rebased branch. Never force-push a default branch; this is not one:
-     cd <worktree> && git-guard --dir=<worktree> --branch=${pr.branch} -- git push --force-with-lease
+     bash ${SKILL_DIR}/git-guard.sh --dir=<worktree> --branch=${pr.branch} -- git push --force-with-lease
 
 5. WAIT FOR CI ON THE HEAD THAT IS ACTUALLY THERE NOW. Poll; do not assume:
      cd ${path} && gh pr view ${pr.number} --json headRefOid,statusCheckRollup

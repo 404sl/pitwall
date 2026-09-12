@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -40,19 +40,7 @@ case "$1 $2" in
 esac
 `,
   );
-  write(
-    bin,
-    "git-guard",
-    `#!/bin/bash
-while [ $# -gt 0 ]; do
-  [ "$1" = "--" ] && { shift; break; }
-  shift
-done
-exec "$@"
-`,
-  );
   chmodSync(join(bin, "gh"), 0o755);
-  chmodSync(join(bin, "git-guard"), 0o755);
   write(root, "queue.json", queue);
   return bin;
 }
@@ -85,8 +73,27 @@ function workspace() {
   return { root, bare, repo, branchHead };
 }
 
-function run(script: string, argv: string[], root: string, bin: string) {
-  const ran = spawnSync("bash", [join(SKILL, script), ...argv], {
+function skillWith(root: string, tag: string, guard: string | null): string {
+  const skill = join(root, `skill-${tag}`);
+  mkdirSync(skill);
+  for (const entry of readdirSync(SKILL)) symlinkSync(join(SKILL, entry), join(skill, entry));
+  unlinkSync(join(skill, "git-guard.sh"));
+  if (guard !== null) {
+    writeFileSync(join(skill, "git-guard.sh"), guard);
+    chmodSync(join(skill, "git-guard.sh"), 0o755);
+  }
+  return skill;
+}
+
+const REFUSING_GUARD = `#!/bin/bash
+echo "REFUSED" >&2
+echo "git-guard.sh: /nowhere is on release/other and the caller believes it is on what it named." >&2
+echo "              Nothing was run." >&2
+exit 2
+`;
+
+function run(script: string, argv: string[], root: string, bin: string, skill: string = SKILL) {
+  const ran = spawnSync("bash", [join(skill, script), ...argv], {
     cwd: root,
     encoding: "utf8",
     env: {
@@ -178,5 +185,134 @@ test("a rebase with no identity to borrow is not reported as a conflict with mas
     git(box.bare, "log", "-1", "--format=%cn <%ce>", "devloop/zz-aaa1"),
     `${AUTHOR.name} <${AUTHOR.email}>`,
     "the rebase rewrote the committer as whatever git could invent from the machine account",
+  );
+});
+
+test("a guard that cannot be executed is not reported as a push the guard refused", () => {
+  const box = workspace();
+  const bin = stubs(
+    box.root,
+    box.bare,
+    JSON.stringify([
+      {
+        number: 101,
+        title: "the change a lane made",
+        headRefName: "devloop/zz-aaa1",
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+    ]),
+  );
+  const skill = skillWith(box.root, "absent", null);
+
+  const ran = run(
+    "land-train.sh",
+    ["--repo-path", box.repo, "--slug", "acme/site", "--prefix", `guardless-${process.pid}`],
+    box.root,
+    bin,
+    skill,
+  );
+
+  assert.equal(ran.code, 6, `${ran.out}\n${ran.err}`);
+  assert.doesNotMatch(
+    ran.out,
+    /refused/,
+    "a guard that was never executed is reported as a guard that refused the push. That is the " +
+      "misdiagnosis loop this guard was written to end: the lander says the invariant stopped " +
+      `the push, and a person re-reads the branch looking for a reason that is not there:\n${ran.out}`,
+  );
+  assert.match(
+    ran.out,
+    /could not be run/,
+    `the summary does not say the guard itself is the problem:\n${ran.out}`,
+  );
+});
+
+test("a guard that refuses says on the summary line why it refused", () => {
+  const box = workspace();
+  const bin = stubs(
+    box.root,
+    box.bare,
+    JSON.stringify([
+      {
+        number: 101,
+        title: "the change a lane made",
+        headRefName: "devloop/zz-aaa1",
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+    ]),
+  );
+  const skill = skillWith(box.root, "refusing", REFUSING_GUARD);
+
+  const ran = run(
+    "land-train.sh",
+    ["--repo-path", box.repo, "--slug", "acme/site", "--prefix", `guardno-${process.pid}`],
+    box.root,
+    bin,
+    skill,
+  );
+
+  assert.equal(ran.code, 6, `${ran.out}\n${ran.err}`);
+  assert.match(
+    ran.out,
+    /git-guard\.sh: .*release\/other/,
+    "the guard explained itself and the lander threw the explanation away, so the summary names " +
+      `no cause a person can act on:\n${ran.out}`,
+  );
+});
+
+test("land-one.sh tells a guard it could not run apart from one that refused", () => {
+  const absent = workspace();
+  const gone = run(
+    "land-one.sh",
+    [
+      "--repo-path",
+      absent.repo,
+      "--slug",
+      "acme/site",
+      "--pr",
+      "101",
+      "--branch",
+      "devloop/zz-aaa1",
+      "--prefix",
+      `oneguardless-${process.pid}`,
+    ],
+    absent.root,
+    stubs(absent.root, absent.bare, "[]"),
+    skillWith(absent.root, "absent", null),
+  );
+
+  assert.equal(gone.code, 6, `${gone.out}\n${gone.err}`);
+  assert.doesNotMatch(
+    gone.out,
+    /refused/,
+    `a guard that never ran is reported as a refusal of the force-push:\n${gone.out}`,
+  );
+  assert.match(gone.out, /could not be run/, `${gone.out}`);
+
+  const box = workspace();
+  const no = run(
+    "land-one.sh",
+    [
+      "--repo-path",
+      box.repo,
+      "--slug",
+      "acme/site",
+      "--pr",
+      "101",
+      "--branch",
+      "devloop/zz-aaa1",
+      "--prefix",
+      `oneguardno-${process.pid}`,
+    ],
+    box.root,
+    stubs(box.root, box.bare, "[]"),
+    skillWith(box.root, "refusing", REFUSING_GUARD),
+  );
+
+  assert.equal(no.code, 6, `${no.out}\n${no.err}`);
+  assert.match(
+    no.out,
+    /git-guard\.sh: .*release\/other/,
+    `the refusal reason the guard printed is missing from the summary:\n${no.out}`,
   );
 });

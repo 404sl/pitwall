@@ -1,5 +1,62 @@
 # Changelog
 
+## 0.1.36
+
+**Rule 3 of every lane brief named a binary no lane could run.** `git-guard` resolved to a file
+outside any of these repositories, mode 700, which a lane can neither read nor execute: `head`
+on it exited 1 with no output and calling it exited 126 with "Interrupted system call". Every
+lane that pushes was therefore choosing between following the rule and failing, or satisfying
+the invariant some other way and doing something its brief did not say. Two of the four callers
+executed it directly - `land-one.sh` before its force-push and `land-train.sh` before pushing a
+train - so a guard that was meant to prove a push was safe was instead an unconditional refusal
+of the push.
+
+- **The guard is now `git-guard.sh`, a script beside `release-lock.sh` and `release-lane.sh`.**
+  It lives where every other shared guard in this pipeline lives, which makes it
+  version-controlled and testable like those, and it is reachable by any lane because it ships
+  with the plugin. Copying the old binary in was not an option: it could not be read.
+- **It refuses five things and runs nothing when it refuses.** A `--branch` of master or main; a
+  `--dir` git reports no worktree root for; a `--dir` that is inside a worktree but not its root;
+  a detached HEAD, which has no branch to compare; and a checkout whose HEAD is not the branch
+  the caller named. Otherwise it changes into the directory and execs the command.
+- **Paths are compared resolved, not literally.** `rev-parse --show-toplevel` answers with the
+  real path, so on a machine where the worktree root is reached through a symlink a literal
+  comparison refuses every legitimate worktree and passes where there is no symlink - wrong in
+  the direction that looks fine until it is somebody else's machine.
+- **All four call sites now name the script**, the two shell ones resolving it beside themselves
+  before they change directory, and rule 3 says "Guard pushes" rather than "Guard branch creation
+  and pushes": a HEAD-equals-branch check cannot pass on the command that creates the branch, and
+  in this pipeline branches are cut by `git worktree add -b` anyway. `plugin-prompts.test.ts`
+  holds that: the rules block has to name `git-guard.sh`, `land.js` has to name it, and no `.js`
+  or `.sh` in the skill directory may carry the bare PATH name. The scan is limited to those two
+  extensions so that this file can still say what the old binary was called.
+- **The two shell callers say which of three things went wrong, instead of one sentence for all
+  of them.** Both sent the guard's stderr to `/dev/null` and tested only zero against non-zero,
+  so a guard that was never executed came out as "push was refused" - a refusal reported for a
+  check that never looked at anything, which is exactly the misdiagnosis that cost this ticket
+  its first day. The exit status is now read: 126 and 127 are the guard not being runnable, 2
+  is a refusal, and anything else belongs to the pushed command. 2 is the weakest of the three,
+  because the guard `exec`s on success, so a pushed command that itself exits 2 arrives looking
+  the same - the guard's own stderr is passed through rather than dropped, and the line it
+  prefixes with its own name is what separates them and what goes on the summary.
+- **Nine tests cover the guard**, including the four the ticket asked for - the right branch runs
+  the command, master, main and a branch other than the one given each refuse. Every refusal
+  asserts the guard's own exit code and its own prefix on stderr, not merely that something
+  exited non-zero: with the script deleted bash answers 127 and creates no marker file, which
+  satisfies a non-zero-and-did-not-run assertion perfectly and proves nothing. Each also asserts
+  the wording of the refusal it is named for, so it cannot be satisfied by an earlier branch of
+  the guard firing instead - deleting the root check, the detached-HEAD check or the
+  no-worktree-root check fails exactly the test named for it, and nothing else. Measured both
+  ways - nine of nine red with the script removed, nine of nine green with it back. Each
+  refusal still asserts the command did not run, because a guard that reports a refusal and
+  runs the command anyway is worse than one that allows it.
+- **`lander-identity.test.ts` stubbed a permissive `git-guard` onto PATH**, so `land-one.sh` and
+  `land-train.sh` were exercising a guard that allowed everything. The stub is gone and both
+  tests now run the real guard. Three more tests there run each lander against a skill directory
+  whose guard is missing, and against one that refuses with a reason, and read the summary line
+  back: a guard that could not be run must not be reported as a refusal, and a refusal must carry
+  the guard's own sentence. All three fail against the callers as they were.
+
 ## 0.1.35
 
 **The compliance gate could not pass a commit in this repository, because this repository's own
