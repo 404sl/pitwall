@@ -346,6 +346,17 @@ NON-NEGOTIABLE RULES. They outrank speed, and they outrank finishing the task.
    so there is no category of command it does not apply to. You almost never wanted the
    merge anyway - you wanted stderr GONE, which is 2>/dev/null, or you wanted to read
    help text, which needs no redirect at all. Reach for one of those instead.
+
+   WHEN YOU DO WANT TO SEE WHY A COMMAND FAILED, THIS IS HOW, and it is the moment the rule
+   gets broken: a probe or a cleanup step, piped into head or tail, where the writer wants the
+   error message and reaches for the habit. Three runs did it in one night at exactly that
+   shape of step. Two idioms satisfy the rule; neither is obvious while you are tempted.
+   Run the command plainly, with nothing after it: stderr reaches your transcript on its own,
+   and it still does when stdout is piped - a pipe carries stdout only, so the merge was never
+   needed to see the error. When the output genuinely must be filed or trimmed, send stderr
+   to your scratch directory and read that file afterwards:
+     mkdir -p ${SCRATCH}/${ID} && <command> 2>${SCRATCH}/${ID}/stderr.txt | tail -20
+     cat ${SCRATCH}/${ID}/stderr.txt
 8. Never report success over a failing check. If tests or lint are red and you cannot get
    them green, stop and say so.
 9b. WHEN YOU FILE OR SPLIT A TICKET, follow WRITING-TICKETS.md in this skill directory.
@@ -875,6 +886,14 @@ ${again ? '' : `Set up the worktree. THE BRANCH MAY ALREADY EXIST, so check befo
 Mark it claimed, from ${ROOT}:
   bd update ${task.id} -s in_progress
 
+IF ONE OF THOSE REFUSES, READ THE REASON WITHOUT MERGING STDERR. Run the failing command again
+on its own and stderr reaches you; or, if you must pipe it, keep stderr in your scratch directory
+and read it:
+  <command> 2>${scratch}/stderr.txt | tail -20
+  cat ${scratch}/stderr.txt
+Never use 2>&1 to see it, here or anywhere: it breaks xcodebuild and other tools outright, and
+a setup probe piped into head or tail is exactly where runs keep reaching for it.
+
 BRANCH FROM origin/master, NEVER FROM ANOTHER LANE'S BRANCH, and open the pull request against
 master. If the work you need sits in a pull request that has not landed yet, that is a
 dependency - say so and stop, or build the part that does not need it. Do not stack on it.
@@ -1225,6 +1244,7 @@ Do not modify the branch, do not push, do not merge, do not deploy. Never use 2>
 function handoffPrompt(task, work) {
   const wtPath = work.worktree || `${WT}/${task.id}`
   const repo = repoPath(task.repo)
+  const scratch = `${SCRATCH}/${task.id}`
   // A PULL REQUEST NUMBER IS MEANINGLESS WITHOUT ITS REPOSITORY, and `cd`-ing first is not
   // enough. `gh pr view 20` means "number 20 in whatever repo this directory points at", so a
   // run that was routed to the wrong checkout gets a real, plausible answer instead of an
@@ -1491,8 +1511,17 @@ PR: ${work.prUrl || work.prNumber}
 
 4. REMOVE YOUR WORKTREE. It holds the branch checked out, and the lander's --delete-branch
    fails on that every single time, leaving both branches behind and a non-zero exit that
-   looks like the merge failed:
-     cd ${repo} && git worktree remove ${wtPath} --force
+   looks like the merge failed. lane-handoff.sh already removed it if it exited 0 and was given
+   --worktree or could find it, so check first, and run exactly this if it is still listed:
+     git -C ${repo} worktree list
+     git -C ${repo} worktree remove ${wtPath} --force
+   'is not a working tree' means it is already gone, which is the outcome you want.
+
+   IF IT REFUSES FOR ANY OTHER REASON, run it again plainly and read stderr - never use 2>&1
+   and do not pipe it into tail; a cleanup command piped into tail is exactly where three runs
+   broke that rule in one night. If the reason must be kept, keep stderr alone:
+     git -C ${repo} worktree remove ${wtPath} --force 2>${scratch}/worktree-remove.txt
+     cat ${scratch}/worktree-remove.txt
 
 5. Record where it stands, from ${ROOT}:
      bd update ${task.id} --append-notes "<what the change does, the PR url, and that it is green and labelled lane-verified awaiting the lander>"
