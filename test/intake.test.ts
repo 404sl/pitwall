@@ -361,6 +361,21 @@ test("a dropped file leaves the checkout it landed in clean", async (t) => {
   assert.equal(after.status, 0);
   assert.equal(after.stdout, before.stdout, "a dropped file shows up in git status");
   assert.doesNotMatch(after.stdout, /pitwall-intake/);
+
+  writeFileSync(join(box.root, INTAKE_DIR, ".gitignore"), "");
+  const again = await box.post(
+    multipart([part("text", "a second screenshot"), part("files", "PNGDATA", "shot.png")]),
+  );
+  assert.equal(again.status, 200, again.body);
+
+  const healed = spawnGit(["status", "--porcelain"], { cwd: box.root });
+  assert.equal(healed.status, 0);
+  assert.equal(
+    healed.stdout,
+    before.stdout,
+    "an emptied .pitwall-intake/.gitignore was left unrepaired",
+  );
+  assert.doesNotMatch(healed.stdout, /pitwall-intake/);
 });
 
 test("a recorded request with no action header is refused, and no bead is written", async (t) => {

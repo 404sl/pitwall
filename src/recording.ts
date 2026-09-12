@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { issueActor, issueCreator, type ReadIssuesOptions } from "./beads.js";
@@ -43,10 +43,7 @@ function reasonOf(cause: unknown): string {
 function writeDropped(root: string, id: string, files: readonly DroppedFile[]): string[] {
   const home = join(resolve(root), INTAKE_DIR);
   mkdirSync(home, { recursive: true });
-  const ignore = join(home, ".gitignore");
-  if (!existsSync(ignore)) {
-    writeFileSync(ignore, "*\n");
-  }
+  writeFileSync(join(home, ".gitignore"), "*\n");
   const dir = intakePath(root, id);
   mkdirSync(dir, { recursive: true });
   const names = uniqueNames(files.map((file) => file.name));
