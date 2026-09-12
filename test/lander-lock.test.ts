@@ -35,6 +35,7 @@ const LAND_ARGS = {
 };
 
 const TOKEN = "lander-1788964650-29574";
+const TRAIN_TOKEN = "land-train-1788964650-29574";
 
 function landArgs(lockToken: string): Record<string, unknown> {
   return { ...LAND_ARGS, lockToken };
@@ -55,8 +56,8 @@ function lockPromptOf(calls: Call[]): string {
 }
 
 test("land-train.js releases the merge lock when a step throws", async () => {
-  const { calls, done } = runScript("land-train.js", LAND_ARGS, (call, n) => {
-    if (n === 1) return { status: "taken", token: "land-train-1-aaaaaa", holder: "land-train-1-aaaaaa" };
+  const { calls, done } = runScript("land-train.js", landArgs(TRAIN_TOKEN), (call, n) => {
+    if (n === 1) return { status: "taken", holder: TRAIN_TOKEN };
     throw new Error("the build agent died mid-run");
   });
 
@@ -82,16 +83,16 @@ test("land.js puts the token it was launched with into the release command itsel
   );
 });
 
-test("land-train.js puts the reported token into the release command itself", async () => {
-  const { calls, done } = runScript("land-train.js", LAND_ARGS, (call, n) => {
-    if (n === 1) return { status: "taken", token: "land-train-1788964650-29574", holder: "land-train-1788964650-29574" };
+test("land-train.js puts the token it was launched with into the release command itself", async () => {
+  const { calls, done } = runScript("land-train.js", landArgs(TRAIN_TOKEN), (call, n) => {
+    if (n === 1) return { status: "taken", holder: TRAIN_TOKEN };
     return { status: "error", notes: "nothing to build" };
   });
   await done;
 
   assert.ok(
-    releasePromptOf(calls).includes("land-train-1788964650-29574"),
-    "the release step was never handed the token the lock step reported",
+    releasePromptOf(calls).includes(TRAIN_TOKEN),
+    "the release step was never handed the token this train took the lock under",
   );
 });
 
@@ -303,28 +304,6 @@ test("release-lock.sh removes nothing for a token no lander could have minted", 
   }
 });
 
-test("land-train.js emits no release command for a token it cannot quote back", async () => {
-  const { calls, done } = runScript("land-train.js", LAND_ARGS, (call, n) => {
-    if (n === 1) return { status: "taken", token: "lander-1'; touch /tmp/lander-lock-injection-marker #" };
-    if (call.label && call.label.startsWith("survey")) return { prs: [] };
-    return { status: "error", notes: "nothing to build" };
-  });
-  const result = (await done) as { lock?: string };
-
-  assert.equal(
-    calls.some((c) => c.label === "release"),
-    false,
-    "land-train.js interpolated an agent-reported token straight into a shell command. The " +
-      "token is quoted with single quotes, so one in the token closes the quoting and the rest " +
-      "of it becomes command of its own - against the lock that serialises every merge and deploy.",
-  );
-  assert.match(
-    result.lock || "",
-    /LEAKED/,
-    "land-train.js returned without saying it was still holding the lock",
-  );
-});
-
 test("land-train.js tells a stand-down apart from a leak in its own result", async () => {
   const outcomes: Record<string, RegExp> = {
     released: /^released$/,
@@ -333,8 +312,8 @@ test("land-train.js tells a stand-down apart from a leak in its own result", asy
     still_held: /LEAKED/,
   };
   for (const [status, expected] of Object.entries(outcomes)) {
-    const { done } = runScript("land-train.js", LAND_ARGS, (call, n) => {
-      if (n === 1) return { status: "taken", token: "land-train-1788964650-29574", holder: "land-train-1788964650-29574" };
+    const { done } = runScript("land-train.js", landArgs(TRAIN_TOKEN), (call, n) => {
+      if (n === 1) return { status: "taken", holder: TRAIN_TOKEN };
       if (call.label === "release") return { status };
       return { status: "error", notes: "nothing to build" };
     });
@@ -353,8 +332,8 @@ test("land-train.js tells a stand-down apart from a leak in its own result", asy
   }
 });
 
-test("land-train.js emits no removal command when the lock step reported no token", async () => {
-  const { calls, done } = runScript("land-train.js", LAND_ARGS, (call, n) => {
+test("land-train.js emits no removal command when the holder file read back nothing", async () => {
+  const { calls, done } = runScript("land-train.js", landArgs(TRAIN_TOKEN), (call, n) => {
     if (n === 1) return { status: "taken" };
     return { status: "error", notes: "nothing to build" };
   });
@@ -463,7 +442,7 @@ test("neither lander stands down over the newline cat prints", async () => {
 
 test("land-train.js reads the holder file before it stands down for another lander", async () => {
   const theirs = "land-train-1788975899-51221";
-  const { calls, done } = runScript("land-train.js", LAND_ARGS, (call, n) => {
+  const { calls, done } = runScript("land-train.js", landArgs(TRAIN_TOKEN), (call, n) => {
     if (n === 1) return { status: "held", holder: `${theirs}\n` };
     return { status: "error", notes: "nothing to build" };
   });
@@ -491,53 +470,66 @@ test("land-train.js reads the holder file before it stands down for another land
   );
 });
 
-test("land.js refuses before taking the lock when args carry no token", async () => {
-  const { calls, done } = runScript("land.js", LAND_ARGS, () => {
-    throw new Error("a step ran for a launch that should have been refused");
-  });
-  const result = (await done) as { error?: string };
+const LAUNCHERS: Record<string, RegExp> = {
+  "land.js": /config\.sh --land/,
+  "land-train.js": /config\.sh --train/,
+};
 
-  assert.equal(
-    calls.length,
-    0,
-    "land.js launched with no lockToken still ran a step. The refusal has to land before the " +
-      "lock is taken, the way the missing-slug block does: a run that mkdirs the lock and only " +
-      "then aborts leaves it standing for a release step that never runs.",
-  );
-  assert.match(
-    result.error || "",
-    /lockToken/,
-    `the refusal never names the argument that is missing: ${JSON.stringify(result)}`,
-  );
-  assert.match(
-    result.error || "",
-    /config\.sh --land/,
-    "the refusal names no way to get a token, so whoever launched it by hand is left guessing " +
-      "at a field land.js will not mint for itself",
-  );
-});
+function refusal(result: { error?: string; notes?: string }): string {
+  return result.error || result.notes || "";
+}
 
-test("land.js refuses a lock token it could not quote back into a shell command", async () => {
-  for (const bad of ["lander-1'; touch /tmp/lander-lock-injection-marker #", "lander-1\nlander-2", "   "]) {
-    const { calls, done } = runScript("land.js", landArgs(bad), () => {
+test("neither lander takes the lock when args carry no token", async () => {
+  for (const [file, launcher] of Object.entries(LAUNCHERS)) {
+    const { calls, done } = runScript(file, LAND_ARGS, () => {
       throw new Error("a step ran for a launch that should have been refused");
     });
-    const result = (await done) as { error?: string };
+    const result = (await done) as { error?: string; notes?: string };
 
     assert.equal(
       calls.length,
       0,
-      `land.js took the lock under ${JSON.stringify(bad)}. The token is interpolated into a ` +
-        "single-quoted shell argument in both the lock step and the removal, so a quote in it " +
-        "closes the quoting and the rest becomes a command of its own - against the lock that " +
-        "serialises every merge and deploy. Moving the mint into args moved that vector from " +
-        "the agent's answer to the args object, and the check has to move with it.",
+      `${file} launched with no lockToken still ran a step. The refusal has to land before the ` +
+        "lock is taken, the way the missing-slug block does: a run that mkdirs the lock and only " +
+        "then aborts leaves it standing for a release step that never runs.",
     );
     assert.match(
-      result.error || "",
+      refusal(result),
       /lockToken/,
-      `the refusal never names the argument it rejected: ${JSON.stringify(result)}`,
+      `the refusal never names the argument that is missing: ${JSON.stringify(result)}`,
     );
+    assert.match(
+      refusal(result),
+      launcher,
+      `${file} names no way to get a token, so whoever launched it by hand is left guessing at ` +
+        "a field it will not mint for itself",
+    );
+  }
+});
+
+test("neither lander accepts a token it could not quote back into a shell command", async () => {
+  for (const file of Object.keys(LAUNCHERS)) {
+    for (const bad of ["lander-1'; touch /tmp/lander-lock-injection-marker #", "lander-1\nlander-2", "   "]) {
+      const { calls, done } = runScript(file, landArgs(bad), () => {
+        throw new Error("a step ran for a launch that should have been refused");
+      });
+      const result = (await done) as { error?: string; notes?: string };
+
+      assert.equal(
+        calls.length,
+        0,
+        `${file} took the lock under ${JSON.stringify(bad)}. The token is interpolated into a ` +
+          "single-quoted shell argument in both the lock step and the removal, so a quote in it " +
+          "closes the quoting and the rest becomes a command of its own - against the lock that " +
+          "serialises every merge and deploy. Moving the mint into args moved that vector from " +
+          "the agent's answer to the args object, and the check has to move with it.",
+      );
+      assert.match(
+        refusal(result),
+        /lockToken/,
+        `the refusal never names the argument it rejected: ${JSON.stringify(result)}`,
+      );
+    }
   }
 });
 
@@ -578,6 +570,62 @@ test("land.js writes the token it was launched with and hands the same one to th
       "give it back",
   );
   assert.equal(result.lock, "released", `the run did not report the lock released: ${result.lock}`);
+});
+
+test("land-train.js writes the token it was launched with and hands the same one to the removal", async () => {
+  const { calls, done } = runScript("land-train.js", landArgs(TRAIN_TOKEN), (call, n) => {
+    if (n === 1) return { status: "taken", holder: `${TRAIN_TOKEN}\n` };
+    if (call.label === "release") return { status: "released" };
+    return { status: "error", notes: "nothing to build" };
+  });
+  const result = (await done) as { lock?: string };
+
+  const lock = lockPromptOf(calls);
+  const command = lock.slice(0, lock.indexOf("THE TOKEN IS ALREADY IN THAT COMMAND"));
+  assert.ok(
+    command.includes(`'${TRAIN_TOKEN}' > /tmp/devloop-merge.lock/holder`),
+    `the lock step writes something other than the token it was launched with:\n${lock}`,
+  );
+  assert.doesNotMatch(
+    command,
+    /date \+%s|\$\$/,
+    "the lock step still mints its own token inside the command it runs. Every value such a " +
+      "step reports comes from one answer, so a replayed acquisition agrees with itself and " +
+      "nothing in the script can tell it from a fresh one - the train then believes it holds a " +
+      "lock that may be free or another lander's, and merges unserialised.",
+  );
+  assert.equal(
+    (calls[0]?.schema as { properties?: Record<string, unknown> } | undefined)?.properties?.["token"],
+    undefined,
+    "the lock step is still asked to report the token it wrote. The train does not read it any " +
+      "more, and a field nobody checks is exactly the stale claim this change removes.",
+  );
+  assert.match(
+    releasePromptOf(calls),
+    new RegExp(`--token '${TRAIN_TOKEN}'`),
+    "the removal was handed a different token from the one written into the holder file, so " +
+      "release-lock.sh finds no match and the lock is left standing by the step that exists to " +
+      "give it back",
+  );
+  assert.equal(result.lock, "released", `the train did not report the lock released: ${result.lock}`);
+});
+
+test("every instruction to launch a train goes through config.sh --train", () => {
+  const skill = readFileSync(join(SKILL, "SKILL.md"), "utf8");
+  const at = skill.indexOf("config.sh --train");
+  assert.ok(
+    at > 0,
+    "SKILL.md documents no way to launch a train through config.sh --train. That command mints " +
+      "the merge-lock token the train holds, and land-train.js refuses to start without one - " +
+      "a documented launch that skips it cannot land anything, and until 2026-09-12 there was " +
+      "no documented launch at all.",
+  );
+  assert.match(
+    skill.slice(at, at + 400),
+    /args: <the object config\.sh printed>/,
+    "the documented launch no longer passes the object config.sh printed, so a supervisor " +
+      "following it assembles args by hand and leaves out the token",
+  );
 });
 
 test("every instruction to launch the lander goes through config.sh --land", () => {

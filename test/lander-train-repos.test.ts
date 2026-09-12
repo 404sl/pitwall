@@ -6,6 +6,7 @@ import { runScript, type Call, type Reply } from "./support/workflow.js";
 const ARGS = {
   skillDir: "/skill",
   root: "/root",
+  lockToken: "land-train-1788964650-29574",
   repos: {
     site: { path: "cli", slug: "404sl/pitwall", deploy: ["staging"] },
     docs: { path: "site", slug: "404sl/pitwall-site" },
@@ -43,7 +44,7 @@ function account(out: Result, name: string): Account {
 
 function train(reply: Reply, args: Record<string, unknown> = {}) {
   return runScript("land-train.js", { ...ARGS, repo: "site", ...args }, (call, n) => {
-    if (n === 1) return { status: "taken", token: TOKEN, holder: TOKEN };
+    if (n === 1) return { status: "taken", holder: TOKEN };
     return reply(call, n);
   });
 }

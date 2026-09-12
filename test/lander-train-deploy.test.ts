@@ -14,6 +14,7 @@ function argsFor(site: Record<string, unknown>) {
     skillDir: "/skill",
     root: "/root",
     repo: "site",
+    lockToken: TOKEN,
     repos: {
       site: { path: "cli", slug: "404sl/pitwall", ...site },
       docs: { path: "site", slug: "404sl/pitwall-site" },
@@ -44,7 +45,7 @@ const landed: Reply = (call: Call) => {
 
 async function deployBrief(site: Record<string, unknown>) {
   const { calls, done } = runScript("land-train.js", argsFor(site), (call, n) => {
-    if (n === 1) return { status: "taken", token: TOKEN, holder: TOKEN };
+    if (n === 1) return { status: "taken", holder: TOKEN };
     return landed(call, n);
   });
   await done;
@@ -126,7 +127,7 @@ type Result = {
 
 function trainWith(steps: Record<string, unknown>, site: Record<string, unknown> = CONFIGURED) {
   return runScript("land-train.js", argsFor(site), (call, n) => {
-    if (n === 1) return { status: "taken", token: TOKEN, holder: TOKEN };
+    if (n === 1) return { status: "taken", holder: TOKEN };
     if (call.label in steps) return steps[call.label];
     return landed(call, n);
   });

@@ -22,6 +22,10 @@
 #                                   merge, the scriptPath to dispatch, and the merge-lock token
 #                                   that run writes into the holder file - minted here, one per
 #                                   launch, because land.js refuses to mint its own.
+#   config.sh --train <repo>        stage the workflow scripts and print the args object for a
+#                                   land-train.js run against ONE repository, carrying the
+#                                   scriptPath to dispatch and the merge-lock token that train
+#                                   writes into the holder file.
 #   config.sh --check               validate the file and report what is missing
 #
 # WHERE IT LOOKS, in order: $DEVLOOP_CONFIG, then .autofix.json walking up from the cwd. Walking
@@ -237,6 +241,32 @@ for a in sys.argv[4:]:
 if pre:
     out["preflighted"] = pre
 print(json.dumps(out))
+PY
+    ;;
+  --train)
+    [ $# -ge 2 ] || { echo "usage: config.sh --train <repo>" >&2; exit 2; }
+    SCRIPT_PATH="$(PITWALL_CONFIG="$CONFIG" bash "$SKILL_DIR/run-script.sh" land-train.js)" || {
+      echo "config.sh --train: run-script.sh could not stage the train - it does not start." >&2
+      exit 1
+    }
+    python3 - "$CONFIG" "$SKILL_DIR" "$SCRIPT_PATH" "$2" <<'PY'
+import json, os, sys, time
+cfg = json.load(open(sys.argv[1]))
+repos = cfg.get("repos", {})
+repo = sys.argv[4]
+if repos and repo not in repos:
+    sys.stderr.write("no repository %s in this config - have: %s\n"
+                     % (repo, ", ".join(sorted(repos)))); sys.exit(2)
+print(json.dumps({
+    "skillDir": sys.argv[2],
+    "scriptPath": sys.argv[3],
+    "root": cfg["root"],
+    "idPrefix": cfg.get("idPrefix", "sr"),
+    "lockPrefix": cfg.get("lockPrefix", "devloop"),
+    "repo": repo,
+    "lockToken": "land-train-%d-%d" % (int(time.time()), os.getpid()),
+    "repos": repos,
+}))
 PY
     ;;
   "") cat "$CONFIG" ;;
