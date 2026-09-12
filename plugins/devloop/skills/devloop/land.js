@@ -258,12 +258,12 @@ const VERSION = {
   properties: {
     fetched: { type: 'boolean', description: "the FETCH, and nothing else: true only when the git fetch printed FETCHED. False when it did not, whatever the commands after it printed - every ref this step and the merge after it read is then whatever the checkout already held." },
     status: { enum: ['read', 'no_manifest', 'unreadable'], description: "the MANIFEST read, and nothing else: 'read' only when both git show calls printed a manifest you could copy a version string out of. What gh printed does not touch this field." },
-    prStatus: { enum: ['read', 'unreadable'], description: "the PULL REQUEST read: 'read' when gh pr view printed an answer, 'unreadable' when it failed for any reason - a rate limit, a network error, no authentication. Say which in notes." },
+    prStatus: { enum: ['read', 'unreadable'], description: "the PULL REQUEST read: 'read' when gh api printed the pull request, 'unreadable' when it failed for any reason - a rate limit, a network error, no authentication. Say which in notes." },
     masterVersion: { type: 'string', description: `the "version" string in origin/master's ${PLUGIN_MANIFEST}, verbatim. An empty string when you could not read one.` },
     branchVersion: { type: 'string', description: `the "version" string in the branch's ${PLUGIN_MANIFEST}, verbatim. An empty string when you could not read one.` },
     touchesPlugin: { type: 'boolean', description: 'true when the branch changes any file under plugins/ or .claude-plugin/ - that is what the marketplace serves. True when the diff could not be read at all, because an unknown answer here must not read as out of scope.' },
-    labelled: { type: 'boolean', description: `true when gh pr view printed ${LABEL} among the pull request's labels just now. Meaningless unless prStatus is 'read' - report false when gh printed nothing.` },
-    open: { type: 'boolean', description: "true when gh pr view printed state OPEN and isDraft false - a closed, merged or draft pull request is not one this run is being asked to merge. Meaningless unless prStatus is 'read' - report false when gh printed nothing." },
+    labelled: { type: 'boolean', description: `true when gh api printed ${LABEL} among the pull request's labels just now. Meaningless unless prStatus is 'read' - report false when gh printed nothing.` },
+    open: { type: 'boolean', description: "true when gh api printed state open and draft false - a closed, merged or draft pull request is not one this run is being asked to merge. Meaningless unless prStatus is 'read' - report false when gh printed nothing." },
     notes: { type: 'string' }
   }
 }
@@ -465,7 +465,22 @@ Look in each of these, and skip any directory that does not exist:
 ${Object.entries(REPOS).map(([name, path]) => `  ${slug(name)}  ${path}`).join('\n')}
 
 In each, naming the repository rather than relying on the directory:
-  cd <path> && gh pr list --repo <that repository's owner/name> --state open --label ${LABEL} --json number,title,headRefName,createdAt
+  cd <path> && gh api "repos/<that repository's owner/name>/pulls?state=open&per_page=100" --jq 'map(if any(.labels[]; .name == "${LABEL}") then {number, title, branch: .head.ref, createdAt: .created_at, body} else empty end)'
+
+THAT IS A REST READ, AND IT IS THE ONLY ONE TO USE. 'gh pr list' and 'gh pr view' go over GraphQL,
+and GraphQL is throttled by a secondary limit that 'gh api rate_limit' reports as full - on
+2026-09-12 every 'gh pr view' in a run was refused with 'API rate limit already exceeded' while
+rate_limit showed 5000 of 5000 remaining and every REST read answered. The limit flaps within
+minutes, so do not retry a GraphQL command in the hope it clears; the REST read is the retry.
+
+THE BODY COMES BACK IN THAT SAME OUTPUT. Take the tracker id from the 'body' field it printed and
+do not read it again with 'gh pr view <n> --json body' - that is one GraphQL call per pull request
+and puts the whole pass back on the throttled API. The label filter is applied by the --jq above
+because the REST list carries no label parameter; do not drop it and hand back unlabelled work.
+
+IF THE READ FAILS IN A REPOSITORY, say so in 'notes' - the repository and what gh said - rather
+than reporting it as having nothing queued. An empty list and a refused read render identically
+and are not the same fact.
 
 RETURN THE owner/name AS 'slug', COPIED FROM THE LIST ABOVE, CHARACTER FOR CHARACTER. Do not
 abbreviate it, do not substitute a short name for it, and do not describe the repository in your
@@ -587,7 +602,7 @@ function prVerdict(read) {
   if (!read || read.prStatus !== 'unreadable') return null
   return {
     why: 'pr_unreadable',
-    detail: `gh could not read pull request state - ${trimmed(read.notes) || 'the version step reported no answer from gh pr view'}. Nothing is known about the version here: this says the PULL REQUEST could not be read, not that a number could not be. Nothing was merged, the label was left on, and the next run picks it up when gh answers again.`
+    detail: `gh could not read pull request state - ${trimmed(read.notes) || 'the version step reported no answer from gh api'}. Nothing is known about the version here: this says the PULL REQUEST could not be read, not that a number could not be. Nothing was merged, the label was left on, and the next run picks it up when gh answers again.`
   }
 }
 
@@ -625,7 +640,13 @@ number read once at the top of the run is stale by the second merge.
   cd ${path} && git show origin/master:${PLUGIN_MANIFEST}
   cd ${path} && git show origin/${pr.branch}:${PLUGIN_MANIFEST}
   cd ${path} && git diff --name-only origin/master...origin/${pr.branch}
-  gh pr view ${pr.number} --repo ${pr.slug} --json labels,state,isDraft
+  gh api repos/${pr.slug}/pulls/${pr.number} --jq '{labels: [.labels[].name], state, draft, merged}'
+
+THE PULL REQUEST IS READ OVER REST, AND ONLY OVER REST. Do not substitute 'gh pr view' for that
+command: it goes over GraphQL, which a secondary limit throttles independently of the number
+'gh api rate_limit' shows - on 2026-09-12 six of these steps in one run were refused with 'API
+rate limit already exceeded' while rate_limit reported 5000 of 5000 and every REST read answered.
+If 'gh api' fails too, that is prStatus 'unreadable'; the fix is a later round, not another API.
 
 git show prints a file as it is at a ref and touches nothing. Do not check anything out, do not
 switch, do not reset, and do not stash.
@@ -651,7 +672,7 @@ refs are whatever this checkout already held, so origin/master can be behind wor
 merged, and a branch that looks up to date against it has never been tested against master at all.
 
 status IS ABOUT THE MANIFEST AND NOTHING ELSE. gh has its own field, prStatus, and what gh printed
-never moves status. Report prStatus 'read' when gh pr view printed an answer and 'unreadable' when
+never moves status. Report prStatus 'read' when gh api printed the pull request and 'unreadable' when
 it failed for any reason - a rate limit, a network error, no authentication - and say which in
 notes. The two reads fail for unrelated causes and have unrelated remedies: an unreadable manifest
 is a number to fix, an unreadable pull request is a read to try again later, and reporting the
@@ -673,13 +694,14 @@ number it declares. It is false when the diff lists none of them, and TRUE when 
 itself did not print - an answer nobody could read must not read as out of scope, because the
 version guard is skipped entirely for a branch reported false.
 
-labelled and open come from gh pr view, and they say whether this pull request is still the thing
-the run was asked to merge. labelled is true when ${LABEL} is among the labels it printed. open is
-true when state is OPEN and isDraft is false. Report what that command printed and nothing else -
-if it printed no answer at all, report prStatus 'unreadable', labelled false and open false, and
-say in notes what gh printed instead, because a refusal decided here takes a pull request out of
-the queue and reopens somebody's tracker issue, and neither is safe to do to a pull request that
-is no longer in the queue to refuse.
+labelled and open come from the gh api read, and they say whether this pull request is still the
+thing the run was asked to merge. labelled is true when ${LABEL} is among the labels it printed.
+open is true when state is "open" and draft is false - REST spells the state in lower case, and a
+merged pull request comes back as state "closed" with merged true. Report what that command
+printed and nothing else - if it printed no answer at all, report prStatus 'unreadable', labelled
+false and open false, and say in notes what gh printed instead, because a refusal decided here
+takes a pull request out of the queue and reopens somebody's tracker issue, and neither is safe to
+do to a pull request that is no longer in the queue to refuse.
 
 ${LAW}`
 }
@@ -1451,6 +1473,7 @@ try {
     // behind two P3s. They merged, master went red, and the lander then correctly refused to
     // merge into a red master - so it could not land the fix for the red master. Queue order
     // alone turned two correct rules into a deadlock a person had to break.
+    if (survey && trimmed(survey.notes)) log(`survey: ${trimmed(survey.notes)}`)
     const surveyed = ((survey && survey.prs) || [])
       .map(resolveRepo)
       .filter((p) => !seen.has(keyOf(p)))
