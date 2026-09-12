@@ -183,10 +183,7 @@ export const strings = {
         stale: "Run this, or say it is already done — the check below found the reason may have expired.",
       },
       inFlight: "Nothing for you — a lane is working it.",
-      landing: {
-        standing: "Nothing for you — it is waiting to be landed.",
-        stale: "Its pull request merged. Close it, or record what is still open.",
-      },
+      landing: "Nothing for you — it is waiting to be landed.",
       ready: "Nothing for you — it is waiting for a lane to pick it up.",
       parked: "Nothing for you — it is parked: {reason}.",
       blocked: "Nothing for you — something else has to close first.",
@@ -235,17 +232,13 @@ export const strings = {
       neverChecked: "Nothing has checked whether this is still true.",
       noEvidence: "Checked; nothing has changed that this check can see.",
       unresolved: {
-        reference: {
-          one: "1 reference could not be checked; it is recorded in the snapshot.",
-          many: "{count} references could not be checked; they are recorded in the snapshot.",
-        },
         precondition: {
           one: "1 precondition could not be run; it is recorded in the snapshot.",
           many: "{count} preconditions could not be run; they are recorded in the snapshot.",
         },
       },
       method:
-        "This check reads the issue's own text: notes recorded after the parking label, issues and pull requests it names, and a short list of testable preconditions. It cannot see anything outside that.",
+        "This check reads the issue's own text: notes recorded after the parking label, issues it names, and a short list of testable preconditions. It cannot see anything outside that.",
       evidence: "Evidence",
     },
     deps: {
