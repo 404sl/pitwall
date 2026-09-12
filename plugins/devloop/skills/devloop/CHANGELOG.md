@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.67
+
+A run that wants to see why a probe or cleanup command failed is now told how: run it plainly and read stderr from the transcript, or redirect stderr alone into its scratch directory and read the file. The handoff step hands over the exact worktree-removal command and says that "is not a working tree" after a successful handoff is the expected outcome, not an error to investigate.
+
 ## 0.1.66
 
 A value-taking flag given as the last argument to assign-plugin-version.sh, land-train.sh, dispatchable.sh, lane-handoff.sh, land-one.sh or stranded.sh now exits 6 and names the flag, instead of spinning forever. A session that sees exit 6 from one of these with "needs a value" on stderr dropped or misplaced a flag's value in the invocation.
