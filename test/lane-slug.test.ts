@@ -3,12 +3,6 @@ import test from "node:test";
 
 import { runScript, type Call } from "./support/workflow.js";
 
-// Rule 12 tells a run that every 'gh pr' command carries '--repo', and that the slug for the run
-// is named above. That was true of the handoff brief, which interpolates it into its own commands,
-// and false of the fix brief, which printed the repository's PATH and nothing else - so the step
-// that opens the pull request had the rule and no value to pass it. A wrong slug there does not
-// fail: pull request numbers overlap across the repositories in one workspace, so 'gh pr create'
-// against the wrong one opens the pull request in the wrong place and answers successfully.
 const REPOS = {
   site: { path: "cli", slug: "404sl/pitwall", role: "node", test: "npm test", lint: "npm run lint" },
   integration: { path: "schema", slug: "404sl/pitwall-schema", role: "node", test: "npm test", lint: "npm run lint" },
