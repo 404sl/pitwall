@@ -59,6 +59,16 @@ fi
 PFX="$(bash "$CFG" lockPrefix 2>/dev/null || echo devloop)"
 
 cd "$ROOT" || exit 1
+ID_PFX="$(bash "$CFG" idPrefix 2>/dev/null)"
+case "$ID_PFX" in
+  ''|*[!a-zA-Z0-9_-]*)
+    echo "triage-scan.sh: could not resolve idPrefix from the workspace config - refusing to scan." >&2
+    echo "                Guessing it would look for another project's ids in the live runs, so no" >&2
+    echo "                run would ever count as live and every quiet lane would read as dead." >&2
+    echo "                Run from the workspace root, and check the config is readable:" >&2
+    echo "                  bash $CFG --check" >&2
+    exit 3 ;;
+esac
 QUIET=0
 [ "$1" = "--quiet" ] && QUIET=1
 
@@ -208,7 +218,7 @@ if [ -n "$ORPHANS" ]; then
 fi
 
 TRACKER_RC=0
-python3 - "$QUIET" "$ROOT" "$PFX" <<'PY' || TRACKER_RC=$?
+python3 - "$QUIET" "$ROOT" "$PFX" "$ID_PFX" <<'PY' || TRACKER_RC=$?
 import json, os, subprocess, sys
 
 quiet = sys.argv[1] == "1"
@@ -216,6 +226,7 @@ quiet = sys.argv[1] == "1"
 # handed-off check below runs gh inside each one.
 ROOT = sys.argv[2]
 PFX = sys.argv[3] if len(sys.argv) > 3 else "devloop"
+ID_PFX = sys.argv[4]
 PARK = {"needs-decision", "needs-access", "blocked-tooling", "watch", "umbrella", "roadmap"}
 
 def load(p):
@@ -476,7 +487,7 @@ def _live_ids():
     for d in recent:
         path = os.path.join(WFDIR, d)
         try:
-            out = subprocess.run(["grep", "-rhoam1", "-E", r"sr-[a-z0-9]+(\.[0-9]+)*", path],
+            out = subprocess.run(["grep", "-rhoam1", "-E", ID_PFX + r"-[a-z0-9]+(\.[0-9]+)*", path],
                                  capture_output=True, text=True, timeout=20).stdout
         except Exception:
             continue
