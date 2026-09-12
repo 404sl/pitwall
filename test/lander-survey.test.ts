@@ -30,6 +30,7 @@ function runScript(file: string, args: unknown, reply: Reply) {
 const ARGS = {
   skillDir: "/skill",
   root: "/root",
+  lockToken: "lander-1788964650-29574",
   repos: {
     site: { path: "cli", slug: "404sl/pitwall" },
     docs: { path: "site", slug: "404sl/pitwall-site" },

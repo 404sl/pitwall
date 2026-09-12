@@ -58,6 +58,22 @@ const LOCK_PREFIX = input.lockPrefix || 'devloop'
 const MERGE_LOCK = `/tmp/${LOCK_PREFIX}-merge.lock`
 const TOKEN_SHAPE = /^[A-Za-z0-9._-]+$/
 const trimmed = (v) => String(v || '').trim()
+
+const LOCK_TOKEN = trimmed(input.lockToken)
+if (!LOCK_TOKEN || !TOKEN_SHAPE.test(LOCK_TOKEN)) {
+  const said = LOCK_TOKEN
+    ? `lockToken reads [${LOCK_TOKEN}], which is not ${TOKEN_SHAPE} - it is interpolated into a single-quoted shell argument and nothing else can be`
+    : 'args carry no lockToken'
+  return {
+    landed: [], stopped: [], skipped: [], deployed: null, masterBroken: false,
+    error: `${said}. Build the dispatch with config.sh --land, which mints one per launch - ` +
+           `stable across a resume of the same run, different on the next - and carries it in ` +
+           `the args object it prints. land.js will not mint its own and does not fall back to ` +
+           `one: a lock step that mints the token reports every value from inside one cached ` +
+           `result, so a replayed acquisition agrees with itself and nothing in this script can ` +
+           `tell it from a fresh one.`
+  }
+}
 const ID_PREFIX = input.idPrefix || 'sr'
 const LABEL = 'lane-verified'
 const PLUGIN_MANIFEST = 'plugins/devloop/.claude-plugin/plugin.json'
@@ -325,8 +341,7 @@ const LOCK = {
   required: ['status', 'holder'],
   properties: {
     status: { enum: ['taken', 'held_by_other'] },
-    token: { type: 'string', description: 'the token you wrote into the holder file' },
-    holder: { type: 'string', description: 'what cat printed back out of the holder file, verbatim and untidied - this run compares it against the token, ignoring the newline cat prints at the end, and stands down when the two differ' },
+    holder: { type: 'string', description: 'what cat printed back out of the holder file, verbatim and untidied - this run compares it against the token it gave you, ignoring the newline cat prints at the end, and stands down when the two differ' },
     notes: { type: 'string' }
   }
 }
@@ -348,17 +363,21 @@ function lockPrompt() {
   return `Take the merge lock, so nothing else lands while this run does.
 
   while ! mkdir ${MERGE_LOCK} 2>/dev/null; do sleep 0.2; done
-  printf 'lander-%s-%s\\n' "$(date +%s)" "$$" > ${MERGE_LOCK}/holder
+  printf '%s\\n' '${LOCK_TOKEN}' > ${MERGE_LOCK}/holder
   cat ${MERGE_LOCK}/holder
   echo GOT_MERGE_LOCK
 
-REPORT TWO VALUES, NOT ONE. 'token' is the string you wrote; 'holder' is what cat printed back,
-verbatim, whatever it says. Report both even when they are identical, and do not correct either
-one to match the other - the run compares them and stands down when they differ, so a value
-tidied here hides the one thing this step exists to show. The newline the file ends with and cat
-prints back is not a difference: the run ignores whitespace around both values. The release step
-is handed what you report and can compare against nothing else, so a token you omit or retype is
-a lock this run cannot give back.
+THE TOKEN IS ALREADY IN THAT COMMAND AND IS NOT YOURS TO MINT. Do not put $(date +%s), $$, or
+anything you compose yourself in its place, and do not ask anybody for one. It is minted per
+launch outside this run and the release step is handed the same value, so a token substituted
+here is a lock this run cannot give back. A token this step made up would also be stale in
+exactly the way this arrangement exists to prevent: replay this answer and every value in it
+agrees with itself while the lock on disk belongs to somebody else.
+
+REPORT ONE VALUE: 'holder' is what cat printed back, verbatim, whatever it says. Do not correct
+it to match the token above - the run compares the two and stands down when they differ, so a
+value tidied here hides the one thing this step exists to show. The newline the file ends with
+and cat prints back is not a difference: the run ignores whitespace around both values.
 
 It used to be the bare word 'lander', which could not tell two concurrent landers apart: both
 wrote the same string, so each would read its own name in the other's lock and delete it. That
@@ -374,7 +393,7 @@ minutes, read the holder file and stop:
 
 Return status 'held_by_other' with what it said. A holder that does not begin 'lander-' and is
 not a tracker id is a PERSON merging by hand - leave it exactly alone and let them finish. A
-holder that DOES begin 'lander-' but is not the token you wrote is ANOTHER LANDER, very likely
+holder that DOES begin 'lander-' but is not the token above is ANOTHER LANDER, very likely
 in another session on this machine, and is equally not yours to break. A wrongly broken lock
 costs two runs their work; a lock left standing costs only time. That instruction used to read
 "remove it after 15 minutes", and that is precisely what caused a lane to steal a live lock
@@ -382,8 +401,8 @@ from another lane mid-merge.
 
 Return 'taken' once mkdir succeeded and you have written the holder file, and report what cat
 printed as 'holder' whether or not it matches the token. You are not asked to judge ownership:
-the run compares the two values itself and stands down on a mismatch, because the file is the
-fact and the value you report is a claim about it.
+the run compares the holder file against the token it was launched with, stands down on a
+mismatch, and the file is the fact while the value you report is a claim about it.
 ${LAW}`
 }
 
@@ -1289,16 +1308,14 @@ phase('Survey')
 // supervisor was mid-investigation - so being the only lander is not the same as being the
 // only thing merging.
 const lock = await agent(lockPrompt(), { label: 'lock', phase: 'Survey', schema: LOCK, model: 'haiku', effort: 'low' })
-const token = trimmed(lock && lock.token)
 const holder = trimmed(lock && lock.holder)
 if (!lock || lock.status !== 'taken') {
   log(`merge lock held by ${holder || 'somebody'} - not landing anything this run`)
   return { landed: [], stopped: [], skipped: [], deployed: 'not_needed', lockedOutBy: lock ? holder : null }
 }
 
-const mintedHere = !!token && TOKEN_SHAPE.test(token) && holder === token
-if (!mintedHere) {
-  const unproven = `LEAKED - the lock step reported taken, but ${MERGE_LOCK}/holder reads [${holder}] against a token of [${token}], so this run cannot prove the lock is its own. Nothing was landed and nothing was removed. Read ${MERGE_LOCK}/holder: if it names a run that has finished, clear it; if it names another lander, it is theirs and they give it back themselves.`
+if (holder !== LOCK_TOKEN) {
+  const unproven = `LEAKED - the lock step reported taken, but ${MERGE_LOCK}/holder reads [${holder}] against a token of [${LOCK_TOKEN}], so this run cannot prove the lock is its own. Nothing was landed and nothing was removed. Read ${MERGE_LOCK}/holder: if it names a run that has finished, clear it; if it names another lander, it is theirs and they give it back themselves.`
   log(unproven)
   return { landed: [], stopped: [], skipped: [], deployed: 'not_needed', lock: unproven, lockedOutBy: holder }
 }
@@ -1588,23 +1605,18 @@ try {
 } finally {
   // However this ended. A run that merged and then died before releasing held every other
   // lane up for twenty minutes with nothing behind it.
-  if (!token || !TOKEN_SHAPE.test(token)) {
-    lockState = `LEAKED - ${MERGE_LOCK} is held under a token this run cannot quote back, so no removal was even asked for. Read ${MERGE_LOCK}/holder, and leave it alone unless it names a run that has finished.`
-    log(lockState)
+  const released = await agent(releasePrompt(LOCK_TOKEN), { label: 'release', phase: 'Deploy', model: 'haiku', effort: 'low', schema: RELEASE })
+  if (released && released.status === 'released') {
+    lockState = 'released'
+  } else if (released && released.status === 'not_mine') {
+    lockState = `not_mine - ${MERGE_LOCK}/holder did not hold ${LOCK_TOKEN}, so nothing was removed and nothing should be`
+    log(`${lockState}.\n    ${released.notes || 'the script reported NOT_MINE and says what the holder file read instead'}`)
+  } else if (released && released.status === 'already_gone') {
+    lockState = `already_gone - ${MERGE_LOCK} was not there to release`
+    log(`${lockState}. Something removed this run's lock while it was working, so another lander may have been running beside it.\n    ${released.notes || ''}`)
   } else {
-    const released = await agent(releasePrompt(token), { label: 'release', phase: 'Deploy', model: 'haiku', effort: 'low', schema: RELEASE })
-    if (released && released.status === 'released') {
-      lockState = 'released'
-    } else if (released && released.status === 'not_mine') {
-      lockState = `not_mine - ${MERGE_LOCK}/holder did not hold ${token}, so nothing was removed and nothing should be`
-      log(`${lockState}.\n    ${released.notes || 'the script reported NOT_MINE and says what the holder file read instead'}`)
-    } else if (released && released.status === 'already_gone') {
-      lockState = `already_gone - ${MERGE_LOCK} was not there to release`
-      log(`${lockState}. Something removed this run's lock while it was working, so another lander may have been running beside it.\n    ${released.notes || ''}`)
-    } else {
-      lockState = `LEAKED - ${MERGE_LOCK} still held ${token} after the release step, or the step answered nothing. Check ${MERGE_LOCK}/holder still reads ${token} before removing it - if it reads anything else, another lander has it and it is not yours.`
-      log(`${lockState}\n    ${(released && released.notes) || 'the release agent returned nothing'}`)
-    }
+    lockState = `LEAKED - ${MERGE_LOCK} still held ${LOCK_TOKEN} after the release step, or the step answered nothing. Check ${MERGE_LOCK}/holder still reads ${LOCK_TOKEN} before removing it - if it reads anything else, another lander has it and it is not yours.`
+    log(`${lockState}\n    ${(released && released.notes) || 'the release agent returned nothing'}`)
   }
 }
 

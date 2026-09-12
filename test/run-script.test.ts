@@ -168,6 +168,39 @@ test("a lander dispatch restages land.js and still names its pre-flighted PRs", 
   }
 });
 
+test("a lander dispatch mints a merge-lock token that is different every launch", () => {
+  const box = harness();
+  try {
+    const first = run(box, CONFIG_SH, "--land");
+    const second = run(box, CONFIG_SH, "--land");
+    assert.equal(first.status, 0, first.stderr);
+    assert.equal(second.status, 0, second.stderr);
+
+    const one = (JSON.parse(first.stdout) as { lockToken?: string }).lockToken;
+    const two = (JSON.parse(second.stdout) as { lockToken?: string }).lockToken;
+
+    for (const token of [one, two]) {
+      assert.ok(
+        token && /^lander-[A-Za-z0-9._-]+$/.test(token),
+        `config.sh --land printed ${JSON.stringify(token)} as the merge-lock token. land.js ` +
+          "refuses a launch whose token is absent or carries anything it cannot quote into a " +
+          "single-quoted shell argument, so a token of the wrong shape is a lander that never " +
+          "starts. The lander- prefix is what tells a holder file apart from a person merging " +
+          "by hand.",
+      );
+    }
+    assert.notEqual(
+      one,
+      two,
+      "two launches were handed the same merge-lock token. The token is the only evidence a " +
+        "run has that the lock step really ran for it rather than replaying an earlier answer, " +
+        "and one shared by two launches proves nothing at all.",
+    );
+  } finally {
+    clean(box);
+  }
+});
+
 test("nothing in the skill dispatches a scriptPath written out by hand", () => {
   const offenders: string[] = [];
   for (const entry of readdirSync(SKILL)) {
