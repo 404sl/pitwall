@@ -106,8 +106,8 @@ behind=$(git rev-list --count "origin/${BRANCH}..origin/master" 2>/dev/null || e
 case "$behind" in ''|*[!0-9]*) say "usage: no such branch origin/${BRANCH}"; exit 6 ;; esac
 
 if [ "$behind" != "0" ]; then
-  merges=$(git rev-list --merges --count "origin/master..origin/${BRANCH}" 2>/dev/null || echo 0)
-  case "$merges" in ''|*[!0-9]*) merges=0 ;; esac
+  merges=$(git rev-list --merges --count "origin/master..origin/${BRANCH}" 2>/dev/null || echo unknown)
+  case "$merges" in ''|*[!0-9]*) say "usage: could not count merge commits on origin/${BRANCH}"; exit 6 ;; esac
   if [ "$merges" != "0" ]; then
     say "merge_shaped: ${BRANCH} carries ${merges} merge commit(s) of its own and is ${behind} behind master - a rebase would keep none of them and drop whatever exists only in the resolution, so nothing was touched. Rework it onto master."
     exit 8

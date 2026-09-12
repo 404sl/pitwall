@@ -59,6 +59,21 @@ exec "$@"
   return bin;
 }
 
+function breakMergeCount(bin: string): void {
+  const real = spawnSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).stdout.trim();
+  assert.ok(real, "no git on PATH to delegate to");
+  writeFileSync(
+    join(bin, "git"),
+    `#!/bin/bash
+for a in "$@"; do
+  [ "$a" = "--merges" ] && { echo "fatal: bad object" >&2; exit 128; }
+done
+exec ${real} "$@"
+`,
+  );
+  chmodSync(join(bin, "git"), 0o755);
+}
+
 function workspace() {
   const root = mkdtempSync(join(tmpdir(), "lander-merge-shaped-"));
   const bare = join(root, "origin.git");
@@ -182,6 +197,31 @@ test("land-one.sh leaves a merge-shaped branch that is already on top of master 
       `work forever - nothing is ever going to make that branch linear:\n${ran.out}\n${ran.err}`,
   );
   assert.match(ran.out, /^current:/m, ran.out);
+});
+
+test("land-one.sh refuses to rebase when it cannot count the branch's merge commits", () => {
+  const box = workspace();
+  lane(box.repo, "devloop/zz-unreadable", join("src", "pit.ts"), "export const pit = 1;\n");
+  onMaster(box.repo, "export const lanes = 3;\n", "master moves under the branch");
+  breakMergeCount(box.bin);
+
+  const head = git(box.repo, "rev-parse", "origin/devloop/zz-unreadable");
+  const ran = landOne(box.root, box.repo, box.bin, "devloop/zz-unreadable", "304");
+
+  assert.equal(
+    ran.code,
+    6,
+    "the guard read nothing and took that for 'no merge commits', so a branch whose shape is " +
+      `unknown went to the rebase that silently drops a merge resolution:\n${ran.out}\n${ran.err}`,
+  );
+  assert.match(ran.out, /^usage: could not count merge commits/m, ran.out);
+  git(box.repo, "fetch", "--quiet", "origin");
+  assert.equal(git(box.repo, "rev-parse", "origin/devloop/zz-unreadable"), head, "the branch was rebased on an unreadable count");
+  assert.equal(
+    existsSync(join("/tmp", `${PREFIX}-worktrees`, "land-304")),
+    false,
+    "the run reached the worktree it only creates on its way to the rebase",
+  );
 });
 
 const ARGS = {
