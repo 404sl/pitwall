@@ -89,6 +89,7 @@ if (!SKILL_DIR) {
 }
 
 const WT = input.worktrees || `/tmp/${LOCK_PREFIX}-worktrees`
+const SCRATCH = `/tmp/${LOCK_PREFIX}-scratch`
 
 // What a lane runs to check its own work, per repo, from the config. Falls back to an
 // instruction rather than a guess: a wrong test command reads as a broken build.
@@ -143,14 +144,20 @@ const TRIAGE = {
         required: ['title', 'repo', 'scope', 'autonomous'],
         properties: {
           title: { type: 'string' },
-          repo: { enum: ['site', 'extension', 'integration', 'docs'] },
+          repo: {
+            enum: ['site', 'extension', 'integration', 'docs'],
+            description: 'routed per child from the paths that child names, and a key this workspace has configured. A child does not inherit the parent routing.'
+          },
           scope: { type: 'string', description: 'what this child covers, traceable to the parent text' },
           autonomous: { type: 'boolean', description: 'false if this child still needs a person' },
           whyNotAutonomous: { type: 'string' }
         }
       }
     },
-    repo: { enum: ['site', 'extension', 'integration', 'docs', 'unknown'] },
+    repo: {
+      enum: ['site', 'extension', 'integration', 'docs', 'unknown'],
+      description: 'must be a key this workspace has configured - the brief lists them with their checkouts. The list above is a wire format shared with other projects and holds keys this workspace does not have.'
+    },
     title: { type: 'string' },
     priority: { type: 'integer' },
     ui: { type: 'boolean' },
@@ -217,6 +224,39 @@ const LANE = {
     notes: { type: 'string', description: 'everything it printed, verbatim' }
   }
 }
+
+const SHELL_FIRST = `EVERY COMMAND THAT RUNS git OR bundle STARTS WITH THESE TWO EXPORTS, and so does every
+command that runs a script which does:
+
+  export GIT_CONFIG_GLOBAL=/dev/null BUNDLE_USER_CONFIG=/dev/null && <your command>
+
+Each command you run is its own shell, so exporting them once at the start reaches nothing after
+it - they go at the front of the command, the way TEST_ENV_NUMBER already does. Lead with
+'export ... &&' rather than writing them as a prefix assignment: a $(...) inside the command
+expands BEFORE a prefix assignment takes effect, so the identity reads below would still go
+through the home config.
+
+A HOME-DIRECTORY CONFIG THAT CANNOT BE READ PRESENTS AS ANYTHING BUT ITSELF. Every git command
+fails with 'unknown error occurred while reading the configuration files', and every
+bundler-fronted command HANGS with no output at all - 60s of wall clock against 0.067s of user
+time, so blocked on I/O rather than slow. A hang and a slow machine look identical, so a run pays
+its full timeout before suspecting anything: three runs diagnosed this from scratch in one
+evening, one of them after killing two suites on timeouts. Whether a synced folder has
+materialised a file is not something a run controls, so those files are not read at all. The two
+exports cost a readable config nothing and are not conditional.
+
+COMMIT IDENTITY IS THE ONE THING THAT DOES NOT SURVIVE THEM, and every command that WRITES a
+commit needs it - commit, rebase, merge, cherry-pick. Pass it on the command, taken from the
+branch being built on:
+
+  git -c user.name="$(git log -1 --format=%an origin/master)" -c user.email="$(git log -1 --format=%ae origin/master)" commit -F <message file>
+
+Without it git either refuses outright, 'unable to auto-detect email address', or writes the
+wrong author - and nothing downstream notices the second. On this machine the credential helper
+sits in the system config rather than the home one, so pushes keep working - but that is this
+machine, not a rule: a workspace set up by 'gh auth setup-git' has the helper in the GLOBAL
+config, and these exports drop it. If a push asks for a password, say so rather than putting the
+home config back.`
 
 const LAW = `
 NON-NEGOTIABLE RULES. They outrank speed, and they outrank finishing the task.
@@ -331,18 +371,37 @@ NON-NEGOTIABLE RULES. They outrank speed, and they outrank finishing the task.
    they failed every commit. Do NOT run 'bd hooks install' to repair them - it also installs
    a prepare-commit-msg hook that appends agent identity trailers to commit messages, which
    rule 1 forbids. If a commit is blocked by a hook, say so and stop.
-12. EVERY 'gh pr' COMMAND CARRIES ITS REPOSITORY. Use '--repo <owner/name>' on every one,
+12. EVERY 'gh pr' COMMAND CARRIES ITS REPOSITORY. Use '--repo' with this run's slug on every one,
    including inside the checkout. A bare number means "whichever repository this directory
    points at", which is the assumption that is wrong when a run has been routed to the wrong
    checkout - and pull request numbers overlap across the repositories here, so a bare number
    returns a real answer rather than an error. There is no failing case to catch it.
-   The slug for this run is given above. If a command needs a number from another repository,
-   name that repository explicitly too.
+   A brief that sends you to 'gh' names this run's slug above, or the command that reads it from
+   the checkout. If a command needs a number from another repository, name that repository
+   explicitly too.
+
+${SHELL_FIRST}
 `
 
 // The config may place a repo anywhere under the workspace; falling back to the repo's own name
 // keeps a bare dispatch working for the common case where they match.
 function repoPath(repo) { return `${ROOT}/${(REPOS[repo] || {}).path || repo}` }
+
+const REPO_KEYS = Object.keys(REPOS)
+function reposTable() {
+  if (!REPO_KEYS.length) {
+    return `This workspace's configuration lists no repositories at all, so nothing can be routed.
+Return eligible:false saying so.`
+  }
+  const rows = REPO_KEYS.map((k) => {
+    const slug = (REPOS[k] || {}).slug
+    return `  ${k}  ->  ${repoPath(k)}${slug ? `  (${slug})` : ''}`
+  })
+  return rows.join('\n')
+}
+
+function unconfigured(repo) { return !Object.prototype.hasOwnProperty.call(REPOS, String(repo)) }
+function configuredList() { return REPO_KEYS.length ? REPO_KEYS.join(', ') : '(none)' }
 
 // HOW A LANE CHECKS ITS OWN WORK.
 //
@@ -448,6 +507,38 @@ you fail, and in this order - the owner file first, so the directory is never le
   rm -f /tmp/${LOCK_PREFIX}-lane-${laneIndex + 2}.owner
   rmdir /tmp/${LOCK_PREFIX}-lane-${laneIndex + 2}.lock
 
+THEN MAKE THE WORKTREE BOOT. Four things this app needs to start are gitignored, so none of them
+can reach a checkout and a worktree cut from origin/master cannot boot Rails at all. Run these
+before any other command, in this order:
+
+  test -L ${wtPath}/config/master.key || ln -s ${repoPath(repo)}/config/master.key ${wtPath}/config/master.key
+  test -L ${wtPath}/.env || ln -s ${repoPath(repo)}/.env ${wtPath}/.env
+  test -L ${wtPath}/node_modules || ln -s ${repoPath(repo)}/node_modules ${wtPath}/node_modules
+  export GIT_CONFIG_GLOBAL=/dev/null BUNDLE_USER_CONFIG=/dev/null && cd ${wtPath} && bundle exec rails dartsass:build
+
+THE GUARD IS THE POINT, AND A SENTENCE CANNOT REPLACE IT. You are handed this step on every
+attempt, including a retry onto a worktree that already has all three links. 'ln -s SRC DEST'
+where DEST is an existing symlink to a directory does NOT fail: it follows DEST and
+creates SRC's basename INSIDE the target. A bare re-run of the node_modules line therefore writes
+${repoPath(repo)}/node_modules/node_modules into the MAIN CHECKOUT - exit 0, no output, and
+invisible to 'git status' because node_modules is gitignored - leaving a self-referential loop in
+the one directory the asset manifest link_trees into. Keep the 'test -L' guard rather than
+reaching for a flag: the overwrite flag is 'ln -sfn' on GNU and 'ln -sfh' on BSD, so neither
+spelling is portable and the guard is.
+
+SKIP ONE AND THE FAILURE DOES NOT LOOK LIKE SETUP. Without config/master.key the credentials
+will not decrypt, so config/cable.yml renders 'undefined method url for nil' and every rails
+command dies before loading a single spec - under RAILS_ENV=test as well, because that file
+evaluates ERB for every environment whatever the test adapter needs. Without node_modules the
+asset manifest link_trees into it and every view-rendering spec fails with 'link_tree argument
+must be a directory'. With app/assets/builds unbuilt, stylesheet_link_tag falls through to
+compiling sass and raises 'cannot load such file -- sassc', which reads as a missing gem rather
+than a missing build. Measured 2026-09-12 on pristine origin/master: 427 of 1471 examples fail
+with none of these done, and 0 fail with all four. A lane that does not know this reads 427
+failures on a four-line change as a broken branch.
+
+They are gitignored and must not end up in your commit; check 'git status' before committing.
+
 Then carry the variable on every command:
   cd ${wtPath} && TEST_ENV_NUMBER=${laneIndex + 2} bundle exec rails db:test:prepare
   cd ${wtPath} && TEST_ENV_NUMBER=${laneIndex + 2} bash ${SKILL_DIR}/rspec-quiet.sh
@@ -505,21 +596,32 @@ red, the failure is yours to fix exactly as a local one would be - read the run,
 again. A red CI run on YOUR OWN BRANCH is the normal way to find a break here; it costs a
 2.6-minute cycle instead of a ten-minute one.
 
+IF IT SAYS 'no checks reported', DO NOT WAIT AGAIN - READ WHETHER THE BRANCH CONFLICTS:
+
+  cd ${wtPath} && gh pr view <your PR number> --repo ${cfg.slug || '<owner/name>'} --json mergeable,mergeStateStatus
+
+mergeable CONFLICTING, or mergeStateStatus DIRTY, means GitHub cannot build the merge ref the
+workflow runs on, so it scheduled NO RUN AT ALL - not queued, not skipped, absent. An empty rollup
+from a conflict is the same shape as one that is a minute old, which is why a lane sat on pitwall#120
+for two hours re-triggering a run that was never coming. Closing and reopening the PR does not
+resolve a conflict and will not produce one either. Merge origin/master into your branch, resolve,
+push, and wait on the new head.
+
+mergeable UNKNOWN means GitHub has not computed it yet. Re-read it; conclude nothing from one read.
+
 WHAT THIS DOES NOT CHANGE: the PR still has to be green before it is labelled, and
 lane-handoff.sh refuses to label anything whose rollup is empty, failing, or describing a stale
-head. The gate did not move, only where the suite runs.
+head - and exits 3 'conflicted' rather than 4 when a conflict is what emptied it, and 9
+'unreadable' rather than 4 when it could not read the rollup at all. The gate did not move, only
+where the suite runs.
 
 IF YOU EDIT A FILE WITH THE Edit TOOL, READ IT WITH THE Read TOOL FIRST. Inspecting it with
 'cat' through Bash does not count: Edit refuses with "File has not been read yet" and the call
 is wasted. Either Read then Edit, or skip Edit and write the change with a python heredoc -
 both work, mixing them does not.
 
-A fresh worktree needs .env,
-config/master.key and node_modules SYMLINKED from ${ROOT}/site to boot. They are gitignored
-and must not end up in your commit; check 'git status' before committing.
-
 .env IS A SYMLINK TO THE OWNER'S OWN FILE, SO NEVER WRITE TO IT. Appending a line in your
-worktree writes straight through into ${ROOT}/site/.env and changes how their development
+worktree writes straight through into ${repoPath(repo)}/.env and changes how their development
 machine behaves. On 2026-08-30 exactly that happened while trying to silence browser popups,
 and the owner's .env had to be restored. If you need an environment variable, export it for
 your command - FOO=bar bundle exec ... - never edit the file.
@@ -537,19 +639,23 @@ to them like their own test suite has gone haywire.
 The mail still gets written under tmp/my_mails, so nothing is lost and you can still read what
 was sent. Only the window is suppressed.
 
-app/assets/builds IS DIFFERENT - COPY IT, NEVER SYMLINK IT. The directory is tracked (it
-holds a .keep), so replacing it with a link makes git report the .keep deleted and the
-directory untracked, and 'git check-ignore' fails outright with "pathspec is beyond a
+app/assets/builds IS DIFFERENT - BUILD IT, NEVER SYMLINK IT AND NEVER COPY IT. The directory is
+tracked (it holds a .keep), so replacing it with a link makes git report the .keep deleted and
+the directory untracked, and 'git check-ignore' fails outright with "pathspec is beyond a
 symbolic link". The result is a dirty tree that blocks a rebase, for a reason that looks
-nothing like its cause. Copy it, or just run dartsass:build in the worktree and let it
-populate:
-  cp -R ${ROOT}/site/app/assets/builds/. ${wtPath}/app/assets/builds/
+nothing like its cause.
+
+Copying it is the quieter mistake and it costs more. The main checkout's CSS was compiled from
+whatever commit that checkout sits on, which is usually behind yours: on 2026-09-12 a copy from
+a checkout three commits back left 14 dark-mode brand-token system specs failing, on tokens the
+branch had never touched, and they read as a real regression rather than stale output. Only
+dartsass:build in your own worktree produces CSS that matches your branch.
 If you inherit a worktree where it is already a symlink, remove ONLY the link - never the
 target, which is the main checkout's compiled CSS - then recreate the directory and restore
 the tracked .keep.
 
-app/assets/builds is COMPILED OUTPUT, and the copy you inherit was built from whatever that
-checkout last had. If it is EMPTY (just .keep), request specs fail too, not only system specs -
+app/assets/builds is COMPILED OUTPUT, and whatever you inherit was built from whatever that
+worktree last had. If it is EMPTY (just .keep), request specs fail too, not only system specs -
 stylesheet_link_tag raises 'LoadError: cannot load such file -- sassc', which reads like a
 missing gem rather than a missing build. Run dartsass:build before concluding anything from it. Any system spec that reads a computed style then tests stylesheets older
 than your branch. That is a false red, and it looks exactly like a real one: an assertion
@@ -604,7 +710,7 @@ db/schema.rb to match.`
   }
   if (role === 'node') {
     return `Share dependencies instead of reinstalling:
-  ln -s ${repoPath(repo)}/node_modules ${wtPath}/node_modules
+  test -L ${wtPath}/node_modules || ln -s ${repoPath(repo)}/node_modules ${wtPath}/node_modules
 
 ${repoCommands(repo)}
 
@@ -630,8 +736,8 @@ modified topics-from-search.md and five untracked drafts. Branching there puts y
 of their work, and one 'git add -A' commits their drafts into your pull request.
 
   cd ${repoPath('docs')} && git fetch origin --quiet
-  git worktree add --force /tmp/devloop-worktrees/${task.id} -b ${`devloop/${task.id}`} origin/master
-  cd /tmp/devloop-worktrees/${task.id}
+  git worktree add --force ${wtPath} -b devloop/${task.id} origin/master
+  cd ${wtPath}
 
 Everything after that happens in the worktree. Do not cd back, do not check anything out in the
 original, and remove the worktree when you hand off. Branch from origin/master rather than the
@@ -713,12 +819,14 @@ function fixPrompt(task, attempt, feedback, laneIndex, brief) {
   // dbg.txt, full.txt and err-before.txt straight into the shared worktrees parent, where two
   // lanes debugging at once overwrite each other's output and neither notices. That is the
   // same failure as two runs sharing a test database, in a place nobody thought to look.
-  const scratch = `/tmp/devloop-scratch/${task.id}`
+  const scratch = `${SCRATCH}/${task.id}`
   const again = attempt > 1
+  const slug = (REPOS[task.repo] || {}).slug
   return `${again ? 'REWORK' : 'Fix'} one tracker issue end to end and open a pull request.
 
 Issue: ${task.id} - ${task.title}
 Repo: ${task.repo} (${repoPath(task.repo)})
+Slug: ${slug || 'not configured - read it with \'git -C ' + repoPath(task.repo) + ' remote get-url origin\', drop a trailing .git and a git@github.com: or https://github.com/ prefix, and use only an owner/name result, rather than guessing one'}
 Worktree: ${wtPath}
 Branch: ${branch}
 Scratch: ${scratch} - every temporary file you write goes in here. Test output, diffs,
@@ -755,6 +863,7 @@ ${brief ? `\nA designer has already decided how this should look. Build exactly 
 re-decide appearance, and if you think it is wrong, stop and ask rather than improvising:\n---\n${brief}\n---\n` : ''}
 
 ${again ? '' : `Set up the worktree. THE BRANCH MAY ALREADY EXIST, so check before creating it:
+  export GIT_CONFIG_GLOBAL=/dev/null BUNDLE_USER_CONFIG=/dev/null
   cd ${repoPath(task.repo)}
   git fetch origin --quiet
   if git ls-remote --exit-code --heads origin ${branch} >/dev/null; then
@@ -820,7 +929,7 @@ Create ${WT}/shots first. Return the absolute paths in 'screenshots'.
 
 Before committing, prove none of it leaked:
   cd ${wtPath} && git diff --cached --name-only
-  cd ${wtPath} && git diff --cached | grep -n "devloop-worktrees\|save_screenshot" || true
+  cd ${wtPath} && git diff --cached | grep -nE "${WT}|${SCRATCH}|save_screenshot" || true
 If either turns up anything, remove it and stage again. Untracked leftovers matter too -
 check 'git status --porcelain' is limited to what you meant to commit.
 
@@ -1004,8 +1113,40 @@ Otherwise:
    ${task.id}. Do NOT merge it. This repository gained a remote and CI on 2026-08-19; the
    instruction that it had neither outlived the fact by a day and would have had you commit
    straight onto a real default branch.`
-   : `Commit, push, and open a PR with 'gh pr create' explaining what was wrong, why this fix,
-   and what the test covers. Reference ${task.id}. Do NOT merge it.`}
+   : `Commit with the identity on the command rather than from a config nobody read -
+   git -c user.name="$(git log -1 --format=%an origin/master)" -c user.email="$(git log -1 --format=%ae origin/master)" commit -F <message file> -
+   then push and open a PR with 'gh pr create' explaining what was wrong, why this fix, and
+   what the test covers. Reference ${task.id}. Do NOT merge it.`}
+
+IF YOUR CHANGE TOUCHES plugins/ OR .claude-plugin/, LEAVE THE VERSION ALONE. Do not edit the
+version in .claude-plugin/marketplace.json, do not edit it in
+plugins/devloop/.claude-plugin/plugin.json, and do not add a version heading to
+plugins/devloop/skills/devloop/CHANGELOG.md. Leave all three files exactly as master has them.
+
+The number you would choose is already wrong. You read master when you started; by the time your
+pull request merges another lane has landed and moved it, and every lane in a pass reads the same
+master and picks the same number. On 2026-09-12 five plugin pull requests all declared 0.1.33:
+the first to land moved master to 0.1.33 and the other four were then equal rather than greater,
+were refused, and were retired - four sets of finished, reviewed, green work, each needing a full
+re-dispatch to recover. The lander assigns the number when it merges, which is the only moment
+anything knows what master holds.
+
+THE WORDS ARE STILL YOURS, because nothing else knows what you changed. Put your changelog entry
+in the PULL REQUEST BODY, under a heading of its own, and the lander copies it under the version
+it assigns:
+
+  ## Plugin changelog
+
+  What a session should do differently now - not what the diff was.
+
+One section, plain prose or bullets, no version number in it. With no such section the entry
+becomes your pull request title, which is worse than a sentence you wrote.
+
+If your change genuinely needs to edit one of those three files in SOMETHING OTHER than the
+version - a new field in the plugin manifest, a second entry in the marketplace - the lander
+refuses the pull request and names the file rather than quietly restoring master's copy over your
+edit. Say so in your summary so a person can sequence it: a lane and the lander cannot both own
+that file in one pass.
 
 ${LAW}
 
@@ -1024,6 +1165,8 @@ PR: ${work.prUrl || work.prNumber}
 Author's claim: ${work.summary}
 Test they added: ${work.testsAdded || 'none reported'}
 Round ${attempt} of ${MAX_ATTEMPTS}.
+
+${SHELL_FIRST}
 
 Read the issue with 'bd show ${task.id}' from ${ROOT}, then read the actual diff:
   cd ${work.worktree || `${WT}/${task.id}`} && rtk git diff origin/master...HEAD
@@ -1052,7 +1195,7 @@ you did not actually view an image.
   worktree, run that test, restore it. Leave the worktree byte-clean and say you did.
 - Did unrelated changes ride along?
 - Did any scaffolding reach the commit? Run
-  'git diff origin/master...HEAD | grep -n "devloop-worktrees\|save_screenshot"'. A scratch
+  'git diff origin/master...HEAD | grep -nE "${WT}|${SCRATCH}|save_screenshot"'. A scratch
   path or a capture call inside a committed file is an automatic rejection: it makes every
   future run of that suite write into a directory that exists on one machine.
 - What breaks that the suite cannot see? Other callers of the changed code, a state the new
@@ -1105,13 +1248,30 @@ Repo: ${task.repo}
 PR: ${work.prUrl || work.prNumber}
 
 1. WAIT FOR THE PR'S OWN CHECKS AND CONFIRM THEY ARE GREEN. Poll, do not assume:
-     cd ${repo} && gh pr view ${work.prNumber} --repo ${slug} --json statusCheckRollup,headRefOid
+     cd ${repo} && gh pr view ${work.prNumber} --repo ${slug} --json statusCheckRollup,headRefOid,mergeable,mergeStateStatus
 
    Every check must have conclusion SUCCESS, AND THERE MUST BE AT LEAST ONE. For the first
    minute or so after a push the rollup is an EMPTY ARRAY - GitHub has not registered the run
    yet. "All of them are green" is TRUE of no checks at all, in jq and in English, so a
    waiting loop built on all(...) exits instantly having seen nothing. Treat an empty rollup
    as "not started, keep waiting", never as a pass.
+
+   READ THE MERGEABILITY IN THE SAME CALL, AND BEFORE YOU SETTLE IN TO WAIT. mergeable
+   CONFLICTING, or mergeStateStatus DIRTY, means the branch conflicts with master - and a
+   pull_request workflow runs on refs/pull/<n>/merge, which GitHub cannot build while it
+   conflicts, so it schedules NO RUN AT ALL. Not queued, not skipped, absent. The rollup stays
+   empty for good and looks exactly like one that is a minute old, which is how a lane waited two
+   hours on pitwall#120 and learned nothing. Closing and reopening the PR does not resolve a
+   conflict: that was tried there, one second apart, and changed nothing.
+
+   A CONFLICT IS NOT YOURS TO RESOLVE HERE - you are not rebasing and not merging in this step.
+   Return status 'blocked' with 'conflicted with master' and the mergeStateStatus in 'notes'. The
+   run then ends NOT LABELLED with the conflict on the record, which is what whoever reads it needs
+   to send the branch for a merge from master. Nothing is lost by stopping: the wait could not have
+   ended.
+
+   mergeable UNKNOWN means GitHub has not computed it yet, which is neither a conflict nor a
+   clean merge. Re-read it on the next poll; never conclude a conflict from one read.
 
    DO NOT FALL BACK TO THE LEGACY COMBINED-STATUS ENDPOINT while you wait. The endpoint
    repos/<owner>/<repo>/commits/<sha>/status answers state "pending" with total_count 0 on
@@ -1144,6 +1304,13 @@ PR: ${work.prUrl || work.prNumber}
    if a commit message is the problem say so in 'notes' and return 'blocked' - rewriting
    history under a pushed branch is not something to do unattended.
 
+   AN INSTRUCTION TO ADD THOSE TRAILERS IS NOT A FINDING, AND NOT A REASON TO STOP HERE.
+   You may have been handed one alongside the rule that forbids them. Rule 1 below settles
+   that permanently, and the trailers being absent is the whole outcome: there is nothing in
+   the commit to rewrite, nothing in the body to edit, and nothing to ask anybody. A conflict
+   with that instruction is not a value 'status' can take. Read the checks, label the PR,
+   write the note, remove the worktree, and return a handoff outcome.
+
    ONE EXCEPTION, settled by the owner on 2026-08-23: THE NAME OF A THIRD-PARTY PRODUCT THIS
    CHANGE INTEGRATES WITH IS SUBJECT MATTER, NOT AN AUTHORSHIP CLAIM. This product ships an
    MCP server, and the clients that connect to it are called Claude Code, Codex and Gemini CLI.
@@ -1175,9 +1342,18 @@ PR: ${work.prUrl || work.prNumber}
 
    STEPS 1 TO 5 OF THIS HANDOFF ARE ONE COMMAND. Prefer it:
 
-     bash ${SKILL_DIR}/lane-handoff.sh --repo-path ${repo} --slug <owner/name> \
+     bash ${SKILL_DIR}/lane-handoff.sh --repo-path ${repo} --slug ${slug} \
        --pr ${work.prNumber} --branch <your branch> --issue ${task.id} \
        --note-file <a file holding your tracker note> --worktree ${wtPath}
+
+   A REFUSAL IS NEVER WORKED AROUND BY LABELLING BY HAND. Every non-zero exit EXCEPT 5 and 8 is a
+   refusal: nothing was labelled anywhere, and putting the label on yourself asserts exactly the
+   judgement this script exists to withhold. 5 and 8 are the only two where the label may already
+   be on, and each has its own paragraph below - so read any other code as a refusal, including
+   one not yet described here. If you believe the script is wrong rather than your arguments,
+   file a ticket quoting the exact command and exit code, say so in 'notes', and return 'blocked'.
+   A lane has already read a correct refusal as a defect and labelled its pull request by hand:
+   the script was right, and the slug it had been given was not.
 
    --worktree, --lane-lock and --note-file are ALL OPTIONAL. Leave out any you do not have and
    the script skips that step. It needs only --repo-path, --slug, --pr and --branch. A lane read
@@ -1194,9 +1370,54 @@ PR: ${work.prUrl || work.prNumber}
    actually on the branch, labels, reads the label back, removes YOUR worktree, appends your
    note with --append-notes and reads it back, and drops your lane lock last.
 
-   Exit codes: 0 handed off, 2 non-compliant (NOTHING was labelled - it prints the offending
-   lines, you judge them, you fix, you re-run), 4 not in a state to label, 5 labelled and cleaned
-   up but the tracker note could not be confirmed, 6 bad arguments.
+   IT HANDLES EVERY PULL REQUEST ON THE BRANCH, not only the one you name. It asks every
+   repository the workspace config names for its open pull requests whose head is --branch, and
+   checks and labels each one it finds in the same run. A ticket that touched two repositories is
+   therefore ONE handoff, not two: running it once per repository appends your note twice.
+
+   Exit codes: 0 handed off, 2 non-compliant (NOTHING was labelled anywhere - it prints the
+   offending lines against the pull request they came from, you judge them, you fix, you re-run),
+   3 a pull request on the branch conflicts with master so no check will ever be scheduled for it,
+   4 a pull request on the branch is not in a state to label (nothing was labelled anywhere),
+   5 labelled and cleaned up but the tracker note could not be confirmed, 6 bad arguments,
+   7 the set of pull requests on the branch could not be established - the config could not be
+   read, a repository's pull requests or labels could not be listed, the label could not be
+   created in one of them, or a checkout named by the config has no origin/<branch> (nothing was
+   labelled anywhere), 8 labelling began and stopped part-way, 9 a pull request's status rollup
+   could not be READ at all.
+
+   EXIT 9 IS NOT A FAILING PULL REQUEST. It means gh would not answer - throttled, an expired
+   token, a wrong slug, a deleted pull request - or answered something that did not parse, so
+   nothing whatever is known about that pull request's checks. That is not the same as knowing a
+   check failed, which is why it is not 4 and why the output never claims a verdict. It names the
+   exact 'gh pr view' it attempted and quotes what gh or the reader said: READ THAT before deciding
+   anything. Secondary rate limits are live here and are invisible in 'gh api rate_limit' - every
+   bucket reads full while calls are refused - so a throttled read is the common case. Wait a
+   minute and run the handoff again; if the same read keeps failing for a reason the output names
+   as permanent, return 'blocked' quoting it.
+
+   EXIT 3 IS NOT A WAIT AND NOT A RE-RUN. The pull request conflicts with master, so GitHub builds
+   no merge ref and schedules no checks for it - the rollup you are waiting on will never fill.
+   Nothing you can do in this step changes that, and a second run reads the same conflict again:
+   return 'blocked' with what it printed. The remedy is a merge from master, and it is not yours
+   here.
+
+   EXIT 7 IS NOT 'BAD ARGUMENTS'. Your arguments were fine and nothing was labelled: something it
+   has to read or prepare to cover the full set of pull requests would not answer. READ WHICH ONE
+   IT NAMES, because the remedies are different and only one of them is waiting. A config it could
+   not find: run it from the main checkout rather than from your worktree. A repository with no
+   slug and no checkout: add the slug to the config. A repository that would not list its pull
+   requests or labels, with gh's reason quoted: that one may be transient, so re-run it. A
+   repository with no lane-verified label that it could not create one in: that is a permissions
+   answer, not a transient one - somebody with write access there creates the label once, and no
+   number of re-runs will do it. Do NOT label by hand instead, whichever it is: labelling the half
+   you know about is the defect this script exists to prevent.
+
+   EXIT 8 MEANS RE-RUN IT, once the cause it quotes is gone. It prints which pull requests carry
+   the label and which do not. Adding a label is idempotent and it stops before the worktree
+   removal and the tracker note, so a second run relabels what is already labelled harmlessly and
+   finishes the rest. Never take a label off to tidy this up, and never label the remainder by
+   hand - the lander reads only the label, so a pull request left out is invisible to it.
 
    EXIT 5 IS NOT A REASON TO RE-RUN IT. The label is on and the worktree is gone; only the note is
    outstanding, and the message says which repair it wants. Re-running the whole handoff cannot
@@ -1208,9 +1429,29 @@ PR: ${work.prUrl || work.prNumber}
    tell the difference - that judgement is yours, and 'sends automatically', 'the model' and
    'regenerated' have all been correctly kept before.
 
+   THAT JUDGEMENT DECIDES HOW TO REWORD A HIT, NEVER WHETHER TO PROCEED PAST IT. Exit 2 is
+   TERMINAL: the only route to a label is a re-run of the script that exits 0. 'This hit is my
+   own subject matter, therefore it is fine' ends in a rewording that keeps the meaning - never
+   in a label applied by hand.
+
+   THE HANDOFF LABEL TOKEN HAS NO SUBJECT-MATTER EXEMPTION AND NO COMPLIANT SPELLING. The check
+   is a grep for the literal token, so typesetting changes nothing: backticks, a code fence and a
+   quotation from a file in this repository all still hit. A change whose own subject is the
+   handoff mechanics is not the exception to that, it is the case that meets it most often, and
+   the rewrite is the same one either way - name the label in words rather than writing the
+   token. 'The handoff label' carries the meaning and passes.
+
+   That is measured. On 2026-09-12 a lane took exit 2 on a pull request whose whole subject was
+   the handoff script, judged its single hit a false positive, and added the label by hand - to
+   a pull request whose own text said that a refusal is never worked around by labelling by
+   hand. The label is the only signal the lander reads and nothing re-checks it before the
+   merge, so what it published was a verdict no gate had given.
+
    Use --check-only to see the verdict without changing anything.
 
-   If the script is missing, do it by hand with the steps below, which are the same sequence:
+   If the script is missing, do it by hand with the steps below, which are the same sequence.
+   MISSING means the file is not there. A refusal is not a missing script, and these steps are
+   never the answer to one:
      cd ${repo} && gh pr edit ${work.prNumber} --repo ${slug} --add-label lane-verified
 
    If that fails because the label does not exist in this repository, create it once and
@@ -1505,8 +1746,40 @@ Rules for a split, because a bad one is worse than asking:
 - If splitting would leave a child that is still ambiguous, do not split. Ask instead.
 - Do NOT split merely because an issue is large. Size is not a reason; independence is.
 
-Otherwise eligible:true. Set 'repo' from the paths and subject matter: site (Rails app),
-extension (Chrome extension), integration (npm library).
+Otherwise eligible:true.
+
+ROUTE IT FROM THE PATHS THE TICKET NAMES, AND CHECK THE ANSWER. These are the repositories this
+workspace has, with the checkout each key resolves to:
+
+${reposTable()}
+
+1. ONLY A KEY FROM THAT TABLE MAY BE RETURNED. The schema's list of words is a wire format shared
+   with other projects and contains keys this workspace does not have. A key that is in the list
+   and absent from the table is not a choice - it is a dispatch whose worktree is cut from a path
+   that does not exist. If the work belongs somewhere with no key here, return eligible:false and
+   say which repository it needs.
+2. DERIVE THE KEY FROM THE SOURCE PATHS THE TICKET NAMES. For each path it names, find which
+   checkout actually contains it:
+     ls <checkout>/<the path it names> 2>/dev/null
+     git -C <checkout> ls-files 'the path it names' 2>/dev/null
+   The assigned repo must be one where those paths exist. A ticket whose subject is a spec under
+   spec/ does not belong in a TypeScript package that has no spec/ directory, whatever its
+   wording suggests.
+3. A 'Repo:' LINE IN THE TICKET IS CONFIRMATION, NOT AUTHORITY. Most tickets here open with one
+   and it is usually right, so use it to confirm what the paths already told you. Do NOT require
+   it: tickets are written by several sessions and by hand, and a rule that only works when the
+   author remembered it fails the same way one level up. A child split off a parent does not
+   inherit the line at all, which is how the routing gets lost on the ticket that actually ships.
+4. WHEN THE LINE AND THE PATHS DISAGREE, THAT IS A STOP, NOT A TIEBREAK. Return eligible:false and
+   name both - the key the line claims and the checkout the paths are in. Guessing between them is
+   how a lane ends up labelling an unrelated pull request that happens to share a number.
+
+FOUR LIVE MISROUTES IN ONE DAY, every one recovered by the lane rather than by the pipeline, and
+they cost a dispatch each: a ticket naming src/notify.ts routed to the contract repo; a child
+whose parent was routed correctly sent to a package with no spec/ directory; a handoff graded
+against a checkout that had nothing to do with the branch, which reported a green pull request as
+not-green; and a key chosen from the enum for a checkout this workspace does not have. The paths
+were in every one of those tickets.
 
 Set 'ui' true only when somebody has to DECIDE HOW SOMETHING LOOKS OR READS: new or changed
 layout, styling, components, states, or on-screen wording. Those go through a designer.
@@ -1524,6 +1797,23 @@ Report 'title' and 'priority' as the tracker has them. Do not modify anything. N
 
 if (!triage) return { id: ID, outcome: 'agent_error', at: 'triage' }
 
+const wouldSplit = !triage.eligible && triage.splittable && (triage.splitPlan || []).length > 1
+const misrouted = triage.eligible
+  ? (unconfigured(triage.repo) ? [triage.repo] : [])
+  : wouldSplit ? triage.splitPlan.map((c) => c.repo).filter(unconfigured) : []
+if (misrouted.length) {
+  const named = [...new Set(misrouted)].map((r) => `'${r}'`).join(', ')
+  const where = triage.eligible ? 'this issue' : 'a child of this split'
+  triage.eligible = false
+  triage.splittable = false
+  triage.reason = `triage routed ${where} to ${named}, which is not a repository in this ` +
+    `workspace's configuration - it has ${configuredList()}. The key came from the schema's ` +
+    `shared list rather than from the config, so there is no checkout behind it and nothing ` +
+    `downstream would notice: a bare pull request number resolves in whichever repository it is ` +
+    `handed, and the numbers overlap. Say which configured repository the paths in this ticket ` +
+    `are in, or add the missing one to the configuration, and dispatch it again.`
+}
+
 if (!triage.eligible && triage.splittable && (triage.splitPlan || []).length > 1) {
   phase('Split')
   const plan = triage.splitPlan
@@ -1539,6 +1829,7 @@ Create the title as it should read, not as it was pasted.
 
 Children to create, in order:
 ${plan.map((c, i) => `${i + 1}. [${c.repo}] ${c.title}
+   repo: ${c.repo} (${repoPath(c.repo)})
    scope: ${c.scope}
    ${c.autonomous ? 'can be done unattended' : `needs a person: ${c.whyNotAutonomous}`}`).join('\n')}
 
@@ -1548,6 +1839,14 @@ For each, from ${ROOT}:
   what done looks like. Carry across the concrete detail the parent already established -
   file and line references, reproductions, ids - rather than pointing at the parent for it.>"
   --acceptance "<what must be true, for this child only>"
+OPEN EVERY CHILD'S DESCRIPTION WITH ITS ROUTING, on its own first line, before anything else:
+  Repo: <the key listed for that child above> (<that repository's checkout path>)
+ROUTING IS THE SECOND THING A CHILD SILENTLY FAILS TO INHERIT, after metadata. A parent that
+opens with its own Repo line produces children that open straight into the work, so triage has
+nothing to confirm against and guesses - and the child is the thing that actually ships. That
+cost a whole dispatch on 2026-09-10: a correctly routed parent's child was sent to a TypeScript
+package for a ticket whose subject was a Rails spec, and the lane could not begin. Write the
+line per child from the list above; do not copy the parent's, which may name a different repo.
 CHOOSE <type> PER CHILD - bug, feature or task - from what the child actually is, not from the
 parent's type and not from a fixed value. A child that builds something new is a feature even
 when the parent is a bug; a child that is somebody running a command or reading a dashboard is

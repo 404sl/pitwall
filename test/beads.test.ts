@@ -42,6 +42,20 @@ test("closed issues are kept for the metrics and never carried in issues", async
   );
 });
 
+test("the external-ref a bead was imported with is read, and its absence is not invented", async () => {
+  const collected = await readIssues(TRACKER, {
+    env: { ...env("ok"), BD_LIST_FIXTURE: "shipped" },
+    errors: [],
+  });
+  const byId = new Map(collected.closed.map((issue) => [issue.id, issue]));
+  assert.equal(byId.get("mw-1")?.externalRef, "https://github.com/acme/site/issues/7");
+  assert.equal(
+    byId.get("mw-1.1")?.externalRef,
+    "https://session-replay.com/replays/e5QfEEjBkaPuvxwGyjn2vw",
+  );
+  assert.equal(byId.get("mw-4")?.externalRef, undefined);
+});
+
 test("dependency edges from bd blocked populate blockedBy", async () => {
   const collected = await readIssues(TRACKER, { env: env("ok"), errors: [] });
   const byId = new Map(collected.issues.map((issue) => [issue.id, issue]));

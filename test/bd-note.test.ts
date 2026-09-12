@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { GIT_ENV } from "./support/git.js";
 
 const SCRIPT = join(
   import.meta.dirname,
@@ -80,6 +81,7 @@ function append(
 ): Ran {
   const env: Record<string, string | undefined> = {
     ...process.env,
+    ...GIT_ENV,
     PATH: `${box.bin}:${process.env["PATH"] ?? ""}`,
     PITWALL_CONFIG: box.config,
     BEADS_DIR: "",

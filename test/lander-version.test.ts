@@ -6,6 +6,7 @@ import { runScript, type Call } from "./support/workflow.js";
 const ARGS = {
   skillDir: "/skill",
   root: "/root",
+  lockToken: "lander-1788964650-29574",
   repos: { site: { path: "cli", slug: "404sl/pitwall" } },
 };
 
@@ -22,7 +23,9 @@ const PR = {
 const SHA = "e1a54123ca4d0b6a32479f49da4d26893f648206";
 
 type Declared = {
+  fetched?: boolean;
   status: string;
+  prStatus?: string;
   masterVersion: string;
   branchVersion: string;
   touchesPlugin: boolean;
@@ -33,7 +36,9 @@ type Declared = {
 
 function declared(over: Partial<Declared> = {}): Declared {
   return {
+    fetched: true,
     status: "read",
+    prStatus: "read",
     masterVersion: "0.1.21",
     branchVersion: "0.1.22",
     touchesPlugin: true,
@@ -75,36 +80,42 @@ function labels(calls: Call[]) {
   return calls.map((c) => c.label).join(", ");
 }
 
-test("land.js refuses a branch whose plugin version equals master's, naming both numbers", async () => {
-  const { calls, done } = lander(declared({ masterVersion: "0.1.21", branchVersion: "0.1.21" }));
+test("land.js lands a plugin branch declaring the version master already holds, because the lander assigns the number", async () => {
+  const { calls, logs, done } = lander(declared({ masterVersion: "0.1.21", branchVersion: "0.1.21" }));
   const out = await done;
 
   assert.equal(
     calls.filter((c) => c.label.startsWith("land:")).length,
-    0,
-    `the merge step ran on a branch declaring the version master already holds. Steps: ${labels(calls)}`,
+    1,
+    "a branch declaring the number master holds was refused. Every lane in a pass reads the same " +
+      "master and bumps to the same number, so refusing equality lands one pull request per pass and " +
+      `retires the rest - measured on 2026-09-12, four of five. Steps: ${labels(calls)}`,
   );
-  assert.deepEqual(out.landed, []);
-  const stopped = out.stopped.find((s) => s.number === 80);
-  assert.ok(stopped, `nothing was reported as stopped: ${JSON.stringify(out.stopped)}`);
-  assert.equal(stopped.why, "version_not_ahead");
-  assert.match(stopped.detail || "", /0\.1\.21/);
+  assert.deepEqual(out.stopped, []);
+  assert.equal(out.landed.length, 1);
   assert.ok(
-    (stopped.detail || "").includes("0.1.21") && /origin\/master holds 0\.1\.21/.test(stopped.detail || ""),
-    `the refusal does not name both numbers: ${stopped.detail}`,
+    logs.some((l) => l.includes("0.1.21") && /assigns the one after/.test(l)),
+    `the run log does not say where the number that lands comes from: ${logs.join("\n")}`,
   );
 });
 
-test("land.js refuses a branch whose plugin version is lower than master's, naming both numbers", async () => {
+test("land.js lands a plugin branch whose declared version is behind master, because that number is not used", async () => {
   const { calls, done } = lander(declared({ masterVersion: "0.1.21", branchVersion: "0.1.17" }));
   const out = await done;
 
-  assert.equal(calls.filter((c) => c.label.startsWith("land:")).length, 0, `the merge step ran: ${labels(calls)}`);
-  const stopped = out.stopped.find((s) => s.number === 80);
-  assert.ok(stopped);
-  assert.equal(stopped.why, "version_not_ahead");
-  assert.match(stopped.detail || "", /0\.1\.17/);
-  assert.match(stopped.detail || "", /0\.1\.21/);
+  assert.equal(
+    calls.filter((c) => c.label.startsWith("land:")).length,
+    1,
+    "a branch whose own number is behind was refused, and nothing in the pipeline would ever have " +
+      `raised it - the lander writes the three version files from master itself: ${labels(calls)}`,
+  );
+  assert.deepEqual(out.stopped, []);
+  assert.equal(out.landed.length, 1);
+  assert.equal(
+    calls.filter((c) => c.label.startsWith("retire:")).length,
+    0,
+    `finished, green work was un-queued over a number it no longer chooses: ${labels(calls)}`,
+  );
 });
 
 test("land.js lands a branch whose plugin version is strictly greater", async () => {
@@ -114,14 +125,6 @@ test("land.js lands a branch whose plugin version is strictly greater", async ()
   assert.equal(calls.filter((c) => c.label.startsWith("land:")).length, 1, `the merge step did not run: ${labels(calls)}`);
   assert.deepEqual(out.stopped, []);
   assert.equal(out.landed.length, 1);
-});
-
-test("land.js compares the numbers rather than the strings, so 0.1.9 does not outrank 0.1.21", async () => {
-  const { calls, done } = lander(declared({ masterVersion: "0.1.21", branchVersion: "0.1.9" }));
-  const out = await done;
-
-  assert.equal(calls.filter((c) => c.label.startsWith("land:")).length, 0, `the merge step ran: ${labels(calls)}`);
-  assert.equal(out.stopped[0]?.why, "version_not_ahead");
 });
 
 test("land.js lands a branch that changes nothing the plugin ships, whatever the version says", async () => {
@@ -149,13 +152,31 @@ test("land.js refuses rather than merges when master's version cannot be read", 
   assert.match(out.stopped[0]?.detail || "", /git fetch origin exited 128/);
 });
 
-test("land.js refuses rather than merges when a version is not three numbers", async () => {
+test("land.js lands a branch whose own version is not three numbers, since the branch's number is not read", async () => {
   const { calls, done } = lander(declared({ masterVersion: "0.1.21", branchVersion: "v0.1.22-rc" }));
   const out = await done;
 
-  assert.equal(calls.filter((c) => c.label.startsWith("land:")).length, 0, `an unparseable version let the merge through: ${labels(calls)}`);
+  assert.equal(calls.filter((c) => c.label.startsWith("land:")).length, 1, labels(calls));
+  assert.deepEqual(out.stopped, []);
+  assert.equal(out.landed.length, 1);
+});
+
+test("land.js refuses when MASTER's version is not three numbers, because the number that lands is counted from it", async () => {
+  const { calls, done } = lander(declared({ masterVersion: "v0.1.21-rc", branchVersion: "0.1.22" }));
+  const out = await done;
+
+  assert.equal(
+    calls.filter((c) => c.label.startsWith("land:")).length,
+    0,
+    `a master nobody can read let the merge through, and the version it would land cannot be computed: ${labels(calls)}`,
+  );
   assert.equal(out.stopped[0]?.why, "version_unreadable");
-  assert.match(out.stopped[0]?.detail || "", /v0\.1\.22-rc/);
+  assert.match(out.stopped[0]?.detail || "", /v0\.1\.21-rc/);
+  assert.equal(
+    calls.filter((c) => c.label.startsWith("retire:")).length,
+    0,
+    `a pull request was un-queued because master's own manifest is wrong: ${labels(calls)}`,
+  );
 });
 
 test("land.js refuses rather than merges when the version step answers nothing", async () => {
@@ -178,7 +199,7 @@ test("land.js lands in a repository that ships no plugin manifest on master", as
   assert.equal(out.landed.length, 1);
 });
 
-test("land.js reads master's version once per pull request, after the one before it merged", async () => {
+test("land.js reads master's version once per pull request, and both plugin branches of a pass land", async () => {
   const SECOND = { ...PR, number: 81, branch: "devloop/pitwall-maz2", issue: "pitwall-maz2" };
   const versions: Record<string, Declared> = {
     "404sl/pitwall#80": declared({ masterVersion: "0.1.21", branchVersion: "0.1.22" }),
@@ -194,8 +215,14 @@ test("land.js reads master's version once per pull request, after the one before
   const out = await done;
 
   assert.equal(calls.filter((c) => c.label.startsWith("version:")).length, 2, `master was not re-read per pull request: ${labels(calls)}`);
-  assert.deepEqual(out.landed.map((l) => l.number), [80]);
-  assert.equal(out.stopped.find((s) => s.number === 81)?.why, "version_not_ahead");
+  assert.deepEqual(
+    out.landed.map((l) => l.number),
+    [80, 81],
+    "the second plugin pull request of the pass did not land. It read the master the first one had " +
+      "already moved, so its own number was equal rather than greater - which is the deadlock this " +
+      `removes by not reading the branch's number at all: ${JSON.stringify(out.stopped)}`,
+  );
+  assert.deepEqual(out.stopped, []);
 });
 
 test("the land.js version step fetches origin before reading master", async () => {
@@ -256,18 +283,18 @@ test("land-train.js reads master's version after the train is green and before i
   assert.ok(verify < version && version < merge, `the version is not read between the checks and the merge: ${order.join(", ")}`);
 });
 
-test("land.js un-queues a pull request refused on its version, so the next run does not rediscover it", async () => {
+test("land.js un-queues nothing over a version, since no version refusal is left to act on", async () => {
   const { calls, done } = lander(declared({ masterVersion: "0.1.21", branchVersion: "0.1.17" }));
-  await done;
+  const out = await done;
 
-  const retire = calls.find((c) => c.label.startsWith("retire:"));
-  assert.ok(
-    retire,
-    `a refusal that nothing can resolve on its own left the label on, so every future run pays for the same refusal. Steps: ${labels(calls)}`,
+  assert.equal(
+    calls.filter((c) => c.label.startsWith("retire:")).length,
+    0,
+    "a pull request was retired over the number it declares. Four pull requests of finished, " +
+      "reviewed, green work were retired that way on 2026-09-12, each costing a full re-dispatch " +
+      `to recover: ${labels(calls)}`,
   );
-  assert.match(retire.prompt, /404sl\/pitwall#80/);
-  assert.match(retire.prompt, /0\.1\.17/);
-  assert.match(retire.prompt, /0\.1\.21/);
+  assert.equal(out.landed.length, 1);
 });
 
 test("land.js leaves a pull request queued when the version could not be read at all", async () => {
@@ -312,20 +339,16 @@ test("land.js does not un-queue a pull request whose label was pulled back while
   assert.equal(
     calls.filter((c) => c.label.startsWith("retire:")).length,
     0,
-    `a pull request a lane had pulled back for rework was un-queued on its version, which appends a ` +
-      `finding to an issue that lane holds in_progress and reopens it for a second lane. Steps: ${labels(calls)}`,
+    `a pull request a lane had pulled back for rework was un-queued, which appends a finding to an ` +
+      `issue that lane holds in_progress and reopens it for a second lane. Steps: ${labels(calls)}`,
   );
   assert.equal(
     calls.filter((c) => c.label.startsWith("land:")).length,
-    0,
-    `a merge was delegated for a branch whose number is behind, and land-one.sh never reads a ` +
-      `version - so the label being gone turned the guard off rather than holding it: ${labels(calls)}`,
+    1,
+    "nothing was delegated, so nothing re-read the label: the version step is one haiku read and " +
+      `land-one.sh asks GitHub itself and exits 7 without merging: ${labels(calls)}`,
   );
-  assert.deepEqual(
-    out.stopped.filter((s) => s.why === "version_not_ahead"),
-    [],
-    `refused on a number it was no longer in the queue to declare: ${JSON.stringify(out.stopped)}`,
-  );
+  assert.deepEqual(out.landed, [], JSON.stringify(out.landed));
   assert.ok(
     out.skipped.some((s) => s.number === 80 && /still labelled/.test(s.why || "")),
     `it was neither deferred nor left alone: ${JSON.stringify({ stopped: out.stopped, skipped: out.skipped })}`,
@@ -340,26 +363,7 @@ test("land.js does not un-queue a closed or draft pull request on its version ei
   const out = await done;
 
   assert.equal(calls.filter((c) => c.label.startsWith("retire:")).length, 0, `a closed pull request was un-queued: ${labels(calls)}`);
-  assert.equal(calls.filter((c) => c.label.startsWith("land:")).length, 0, `a merge was delegated anyway: ${labels(calls)}`);
-  assert.deepEqual(out.stopped.filter((s) => s.why === "version_not_ahead"), [], JSON.stringify(out.stopped));
-});
-
-test("land.js refuses but keeps queued a branch whose version is behind when the queue state was not read", async () => {
-  const reply = declared({ masterVersion: "0.1.21", branchVersion: "0.1.17" });
-  delete reply.labelled;
-  delete reply.open;
-  const { calls, done } = lander(reply);
-  const out = await done;
-
-  assert.equal(calls.filter((c) => c.label.startsWith("land:")).length, 0, `the merge ran anyway: ${labels(calls)}`);
-  assert.equal(
-    calls.filter((c) => c.label.startsWith("retire:")).length,
-    0,
-    `a step that reported no queue state un-queued a pull request anyway: ${labels(calls)}`,
-  );
-  assert.equal(out.stopped[0]?.why, "version_unreadable");
-  assert.match(out.stopped[0]?.detail || "", /0\.1\.17/);
-  assert.match(out.stopped[0]?.detail || "", /lane-verified/);
+  assert.deepEqual(out.landed, [], JSON.stringify(out.landed));
 });
 
 test("the land.js version step reads the label and the state of the pull request it is about to merge", async () => {
@@ -405,60 +409,141 @@ test("land.js refuses an unreadable master even when the step also reports the l
   assert.match(out.stopped[0]?.detail || "", /git fetch origin exited 128/);
 });
 
-test("land.js does not merge a behind version because the step reported the label gone", async () => {
+test("land.js lands a branch touching no plugin file when the manifest could not be read, because the guard does not govern it", async () => {
   const { calls, logs, done } = lander(
-    declared({ masterVersion: "0.1.21", branchVersion: "0.1.17", labelled: false }),
-    { status: "merged", mergeSha: SHA, masterGreen: true, notes: "" },
+    declared({ status: "unreadable", masterVersion: "", branchVersion: "", touchesPlugin: false, notes: "git show origin/master exited 128" }),
   );
   const out = await done;
 
-  assert.deepEqual(
-    out.landed,
-    [],
-    `a branch declaring 0.1.17 merged over master's 0.1.21 because one haiku read - or a lane ` +
-      `re-labelling between the read and land-one.sh's own check - turned the version guard off ` +
-      `rather than handing it over: ${JSON.stringify(out.landed)}`,
+  assert.equal(
+    calls.filter((c) => c.label.startsWith("land:")).length,
+    1,
+    `a branch changing nothing under plugins/ or .claude-plugin/ was refused over a number the ` +
+      `guard never compares for it: ${labels(calls)}`,
   );
+  assert.deepEqual(out.stopped, []);
+  assert.equal(out.landed.length, 1);
+  assert.ok(
+    logs.some((l) => /plugins\/ or \.claude-plugin\//.test(l)),
+    `the versions were left uncompared and the run log says nothing about it, so a wrong ` +
+      `touchesPlugin on an unreadable manifest passes silently: ${logs.join("\n")}`,
+  );
+});
+
+test("land.js calls an unreadable pull request pr_unreadable, and does not spend a merge agent on it", async () => {
+  const { calls, logs, done } = lander(
+    declared({
+      prStatus: "unreadable",
+      labelled: false,
+      open: false,
+      notes: "gh pr view 37 failed with exit code 1: GraphQL API rate limit already exceeded",
+    }),
+  );
+  const out = await done;
+
+  assert.equal(out.stopped[0]?.why, "pr_unreadable");
+  assert.match(out.stopped[0]?.detail || "", /rate limit already exceeded/);
   assert.equal(
     calls.filter((c) => c.label.startsWith("land:")).length,
     0,
-    `the merge was delegated to land-one.sh, which checks the label and the checks and never a ` +
-      `version, so nothing downstream would have compared the numbers: ${labels(calls)}`,
+    `a merge agent was spawned while gh could not answer, and land-one.sh reads an unanswerable ` +
+      `rollup as red and exits 4 - which retires the pull request: ${labels(calls)}`,
   );
-  assert.equal(calls.filter((c) => c.label.startsWith("retire:")).length, 0, `it was un-queued: ${labels(calls)}`);
+  assert.equal(
+    calls.filter((c) => c.label.startsWith("retire:")).length,
+    0,
+    `it was un-queued because gh was rate limited: ${labels(calls)}`,
+  );
   assert.ok(
-    logs.some((l) => /DEFERRED/.test(l) && l.includes("0.1.17") && l.includes("0.1.21") && l.includes("lane-verified")),
-    `the deferral left nothing a person could act on: a number that is behind and a label that is ` +
-      `gone are two different things to fix, and the log names neither: ${logs.join("\n")}`,
+    !logs.some((l) => /is gone|closed, merged or draft/.test(l)),
+    `labelled and open were read as facts from a gh call that printed nothing: ${logs.join("\n")}`,
   );
 });
 
-test("land.js does not merge a behind version because the step reported it closed either", async () => {
-  const { calls, done } = lander(
-    declared({ masterVersion: "0.1.21", branchVersion: "0.1.17", open: false }),
-    { status: "merged", mergeSha: SHA, masterGreen: true, notes: "" },
-  );
+test("land.js keeps a rate-limited read off the version verdict even when the branch ships a plugin file", async () => {
+  const { done } = lander(declared({ prStatus: "unreadable", touchesPlugin: true, labelled: false, open: false, notes: "API rate limit exceeded" }));
   const out = await done;
 
-  assert.deepEqual(out.landed, [], JSON.stringify(out.landed));
-  assert.equal(calls.filter((c) => c.label.startsWith("land:")).length, 0, labels(calls));
-  assert.equal(calls.filter((c) => c.label.startsWith("retire:")).length, 0, labels(calls));
+  assert.equal(
+    out.stopped[0]?.why,
+    "pr_unreadable",
+    `a failed pull request read was reported as a version problem, which sends a reader to ` +
+      `manifests and version arithmetic that were never wrong`,
+  );
 });
 
-test("land.js does not merge an uncomparable version because the step reported the label gone", async () => {
-  const { calls, done } = lander(
-    declared({ masterVersion: "0.1.21", branchVersion: "v0.1.22-rc", labelled: false }),
-    { status: "merged", mergeSha: SHA, masterGreen: true, notes: "" },
+test("the version prompt asks for the manifest read and the pull request read as separate fields", async () => {
+  const { calls, done } = lander(declared());
+  await done;
+
+  const prompt = calls.find((c) => c.label.startsWith("version:"))?.prompt || "";
+  assert.match(prompt, /prStatus/, "the step has no field to report a failed gh call in");
+  assert.ok(
+    !/gh pr view printed no answer\. Say which in notes/.test(prompt),
+    "the prompt still routes a failed gh call into status, which is the field the version verdict reads",
+  );
+});
+
+test("land.js refuses a branch the version guard does not govern when the fetch itself failed", async () => {
+  const { calls, logs, done } = lander(
+    declared({
+      fetched: false,
+      masterVersion: "0.1.21",
+      branchVersion: "0.1.21",
+      touchesPlugin: false,
+      notes: "git fetch did not print FETCHED",
+    }),
   );
   const out = await done;
 
-  assert.deepEqual(
-    out.landed,
-    [],
-    `a version nobody can order against anything merged because the queue state came back false: ` +
-      `a label that is gone says who decides whether this pull request is still wanted, not whether ` +
-      `an unreadable number is ahead: ${JSON.stringify(out.landed)}`,
+  assert.equal(
+    out.stopped[0]?.why,
+    "fetch_failed",
+    "a failed fetch was waved through on scope. Every ref after it is whatever the checkout " +
+      "already held, so a stale origin/master diffs and shows perfectly well - and land-one.sh " +
+      "swallows its own fetch error, reads the branch as not behind, rebases nothing and merges " +
+      `it on a master it was never tested against: ${JSON.stringify(out.stopped)}`,
   );
-  assert.equal(out.stopped[0]?.why, "version_unreadable");
+  assert.equal(calls.filter((c) => c.label.startsWith("land:")).length, 0, `the merge step ran on stale refs: ${labels(calls)}`);
   assert.equal(calls.filter((c) => c.label.startsWith("retire:")).length, 0, `it was un-queued on ignorance: ${labels(calls)}`);
+  assert.deepEqual(out.landed, [], JSON.stringify(out.landed));
+  assert.ok(
+    logs.some((l) => /fetch/i.test(l)),
+    `the run log does not name the fetch as the reason it stopped: ${logs.join("\n")}`,
+  );
+});
+
+test("land.js refuses a failed fetch on a plugin branch too, whatever the numbers say", async () => {
+  const { calls, done } = lander(declared({ fetched: false, masterVersion: "0.1.21", branchVersion: "0.1.22", notes: "fatal: could not read from remote repository" }));
+  const out = await done;
+
+  assert.equal(out.stopped[0]?.why, "fetch_failed", JSON.stringify(out.stopped));
+  assert.match(out.stopped[0]?.detail || "", /could not read from remote repository/);
+  assert.equal(calls.filter((c) => c.label.startsWith("land:")).length, 0, labels(calls));
+});
+
+test("the version prompt asks for the fetch as its own field, not as a manifest verdict", async () => {
+  const { calls, done } = lander(declared());
+  await done;
+
+  const prompt = calls.find((c) => c.label.startsWith("version:"))?.prompt || "";
+  assert.match(prompt, /fetched/, "the step has no field to report a failed fetch in");
+  assert.ok(
+    !/FETCHED did not print, or ls-tree/.test(prompt),
+    "the prompt still folds a failed fetch into status, which the version verdict skips entirely " +
+      "for a branch that touches no plugin file",
+  );
+});
+
+test("land.js says in the run log when the versions were left uncompared over a manifest it could not read", async () => {
+  const { logs, done } = lander(
+    declared({ status: "unreadable", masterVersion: "", branchVersion: "", touchesPlugin: false, notes: "git show origin/master exited 128" }),
+  );
+  await done;
+
+  assert.ok(
+    logs.some((l) => /not compared/.test(l) && /git show origin\/master exited 128/.test(l)),
+    "the not-compared line reads identically for a repository that has no plugin number and one " +
+      `whose manifest could not be read, so nobody can tell the two apart: ${logs.join("\n")}`,
+  );
 });

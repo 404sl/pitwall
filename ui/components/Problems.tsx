@@ -1,5 +1,5 @@
 import { problemKey, type ProblemRow } from "../model.js";
-import { clock, stamp } from "../format.js";
+import { clock, fill, stamp } from "../format.js";
 import { strings } from "../strings.js";
 
 function scopeLabel(row: ProblemRow): string {
@@ -10,6 +10,15 @@ function scopeLabel(row: ProblemRow): string {
     return strings.problems.console;
   }
   return row.name;
+}
+
+function preventedText(count: number | undefined): string {
+  if (count === undefined) {
+    return "";
+  }
+  return count === 1
+    ? ` ${strings.problems.prevented.one}`
+    : ` ${fill(strings.problems.prevented.many, { count: String(count) })}`;
 }
 
 export function Problems({ rows }: { rows: ProblemRow[] }) {
@@ -38,7 +47,10 @@ export function Problems({ rows }: { rows: ProblemRow[] }) {
               {scopeLabel(row)}
             </th>
             <td className="pw-cell pw-cell--id">{row.source}</td>
-            <td className="pw-cell pw-cell--title">{row.message}</td>
+            <td className="pw-cell pw-cell--title">
+              {row.message}
+              {preventedText(row.prevented)}
+            </td>
             <td className="pw-cell pw-cell--at" title={stamp(row.at)}>
               {clock(row.at)}
             </td>

@@ -1,34 +1,642 @@
 # Changelog
 
-## 0.1.31
+## 0.1.51
 
-**The triage scan's seen state was keyed to the directory the skill is installed in, so a rename
-had already thrown it away.** `triage-scan.sh` kept its watermarks at `~/.claude/skills/devloop/`.
-The write never failed - it creates the directory - but the skill used to be called `autofix`, and
-the 22 watermarks it last wrote are still sitting under that former name, untouched since
-2026-08-28. Every run since read an empty set, so every issue a person had already judged came back
-as a fresh finding, which is how a monitor becomes noise and then gets ignored. A plugin update
-would do the same thing again on its own: the install path carries a version segment and is
-replaced wholesale each release.
+A release train no longer closes tracker issues on the strength of a deploy step nobody read. The
+deploy step must report `deployed` - confirmed by what the hosts are serving - before anything is
+closed; a step that reports nothing is reported as unknown rather than as a failure, and the
+issues stay open with the merge sha named so a person can settle it. The close step now reports
+which pull requests it closed an issue for, and anything it does not name comes back as unclosed
+rather than being assumed done.
 
-- **It now lives at `/tmp/<prefix>-triage-seen.json`,** beside the slot registry and the lane
-  locks and keyed by the same `lockPrefix`, so neither a release nor a rename can move it.
-  `whatsnew.sh` already kept its own marker this way. `/tmp` is the right kind of home for it
-  regardless: losing it costs one noisy run, not work.
-- **The scan recognises `autofix/` as well as `devloop/` when reading an id out of a branch name.**
-  A merged `autofix/<id>` was not matched, so its issue - still `in_progress`, worktree gone, no
-  live run - was reported as `E stale claim`, a lane that died holding it. 27 of those branches are
-  in this workspace's pull request history and three are inside the 60-PR window the check reads.
-  The branch namespace a lane WRITES stays the literal `devloop/` and stays unconfigurable, for the
-  reason recorded with the prefix work: several readers match it literally, so a key only the
-  writer honoured would split the namespace. What a reader accepts has to be the wider set.
-- **Branches nobody generated are deliberately still unmatched.** `fix/...`, `docs/...` and the
-  rest carry no id anywhere in the name - 12 of the last 60 merged pull requests - and they are
-  matched by the number quoted in the issue's own notes instead. No prefix list would help them.
-- **The documented mark command pointed at a path that does not resolve.** `TRIAGE.md` told a
-  triage agent to run `~/.claude/skills/devloop/triage-scan.sh`, so the step that records a
-  judgement silently did nothing and the seen state was never written at all. It now uses
-  `${CLAUDE_PLUGIN_ROOT}`, as every other invocation in the skill does.
+## 0.1.50
+
+The lander's merge-lock token is now minted by `config.sh --land` and carried in `args` as `lockToken`, not made up by the lock step. Launch `land.js` with the object that command printed - it refuses to start without a token and will not mint one for itself, so an args object assembled by hand lands nothing. A relaunch after a stall goes through the same command. The lock step is handed the token to write and is asked only for what `cat` printed back; it must not substitute a timestamp or a pid of its own.
+
+## 0.1.49
+
+Re-running a node-role lane's setup step is now safe. The link command is a no-op when the
+worktree already holds the link, so a rework attempt no longer writes a
+`node_modules/node_modules` loop into the main checkout the way a bare `ln -s` did,
+silently and invisibly to `git status`.
+
+If such a directory already exists in a main checkout it is residue from before this
+change. Leave it alone and say so in your result - a main checkout is never a lane's to
+write to or tidy, whatever is in it.
+
+## 0.1.48
+
+The queue scripts can now take only the work assigned to this loop, and do so only where the workspace asks for it. Add `"actor": "<the project's queue name>"` to `.pitwall.json` and both `dispatchable.sh` and `queue.sh` offer, count and claim only issues whose assignee is that name - unassigned work is skipped too, since an unassigned ticket is nobody's queue and the pipeline merges unattended. Without the field nothing changes, and `dispatchable.sh` prints one line on stderr saying the gate is off and how to turn it on.
+
+The name is read from the config and never derived from `idPrefix`: in some workspaces the two are the same string and in others the project name is not the prefix at all, so a derived name matches nothing and does it without an error.
+
+`queue.sh`'s "ready to start" line names the queue it counted when the gate is on, so it and `watch.sh`'s DISPATCH line keep meaning the same thing, and `--next` stamps its claims with that same name - without it bd resolves a different actor and its ownership guard refuses every claim. When nothing is dispatchable, `dispatchable.sh` names the queues the ready work is actually sitting in, counting only the tickets the assignee gate itself withheld.
+
+## 0.1.47
+
+A rails lane is now given four runnable setup commands before it runs anything else: symlink `config/master.key`, `.env` and `node_modules` from the main checkout, then `bundle exec rails dartsass:build` in the worktree. Each symlink is guarded with `test -L`, because the step is handed out on every attempt and a bare `ln -s` onto an existing symlinked directory silently creates the link inside the main checkout instead of failing. Do not copy the main checkout's compiled CSS - it is usually older than the branch and fails brand-token specs the branch never touched. The rails brief resolves the main checkout from the configured repo path rather than assuming a directory called `site`.
+
+Refs pitwall-r8mt
+
+## 0.1.46
+
+The version commit written at merge time no longer carries the plugin's own label in its subject - it now reads "Set the plugin version" followed by the number. Nothing a session does changes, but a merge commit on public master is now neutral text, which is what the handoff compliance check assumes and could not previously enforce. `land-one.sh` recognises both the new subject and the one it replaces, so a branch that an earlier round already prepared is still recognised and its stale version commit still dropped rather than replayed into a changelog conflict.
+
+Refs pitwall-zrbu
+
+## 0.1.45
+
+The handoff command now carries your repository's slug - you are no longer asked to supply `<owner/name>` yourself, and rule 12 no longer shows one either. Do not guess a slug from anywhere: a guess that names a real pull request in another repository is how the handoff label reaches the wrong one.
+
+A refusal from lane-handoff.sh is never worked around by labelling the pull request by hand. Every non-zero exit except 5 and 8 means nothing was labelled anywhere, and that includes any code not yet described in the brief. If you believe the script is wrong rather than your arguments, file a ticket quoting the exact command and exit code, say so in your notes, and return blocked.
+
+## 0.1.44
+
+**Triage now routes a lane from the paths its ticket names, against the repositories this
+workspace actually has.** It used to decide from one sentence naming another workspace's
+repositories - "site (Rails app), extension (Chrome extension), integration (npm library)" -
+and was never shown the checkouts in the configuration it was handed, so it chose from the
+schema's shared list. Four misroutes in one day, a dispatch each.
+
+- **A repo key the workspace configuration does not have is refused before a worktree is cut.**
+  The key is checked the moment triage returns, so it never reaches the fix step, the handoff or
+  the lander. The issue comes back parked through the handover with the configured keys named.
+  **Read that as a mis-key, not as a broken ticket** - triage runs cheap and a one-off bad key is
+  possible. Clear it by saying which configured repository the ticket's paths are in, or by
+  adding the missing key to the workspace configuration, then dispatch it again. No retry is
+  attempted, deliberately: loud here beats a run cutting a worktree from a path that does not
+  exist, then handing a pull request number to a repository it does not belong to.
+- **A `Repo:` line is confirmation now, not authority, and disagreement is a stop.** Derive the
+  repository from which checkout contains the paths the ticket names; use the line to confirm it
+  when the author wrote one. When the line and the paths name different checkouts, triage returns
+  ineligible naming both rather than breaking the tie. So a ticket with no `Repo:` line still
+  routes, and one with a wrong line no longer routes wrongly in silence.
+- **When you split a ticket, open every child's description with its own routing.** First line,
+  before anything else: `Repo: <key> (<checkout path>)`, derived per child from that child's own
+  paths and never copied from the parent. Routing is the second thing a child silently fails to
+  inherit, after metadata, and the child is the thing that ships - a correctly routed parent's
+  child was sent to a TypeScript package for a ticket about a Rails spec and could not begin.
+
+## 0.1.43
+
+A refusal from the handoff compliance check is terminal. Your judgement picks how to
+reword an offending line, never whether to proceed past one, and the only route to a
+label is a re-run of the script that exits 0 - never a label applied by hand.
+
+The handoff label token has no subject-matter exemption and no spelling that passes:
+the check greps the literal token, so backticks, a code fence and a quotation from a
+file in the repository all still hit. Reword by naming the label in words instead.
+That applies equally to documentation about the handoff mechanics and to a sentence
+reporting a pull request's own state - both get the same rewrite.
+
+The by-hand label steps in the brief apply only when the script file is absent. A
+refusal is not a missing script.
+
+## 0.1.42
+
+The lander no longer calls a failed `gh pr view` a version problem. A pull
+request whose labels and state could not be read now stops as `pr_unreadable`,
+with the gh error attached, and keeps its label so the next pass retries it -
+the remedy is to wait, not to bump a number. A branch that changes nothing under
+`plugins/` or `.claude-plugin/` is no longer refused over a manifest the version
+guard would never have compared for it.
+
+A fetch that did not print `FETCHED` is now reported in its own field and stops
+the pull request as `fetch_failed`, whatever the branch touches. Every ref read
+after a failed fetch is whatever the checkout already held, so a branch can read
+as up to date against a master that has moved, and the merge step rebases
+nothing. Nothing merges on it, the label stays on, and the next run takes it.
+
+## 0.1.41
+
+**A release train's deploy brief named a script that does not exist and two hosts nobody owns.**
+`land-train.js` built its own deploy step out of three literals:
+`~/.claude/skills/devloop/deploy-one.sh`, `bundle exec mina <env> deploy`, and read-backs against
+`staging.example.com` and `example.com`. The plugin does not install to `~/.claude/skills/devloop/` -
+it installs under `~/.claude/plugins/cache/`, with a version segment - so that path resolved to
+nothing, and the placeholder hosts resolved to somebody else's domain.
+
+The same file reads `skillDir` on the way in and REFUSES TO START without it, with a note
+explaining that absent it renders as `bash undefined/...` and that a lane which cannot find a
+script does not stop - it does the steps by hand and the run SUCCEEDS. That argument was made
+about `lane-handoff.sh` and never applied to the deploy step, which is the one that ships.
+
+The hosts are the worse half. A revision read back from a domain we do not control cannot fail,
+and a check that cannot fail is not a check - it is the deploy promoting itself on its own word,
+which is the failure `deploy-one.sh` was written to prevent.
+
+- **The deploy commands come from `repos.<name>.deploy` and the read-backs from
+  `repos.<name>.verify`,** which is what `land.js` has done since 0.1.20 and what `.pitwall.json`
+  has carried since. `land-train.js` already read that array's LENGTH, to decide whether a
+  repository deploys at all, and then threw its CONTENTS away and invented two commands instead.
+  Reading the same field for both is the fix; nothing about one project's deploy tool is written
+  into this file any more.
+- **No deploy tool is named in the brief.** `bundle exec mina` was as wrong as the hosts and for
+  the same reason - this file ships in a plugin other workspaces install, and one deploy command
+  written into it deploys the wrong thing everywhere else. The configured string is passed through
+  verbatim, and the brief says not to unwrap it and run the underlying tool directly.
+- **The brief is worded for N environments rather than exactly two.** It used to say "staging AND
+  production" and "BOTH environments"; it now says every environment the repository deploys to, in
+  the order the config lists them, which is what made "STAGING FIRST" true in the first place. A
+  repository with one environment, or three, is no longer given a brief that miscounts it.
+- **A repository that records no `verify` is told to work out what is live by whatever means the
+  project offers,** the same fallback prose `land.js` uses, rather than being handed a host. The
+  log-only sentences about a read-back that cannot be keyed are deliberately NOT reused here: those
+  are instructions to edit configuration in another repository, and 0.1.20 already established that
+  no sentence written for a person reading the log reaches an agent's brief.
+
+Four tests drive the train with a stubbed agent and assert on the rendered deploy brief: that it
+contains neither `example.com` nor `~/.claude/skills`, that it carries each configured deploy
+command in configured order and names no deploy tool the config did not, that it reads every
+configured environment back, and that a repository with a deploy and no verify gets the fallback
+instruction. All four fail against the copy on master.
+
+The incidents this is measured against: `pitwall-voe`, where a deploy read configuration from the
+wrong copy of a file for hours with nothing reporting it, and `pitwall-ey8` and `pitwall-azp`,
+which exist because a deploy was promoted on its own word.
+
+Refs pitwall-b492.
+
+## 0.1.40
+
+Report a rollup the handoff could not read as unread, not as not-green
+
+## 0.1.39
+
+Say when a journal age could not be measured, instead of printing it as fresh
+
+## 0.1.38
+
+**A lane no longer chooses the plugin version, and must not touch the three files that carry
+it** - `.claude-plugin/marketplace.json`, `plugins/devloop/.claude-plugin/plugin.json`, and the
+version heading of this file. Every lane in a pass read the same `origin/master` and bumped to
+the same number, so the first to land moved master to it and the rest were equal rather than
+greater - which the version guard refuses. On 2026-09-12 five plugin pull requests all declared
+`0.1.33`, and four sets of finished, reviewed, green work were retired for a reason that had
+nothing to do with their content.
+
+`assign-plugin-version.sh` assigns the number instead, counted up from what master holds at the
+moment the branch is pushed for merging. `land-one.sh` runs it per pull request, inside the
+worktree it already rebases in, and `land-train.sh` runs it once per train. Two plugin pull
+requests queued at once now both land in one pass, with consecutive versions.
+
+**Write the entry in the PULL REQUEST BODY, under a `## Plugin changelog` heading.** The lander
+copies that section in under the version it assigns, so the words are still the lane's. A body
+with no such section - or a heading with nothing under it - gets the pull request title instead.
+A body that cannot be read at all REFUSES the merge rather than moving the version with nothing
+under its heading, and the next pass reads it again.
+
+**A lane that edits one of those three files beyond its version is now REFUSED by name** rather
+than having master's copy restored over it. That restore is whole-file: a branch shipping a new
+manifest field or a second marketplace entry had it deleted and merged anyway, and CI stays green
+because CI only asserts that the two manifests agree. On a train the refusal names the plugin
+changes the train is carrying, because up to eight already-green pull requests lose the pass with
+it.
+
+`land-one.sh` drops a version commit an earlier round wrote onto the branch before it rebases, so
+every round counts the number again from master as it is now. A pull request that does not merge
+in the round that prepared it - an empty check rollup is the ordinary reason - used to replay that
+commit onto a master whose own number had moved and conflict on this file, and a conflict retires
+a green pull request.
+
+## 0.1.37
+
+**A release train acted on one repository and its result could not say so.** `land-train.js` took
+one `repo` key on the way in, resolved the path and the slug once, and every later step used those
+single values - so a workspace landing across two repositories lost the smaller one every train.
+The run that reported it returned `landed:[1287], rejected:[], stranded:[], notes:null` while a
+labelled, green, reviewed pull request in the second repository sat untouched, and a supervisor who
+had not personally opened it read that as a clean run. Since the train only ever examines one
+repository, `rejected` and `stranded` being empty for every other one is guaranteed rather than
+informative: the result could not tell "nothing was labelled there" from "nothing looked".
+
+The file already held the argument. Beside `stranded` in its own return: *an empty rejected list
+must not be able to hide work that went nowhere*, written after a train silently dropped #739
+twice. That was applied to a branch the train DROPPED and never carried to a repository the train
+never OPENED.
+
+- **`repo` is required and is refused rather than guessed.** It used to read
+  `(args && args.repo) || 'site'`, so omitting it did not error - it silently selected one
+  repository, which is why the missing pull request was invisible rather than merely unreported.
+  The run looked like "the train" instead of "the train, for one of several". This is where
+  `lanes.sh`, `lock-check.sh` and `dupes.sh` landed on the same guess-versus-refuse question.
+- **The result names the repository and its slug,** at the top level, because a choice made going
+  in and unnamed coming out is silent at both ends.
+- **Every configured repository is surveyed for labelled pull requests before the lock is given
+  back,** and the result carries `surveyed`, `taken` and `left` per repository WITH EXPLICIT
+  ZEROES - a repository that yielded nothing says so rather than being absent from the structure.
+  An absent key and a zero are the same thing to a reader and different things in fact, which is
+  the `errors[]` argument applied to the train's own output.
+- **A repository that could not be surveyed is `null`, not zero.** No slug configured, a `gh`
+  command that failed, a repository the survey left out of its answer, or a `labelled` entry that is
+  not a pull request number all come back with `surveyed: null` and a `why`. A failed read reported
+  as a clean zero is the defect one layer down from the one this entry is about.
+- **A pull request's identity is `slug#number`, never a bare number,** so what this train landed is
+  subtracted only from its own repository's count. The repositories here number in the same range -
+  `404sl/pitwall` is at #115-120 and the pull request that prompted this was `pitwall-site#185` -
+  and a number landed in one repository cancelling the same number labelled in another would have
+  reinstated the whole defect behind a confident zero from a repository reported as read.
+- **What is left carries the exact relaunch rather than a complaint.** `docs: 1 labelled pull
+  request left (404sl/pitwall-site#185) - run again with repo: docs`. Running a second train is the
+  right answer and hand-merging is not: a hand-merge ships the content and skips the release
+  branch, the close step and this accounting. `args.repo` existed and nobody knew, which is the
+  measure of how discoverable it was - `whenToUse` now says a train covers one repository and that
+  the key is required.
+
+**The survey runs after the merge and the close, not at the top, and the placement is held by a
+test that models the late arrival.** The halves of a two-repo ticket do not arrive together - the
+reported one arrived minutes after the first, which is what made the loss hard to see - so a survey
+taken before the train was built would miss exactly the case it exists for. A fixture with both
+repositories labelled from the first call cannot tell the two placements apart and would pass a
+survey moved to the top of the run, so the second repository's pull request is labelled only once
+the merge has been seen: it is absent from the queue the survey would have read early and present in
+the one it reads late. A train that built nothing surveys too: that is the run most likely to be the
+one where another repository holds the only work in the workspace.
+
+Fifteen tests drive the script as a function body: a train with no `repo` returns an error and takes
+no lock, a labelled pull request in a second configured repository appears in the result with its
+relaunch, the survey is ordered after the merge and the close and before the release, a pull request
+labelled during the run is still reported, every configured key is present with numeric counts, the
+same number labelled in two repositories is counted in both, a pull request still labelled in the
+train's own repository is explained rather than left as a bare count, and an unreadable, an omitted,
+a slugless and an unnumbered repository each come back unknown rather than clean. All fifteen fail
+against the previous revision. Moving the survey to the top of the run fails two of them, and moving
+it to between the merge and the close fails one - so neither placement passes on call order alone.
+The two existing suites that drive the train - `lander-lock` and `prefix` - pass `repo` in their
+shared args, which is the newly required input supplied rather than any assertion relaxed.
+
+## 0.1.36
+
+**The fix brief told a lane the slug for its run was named above, and named only the path.** Rule
+12 asks for `--repo <owner/name>` on every `gh pr` command and then says the value is given above.
+That is true of the handoff brief, which interpolates `REPOS[task.repo].slug` into its own
+commands, and false of the fix brief, which printed `Repo: <key> (<path>)` and nothing more - so
+the step that runs `gh pr create` carried the rule with nothing behind it. For a rails-role
+repository the slug did appear once, inside a troubleshooting command in the checks block, with a
+`<owner/name>` fallback beside it; for a node-role repository it appeared nowhere.
+
+A wrong slug at that step does not fail. Pull request numbers overlap across the repositories of
+one workspace, so `gh pr create --repo` naming the wrong one opens the pull request in the wrong
+place and reports success - and on 2026-09-11 a handoff run given the wrong repository evaluated
+`404sl/pitwall#45`, a real unrelated merged pull request, instead of `404sl/pitwall-site#45`.
+
+The fix brief now prints `Slug:` beside the path it already printed, read with the accessor the
+handoff brief already uses. A repository entry that declares no slug - possible in any workspace
+this plugin is installed into - is handed the command that reads one from the checkout instead:
+`git -C <path> remote get-url origin`, a trailing `.git` and the host prefix dropped, the result
+used only if it is owner/name. That is what `lane-handoff.sh` already does when its `--slug` is
+missing, and it is the whole point of not printing a dead end beside a step that needs the value.
+
+Rule 12's second sentence covers both branches - a brief that sends a run to `gh` names this run's
+slug above, or the command that reads it from the checkout - which makes it true of all three
+briefs that carry the rules, configured or not: the fix and handoff briefs name the value or the
+way to it, and the split brief hands out no `gh` command of its own.
+
+Three tests in `test/lane-slug.test.ts`, each failing before: the fix brief rendered for each
+configured repository names that repository's slug on a line of its own, matched to the line
+boundary because `404sl/pitwall` is a prefix of `404sl/pitwall-site`; every brief of a run that
+carries the rules block and hands out a `gh` command of its own names the slug above it; and the
+brief for a repository with no configured slug names `remote get-url origin` against that
+repository's own path and hands out no placeholder to substitute. The second is the invariant
+rather than the instance - the next brief to carry the rules fails it until it names a slug too.
+
+## 0.1.35
+
+**The compliance gate could not pass a commit in this repository, because this repository's own
+directory layout matches its leakage and authorship patterns.** The manifest directory and the
+plugin's own source tree are named after the pipeline, so naming any file a plugin change touched
+tripped the bare-noun leakage pattern, and naming either manifest tripped the authorship pattern
+on the vendor name inside the dot-directory. A commit message that did the ordinary thing - say
+which files it changed - therefore could not pass, and the only compliant message was one that
+refused to name its own subject. It refused a green pull request on exactly three lines, all
+paths, and the run could not be rescued by rework because amending a pushed merge commit is
+refused to a lane by design.
+
+The reasoning that the repository had a convention of avoiding those literals was checked and is
+false: across the last 40 commits on `master` the bare noun appears 8 times and the manifest
+directory 3 times. The owner had also already settled the authorship half on 2026-09-09 - the rule
+is about AUTHORSHIP, trailers and generated-with footers, and does not forbid the literal when it
+is a path or a filename.
+
+The fix is the neutralising `sed`, not the patterns: widening either pattern would weaken a check
+that has caught real violations. Three path forms are now neutralised before the test, the same
+shape the script already used for `CLAUDE.md` and `AGENTS.md`, and anchored as paths so they
+cannot launder prose. A bare pipeline noun outside a path is still caught - that IS the leakage
+the pattern is for.
+
+Five tests, one failing before: a message naming all three manifest and skill paths is compliant,
+and a generated-with footer, an authorship trailer, a scratch checkout path and a bare pipeline
+noun in prose each still leave nothing labelled.
+
+## 0.1.33
+
+**A lane waited two hours on a pull request whose checks GitHub was never going to schedule.**
+To run a `pull_request` workflow GitHub builds `refs/pull/<n>/merge`, and it cannot build that ref
+while the branch conflicts with base - so for a conflicted pull request no run is created at all.
+Not queued, not skipped, not failed: absent. `statusCheckRollup` is `[]` and stays `[]`, which is
+the same shape as a rollup a minute after a push, so every poller in the pipeline read "not ready
+yet" and waited. `pitwall#120` sat like that while Actions was demonstrably healthy, and the usual
+re-trigger - close, reopen one second later - changed nothing, because reopening does not resolve a
+conflict.
+
+`lane-handoff.sh` now reads `mergeable` and `mergeStateStatus` in the same call as the rollup, and
+a conflict is its own outcome with its own exit code:
+
+    3  conflicted  the branch conflicts with master, so no check is coming. Nothing was labelled.
+                   The remedy is a merge from master and a push, not another wait.
+
+`mergeable` `CONFLICTING` or `mergeStateStatus` `DIRTY` is a conflict. `UNKNOWN`, or the field
+missing entirely, is GitHub still computing it and means nothing either way - it is never read as a
+conflict. A pull request that is green on its current head is untouched whatever its mergeability
+says: the lander rebases and waits for CI again, which the handoff brief already promises, and
+`land-one.sh` already owns that path.
+
+The lane briefs in `task.js` say the same thing at the two places a lane waits: after a push, when
+`gh pr checks` answers "no checks reported", and in the handoff step, which returns `blocked`
+with the conflict on the record rather than polling a rollup that cannot fill.
+
+Four tests, the first failing before the change: an empty rollup with `CONFLICTING`/`DIRTY` exits 3
+and says `conflicted`, the same rollup with `UNKNOWN` still exits 4 and says `not-green`, a failing
+check exits 4 and is not called a conflict, and a green pull request that conflicts is still handed
+off. Every existing green test sends no mergeability fields at all, which is the absent case.
+
+## 0.1.32
+
+**`dupes.sh` guessed its lock prefix, so it could score another workspace's issues and say so
+confidently.** `PFX="${LOCK_PREFIX:-devloop}"` was the last literal default left under the skill.
+The scratch files it names live in `/tmp`, which is shared between every workspace on a machine,
+so a guess that happens to match a real prefix reads every bit as authoritative as a correct
+answer - and "nothing resembles closed work" is the most expensive thing this script can say
+wrongly, because the whole point of it is to stop two lanes building the same ticket.
+
+It now resolves `lockPrefix` through `config.sh` and REFUSES with a non-zero exit when it cannot,
+which is the shape `lanes.sh` took in 0.1.23 and the reasoning `lock-check.sh` has carried in its
+own header since the five scripts found reporting on the wrong project on 2026-09-09.
+
+Three tests, all failing before: a directory with no workspace config exits 6 with `refusing to
+guess` on stderr and prints no report, a config declaring a prefix is what the scratch files are
+named after, and a source scan over every `.sh` and `.js` in the skill fails on any `:-devloop`
+left in it.
+
+## 0.1.30
+
+**The prefix was resolved where state is read and written out by hand where it is created.** Every
+reader - `lanes.sh`, `slot.sh`, `kill-lane.sh`, `stranded.sh`, `queue.sh`, `precheck.sh`,
+`triage-scan.sh`, `land.js`, `land-one.sh`, `land-train.sh`, `rework.js` - builds its path from the
+workspace's `lockPrefix`. Three writers did not, so in any workspace whose prefix is not the
+default they wrote somewhere no reader of that workspace looks.
+
+- **`land.js` and `land-train.js` took DIFFERENT merge locks.** The serial lander built its path
+  from `lockPrefix`; the train wrote the default out in twelve places and referred to `lockPrefix`
+  nowhere. The two therefore did not exclude each other, and the one thing this lock exists to
+  prevent - two runs merging into one repository at once - was available to any workspace that had
+  namespaced itself. Train against train was safe only because every train shared one hardcode.
+- **Three of those twelve were instructions to a PERSON.** The supervisor-facing leak diagnostics
+  named a lock path by hand and told whoever read them to check its holder file and remove it if it
+  was theirs. The advice is the right shape and it pointed at a file no run had taken - read under
+  time pressure, during the one operation where touching the wrong lock is unrecoverable.
+- **Every workspace on a machine shared ONE lane scratch directory, unconditionally.** `task.js`
+  built it as a literal, so no setting separated two workspaces and there was nothing to align a
+  prefix to. Measured before the fix: about seventy-four directories from this workspace's lanes
+  sat beside another workspace's in the same parent, going back a day and spanning two different
+  `lockPrefix` values. The hazard is cleanup, not a name clash - either side running an `rm` over
+  the parent destroys the other's live lane scratch, and the victim sees its debug output vanish
+  rather than an error. The comment above that line already argues this fix one scope down: scratch
+  is one directory per issue because lanes writing into a shared parent overwrite each other's
+  output and neither notices. Same argument, same fix, one level up.
+- **The worktree path in the docs-role brief is the resolved one.** It was prompt text, which looks
+  like documentation and survives a sweep of the code - and a brief is followed. The code paths
+  beside it were already prefix-aware, so a code-only fix would have left the brief manufacturing
+  directories under the default prefix and the ticket would have read as done.
+- **The train passes its prefix to `land-train.sh`,** which otherwise fell back to its own default
+  and cut the release worktree under another workspace's directory.
+- **The branch namespace stays one namespace, and is not derived from the prefix.** Branches are
+  namespaced by repository already, so the machine-global collision `lockPrefix` exists to prevent
+  cannot happen to them; and seven readers match `devloop/` literally, so a key only the writer
+  honoured would strand pull requests nothing picks up.
+
+A test drives both landers with a non-default prefix and asserts they name the same lock, that each
+releases the lock it took, that the lane brief carries the resolved worktree and scratch roots, and
+that no file in the skill names a `/tmp` path under the default prefix at all. Four of the five fail
+before this change.
+
+## 0.1.28
+
+**A ticket spanning two repositories got one pull request labelled and the other silently
+orphaned, and the ticket closed anyway.** `lane-handoff.sh` took a single `--repo-path`, `--slug`
+and `--pr`, so a two-repo ticket needed two invocations and nothing required, counted or checked
+the second. Whichever half was handed off got the label the lander reads; the other stayed open
+and unlabelled, which makes it invisible to the lander - and the issue closed on the strength of
+the half that landed. Measured two for two on 2026-09-10: both primary halves landed and deployed,
+both second halves were left open, both tickets closed. In one of the two the orphan was the
+artwork generator, so shipped images were no longer reproducible from master while every dashboard
+stayed green.
+
+- **The set of pull requests is derived from the branch, not from what the handoff was told
+  about.** Every repository the workspace config names is asked for its open pull requests whose
+  head is `--branch`, and each one found is checked and labelled in the same invocation. The
+  caller still names one, and it is still checked; it can no longer be the only one. Of the three
+  shapes the issue offered this is the one that cannot be under-reported by the step with the most
+  reason to stop early, and it needs no new plumbing between steps.
+- **Every pull request is checked before any is labelled.** Labelling the first and then finding
+  the second not ready would leave a mergeable half of a two-repo ticket, which is the defect
+  rather than a smaller version of it. A refusal names the pull request it could not pass and
+  labels nothing anywhere, so exit 2 and exit 4 are now assertions about the whole branch.
+- **A repository whose pull requests cannot be listed is a refusal, not an empty answer.** The
+  same rule the body read already followed, for the reason the release train's own notes give:
+  an empty list must not be able to hide work that went nowhere. Anything that leaves the set of
+  pull requests on the branch unknown refuses with nothing labelled - a config that cannot be
+  read or names no repositories, a repository whose slug cannot be found, a checkout that is not
+  there or has no `origin/<branch>`.
+- **The worktree sweep follows the same set.** Collapsing two invocations into one would otherwise
+  have left the second repository's worktree checked out on the branch, which is what the
+  lander's branch deletion trips on. The refusal to remove a main checkout is applied per
+  repository.
+- **The label is proved to exist in every repository before the first pull request is labelled.**
+  `--add-label` fails where the label is absent, and labelling a set one pull request at a time
+  means the first succeeding and the second failing leaves exactly the orphan this release is
+  about: one half mergeable, the other invisible to the lander. The label cannot be taken off
+  again to repair that - a labelled pull request belongs to the lander, which may already be
+  mid-attempt holding the merge lock - so every repository in the set is asked for its labels and
+  given the label if it has none, and one that cannot carry it refuses the whole handoff with
+  nothing labelled. `gh label list` is asked with `--search` and `--limit`, because its default
+  first thirty labels make a label further down the list look absent - and its answer to a search
+  that matches nothing is NO BYTES AT ALL rather than an empty list, so the read keeps gh's exit
+  status and its output apart instead of reading a parse failure as a repository that would not
+  answer. A name that merely contains the label is not the label, so the comparison is exact.
+  WHAT THIS COSTS: creating a label is a write, so a workspace holding a repository that has no
+  `lane-verified` AND a gh identity without write access there now fails every handoff on that
+  branch at exit 7 with nothing labelled, and needs the label created once by hand. The creation is
+  attempted only against repositories that actually hold a pull request in the set, so merely
+  configuring a repository does not put a label in it. All three repositories of this workspace
+  already carry the label, so nothing here changes. `--search` was checked against gh 2.75.1; no
+  older version was available to check.
+- **Labelling that stops part-way anyway says which pull requests carry the label**, under its own
+  exit code rather than as a bare "the label did not stick", and gh's reason is no longer
+  discarded. Adding a label is idempotent and the handoff stops before the worktree removal and
+  the tracker note, so the remedy is to fix what gh reported and re-run - never to label the
+  remainder by hand, and never to take a label off.
+- **A repository configured without a `path` is read under its own name**, which is what
+  `config.sh --check` has always blessed, and an absolute `path` is read as written. Reading the
+  config is new here, so neither is a change in behaviour; both are what the survey had to get
+  right first time, because defaulting the path to nothing resolves such a repository to the
+  workspace ROOT - which fails on a missing `origin/<branch>` at best, and at worst, had that root
+  been a checkout carrying the branch, grades compliance against the wrong repository's commit
+  messages.
+- **Two new exit codes rather than one overloaded one.** 6 is bad arguments again; 7 is a set of
+  pull requests that could not be established, with nothing labelled; 8 is labelling that began
+  and stopped. A lane reads what a code means from the prose in `task.js` and `rework.js`, and
+  both now describe 7 and 8 and what to do about them: a survey failure reported as "bad
+  arguments" leads a lane to do the handoff by hand, which skips the compliance gate, and
+  `task.js` already records that having happened.
+- This closes the first half of the family only. The release train acting on one repository per
+  run, and being unable to report that it ignored the others, is a different file and a separate
+  issue.
+
+## 0.1.27
+
+**The silent-lane alarm judged whichever run for an issue had stopped writing, not the one that is
+still writing.** An issue re-dispatched after a supervisor stop or a launch crash leaves the earlier
+attempts with empty task output files for ever, so `lane-running.sh --any` lists each of them as
+`RUNNING` - correctly, per task - and `queue-watch.sh` reported the first with a stale journal. The
+event ends in a recommendation to run `kill-lane.sh`, so acting on it would have torn down the
+healthy lane.
+
+Measured on 2026-09-10: `pitwall-azp` had three dispatches that afternoon. `wf_f80fcf95-b4b` was
+stopped by the supervisor over malformed args and had been silent 93m; `wf_12c0c01f-926` failed at
+launch in 41ms with zero agents and had been silent 92m; `wf_92bb050e-d68` was the live one and had
+written 0m earlier. The event named the first, and the alarm is self-confirming in the wrong
+direction - the more often an issue is re-dispatched, the more dead runs exist to be found, so an
+issue with a rough start looks progressively more dead while being progressively more actively
+worked.
+
+- **`silent_lanes` groups the `--any` lines by issue id and judges one run per issue:** the newest
+  writer. A line with no silence annotation is a run inside the staleness window, which settles its
+  issue outright; when every run for an issue is annotated, the smallest age is the newest writer
+  and only that one is reported. A run that is not the newest for its issue is not evidence about
+  the issue at all.
+- **The live/dead decision is still `lane-running.sh`'s.** The only new thing here is which of its
+  lines the monitor reads, so there is no second way to decide whether a lane is alive, and the
+  per-task lines stay as they are for `kill-lane.sh`, which asks a per-issue question and must still
+  refuse on any task in flight.
+- **Not fixed by filtering on task status, and not by a longer threshold.** A stopped task, a crashed
+  task and a finished-but-unreported task are different things the supervisor cannot always tell
+  apart, and the newest-writer test never has to. Raising the window would delay a true alarm
+  without removing a false one, because a lane waiting on CI writes nothing for half an hour at a
+  time - the defect was which run it looked at, not how patient it was.
+- **The event names what it judged.** The reported line carries the task and the workflow as before
+  and, where an issue was dispatched more than once, says it is the newest of N runs for that issue;
+  only then does the event carry a trailer reading that annotation and saying the earlier dispatches
+  were not judged. A reader who runs `lane-running.sh --any` and sees three lines can therefore check
+  the same one the monitor checked instead of the oldest, and a single-dispatch event reads exactly as
+  it did before.
+- **A line whose labels carry no issue id is judged alone.** `lane_ids` prints `no id in its labels`
+  for those, and keying them together would let one such run silence the alarm for another.
+
+Four tests drive `land_gate`: over a workspace with three dispatches for one issue the newest
+writing reports nothing, the newest silent past the window reports that run and neither of the
+others, and two id-less runs do not suppress each other; over a workspace with one dispatch, a
+silent lane is reported with no annotation and no trailer. The first two fail before this change.
+
+## 0.1.26
+
+**The handoff halted over an instruction its brief had already settled, because the settlement was
+a hundred lines past the point it decided.** On `pitwall-hru`, run `wf_00e58d18-768`, the handoff
+returned `blocked` - "Awaiting explicit user decision" - on a twice-reviewed pull request whose CI
+was green. It read no checks, applied no label, wrote no tracker note and left no worktree removed,
+so a finished change sat unlabelled and therefore invisible to the lander until a supervisor
+reconstructed the verdict from the journal by hand.
+
+- **The brief already carried the settlement, and the ticket's diagnosis of where it lived was
+  wrong.** It is in the rules block - one copy, stated once - which the fix, handoff and split
+  briefs splice, and the handoff has spliced it since the dev loop was first published. What it
+  did not have was the
+  settlement anywhere near its compliance step, which is the one place in the brief that names
+  `blocked` as an exit for an attribution problem. A step handed "add a trailer" meets that exit
+  first and takes it, and reading the rules a hundred lines later does not undo a decision already
+  made.
+- **So the compliance step now says, where it decides, that an instruction to add the trailers is
+  not a finding.** Nothing is in the commit to rewrite, nothing in the body to edit, nothing to ask,
+  and a conflict with that instruction is not a value `status` can take. The rules block is
+  untouched and still the only statement of the rule.
+- **Four assertions hold the shape rather than a live run.** The settlement is stated exactly once;
+  both steps that write commit and pull request text splice the rules; the sentence sits before
+  those rules in the handoff brief rather than after them; and the handoff brief carries no
+  backticks of its own, which is the failure that took every lane down on 2026-09-09 and was until
+  now asserted only over the rules block.
+
+## 0.1.25
+
+**Every lane and every lander stalled on a home-directory config nobody could read.** On one
+machine ~/.gitconfig and ~/.bundle/config are symlinks into a synced folder whose files were not
+materialised, and the two failures look nothing alike: git answers "fatal: unknown error occurred
+while reading the configuration files", and every bundler-fronted command hangs with no output at
+all - 60s of wall clock against 0.067s of user time, so blocked on I/O rather than slow. A hang and
+a slow machine are indistinguishable, so a run raises its timeout and waits again. Three separate
+runs diagnosed this from scratch in one evening, two suites were killed on timeouts first, and the
+lander's version step was answering `version_unreadable` rather than merging blind - correctly, and
+with nothing able to merge while it did.
+
+Every brief that hands out a git or bundler command now leads with
+
+    export GIT_CONFIG_GLOBAL=/dev/null BUNDLE_USER_CONFIG=/dev/null && <command>
+
+That reaches the fix, review, handoff and split briefs, the rework's resolve and handoff, the
+lander's steps and the train's. The exports are unconditional rather than probed: whether a synced folder has
+materialised a file is not something a run controls, so the next eviction would bring the whole
+failure back. Gems resolve from the default path without the user config. The credential helper
+sits in the system config on the machine this was measured on, so pushes keep working there - but
+a workspace set up by `gh auth setup-git` keeps the helper in the global config, and these exports
+drop it, so a run whose push asks for a password is told to say so rather than to put the home
+config back.
+
+- **Commit identity is passed on the command now, not read from a config.** It is the one thing
+  those exports take away, and nothing warns about it. Every brief that writes a commit carries
+  `git -c user.name="$(git log -1 --format=%an origin/master)" -c user.email="$(git log -1
+  --format=%ae origin/master)"` - the author master already carries, so there is no new
+  configuration to keep in step and the history gains no second name for the same work. The rebase
+  the lander is told to run carries it too: a rebase writes commits. So does the merge the rework's
+  resolve step runs - `--no-commit` records no author, but git refuses the merge before it touches a
+  file, and the lane reports that as a conflict with master that does not exist.
+- **`land-train.sh` and `land-one.sh` pass it themselves,** because they merge, commit and rebase in
+  their own shells rather than in a brief. Without it the train drops every candidate: the squash
+  merge is refused before the commit is even reached, which the script reports as a conflict, and a
+  commit that does get that far is reported as "commit refused" - either way the train comes out
+  empty, which reads as "nothing was ready". `land-one.sh` reported a rebase that failed for want of
+  an identity as a CONFLICT with master, a branch handed back to a person for a reason that was not
+  true.
+- **Finishing a stopped rebase needs the identity a second time, and an editor.** A `-c` flag
+  covers one invocation and does not carry into `--continue` - which is the command that writes the
+  commit for a resolved conflict. The lander's rebase step told a run to resolve a textual conflict
+  and stopped there, so the only way to finish was a bare `git rebase --continue`: measured under
+  the environment the tests pin, that dies with "no email was given and auto-detection is disabled",
+  and the wrapper reports it as a conflict with master that does not exist - the same false symptom
+  one command later in the same brief. The exports take `core.editor` away as well, and `--continue`
+  opens an editor to reword that commit, so `-c core.editor=true` goes on it too; without that it
+  dies on the editor instead, having got the identity right. Step 4 now spells both commands out,
+  and says not to take git's own hint to set a `--global` identity, which is the file the exports
+  exist to ignore.
+- **What git does with no identity depends on the machine, and the kinder answer is the dangerous
+  one.** Where it can build one from the account - a gecos name and a hostname with a domain - it
+  does not refuse: the commit lands, under a name that belongs to nobody. Where it cannot, the
+  command fails outright. The first machine this was measured on did the first and a Linux runner
+  did the second, from the same commit, so the tests pin `user.useConfigOnly` on and assert the
+  author rather than the exit code.
+
+Eight tests, all of which fail before this change. Four drive the workflow scripts as function
+bodies and read the briefs they hand out - the fix brief on the first attempt AND on a rework,
+which is the one the setup block does not reach, the review brief, the lander's version and merge
+briefs, and both rework briefs. Two run the shell scripts against a throwaway remote with no
+identity anywhere git can reach: the train must still commit, under master's own author, and the
+rebase must not be reported as a conflict. Two read the sources: the standing block must carry no
+backtick, which closes a brief's template literal early and blocks every dispatch, and no commit,
+merge, rebase or cherry-pick anywhere in the plugin may take its identity from configuration. That
+last audit reads the four briefs as well as the two shell scripts, because a brief is where most of
+those commands are written; it matches a git invocation in command position, with or without a
+`-C <path>` in front of the verb, which keeps prose that merely names a command out of the result,
+and skips `merge-base`, `merge-tree` and the `--abort`/`--skip` forms, none of which write a
+commit. `--continue` is NOT skipped, because it is the command that writes the commit for a
+resolved conflict - and the lander's rebase step was leading a run straight into a bare one.
 
 ## 0.1.23
 
@@ -669,8 +1277,9 @@ the first copy seen won, so a written copy could lose to an empty one.
 
 **`lanes.sh` was answering about whichever workspace the default prefix names.** It built the
 registry path from `LOCK_PREFIX` falling back to `devloop` instead of this workspace's
-`lockPrefix`, and reported "no slot registry at /tmp/devloop-slots - no lanes have ever been
-claimed" while three slots were claimed under the prefix the config names. It resolves the
+`lockPrefix`, and reported no slot registry at all - naming the path the default prefix builds,
+under which no lane had ever been claimed - while three slots were claimed under the prefix the
+config names. It resolves the
 prefix from the config now and refuses with exit 6 rather than defaulting, the rule `slot.sh`
 and `lock-check.sh` already follow: an answer about another project's lanes is worse than none.
 

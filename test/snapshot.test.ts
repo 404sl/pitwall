@@ -1,6 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { fileURLToPath } from "node:url";
 import { basename, dirname, join } from "node:path";
 import {
@@ -16,7 +18,7 @@ import {
 import { tmpdir } from "node:os";
 import { execPath } from "node:process";
 import type { AddressInfo } from "node:net";
-import { SCHEMA_VERSION, isYours, parseSnapshot } from "@404sl/pitwall-schema";
+import { SCHEMA_VERSION, isYours, parseSnapshot, type Snapshot } from "@404sl/pitwall-schema";
 import type { Notice } from "../src/notify.ts";
 import { KEPT_SOURCE, PARTIAL_SOURCE, REFRESH_SOURCE, buildBoard } from "../src/board.ts";
 import { consoleCollector, createConsoleServer, listen } from "../src/serve.ts";
@@ -24,7 +26,13 @@ import { collectSnapshot, emitSnapshot } from "../src/snapshot.ts";
 import { historyPath } from "../src/history.ts";
 import { SESSION_REF_VAR } from "../src/sender.ts";
 import { readSnapshot, snapshotPath } from "../src/state.ts";
+import { renderStatus } from "../src/status.ts";
+import { CLOSE_SOURCE, upstreamReport, type Closure } from "../src/upstream.ts";
 import { VERSION } from "../src/version.ts";
+import { nullGlobalGitConfig, spawnGit } from "./support/git.js";
+const { Problems } = await import("../ui/components/Problems.tsx");
+
+nullGlobalGitConfig();
 
 const hasSqlite = await import("node:sqlite").then(
   () => true,
@@ -38,6 +46,7 @@ const PATH_WITH_BD = `${join(FIXTURES, "bd", "ok")}:/usr/bin:/bin`;
 const PATH_WITH_GH = `${join(FIXTURES, "bd", "ok")}:${join(FIXTURES, "gh", "ok")}:/usr/bin:/bin`;
 const RECORDED = join(FIXTURES, "gh", "recorded");
 const PATH_WITH_UNAUTH_GH = `${join(FIXTURES, "bd", "ok")}:${join(FIXTURES, "gh", "unauth")}:/usr/bin:/bin`;
+const PATH_WITH_SLOW_NPM = `${join(FIXTURES, "npm", "slow")}:${join(FIXTURES, "bd", "ok")}:/usr/bin:/bin`;
 
 function pathWithoutGh(): string {
   const bin = mkdtempSync(join(tmpdir(), "pitwall-nogh-"));
@@ -322,6 +331,41 @@ test("nothing is announced to the session that closed the work itself", async ()
   assert.deepEqual(result.delivered, []);
 });
 
+test("a run killed while it is announcing leaves the transition for the next run", async () => {
+  const place = workspace([TRACKER]);
+  const first = await emitSnapshot(options(place));
+  const source = fileURLToPath(new URL("../src/snapshot.ts", import.meta.url));
+  const probe = [
+    `const { emitSnapshot } = await import(${JSON.stringify(source)});`,
+    `await emitSnapshot({`,
+    `  env: ${JSON.stringify({ ...place.env, BD_LIST_FIXTURE: "landed" })},`,
+    `  home: ${JSON.stringify(place.home)},`,
+    `  cwd: ${JSON.stringify(join(place.home, "work", "here"))},`,
+    `  lockRoot: ${JSON.stringify(mkdtempSync(join(tmpdir(), "pitwall-killed-lock-")))},`,
+    `  sender: () => { process.kill(process.pid, "SIGKILL"); return new Promise(() => {}); },`,
+    `  note: () => Promise.reject(new Error("no note should be needed")),`,
+    `});`,
+  ].join("\n");
+  const killed = spawnSync(
+    process.execPath,
+    ["--import", "tsx", "--input-type=module", "-e", probe],
+    { encoding: "utf8" },
+  );
+  assert.equal(killed.signal, "SIGKILL", `the announcing run was not killed: ${killed.stderr}`);
+  const onDisk = readSnapshot({ env: place.env, home: place.home }).snapshot;
+  assert.equal(
+    onDisk?.generatedAt,
+    first.snapshot.generatedAt,
+    "the killed run wrote its snapshot before its notices went out",
+  );
+  const announced = announcing(place);
+  await announced.run();
+  assert.deepEqual(
+    announced.sent.map((notice) => notice.issueId),
+    ["mw-1", "mw-1.1"],
+  );
+});
+
 function notifyingRoot(place: Workspace): { root: string; log: string } {
   const root = mkdtempSync(join(tmpdir(), "pitwall-notify-snapshot-"));
   cpSync(join(TRACKER, "bd-output"), join(root, "bd-output"), { recursive: true });
@@ -475,6 +519,31 @@ test("the board reports a scanned notifier once, and the same row after a refres
   assert.equal(existsSync(notes), false);
 });
 
+test("the written board carries a scanned notifier as one problem against the run", async () => {
+  const place = withConfig("{}");
+  rmSync(place.configPath);
+  const root = scannedRoot(place, "scanned", true);
+  const notes = join(root, "notes.log");
+  const shown = () => {
+    const onDisk = readSnapshot({ env: place.env, home: place.home }).snapshot;
+    assert.ok(onDisk !== undefined);
+    return buildBoard(onDisk).problems.filter((row) => row.source === place.configPath);
+  };
+  await emitSnapshot({ ...options(place), env: place.env });
+  const first = shown();
+  assert.equal(first.length, 1);
+  assert.equal(first[0]?.scope, "run");
+  assert.match(first[0]?.message ?? "", /no completion notice is delivered for it/);
+  assert.match(first[0]?.message ?? "", new RegExp(root));
+  await emitSnapshot({
+    ...options(place),
+    env: { ...place.env, BD_LIST_FIXTURE: "landed", BD_NOTES_LOG: notes },
+  });
+  const again = shown();
+  assert.equal(again.length, 1);
+  assert.equal(again[0]?.message, first[0]?.message);
+});
+
 test("a notice the tracker would not record reaches the board as an error", async () => {
   const place = withConfig("{}");
   notifyingRoot(place);
@@ -493,8 +562,79 @@ test("a notice the tracker would not record reaches the board as an error", asyn
   assert.match(lost[0]?.message ?? "", /could not be recorded on the issue either/);
 });
 
-function pipelineRoot(remote: string): string {
-  const root = mkdtempSync(join(tmpdir(), "pitwall-pipeline-snapshot-"));
+function writtenBoard(place: Workspace): Snapshot {
+  const stored = readSnapshot({ env: place.env, home: place.home }).snapshot;
+  assert.ok(stored, "the collection wrote no snapshot to render");
+  return stored;
+}
+
+function problemsOf(stored: Snapshot, matching: RegExp) {
+  return buildBoard(stored).problems.filter((row) => matching.test(row.message));
+}
+
+function problemsSection(stored: Snapshot): string {
+  const out = renderStatus(stored, { now: Date.parse(stored.generatedAt), width: 100 });
+  return out.slice(out.indexOf("PROBLEMS"));
+}
+
+test("a notice the tracker would not record is a row on the board the collection writes", async () => {
+  const place = withConfig("{}");
+  notifyingRoot(place);
+  await emitSnapshot({ ...options(place), env: place.env });
+  await emitSnapshot({
+    ...options(place),
+    env: { ...place.env, BD_LIST_FIXTURE: "landed" },
+  });
+  const stored = writtenBoard(place);
+  const lost = problemsOf(stored, /notice for mw-planning-session/);
+  assert.deepEqual(
+    lost.map((row) => [row.scope, row.source]),
+    [
+      ["project", "mw-1"],
+      ["project", "mw-1.1"],
+    ],
+  );
+  const markup = renderToStaticMarkup(
+    createElement(Problems, { rows: buildBoard(stored).problems }),
+  );
+  assert.equal(markup.match(/could not be recorded on the issue either/g)?.length, 2);
+  assert.match(problemsSection(stored), /mw-1 +.*was not delivered/);
+});
+
+test("a closure the upstream refused is a row on the board the collection writes", async () => {
+  const place = workspace([pipelineRoot("https://github.com/acme/site.git")]);
+  const env = { ...place.env, PATH: PATH_WITH_GH, GH_OUTPUT: RECORDED };
+  await emitSnapshot({ ...options(place), env });
+  await emitSnapshot({
+    ...options(place),
+    env: { ...env, BD_LIST_FIXTURE: "shipped" },
+    sender: () => Promise.resolve({ delivered: true as const }),
+    note: () => Promise.resolve(),
+    closer: () => Promise.resolve({ closed: false as const, reason: "HTTP 403: Resource not accessible" }),
+  });
+  const stored = writtenBoard(place);
+  const refused = problemsOf(stored, /was not commented and not closed/);
+  assert.deepEqual(
+    refused.map((row) => [row.scope, row.source]),
+    [["project", CLOSE_SOURCE]],
+  );
+  assert.match(refused[0]?.message ?? "", /HTTP 403: Resource not accessible/);
+  assert.match(refused[0]?.message ?? "", /nothing retries it/);
+  const markup = renderToStaticMarkup(
+    createElement(Problems, { rows: buildBoard(stored).problems }),
+  );
+  assert.equal(markup.match(/nothing retries it/g)?.length, 1);
+  const problems = problemsSection(stored);
+  assert.match(problems, new RegExp(`${CLOSE_SOURCE} .*nothing retries it`));
+  assert.ok(
+    problems.split("\n").some((line) => line.includes("nothing retries it")),
+    "an error is never cut short to fit the screen",
+  );
+});
+
+function pipelineRoot(remote: string, where?: string): string {
+  const root = where ?? mkdtempSync(join(tmpdir(), "pitwall-pipeline-snapshot-"));
+  mkdirSync(root, { recursive: true });
   cpSync(join(TRACKER, "bd-output"), join(root, "bd-output"), { recursive: true });
   writeFileSync(
     join(root, ".pitwall.json"),
@@ -503,7 +643,7 @@ function pipelineRoot(remote: string): string {
   const dir = join(root, "site");
   mkdirSync(dir, { recursive: true });
   for (const args of [["init", "--quiet"], ["remote", "add", "origin", remote]]) {
-    const ran = spawnSync("git", args, { cwd: dir, encoding: "utf8" });
+    const ran = spawnGit(args, { cwd: dir });
     assert.equal(ran.status, 0, ran.stderr);
   }
   return root;
@@ -581,6 +721,131 @@ test("gh that is not installed at all leaves the run exiting zero", async () => 
   assert.equal(result.code, 0);
 });
 
+test("a bead that closed carrying an external-ref closes the issue it came from", async () => {
+  const place = workspace([pipelineRoot("https://github.com/acme/site.git")]);
+  const env = { ...place.env, PATH: PATH_WITH_GH, GH_OUTPUT: RECORDED };
+  await emitSnapshot({ ...options(place), env });
+  const asked: Closure[] = [];
+  const result = await emitSnapshot({
+    ...options(place),
+    env: { ...env, BD_LIST_FIXTURE: "shipped" },
+    sender: () => Promise.resolve({ delivered: true as const }),
+    note: () => Promise.reject(new Error("no note should be needed")),
+    closer: (closure: Closure) => {
+      asked.push(closure);
+      return Promise.resolve({ closed: true as const });
+    },
+  });
+  assert.deepEqual(
+    asked.map((closure) => [closure.issueId, closure.issue.url]),
+    [["mw-1", "https://github.com/acme/site/issues/7"]],
+  );
+  assert.equal(asked[0]?.comment, "Landed in site `#101`. Tracked as mw-1.");
+  assert.deepEqual(result.upstream.left, []);
+  assert.deepEqual(
+    result.upstream.reported.map((entry) => entry.result.closed),
+    [true],
+  );
+  assert.deepEqual(upstreamReport(result.upstream), []);
+});
+
+test("a run killed while it is closing upstream leaves the closure for the next run", async () => {
+  const place = workspace([pipelineRoot("https://github.com/acme/site.git")]);
+  const env = { ...place.env, PATH: PATH_WITH_GH, GH_OUTPUT: RECORDED };
+  const first = await emitSnapshot({ ...options(place), env });
+  const source = fileURLToPath(new URL("../src/snapshot.ts", import.meta.url));
+  const probe = [
+    `const { emitSnapshot } = await import(${JSON.stringify(source)});`,
+    `await emitSnapshot({`,
+    `  env: ${JSON.stringify({ ...env, BD_LIST_FIXTURE: "shipped" })},`,
+    `  home: ${JSON.stringify(place.home)},`,
+    `  cwd: ${JSON.stringify(join(place.home, "work", "here"))},`,
+    `  lockRoot: ${JSON.stringify(mkdtempSync(join(tmpdir(), "pitwall-killed-lock-")))},`,
+    `  sender: () => Promise.resolve({ delivered: true }),`,
+    `  note: () => Promise.reject(new Error("no note should be needed")),`,
+    `  closer: () => { process.kill(process.pid, "SIGKILL"); return new Promise(() => {}); },`,
+    `});`,
+  ].join("\n");
+  const killed = spawnSync(
+    process.execPath,
+    ["--import", "tsx", "--input-type=module", "-e", probe],
+    { encoding: "utf8" },
+  );
+  assert.equal(killed.signal, "SIGKILL", `the closing run was not killed: ${killed.stderr}`);
+  const onDisk = readSnapshot({ env: place.env, home: place.home }).snapshot;
+  assert.equal(
+    onDisk?.generatedAt,
+    first.snapshot.generatedAt,
+    "the killed run wrote its snapshot before its upstream closures went out",
+  );
+  const asked: Closure[] = [];
+  await emitSnapshot({
+    ...options(place),
+    env: { ...env, BD_LIST_FIXTURE: "shipped" },
+    sender: () => Promise.resolve({ delivered: true as const }),
+    note: () => Promise.reject(new Error("no note should be needed")),
+    closer: (closure: Closure) => {
+      asked.push(closure);
+      return Promise.resolve({ closed: true as const });
+    },
+  });
+  assert.deepEqual(
+    asked.map((closure) => [closure.issueId, closure.issue.url]),
+    [["mw-1", "https://github.com/acme/site/issues/7"]],
+  );
+});
+
+test("a workspace found by scanning closes nothing on GitHub", async () => {
+  const place = withConfig("{}");
+  rmSync(place.configPath);
+  pipelineRoot("https://github.com/acme/site.git", join(place.home, "work", "scanned"));
+  const env = { ...place.env, PATH: PATH_WITH_GH, GH_OUTPUT: RECORDED };
+  await emitSnapshot({ ...options(place), env });
+  const result = await emitSnapshot({
+    ...options(place),
+    env: { ...env, BD_LIST_FIXTURE: "shipped" },
+  });
+  assert.deepEqual(result.upstream, { reported: [], left: [] });
+});
+
+test("a checkout that will not say what its origin is turns nothing off quietly", async () => {
+  const root = pipelineRoot("https://github.com/acme/site.git");
+  const place = workspace([root]);
+  const env = { ...place.env, PATH: PATH_WITH_GH, GH_OUTPUT: RECORDED };
+  await emitSnapshot({ ...options(place), env });
+  const repo = join(root, "site");
+  rmSync(join(repo, ".git"), { recursive: true, force: true });
+  writeFileSync(join(repo, ".git"), `gitdir: ${join(root, "nowhere")}\n`);
+  const result = await emitSnapshot({
+    ...options(place),
+    env: { ...env, BD_LIST_FIXTURE: "shipped" },
+    closer: () => Promise.reject(new Error("nothing may be closed when ownership is unknown")),
+    note: () => Promise.reject(new Error("nothing may be noted when ownership is unknown")),
+  });
+  assert.deepEqual(result.upstream.reported, []);
+  assert.equal(result.upstream.left.length, 1);
+  assert.match(result.upstream.left[0]?.reason ?? "", /could not tell whether acme\/site/);
+  assert.match(result.upstream.left[0]?.reason ?? "", /site would not say what its origin is/);
+  assert.match(upstreamReport(result.upstream)[0] ?? "", /was left open because/);
+});
+
+test("an issue that could not be closed is recorded on the bead and collected as an error", async () => {
+  const place = workspace([pipelineRoot("https://github.com/acme/site.git")]);
+  const env = { ...place.env, PATH: PATH_WITH_GH, GH_OUTPUT: RECORDED };
+  await emitSnapshot({ ...options(place), env });
+  const { errors } = await consoleCollector({
+    ...options(place),
+    env: { ...env, BD_LIST_FIXTURE: "shipped", BD_NOTES_LOG: join(place.home, "notes.log") },
+    closer: () =>
+      Promise.resolve({ closed: false as const, reason: "HTTP 403: Resource not accessible" }),
+  })();
+  const refused = errors.filter((error) => error.source === CLOSE_SOURCE);
+  assert.equal(refused.length, 1);
+  assert.match(refused[0]?.message ?? "", /acme\/site\/issues\/7 was not commented and not closed/);
+  assert.match(refused[0]?.message ?? "", /HTTP 403: Resource not accessible/);
+  assert.match(readFileSync(join(place.home, "notes.log"), "utf8"), /mw-1 .*HTTP 403/);
+});
+
 test("the snapshot reports whether the reason an issue stopped is still true", async () => {
   const place = workspace([TRACKER]);
   const asked: string[][] = [];
@@ -591,7 +856,6 @@ test("the snapshot reports whether the reason an issue stopped is still true", a
       asked.push([...command]);
       return true;
     },
-    pullFacts: async () => undefined,
   });
   const byId = new Map((snapshot.projects[0]?.issues ?? []).map((issue) => [issue.id, issue]));
   assert.equal(byId.get("mw-20")?.staleness.verdict, "resolved");
@@ -622,7 +886,6 @@ test("the snapshot reads the note time from the tracker, and says once which tim
     ...options(place, new Date("2026-09-08T09:00:00Z")),
     env: { ...place.env, BD_LIST_FIXTURE: "noted" },
     probe: async () => true,
-    pullFacts: async () => undefined,
   });
   const project = snapshot.projects[0];
   const errors = project?.errors ?? [];
@@ -680,24 +943,6 @@ test("a history store that cannot be opened costs the metrics, not the snapshot"
   assert.equal(readSnapshot({ env: place.env, home: place.home }).error, undefined);
 });
 
-test("an issue left in progress after its pull request merged is reported, not left running", async () => {
-  const place = workspace([TRACKER]);
-  const snapshot = await collectSnapshot({
-    ...options(place, new Date("2026-09-08T09:00:00Z")),
-    env: { ...place.env, BD_LIST_FIXTURE: "stale" },
-    probe: async () => true,
-    pullFacts: async (reference) =>
-      reference.text === "site#16" ? { state: "merged", issueId: "mw-26" } : undefined,
-  });
-  const byId = new Map((snapshot.projects[0]?.issues ?? []).map((issue) => [issue.id, issue]));
-  assert.equal(byId.get("mw-26")?.classification, "landing");
-  assert.equal(byId.get("mw-26")?.staleness.verdict, "likely-stale");
-  assert.ok(
-    byId.get("mw-26")?.staleness.evidence.some((line) => line.includes("site#16")),
-    "the verdict does not name the pull request that merged",
-  );
-});
-
 test("a staleness probe that could not be run reaches the project as one error", async () => {
   const place = workspace([TRACKER]);
   const snapshot = await collectSnapshot({
@@ -722,33 +967,6 @@ test("a staleness probe that could not be run reaches the project as one error",
   );
 });
 
-test("references the run could not resolve leave the evidence and reach the project errors", async () => {
-  const place = workspace([TRACKER]);
-  const snapshot = await collectSnapshot({
-    ...options(place, new Date("2026-09-08T09:00:00Z")),
-    env: { ...place.env, BD_LIST_FIXTURE: "stale" },
-    probe: async () => true,
-    pullFacts: async () => undefined,
-  });
-  const project = snapshot.projects[0];
-  const unresolved = (project?.errors ?? []).filter((error) => error.source.startsWith("staleness "));
-  assert.ok(unresolved.length > 0, "a reference nobody could look up is recorded somewhere");
-  for (const error of unresolved) {
-    assert.match(error.message, /^\d+ references? could not be checked: /);
-  }
-  for (const issue of project?.issues ?? []) {
-    assert.ok(
-      !issue.staleness.evidence.some((line) => line.includes("could not resolve")),
-      `${issue.id} still renders a failed lookup as a finding`,
-    );
-  }
-  assert.equal(
-    (project?.errors ?? []).filter((error) => error.source === "staleness").length,
-    0,
-    "a configured run records no run-level staleness failure",
-  );
-});
-
 test("a staleness failure of the run itself is recorded once, not once per issue", async () => {
   const place = workspace([degradedRoot()]);
   const snapshot = await collectSnapshot({
@@ -760,23 +978,69 @@ test("a staleness failure of the run itself is recorded once, not once per issue
   const run = (project?.errors ?? []).filter((error) => error.source === "staleness");
   assert.deepEqual(run.map((error) => error.message), [
     "the project records no issue id prefix, so referenced issues cannot be recognised",
-    "no pull request host is configured, so pull requests could not be looked up",
   ]);
 });
 
-test("a project whose references could not be looked up is not an unreadable project", async () => {
+test("a project whose preconditions could not be run is not an unreadable project", async () => {
   const place = workspace([TRACKER]);
   const result = await emitSnapshot({
     ...options(place, new Date("2026-09-08T09:00:00Z")),
-    env: { ...place.env, BD_LIST_FIXTURE: "stale" },
-    probe: async () => true,
-    pullFacts: async () => undefined,
+    env: { ...place.env, PATH: pathWithoutGh(), BD_LIST_FIXTURE: "stale" },
   });
   assert.ok(
     (result.snapshot.projects[0]?.errors ?? []).some((error) => error.source.startsWith("staleness ")),
-    "the run recorded at least one reference it could not check",
+    "the run recorded at least one precondition it could not run",
   );
   assert.equal(result.code, 0);
+});
+
+test("a collection asks the host for no pull request state at all", async () => {
+  const place = workspace([TRACKER]);
+  const log = join(mkdtempSync(join(tmpdir(), "pitwall-ghlog-")), "asked");
+  const snapshot = await collectSnapshot({
+    ...options(place, new Date("2026-09-08T09:00:00Z")),
+    env: {
+      ...place.env,
+      PATH: PATH_WITH_GH,
+      GH_OUTPUT: RECORDED,
+      GH_LOG: log,
+      BD_LIST_FIXTURE: "stale",
+    },
+  });
+  const project = snapshot.projects[0];
+  assert.ok((project?.issues ?? []).length > 1, "more than one issue was assessed");
+  const asked = existsSync(log) ? readFileSync(log, "utf8").trim().split("\n") : [];
+  assert.deepEqual(
+    asked.filter((line) => line.startsWith("pr view")),
+    [],
+    "a collection spent the host's budget on pull request state",
+  );
+  assert.deepEqual(
+    (project?.errors ?? [])
+      .filter((error) => /could not be checked/.test(error.message))
+      .map((error) => error.message),
+    [],
+    "a check nobody runs still filled the problems band with its own failure",
+  );
+  for (const issue of project?.issues ?? []) {
+    assert.ok(
+      !issue.staleness.evidence.some((line) => /pull request|not merged/.test(line)),
+      `${issue.id} reports a verdict read off a pull request`,
+    );
+  }
+  const byId = new Map((project?.issues ?? []).map((issue) => [issue.id, issue]));
+  assert.equal(byId.get("mw-20")?.staleness.verdict, "resolved");
+  assert.ok(
+    byId.get("mw-20")?.staleness.evidence.some((line) => line.includes("mw-9")),
+    "the checks that read the tracker alone stopped firing too",
+  );
+  assert.equal(byId.get("mw-26")?.classification, "landing");
+  assert.equal(byId.get("mw-26")?.staleness.verdict, "unchecked");
+  assert.deepEqual(
+    (project?.errors ?? []).filter((error) => error.source === "staleness mw-26"),
+    [],
+    "an issue nothing can assess is left unassessed, not recorded as a check that failed",
+  );
 });
 
 test("a collection that reads nothing leaves the board that is stored where it is", async () => {
@@ -1064,4 +1328,37 @@ test("the run-level problem describes what became of each project it names", asy
     buildBoard(stored).refreshFailure?.message,
     `2 of 3 projects could not be read: ${id} (issues kept from the last snapshot), plain (issues missing from this board).`,
   );
+});
+
+test("a probe that is still failing on the next run is dated from the first, so six hours of it reaches the board", async () => {
+  const place = workspace([TRACKER]);
+  const env = { ...place.env, PATH: PATH_WITH_SLOW_NPM, BD_LIST_FIXTURE: "stale" };
+  const state = { env: place.env, home: place.home };
+  const first = await emitSnapshot({ ...options(place), env, timeoutMs: 300 });
+  const probed = (error: { source: string }) => error.source === "npm whoami";
+  assert.ok(
+    first.snapshot.projects[0]?.errors.some(probed),
+    "the precondition probe must have been the thing that timed out",
+  );
+  const started = new Date(Date.now() - 7 * 60 * 60_000).toISOString();
+  writeFileSync(
+    snapshotPath(state),
+    JSON.stringify({
+      ...first.snapshot,
+      projects: first.snapshot.projects.map((project) => ({
+        ...project,
+        errors: project.errors.map((error) => (probed(error) ? { ...error, at: started } : error)),
+      })),
+    }),
+  );
+  await emitSnapshot({ ...options(place), env, timeoutMs: 300 });
+  const written = readSnapshot(state).snapshot;
+  assert.equal(
+    written?.projects[0]?.errors.find(probed)?.at,
+    started,
+    "the written snapshot keeps the instant the probe first failed",
+  );
+  const shown = buildBoard(written as Snapshot).problems.filter(probed);
+  assert.equal(shown.length, 1, "a probe that has not healed in seven hours is somebody's");
+  assert.ok((shown[0]?.prevented ?? 0) > 0, "the checks it prevented are counted against it");
 });

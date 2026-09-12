@@ -1,18 +1,20 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readWorkspace, WORKSPACE_FILE } from "../src/autofix.ts";
 import { defaultBranchOf } from "../src/git.ts";
+import { nullGlobalGitConfig, spawnGit } from "./support/git.js";
+
+nullGlobalGitConfig();
 
 function workspace(): string {
   return mkdtempSync(join(tmpdir(), "pitwall-git-"));
 }
 
 function git(dir: string, ...args: string[]): void {
-  const ran = spawnSync("git", args, { cwd: dir, encoding: "utf8" });
+  const ran = spawnGit(args, { cwd: dir });
   assert.equal(ran.status, 0, ran.stderr);
 }
 

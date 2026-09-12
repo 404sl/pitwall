@@ -83,7 +83,7 @@ a fifth after that lesson was supposedly learned: slot 7 was reused for `app-sey
 `app-12lw` had finished on it, forgetting `app-9q71` was also there. That run refused to start
 and cost 153k tokens to discover a fact `slot.sh --list` prints instantly.
 
-Its registry is a file per slot under `/tmp/devloop-slots` and it goes stale across sessions -
+Its registry is a file per slot under `/tmp/<lockPrefix>-slots` and it goes stale across sessions -
 it held seven finished issues from a previous day while five different lanes were live, which
 would have answered "all lanes busy". When it disagrees with the locks, the LOCKS ARE THE FACT:
 rebuild the registry from them rather than trusting either blindly, and never run `--gc` right
@@ -152,9 +152,17 @@ Workflow({ scriptPath: <the scriptPath that object carries>,
 ```
 
 Launch it when any repo has a labelled PR and no lander run is already going. It takes
-`/tmp/devloop-merge.lock` itself and gives it back on every exit path, so a second run and a
+`/tmp/<lockPrefix>-merge.lock` itself and gives it back on every exit path, so a second run and a
 person merging by hand both wait rather than collide - but two launches still waste a run,
 so check first. Without this step the pipeline's output is labelled PRs sitting forever.
+
+**Pass the object `config.sh --land` printed, never one assembled by hand.** Among the fields it
+carries is `lockToken`, the string that run writes into the holder file, and `land.js` refuses to
+start without one rather than minting its own. The reason is that a minted one proves nothing: a
+lock step whose answer is replayed reports a token, a holder and a status that all agree with each
+other while the lock on disk belongs to somebody else, and no comparison inside the script can see
+it. A token minted per launch cannot be replayed - it is stable if the same run resumes and
+different on the next.
 
 **Run that middle command for every queued PR before launching, in this session's own
 transcript.** It is not a formality and it is not the lander's job done twice.
@@ -322,7 +330,14 @@ whole workspace - is ANY lane in flight - and `queue-watch.sh` gates its READY T
 it: `RUNNING` keeps the gate shut, and `UNKNOWN` announces that it cannot tell rather than
 announcing that nothing is running. A `RUNNING` whose workflow directory has not been written to
 for longer than `--stale-minutes` (default 20, the window `lanes.sh` uses) is announced as well,
-naming the task, the workflow and how long it has been silent. It stays `RUNNING` and the gate
+naming the task, the workflow and how long it has been silent. An issue re-dispatched after a
+supervisor stop or a launch crash leaves every abandoned run reading `RUNNING` for ever, so the
+event judges only the newest-writing run for each issue and says which one of how many it
+judged - an earlier dispatch is not evidence about that issue. A run whose age cannot be measured
+at all - nothing under its workflow directory can be stat'd - says `journal age unknown`, a third
+state beside the annotation and its absence. It is counted as a dispatch of its issue and then not
+judged: read as a writer it would silence the report for every other run of the same issue, and
+read as silence it would put the kill recommendation behind a failed stat. It stays `RUNNING` and the gate
 stays shut - a lane waiting on CI writes nothing for half an hour - but a task orphaned at
 dispatch reads `RUNNING` for as long as its empty output file exists, and that used to hold the
 event shut in silence. The gate used to count `lanes.sh` rows through a pattern fixed to one
@@ -486,7 +501,7 @@ give you, and never choose a slot yourself.
 
 The slot is not decoration: `task.js` derives `TEST_ENV_NUMBER` from it, so the slot number
 *is* the test database. Two live workflows on one slot share a database and corrupt each
-other's run. `--next` now assigns it from a registry under `/tmp/devloop-slots`, reconciled
+other's run. `--next` now assigns it from a registry under `/tmp/<lockPrefix>-slots`, reconciled
 against `in_progress` on every call, so a slot frees itself as soon as its issue is released
 and a died workflow needs no cleaning up by hand.
 
@@ -688,7 +703,7 @@ agent cannot relay what it has not been shown.
   Triage would catch them anyway, but that costs a workflow to learn what a label says.
 - Visual evidence is scaffolding and must never reach a commit. Captures are written by a
   throwaway spec that is deleted before committing, and both the implementer and the
-  reviewer grep the staged diff for `devloop-worktrees` and `save_screenshot`. A scratch
+  reviewer grep the staged diff for the worktree root, the scratch root and `save_screenshot`. A scratch
   path baked into a permanent spec makes every future run of that suite, on every machine,
   write into a directory that exists on one of them.
 - **There is no pre-commit hook, and lanes must not pass `--no-verify`.** This line used to
@@ -786,9 +801,24 @@ see its worktrees and you cannot.
 It is SHARED. Every workspace on this machine runs the version on disk, and sessions
 already running loaded the previous one and will never notice on their own.
 
-So: add an entry to `CHANGELOG.md`, and message the live sessions. `whatsnew.sh` covers
-the ones that start later and the ones that tick; the message covers the one that is
-mid-run right now. Neither substitutes for the other.
+So: record an entry, and message the live sessions. `whatsnew.sh` covers the ones that
+start later and the ones that tick; the message covers the one that is mid-run right now.
+Neither substitutes for the other.
 
 Record what a session should DO differently, not what the diff was. A new script nobody
 is told to run is a file, not a capability.
+
+**A lane writes the entry in its PULL REQUEST BODY, under a `## Plugin changelog`
+heading, and touches none of the three version files** - `.claude-plugin/marketplace.json`,
+`plugins/devloop/.claude-plugin/plugin.json`, or the version heading of `CHANGELOG.md`.
+`assign-plugin-version.sh` copies that section into `CHANGELOG.md` under the version the
+lander assigns at merge time. A lane that picks its own number picks the number every
+other lane in the pass picked: the first to land moves master past the rest, and the rest
+are refused for a reason that has nothing to do with their content.
+
+A body the lander cannot read at all stops the merge rather than moving the number: a
+version whose heading has nothing under it is the entry this whole section exists to
+deliver, and the next pass reads the body again.
+
+Editing the skill by hand, outside the pipeline, you write the `CHANGELOG.md` entry and
+the version yourself - there is no lander in that path to do it for you.

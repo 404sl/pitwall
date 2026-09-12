@@ -16,6 +16,7 @@ import { boardHref, issueHref, type IssueRoute } from "../routes.js";
 import { strings } from "../strings.js";
 import { Band } from "./Band.js";
 import { Failure } from "./Failure.js";
+import { IssueActions, type ActionName, type ActionOutcome } from "./IssueActions.js";
 
 interface PageFailure {
   heading: string;
@@ -184,10 +185,7 @@ export function callFor(
     case "in-flight":
       return { text: strings.issue.call.inFlight, tone: "waiting" };
     case "landing":
-      return {
-        text: expired ? strings.issue.call.landing.stale : strings.issue.call.landing.standing,
-        tone: expired ? "yours" : "waiting",
-      };
+      return { text: strings.issue.call.landing, tone: "waiting" };
     case "ready":
       return { text: strings.issue.call.ready, tone: "waiting" };
     case "blocked":
@@ -509,18 +507,52 @@ function failureBlock(failure?: PageFailure) {
   );
 }
 
+const DONE: Record<ActionName, string> = {
+  answer: strings.actions.doneAnswer,
+  ready: strings.actions.doneReady,
+  "not-mine": strings.actions.doneNotMine,
+};
+
+function outcomeNotice(
+  id: string,
+  outcome: ActionOutcome | undefined,
+  ref: Ref<HTMLParagraphElement>,
+): ReactNode {
+  if (outcome === undefined) {
+    return null;
+  }
+  if (!outcome.ok) {
+    return (
+      <p className="pw-notice pw-notice--alert" role="alert" ref={ref} tabIndex={-1}>
+        {outcome.message}
+      </p>
+    );
+  }
+  return (
+    <p className="pw-notice" role="status" ref={ref} tabIndex={-1}>
+      {fill(DONE[outcome.action], { id })}
+    </p>
+  );
+}
+
 export function IssueDetail({
   shown,
   view,
   failure,
   filter = {},
   heading,
+  route,
+  onOutcome,
+  notice,
 }: {
   shown: IssuePreview;
   view?: IssueView;
   failure?: PageFailure;
   filter?: FilterState;
   heading?: Ref<HTMLHeadingElement>;
+  route?: IssueRoute;
+  onOutcome?: (outcome: ActionOutcome) => Promise<void>;
+  notice?: ReactNode;
 }) {
   const failed = failureBlock(failure);
   return (
@@ -538,6 +570,15 @@ export function IssueDetail({
             notes={view.issue.notes}
           />
         )}
+        {route === undefined || onOutcome === undefined ? null : (
+          <IssueActions
+            route={route}
+            shown={shown}
+            loaded={view !== undefined}
+            onOutcome={onOutcome}
+          />
+        )}
+        {notice}
         <p className="pw-issue__id">{shown.id}</p>
         {view?.closedSinceSnapshot === true && view.snapshot !== undefined ? (
           <p className="pw-notice" role="status">
@@ -610,12 +651,17 @@ export function IssuePage({
   const [view, setView] = useState<IssueView | undefined>(undefined);
   const [failure, setFailure] = useState<PageFailure | undefined>(undefined);
   const [loading, setLoading] = useState(true);
+  const [outcome, setOutcome] = useState<ActionOutcome | undefined>(undefined);
   const heading = useRef<HTMLHeadingElement>(null);
+  const notice = useRef<HTMLParagraphElement>(null);
   const focused = useRef<string | undefined>(undefined);
 
-  const load = useCallback(
-    async (signal: AbortSignal) => {
-      setView(undefined);
+  const read = useCallback(
+    async (signal: AbortSignal, keep: boolean) => {
+      if (!keep) {
+        setView(undefined);
+        setOutcome(undefined);
+      }
       setFailure(undefined);
       setLoading(true);
       let response: Response;
@@ -655,9 +701,25 @@ export function IssuePage({
 
   useEffect(() => {
     const controller = new AbortController();
-    void load(controller.signal);
+    void read(controller.signal, false);
     return () => controller.abort();
-  }, [load]);
+  }, [read]);
+
+  const onOutcome = useCallback(
+    async (result: ActionOutcome) => {
+      if (result.ok) {
+        await read(new AbortController().signal, true);
+      }
+      setOutcome(result);
+    },
+    [read],
+  );
+
+  useEffect(() => {
+    if (outcome !== undefined) {
+      notice.current?.focus();
+    }
+  }, [outcome]);
 
   useEffect(() => {
     document.title = `${route.id} · ${strings.brand}`;
@@ -691,5 +753,16 @@ export function IssuePage({
     );
   }
 
-  return <IssueDetail shown={shown} view={view} failure={failure} filter={filter} heading={heading} />;
+  return (
+    <IssueDetail
+      shown={shown}
+      view={view}
+      failure={failure}
+      filter={filter}
+      heading={heading}
+      route={route}
+      onOutcome={onOutcome}
+      notice={outcomeNotice(route.id, outcome, notice)}
+    />
+  );
 }

@@ -8,6 +8,7 @@ const SHA = "e1a54123ca4d0b6a32479f49da4d26893f648206";
 const ARGS = {
   skillDir: "/skill",
   root: "/root",
+  lockToken: "lander-1788964650-29574",
   repos: {
     docs: {
       path: "site",
@@ -45,6 +46,7 @@ const TWO_ENV = {
 };
 
 const NO_PLUGIN = {
+  fetched: true,
   status: "no_manifest",
   masterVersion: "",
   branchVersion: "",

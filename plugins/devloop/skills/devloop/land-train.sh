@@ -31,6 +31,7 @@
 
 set -u
 
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PREFIX=devloop
 LABEL=lane-verified
 MAX=8
@@ -62,6 +63,16 @@ cd "$REPO_PATH" || exit 6
 git fetch origin --quiet 2>/dev/null
 
 say() { printf '%s\n' "$*"; }
+
+ident_name=$(git log -1 --format=%an origin/master 2>/dev/null)
+ident_email=$(git log -1 --format=%ae origin/master 2>/dev/null)
+git_with_identity() {
+  if [ -n "$ident_name" ] && [ -n "$ident_email" ]; then
+    git -c "user.name=$ident_name" -c "user.email=$ident_email" "$@"
+  else
+    git "$@"
+  fi
+}
 
 # 1. Master green first. A train built on a break lands the break plus everything else, and then
 #    nobody can tell which commit to look at.
@@ -127,12 +138,12 @@ say ""
 #    reaches master. Squashing rewrites the commits, so without that keyword GitHub cannot match
 #    them and every pull request would sit open looking unlanded. The caller verifies rather than
 #    assuming, because a keyword only fires on merge into the DEFAULT branch.
-included=""; skipped=""; body_lines=""
+included=""; skipped=""; body_lines=""; plugin_prs=""
 msgfile=$(mktemp "${TMPDIR:-/tmp}/train-msg.XXXXXX")
 
 while IFS="$(printf '\t')" read -r num branch title; do
   [ -n "$num" ] || continue
-  if ! git merge --squash "origin/${branch}" >/dev/null 2>/dev/null; then
+  if ! git_with_identity merge --squash "origin/${branch}" >/dev/null 2>/dev/null; then
     files=$(git diff --name-only --diff-filter=U 2>/dev/null | tr '\n' ' ')
     git reset --hard HEAD >/dev/null 2>/dev/null
     git clean -fd >/dev/null 2>/dev/null
@@ -147,7 +158,7 @@ while IFS="$(printf '\t')" read -r num branch title; do
     continue
   fi
   printf '%s\n\nCloses #%s\n' "$title" "$num" > "$msgfile"
-  git commit -q -F "$msgfile" 2>/dev/null || {
+  git_with_identity commit -q -F "$msgfile" 2>/dev/null || {
     git reset --hard HEAD >/dev/null 2>/dev/null
     say "  skipped #${num} ${branch} - commit refused"
     skipped="${skipped}${num} "
@@ -155,6 +166,9 @@ while IFS="$(printf '\t')" read -r num branch title; do
   }
   say "  added   #${num} ${branch}"
   included="${included}${num} "
+  if git show --name-only --format= HEAD 2>/dev/null | grep -qE '^(plugins/|\.claude-plugin/)'; then
+    plugin_prs="${plugin_prs}${num} "
+  fi
   body_lines="${body_lines}- #${num} ${title}
 "
 done <<EOF
@@ -169,6 +183,25 @@ if [ -z "$included" ]; then
   say ""
   say "empty: every candidate was skipped, no train to open"
   exit 2
+fi
+
+if [ -n "$plugin_prs" ]; then
+  pr_args=""; pr_list=""
+  for num in $plugin_prs; do
+    pr_args="${pr_args}--pr ${num} "
+    pr_list="${pr_list}#${num} "
+  done
+  version_out=$(bash "$HERE/assign-plugin-version.sh" --worktree "$WT" --slug "$SLUG" $pr_args 2>/dev/null)
+  version_code=$?
+  case "$version_code" in
+    0|2) say ""
+         say "version: $(printf '%s\n' "$version_out" | head -1)" ;;
+    *) cd "$REPO_PATH" || true; cleanup
+       git push origin --delete "$TRAIN" >/dev/null 2>/dev/null
+       say ""
+       say "usage: the devloop plugin version could not be assigned to ${TRAIN}, whose plugin change(s) are ${pr_list% } - ${version_out:-assign-plugin-version.sh printed nothing}"
+       exit 6 ;;
+  esac
 fi
 
 # 4. Push and open the pull request. Guard the push: this is not a default branch and the guard

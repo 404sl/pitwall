@@ -58,6 +58,22 @@ const LOCK_PREFIX = input.lockPrefix || 'devloop'
 const MERGE_LOCK = `/tmp/${LOCK_PREFIX}-merge.lock`
 const TOKEN_SHAPE = /^[A-Za-z0-9._-]+$/
 const trimmed = (v) => String(v || '').trim()
+
+const LOCK_TOKEN = trimmed(input.lockToken)
+if (!LOCK_TOKEN || !TOKEN_SHAPE.test(LOCK_TOKEN)) {
+  const said = LOCK_TOKEN
+    ? `lockToken reads [${LOCK_TOKEN}], which is not ${TOKEN_SHAPE} - it is interpolated into a single-quoted shell argument and nothing else can be`
+    : 'args carry no lockToken'
+  return {
+    landed: [], stopped: [], skipped: [], deployed: null, masterBroken: false,
+    error: `${said}. Build the dispatch with config.sh --land, which mints one per launch - ` +
+           `stable across a resume of the same run, different on the next - and carries it in ` +
+           `the args object it prints. land.js will not mint its own and does not fall back to ` +
+           `one: a lock step that mints the token reports every value from inside one cached ` +
+           `result, so a replayed acquisition agrees with itself and nothing in this script can ` +
+           `tell it from a fresh one.`
+  }
+}
 const ID_PREFIX = input.idPrefix || 'sr'
 const LABEL = 'lane-verified'
 const PLUGIN_MANIFEST = 'plugins/devloop/.claude-plugin/plugin.json'
@@ -146,6 +162,39 @@ const DEPLOY_EVERY = input.deployEvery || 3
 const MAX_ROUNDS = 4
 const WT = `/tmp/${LOCK_PREFIX}-worktrees`
 
+const SHELL_FIRST = `EVERY COMMAND THAT RUNS git OR bundle STARTS WITH THESE TWO EXPORTS, and so does every
+command that runs a script which does:
+
+  export GIT_CONFIG_GLOBAL=/dev/null BUNDLE_USER_CONFIG=/dev/null && <your command>
+
+Each command you run is its own shell, so exporting them once at the start reaches nothing after
+it - they go at the front of the command, the way TEST_ENV_NUMBER already does. Lead with
+'export ... &&' rather than writing them as a prefix assignment: a $(...) inside the command
+expands BEFORE a prefix assignment takes effect, so the identity reads below would still go
+through the home config.
+
+A HOME-DIRECTORY CONFIG THAT CANNOT BE READ PRESENTS AS ANYTHING BUT ITSELF. Every git command
+fails with 'unknown error occurred while reading the configuration files', and every
+bundler-fronted command HANGS with no output at all - 60s of wall clock against 0.067s of user
+time, so blocked on I/O rather than slow. A hang and a slow machine look identical, so a run pays
+its full timeout before suspecting anything: three runs diagnosed this from scratch in one
+evening, one of them after killing two suites on timeouts. Whether a synced folder has
+materialised a file is not something a run controls, so those files are not read at all. The two
+exports cost a readable config nothing and are not conditional.
+
+COMMIT IDENTITY IS THE ONE THING THAT DOES NOT SURVIVE THEM, and every command that WRITES a
+commit needs it - commit, rebase, merge, cherry-pick. Pass it on the command, taken from the
+branch being built on:
+
+  git -c user.name="$(git log -1 --format=%an origin/master)" -c user.email="$(git log -1 --format=%ae origin/master)" commit -F <message file>
+
+Without it git either refuses outright, 'unable to auto-detect email address', or writes the
+wrong author - and nothing downstream notices the second. On this machine the credential helper
+sits in the system config rather than the home one, so pushes keep working - but that is this
+machine, not a rule: a workspace set up by 'gh auth setup-git' has the helper in the GLOBAL
+config, and these exports drop it. If a push asks for a password, say so rather than putting the
+home config back.`
+
 const LAW = `
 Never use 2>&1 - it makes some commands fail outright.
 Use absolute paths, never relative ones.
@@ -153,7 +202,9 @@ Nothing you write anywhere may mention AI, assistants, automated authorship or t
 not a commit message, not a PR body, not a comment, not a tracker note. Read back what you
 wrote from the thing that stored it - GitHub and git both add and rewrite text - and check
 it rather than trusting what you meant to write.
-Never force-push a default branch, and never commit to one directly.`
+Never force-push a default branch, and never commit to one directly.
+
+${SHELL_FIRST}`
 
 const SURVEY = {
   type: 'object',
@@ -202,15 +253,17 @@ const LAND = {
 
 const VERSION = {
   type: 'object',
-  required: ['status', 'masterVersion', 'branchVersion', 'touchesPlugin', 'labelled', 'open', 'notes'],
+  required: ['fetched', 'status', 'prStatus', 'masterVersion', 'branchVersion', 'touchesPlugin', 'labelled', 'open', 'notes'],
   additionalProperties: false,
   properties: {
-    status: { enum: ['read', 'no_manifest', 'unreadable'], description: "'read' only when both git show calls printed a manifest you could copy a version string out of" },
+    fetched: { type: 'boolean', description: "the FETCH, and nothing else: true only when the git fetch printed FETCHED. False when it did not, whatever the commands after it printed - every ref this step and the merge after it read is then whatever the checkout already held." },
+    status: { enum: ['read', 'no_manifest', 'unreadable'], description: "the MANIFEST read, and nothing else: 'read' only when both git show calls printed a manifest you could copy a version string out of. What gh printed does not touch this field." },
+    prStatus: { enum: ['read', 'unreadable'], description: "the PULL REQUEST read: 'read' when gh pr view printed an answer, 'unreadable' when it failed for any reason - a rate limit, a network error, no authentication. Say which in notes." },
     masterVersion: { type: 'string', description: `the "version" string in origin/master's ${PLUGIN_MANIFEST}, verbatim. An empty string when you could not read one.` },
     branchVersion: { type: 'string', description: `the "version" string in the branch's ${PLUGIN_MANIFEST}, verbatim. An empty string when you could not read one.` },
-    touchesPlugin: { type: 'boolean', description: 'true when the branch changes any file under plugins/ or .claude-plugin/ - that is what the marketplace serves' },
-    labelled: { type: 'boolean', description: `true when gh pr view printed ${LABEL} among the pull request's labels just now` },
-    open: { type: 'boolean', description: "true when gh pr view printed state OPEN and isDraft false - a closed, merged or draft pull request is not one this run is being asked to merge" },
+    touchesPlugin: { type: 'boolean', description: 'true when the branch changes any file under plugins/ or .claude-plugin/ - that is what the marketplace serves. True when the diff could not be read at all, because an unknown answer here must not read as out of scope.' },
+    labelled: { type: 'boolean', description: `true when gh pr view printed ${LABEL} among the pull request's labels just now. Meaningless unless prStatus is 'read' - report false when gh printed nothing.` },
+    open: { type: 'boolean', description: "true when gh pr view printed state OPEN and isDraft false - a closed, merged or draft pull request is not one this run is being asked to merge. Meaningless unless prStatus is 'read' - report false when gh printed nothing." },
     notes: { type: 'string' }
   }
 }
@@ -288,8 +341,7 @@ const LOCK = {
   required: ['status', 'holder'],
   properties: {
     status: { enum: ['taken', 'held_by_other'] },
-    token: { type: 'string', description: 'the token you wrote into the holder file' },
-    holder: { type: 'string', description: 'what cat printed back out of the holder file, verbatim and untidied - this run compares it against the token, ignoring the newline cat prints at the end, and stands down when the two differ' },
+    holder: { type: 'string', description: 'what cat printed back out of the holder file, verbatim and untidied - this run compares it against the token it gave you, ignoring the newline cat prints at the end, and stands down when the two differ' },
     notes: { type: 'string' }
   }
 }
@@ -311,17 +363,21 @@ function lockPrompt() {
   return `Take the merge lock, so nothing else lands while this run does.
 
   while ! mkdir ${MERGE_LOCK} 2>/dev/null; do sleep 0.2; done
-  printf 'lander-%s-%s\\n' "$(date +%s)" "$$" > ${MERGE_LOCK}/holder
+  printf '%s\\n' '${LOCK_TOKEN}' > ${MERGE_LOCK}/holder
   cat ${MERGE_LOCK}/holder
   echo GOT_MERGE_LOCK
 
-REPORT TWO VALUES, NOT ONE. 'token' is the string you wrote; 'holder' is what cat printed back,
-verbatim, whatever it says. Report both even when they are identical, and do not correct either
-one to match the other - the run compares them and stands down when they differ, so a value
-tidied here hides the one thing this step exists to show. The newline the file ends with and cat
-prints back is not a difference: the run ignores whitespace around both values. The release step
-is handed what you report and can compare against nothing else, so a token you omit or retype is
-a lock this run cannot give back.
+THE TOKEN IS ALREADY IN THAT COMMAND AND IS NOT YOURS TO MINT. Do not put $(date +%s), $$, or
+anything you compose yourself in its place, and do not ask anybody for one. It is minted per
+launch outside this run and the release step is handed the same value, so a token substituted
+here is a lock this run cannot give back. A token this step made up would also be stale in
+exactly the way this arrangement exists to prevent: replay this answer and every value in it
+agrees with itself while the lock on disk belongs to somebody else.
+
+REPORT ONE VALUE: 'holder' is what cat printed back, verbatim, whatever it says. Do not correct
+it to match the token above - the run compares the two and stands down when they differ, so a
+value tidied here hides the one thing this step exists to show. The newline the file ends with
+and cat prints back is not a difference: the run ignores whitespace around both values.
 
 It used to be the bare word 'lander', which could not tell two concurrent landers apart: both
 wrote the same string, so each would read its own name in the other's lock and delete it. That
@@ -337,7 +393,7 @@ minutes, read the holder file and stop:
 
 Return status 'held_by_other' with what it said. A holder that does not begin 'lander-' and is
 not a tracker id is a PERSON merging by hand - leave it exactly alone and let them finish. A
-holder that DOES begin 'lander-' but is not the token you wrote is ANOTHER LANDER, very likely
+holder that DOES begin 'lander-' but is not the token above is ANOTHER LANDER, very likely
 in another session on this machine, and is equally not yours to break. A wrongly broken lock
 costs two runs their work; a lock left standing costs only time. That instruction used to read
 "remove it after 15 minutes", and that is precisely what caused a lane to steal a live lock
@@ -345,8 +401,8 @@ from another lane mid-merge.
 
 Return 'taken' once mkdir succeeded and you have written the holder file, and report what cat
 printed as 'holder' whether or not it matches the token. You are not asked to judge ownership:
-the run compares the two values itself and stands down on a mismatch, because the file is the
-fact and the value you report is a claim about it.
+the run compares the holder file against the token it was launched with, stands down on a
+mismatch, and the file is the fact while the value you report is a claim about it.
 ${LAW}`
 }
 
@@ -494,59 +550,40 @@ Report the conclusions you actually saw in 'checks', and the head sha in 'headRe
 run's log says what was true rather than only whether it liked it.`
 }
 
-function versionAhead(branch, master) {
-  const a = SEMVER.exec(branch)
-  const b = SEMVER.exec(master)
-  if (!a || !b) return null
-  for (let i = 1; i <= 3; i++) {
-    const x = Number(a[i])
-    const y = Number(b[i])
-    if (x !== y) return x > y
-  }
-  return false
-}
-
 function versionVerdict(read) {
   if (!read) {
-    return { why: 'version_unreadable', detail: 'the version step answered nothing, and a number nobody read is not a number that is ahead' }
+    return { why: 'version_unreadable', detail: 'the version step answered nothing, and a number nobody read is not a number the next one can be counted from' }
+  }
+  if (read.fetched !== true) {
+    return {
+      why: 'fetch_failed',
+      detail: `the version step did not fetch origin - ${trimmed(read.notes) || 'FETCHED did not print'}. Every ref read after that is whatever the checkout already held, so origin/master may be behind what has already merged: the manifest read, the diff that decides whether the version guard applies, and the rebase land-one.sh does not do when it reads the branch as not behind. Nothing was merged and the label was left on, so the next run takes it when the fetch works.`
+    }
   }
   if (read.status === 'no_manifest') return null
+  if (!read.touchesPlugin) return null
   if (read.status !== 'read') {
     return {
       why: 'version_unreadable',
-      detail: `the version step could not read what it needs - ${trimmed(read.notes) || `it reported only '${read.status}'`}`
+      detail: `the version step could not read ${PLUGIN_MANIFEST} - ${trimmed(read.notes) || `it reported only '${read.status}'`}`
     }
   }
-  if (!read.touchesPlugin) return null
-  const branch = trimmed(read.branchVersion)
   const master = trimmed(read.masterVersion)
-  const ahead = versionAhead(branch, master)
-  if (ahead === null) {
+  if (!SEMVER.test(master)) {
     return {
       why: 'version_unreadable',
-      detail: `the declared devloop plugin version cannot be compared - the branch reported '${branch}' and origin/master reported '${master}', and a version that is not three numbers cannot be ordered against anything`
-    }
-  }
-  if (!ahead) {
-    if (read.labelled === false || read.open === false) {
-      return {
-        why: 'version_not_ahead',
-        defer: read.labelled === false ? `${LABEL} is no longer on it` : 'it is closed, merged or a draft',
-        detail: `the branch declares devloop plugin version ${branch} and origin/master holds ${master}, which is not strictly greater`
-      }
-    }
-    if (read.labelled !== true || read.open !== true) {
-      return {
-        why: 'version_unreadable',
-        detail: `the branch declares devloop plugin version ${branch} and origin/master holds ${master}, which is not strictly greater - but the step did not report whether the pull request still carries ${LABEL} and is still open, and a refusal that un-queues a pull request must not act on a queue state nobody read`
-      }
-    }
-    return {
-      why: 'version_not_ahead',
-      detail: `the branch declares devloop plugin version ${branch} and origin/master holds ${master}, which is not strictly greater. Bump ${PLUGIN_MANIFEST} and ${MARKETPLACE_MANIFEST} above ${master} and push again.`
+      detail: `origin/master declares devloop plugin version '${master}' in ${PLUGIN_MANIFEST}, which is not three numbers, and the number this merge lands is counted up from it - so nothing can be incremented and ${MARKETPLACE_MANIFEST} cannot be made to agree with it. The branch's own number is not used.`
     }
   }
   return null
+}
+
+function prVerdict(read) {
+  if (!read || read.prStatus !== 'unreadable') return null
+  return {
+    why: 'pr_unreadable',
+    detail: `gh could not read pull request state - ${trimmed(read.notes) || 'the version step reported no answer from gh pr view'}. Nothing is known about the version here: this says the PULL REQUEST could not be read, not that a number could not be. Nothing was merged, the label was left on, and the next run picks it up when gh answers again.`
+  }
 }
 
 function versionPrompt(pr) {
@@ -574,22 +611,35 @@ switch, do not reset, and do not stash.
 
 REPORT, DO NOT JUDGE. Whether this may merge is decided from what you report, not by you:
 
-  status 'read'         FETCHED printed, ls-tree printed the path, both git show calls printed a
-                        manifest, and gh pr view printed an answer. Copy the "version" string out
-                        of each manifest into masterVersion and branchVersion, verbatim - do not
-                        normalise them, pad them, or correct one to look like the other.
+  status 'read'         ls-tree printed the path and both git show calls printed a manifest. Copy
+                        the "version" string out of each manifest into masterVersion and
+                        branchVersion, verbatim - do not normalise them, pad them, or correct one
+                        to look like the other.
   status 'no_manifest'  ls-tree printed NOTHING. ${PLUGIN_MANIFEST} is not in master's tree, so
                         this repository ships no plugin and has no published number to walk
                         backwards. Skip the two git show calls - there is nothing there to read,
                         and their error is the expected result rather than a problem.
-  status 'unreadable'   FETCHED did not print, or ls-tree printed the path and a git show then
-                        failed anyway, or the manifest it printed carries no "version" string, or
-                        gh pr view printed no answer. Say which in notes.
+  status 'unreadable'   ls-tree printed the path and a git show then failed anyway, or the manifest
+                        it printed carries no "version" string. Say which in notes.
 
-AN UNREADABLE MASTER IS NOT A CLEAR ROAD. If the fetch did not work, or the manifest is in the
-tree and you still cannot get a number out of it, report 'unreadable' and say why. Guessing a
-number turns a guard into a green light, and the merge that follows is the thing the guard exists
-to stop.
+THE FETCH HAS ITS OWN FIELD TOO. Report fetched true when the first command printed FETCHED and
+false when it did not, and say in notes what it printed instead. A failed fetch does not move
+status: the commands after it still run, and status reports what THEY printed. It is reported
+separately because it is the one failure that makes every other answer here quietly stale - the
+refs are whatever this checkout already held, so origin/master can be behind work that has already
+merged, and a branch that looks up to date against it has never been tested against master at all.
+
+status IS ABOUT THE MANIFEST AND NOTHING ELSE. gh has its own field, prStatus, and what gh printed
+never moves status. Report prStatus 'read' when gh pr view printed an answer and 'unreadable' when
+it failed for any reason - a rate limit, a network error, no authentication - and say which in
+notes. The two reads fail for unrelated causes and have unrelated remedies: an unreadable manifest
+is a number to fix, an unreadable pull request is a read to try again later, and reporting the
+second as the first sent a reader looking at version arithmetic that was never wrong.
+
+AN UNREADABLE MASTER IS NOT A CLEAR ROAD. If the fetch did not work, report fetched false; if the
+manifest is in the tree and you still cannot get a number out of it, report status 'unreadable'.
+Say why in either case. Guessing a number turns a guard into a green light, and the merge that
+follows is the thing the guard exists to stop.
 
 WHAT ls-tree PRINTS IS WHAT DECIDES BETWEEN THE OTHER TWO, and nothing else decides it. Empty
 output means 'no_manifest'. Do not reach for 'no_manifest' because some other command errored, and
@@ -598,14 +648,17 @@ and the pull request is refused either way on a verdict that was never about the
 
 touchesPlugin is true when the git diff lists ANY path under plugins/ or .claude-plugin/.
 Those are the files the marketplace serves, so a branch changing one of them ships under whatever
-number it declares. It is false when the diff lists none of them.
+number it declares. It is false when the diff lists none of them, and TRUE when the diff command
+itself did not print - an answer nobody could read must not read as out of scope, because the
+version guard is skipped entirely for a branch reported false.
 
 labelled and open come from gh pr view, and they say whether this pull request is still the thing
 the run was asked to merge. labelled is true when ${LABEL} is among the labels it printed. open is
 true when state is OPEN and isDraft is false. Report what that command printed and nothing else -
-if it printed no answer at all, report status 'unreadable' and say so in notes, because a refusal
-decided here takes a pull request out of the queue and reopens somebody's tracker issue, and
-neither is safe to do to a pull request that is no longer in the queue to refuse.
+if it printed no answer at all, report prStatus 'unreadable', labelled false and open false, and
+say in notes what gh printed instead, because a refusal decided here takes a pull request out of
+the queue and reopens somebody's tracker issue, and neither is safe to do to a pull request that
+is no longer in the queue to refuse.
 
 ${LAW}`
 }
@@ -654,9 +707,11 @@ a report to the supervisor, not a problem for you to solve.
 
      bash ${SKILL_DIR}/land-one.sh --repo-path ${path} --slug ${slug(pr.repo)} --pr ${pr.number} --branch ${pr.branch}
 
-   It checks master is green, rebases onto master only if the branch is behind, force-pushes
-   with the guard, and waits for CI on the pushed head by BLOCKING rather than polling. Then it
-   re-reads the rollup, refuses an empty one, and refuses one that describes a stale head.
+   It checks master is green, rebases onto master only if the branch is behind, assigns the next
+   devloop plugin version when the branch ships a file under plugins/ or .claude-plugin/,
+   force-pushes with the guard, and waits for CI on the pushed head by BLOCKING rather than
+   polling. Then it re-reads the rollup, refuses an empty one, and refuses one that describes a
+   stale head.
 
    Read its EXIT CODE, not its prose:
 
@@ -733,12 +788,23 @@ a report to the supervisor, not a problem for you to solve.
    than making another - a lane may have left one holding exactly this branch, which is a
    favour and not a mess. 'git worktree list' says where it is.
 
-     cd <worktree> && git rebase origin/master
+     cd <worktree> && git -c user.name="$(git log -1 --format=%an origin/master)" -c user.email="$(git log -1 --format=%ae origin/master)" rebase origin/master
 
    TEXTUAL CONFLICTS IN THE SAME REGION are yours to resolve when the intent of both sides is
    plain - two additions to one list, an import added on both sides, a spec file gaining
    examples at the same place. Resolve it so both changes survive, and say in 'notes' what you
    resolved and how.
+
+   FINISHING A STOPPED REBASE NEEDS THE IDENTITY AGAIN, AND AN EDITOR IT CAN RUN. A -c flag
+   applies to ONE invocation and does not carry into --continue - and --continue is what writes
+   the commit for the resolution, so a bare one fails for want of an identity exactly like the
+   rebase above. The exports also take core.editor away, and --continue opens an editor to
+   reword that commit, so git falls back to $EDITOR and a run with no terminal hangs or dies on
+   it. Both halves, every time the rebase stops:
+     cd <worktree> && git add <the files you resolved>
+     cd <worktree> && git -c user.name="$(git log -1 --format=%an origin/master)" -c user.email="$(git log -1 --format=%ae origin/master)" -c core.editor=true rebase --continue
+   A rebase can stop more than once. Repeat both until it reports it has finished. Do not take
+   git's own hint to set a --global identity: that is the file the exports exist to ignore.
 
    A CONFLICT OF MEANING IS NOT. If your branch and something merged since disagree about what
    the code should DO - one renames what the other calls, one changes a behaviour the other
@@ -1053,8 +1119,11 @@ ${LAW}`
 //
 // NOT retired: 'master_red' (nothing is wrong with the PR), 'blocked' (CI simply had not
 // finished - a timing accident that the next round should retry), 'version_unreadable' (the
-// number could not be read at all, which is ignorance rather than a finding), and 'agent_error'
-// (we do not know what happened, and un-queueing on ignorance loses work silently).
+// number could not be read at all, which is ignorance rather than a finding), 'pr_unreadable'
+// (gh could not be asked about the PR, which is the same ignorance about a different read),
+// 'fetch_failed' (the refs everything else was read from may be stale, which is ignorance about
+// all of them at once), and 'agent_error' (we do not know what happened, and un-queueing on
+// ignorance loses work silently).
 const RETIRE = { type: 'object', required: ['status'], additionalProperties: false, properties: {
   status: { enum: ['retired', 'partial', 'nothing_to_do'] },
   retired: { type: 'array', items: { type: 'string' } },
@@ -1239,16 +1308,14 @@ phase('Survey')
 // supervisor was mid-investigation - so being the only lander is not the same as being the
 // only thing merging.
 const lock = await agent(lockPrompt(), { label: 'lock', phase: 'Survey', schema: LOCK, model: 'haiku', effort: 'low' })
-const token = trimmed(lock && lock.token)
 const holder = trimmed(lock && lock.holder)
 if (!lock || lock.status !== 'taken') {
   log(`merge lock held by ${holder || 'somebody'} - not landing anything this run`)
   return { landed: [], stopped: [], skipped: [], deployed: 'not_needed', lockedOutBy: lock ? holder : null }
 }
 
-const mintedHere = !!token && TOKEN_SHAPE.test(token) && holder === token
-if (!mintedHere) {
-  const unproven = `LEAKED - the lock step reported taken, but ${MERGE_LOCK}/holder reads [${holder}] against a token of [${token}], so this run cannot prove the lock is its own. Nothing was landed and nothing was removed. Read ${MERGE_LOCK}/holder: if it names a run that has finished, clear it; if it names another lander, it is theirs and they give it back themselves.`
+if (holder !== LOCK_TOKEN) {
+  const unproven = `LEAKED - the lock step reported taken, but ${MERGE_LOCK}/holder reads [${holder}] against a token of [${LOCK_TOKEN}], so this run cannot prove the lock is its own. Nothing was landed and nothing was removed. Read ${MERGE_LOCK}/holder: if it names a run that has finished, clear it; if it names another lander, it is theirs and they give it back themselves.`
   log(unproven)
   return { landed: [], stopped: [], skipped: [], deployed: 'not_needed', lock: unproven, lockedOutBy: holder }
 }
@@ -1368,12 +1435,7 @@ try {
       const declared = await agent(versionPrompt(pr), {
         label: `version:${keyOf(pr)}`, phase: 'Land', schema: VERSION, model: 'haiku', effort: 'low'
       })
-      const stale = versionVerdict(declared)
-      if (stale && stale.defer) {
-        seen.delete(keyOf(pr))
-        log(`DEFERRED ${keyOf(pr)} - ${stale.detail}, and the version step reports ${stale.defer}, so nothing is un-queued and no merge is delegated; it goes back for a later round`)
-        continue
-      }
+      const stale = versionVerdict(declared) || prVerdict(declared)
       if (stale) {
         stopped.push({ ...pr, why: stale.why, detail: stale.detail })
         log(`STOPPED ${keyOf(pr)} - ${stale.why}\n    ${stale.detail}`)
@@ -1382,8 +1444,12 @@ try {
       if (declared && (declared.labelled === false || declared.open === false)) {
         log(`${keyOf(pr)} - the version step reports it is no longer the pull request this run was asked to merge (${LABEL} ${declared.labelled === false ? 'is gone' : 'still on'}, ${declared.open === false ? 'closed, merged or draft' : 'open'}), and its declared version raises no objection, so land-one.sh decides in shell whether it still merges`)
       }
-      if (declared && declared.status === 'read' && !declared.touchesPlugin) {
-        log(`${keyOf(pr)} - declares devloop plugin version ${trimmed(declared.branchVersion) || '(none)'} against origin/master's ${trimmed(declared.masterVersion) || '(none)'}, and its diff lists no path under plugins/ or .claude-plugin/, so the versions are not compared`)
+      if (declared && declared.status !== 'no_manifest' && !declared.touchesPlugin) {
+        const unread = declared.status === 'read' ? '' : `, and the manifest read reported '${declared.status}'${trimmed(declared.notes) ? `: ${trimmed(declared.notes)}` : ''}`
+        log(`${keyOf(pr)} - declares devloop plugin version ${trimmed(declared.branchVersion) || '(none)'} against origin/master's ${trimmed(declared.masterVersion) || '(none)'}, and its diff lists no path under plugins/ or .claude-plugin/, so the versions are not compared${unread}`)
+      }
+      if (declared && declared.status === 'read' && declared.touchesPlugin) {
+        log(`${keyOf(pr)} - ships a plugin file and declares devloop plugin version ${trimmed(declared.branchVersion) || '(none)'}; that number is not used. land-one.sh assigns the one after origin/master's ${trimmed(declared.masterVersion)} when it pushes, so two plugin pull requests in one pass get consecutive versions instead of the same one`)
       }
       if (declared.status === 'no_manifest') {
         log(`${keyOf(pr)} - origin/master carries no ${PLUGIN_MANIFEST}, so this repository has no published plugin version to walk backwards`)
@@ -1464,7 +1530,7 @@ try {
 
   // Before anything else, un-queue what could not be landed - including when nothing landed at
   // all, which is exactly the run whose findings would otherwise be repeated in full.
-  const dead = stopped.filter((sp) => sp.why === 'conflict' || sp.why === 'red_after_rebase' || sp.why === 'version_not_ahead')
+  const dead = stopped.filter((sp) => sp.why === 'conflict' || sp.why === 'red_after_rebase')
   if (dead.length) {
     phase('Deploy')
     const rt = await agent(retirePrompt(dead), { label: `retire:${dead.length}`, phase: 'Deploy', schema: RETIRE, model: 'sonnet' })
@@ -1539,23 +1605,18 @@ try {
 } finally {
   // However this ended. A run that merged and then died before releasing held every other
   // lane up for twenty minutes with nothing behind it.
-  if (!token || !TOKEN_SHAPE.test(token)) {
-    lockState = `LEAKED - ${MERGE_LOCK} is held under a token this run cannot quote back, so no removal was even asked for. Read ${MERGE_LOCK}/holder, and leave it alone unless it names a run that has finished.`
-    log(lockState)
+  const released = await agent(releasePrompt(LOCK_TOKEN), { label: 'release', phase: 'Deploy', model: 'haiku', effort: 'low', schema: RELEASE })
+  if (released && released.status === 'released') {
+    lockState = 'released'
+  } else if (released && released.status === 'not_mine') {
+    lockState = `not_mine - ${MERGE_LOCK}/holder did not hold ${LOCK_TOKEN}, so nothing was removed and nothing should be`
+    log(`${lockState}.\n    ${released.notes || 'the script reported NOT_MINE and says what the holder file read instead'}`)
+  } else if (released && released.status === 'already_gone') {
+    lockState = `already_gone - ${MERGE_LOCK} was not there to release`
+    log(`${lockState}. Something removed this run's lock while it was working, so another lander may have been running beside it.\n    ${released.notes || ''}`)
   } else {
-    const released = await agent(releasePrompt(token), { label: 'release', phase: 'Deploy', model: 'haiku', effort: 'low', schema: RELEASE })
-    if (released && released.status === 'released') {
-      lockState = 'released'
-    } else if (released && released.status === 'not_mine') {
-      lockState = `not_mine - ${MERGE_LOCK}/holder did not hold ${token}, so nothing was removed and nothing should be`
-      log(`${lockState}.\n    ${released.notes || 'the script reported NOT_MINE and says what the holder file read instead'}`)
-    } else if (released && released.status === 'already_gone') {
-      lockState = `already_gone - ${MERGE_LOCK} was not there to release`
-      log(`${lockState}. Something removed this run's lock while it was working, so another lander may have been running beside it.\n    ${released.notes || ''}`)
-    } else {
-      lockState = `LEAKED - ${MERGE_LOCK} still held ${token} after the release step, or the step answered nothing. Check ${MERGE_LOCK}/holder still reads ${token} before removing it - if it reads anything else, another lander has it and it is not yours.`
-      log(`${lockState}\n    ${(released && released.notes) || 'the release agent returned nothing'}`)
-    }
+    lockState = `LEAKED - ${MERGE_LOCK} still held ${LOCK_TOKEN} after the release step, or the step answered nothing. Check ${MERGE_LOCK}/holder still reads ${LOCK_TOKEN} before removing it - if it reads anything else, another lander has it and it is not yours.`
+    log(`${lockState}\n    ${(released && released.notes) || 'the release agent returned nothing'}`)
   }
 }
 

@@ -1,14 +1,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { PullRequest, type Project } from "@404sl/pitwall-schema";
 import { readWorkspace, WORKSPACE_FILE } from "../src/autofix.ts";
-import { remoteSlugOf, slugOf } from "../src/git.ts";
+import { remoteOf, remoteSlugOf, slugOf } from "../src/git.ts";
 import { LIST_LIMIT, issueMatcher, readPipeline, rollupChecks } from "../src/pipeline.ts";
+import { nullGlobalGitConfig, spawnGit } from "./support/git.js";
+
+nullGlobalGitConfig();
 
 const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "gh");
 const RECORDED = join(FIXTURES, "recorded");
@@ -17,7 +19,7 @@ const HTTPS_REMOTE = "https://github.com/acme/site.git";
 const SSH_REMOTE = "git@github.com:acme/site.git";
 
 function git(dir: string, ...args: string[]): void {
-  const ran = spawnSync("git", args, { cwd: dir, encoding: "utf8" });
+  const ran = spawnGit(args, { cwd: dir });
   assert.equal(ran.status, 0, ran.stderr);
 }
 
@@ -84,6 +86,24 @@ test("the checkout is asked for its remote rather than the configuration", () =>
   assert.equal(remoteSlugOf(join(root, "absent")), undefined);
 });
 
+test("a checkout with nothing to say about its origin is not reported as a failure", () => {
+  const root = mkdtempSync(join(tmpdir(), "pitwall-remote-"));
+  assert.deepEqual(remoteOf(checkout(root, "bare")), {});
+  assert.deepEqual(remoteOf(join(root, "absent")), {});
+  assert.deepEqual(remoteOf(checkout(root, "https", HTTPS_REMOTE)), { slug: "acme/site" });
+});
+
+test("a checkout git refuses to read is a failure, not an absent origin", () => {
+  const root = mkdtempSync(join(tmpdir(), "pitwall-remote-"));
+  const dir = join(root, "broken");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, ".git"), `gitdir: ${join(root, "nowhere")}\n`);
+  const read = remoteOf(dir);
+  assert.equal(read.slug, undefined);
+  assert.match(read.failure ?? "", /not a git repository|gitdir/i);
+  assert.equal(remoteSlugOf(dir), undefined);
+});
+
 test("every open pull request reported is one the contract accepts", async () => {
   const read = await collected();
   assert.deepEqual(read.errors, []);
@@ -122,6 +142,15 @@ test("a check that failed outranks one that is still running", () => {
   assert.equal(rollupChecks([{ __typename: "StatusContext", state: "EXPECTED" }]), "pending");
   assert.equal(rollupChecks([{ __typename: "CheckRun", status: "COMPLETED" }]), "pending");
   assert.equal(rollupChecks(undefined), "none");
+});
+
+test("a draft pull request is reported as a draft and the rest as ready", async () => {
+  const pulls = byNumber((await collected()).pipeline);
+  assert.equal(pulls.get(104)?.draft, true);
+  assert.equal(pulls.get(101)?.draft, false);
+  assert.equal(pulls.get(102)?.draft, false);
+  assert.equal(pulls.get(103)?.draft, false);
+  assert.equal(pulls.get(105)?.draft, false);
 });
 
 test("a pull request is linked to its issue by its branch name or by its body", async () => {
@@ -171,7 +200,7 @@ test("the command carries the slug derived from the remote", async () => {
   const asked = readFileSync(log, "utf8").trim().split("\n");
   assert.equal(
     asked[0],
-    "pr list --repo acme/site --state open --limit 200 --json number,title,labels,headRefName,url,statusCheckRollup,body",
+    "pr list --repo acme/site --state open --limit 200 --json number,title,labels,headRefName,url,statusCheckRollup,body,isDraft",
   );
   assert.equal(asked.length, 1);
 });
@@ -201,6 +230,7 @@ test("a listing that came back at the limit is reported rather than read as ever
   );
   const read = await collected(HTTPS_REMOTE, "ok", { GH_OUTPUT: dir });
   assert.equal(read.pipeline.length, LIST_LIMIT);
+  assert.equal(read.pipeline[0]?.draft, false);
   assert.equal(read.errors.length, 1);
   assert.match(read.errors[0]?.source ?? "", /^gh pr list --repo acme\/site/);
   assert.match(read.errors[0]?.message ?? "", new RegExp(`${LIST_LIMIT} pull request limit`));
@@ -215,7 +245,7 @@ test("gh that is not installed is an error naming the command, not an empty pipe
   assert.equal(read.errors.length, 1);
   assert.equal(
     read.errors[0]?.source,
-    "gh pr list --repo acme/site --state open --limit 200 --json number,title,labels,headRefName,url,statusCheckRollup,body",
+    "gh pr list --repo acme/site --state open --limit 200 --json number,title,labels,headRefName,url,statusCheckRollup,body,isDraft",
   );
   assert.match(read.errors[0]?.message ?? "", /gh pr list --repo acme\/site/);
   assert.match(read.errors[0]?.message ?? "", /ENOENT/);

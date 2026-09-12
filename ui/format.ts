@@ -4,6 +4,12 @@ import { strings } from "./strings.js";
 
 export * from "../src/format.js";
 
+export const SHA_LENGTH = 7;
+
+export function shortSha(commit: string): string {
+  return commit.slice(0, SHA_LENGTH);
+}
+
 export function ofTotal(shown: number, total: number): string {
   return fill(strings.filters.countOf, { shown: String(shown), total: String(total) });
 }

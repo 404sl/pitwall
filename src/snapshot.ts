@@ -19,22 +19,40 @@ import {
   type RootsOptions,
 } from "./config.js";
 import { recordSnapshot, type HistoryMetrics } from "./history.js";
-import { deliver, noticesFor, type Delivered, type Noter, type Sender } from "./notify.js";
-import { issueMatcher, readPipeline } from "./pipeline.js";
-import { preconditionProbe, pullLookup } from "./probes.js";
+import {
+  deliver,
+  lostNotices,
+  noticesFor,
+  type Delivered,
+  type Noter,
+  type Sender,
+} from "./notify.js";
+import { readPipeline } from "./pipeline.js";
+import { preconditionProbe } from "./probes.js";
+import { carryFailingSince } from "./problems.js";
 import { sessionRefOf, unlistedNotifiers, workspaceSender } from "./sender.js";
 import { readSnapshot, writeSnapshot } from "./state.js";
+import {
+  closeUpstream,
+  closuresFor,
+  failedClosures,
+  githubCloser,
+  ownedRepos,
+  upstreamIssueOf,
+  type Closer,
+  type UpstreamRun,
+} from "./upstream.js";
 import { assess, isAssessable, lastNoteAt, type StalenessContext } from "./staleness.js";
 import { VERSION } from "./version.js";
 
 export interface SnapshotOptions extends RootsOptions {
   timeoutMs?: number;
   now?: Date;
-  pullFacts?: StalenessContext["pullFacts"];
   probe?: StalenessContext["probe"];
   sender?: Sender;
   sessionRef?: string;
   note?: Noter;
+  closer?: Closer;
 }
 
 export interface SnapshotResult {
@@ -44,6 +62,7 @@ export interface SnapshotResult {
   read: boolean;
   delivered: Delivered[];
   unlisted: CollectionError[];
+  upstream: UpstreamRun;
 }
 
 type GatheredMetrics = Pick<Metrics, "readyCount" | "inboxCount" | "closedToday" | "landedToday">;
@@ -94,23 +113,10 @@ function stalenessContext(
   day: Date,
   errors: CollectionError[],
 ): StalenessContext {
-  const repos = new Map(project.repos.map((repo) => [repo.name, repo.path]));
-  const knownIds = new Set([...collected.issues, ...collected.closed].map((issue) => issue.id));
   return {
     idPrefix: project.authority.idPrefix,
-    knownIds,
+    knownIds: new Set([...collected.issues, ...collected.closed].map((issue) => issue.id)),
     closedIds: new Set(collected.closed.map((issue) => issue.id)),
-    pullFacts:
-      options.pullFacts ??
-      (repos.size === 0
-        ? undefined
-        : pullLookup({
-            repos,
-            names: issueMatcher(project.authority.idPrefix, knownIds),
-            env: options.env,
-            timeoutMs: options.timeoutMs,
-            errors,
-          })),
     probe:
       options.probe ??
       preconditionProbe({ env: options.env, timeoutMs: options.timeoutMs, errors }),
@@ -374,6 +380,49 @@ async function announce(
   return delivered;
 }
 
+function entrusted(roots: ResolvedRoots, options: SnapshotOptions): boolean {
+  return roots.source === "config" || options.closer !== undefined;
+}
+
+function mightCarryUpstream(closed: readonly ClosedIssue[]): boolean {
+  return closed.some((issue) => upstreamIssueOf(issue.externalRef) !== undefined);
+}
+
+async function closeUpstreamIssues(
+  gathered: readonly Gathered[],
+  previous: Snapshot | undefined,
+  roots: ResolvedRoots,
+  options: SnapshotOptions,
+): Promise<UpstreamRun> {
+  const run: UpstreamRun = { reported: [], left: [] };
+  if (!entrusted(roots, options)) {
+    return run;
+  }
+  for (const entry of gathered) {
+    if (!mightCarryUpstream(entry.closed)) {
+      continue;
+    }
+    const owned = ownedRepos(entry.project);
+    const work = closuresFor({
+      previous: previous?.projects.find((project) => project.id === entry.project.id),
+      closed: entry.closed,
+      slugs: owned.slugs,
+      unreadable: owned.unreadable,
+    });
+    run.left.push(...work.left);
+    if (work.closures.length === 0) {
+      continue;
+    }
+    const closer =
+      options.closer ?? githubCloser({ env: options.env, timeoutMs: options.timeoutMs });
+    const note =
+      options.note ??
+      noteAppender(entry.project.root, { env: options.env, timeoutMs: options.timeoutMs });
+    run.reported.push(...(await closeUpstream(work.closures, { closer, note })));
+  }
+  return run;
+}
+
 export async function collectSnapshot(options: SnapshotOptions = {}): Promise<Snapshot> {
   return (await assemble(options)).snapshot;
 }
@@ -392,11 +441,74 @@ function withHistory(project: Project, derived: HistoryMetrics | undefined): Pro
   return { ...project, metrics };
 }
 
+interface Hit {
+  issueId: string;
+  error: CollectionError;
+}
+
+function collectionHits(delivered: readonly Delivered[], upstream: UpstreamRun): Hit[] {
+  return [
+    ...delivered.flatMap((entry) =>
+      lostNotices([entry]).map((error) => ({ issueId: entry.notice.issueId, error })),
+    ),
+    ...upstream.reported.flatMap((entry) =>
+      failedClosures({ reported: [entry], left: [] }).map((error) => ({
+        issueId: entry.closure.issueId,
+        error,
+      })),
+    ),
+  ];
+}
+
+function closedBy(gathered: readonly Gathered[]): Map<string, string> {
+  const owner = new Map<string, string>();
+  for (const entry of gathered) {
+    for (const issue of entry.closed) {
+      owner.set(issue.id, entry.project.id);
+    }
+  }
+  return owner;
+}
+
+function withCollectionHits(
+  snapshot: Snapshot,
+  gathered: readonly Gathered[],
+  hits: readonly Hit[],
+): Snapshot {
+  if (hits.length === 0) {
+    return snapshot;
+  }
+  const owner = closedBy(gathered);
+  const rendered = new Set(snapshot.projects.map((project) => project.id));
+  const placed = (hit: Hit): string | undefined => {
+    const id = owner.get(hit.issueId);
+    return id !== undefined && rendered.has(id) ? id : undefined;
+  };
+  const against = (id: string | undefined): CollectionError[] =>
+    hits.filter((hit) => placed(hit) === id).map((hit) => hit.error);
+  return {
+    ...snapshot,
+    errors: [...snapshot.errors, ...against(undefined)],
+    projects: snapshot.projects.map((project) => {
+      const added = against(project.id);
+      return added.length === 0 ? project : { ...project, errors: [...project.errors, ...added] };
+    }),
+  };
+}
+
 export async function emitSnapshot(options: SnapshotOptions = {}): Promise<SnapshotResult> {
   const previous = readSnapshot(options).snapshot;
   const { snapshot, code, gathered, roots } = await assemble(options);
   if (!readSomething(gathered)) {
-    return { snapshot, path: undefined, code, read: false, delivered: [], unlisted: [] };
+    return {
+      snapshot,
+      path: undefined,
+      code,
+      read: false,
+      delivered: [],
+      unlisted: [],
+      upstream: { reported: [], left: [] },
+    };
   }
   const history = await recordSnapshot(snapshot, {
     env: options.env,
@@ -404,21 +516,30 @@ export async function emitSnapshot(options: SnapshotOptions = {}): Promise<Snaps
     limits: historyLimits(options),
     now: new Date(snapshot.generatedAt),
   });
+  const unlisted = unlistedReport(roots, options);
   const recorded = parseSnapshot({
     ...snapshot,
     projects: snapshot.projects.map((project) =>
       withHistory(project, history.metrics.get(project.id)),
     ),
-    errors: history.error === undefined ? snapshot.errors : [...snapshot.errors, history.error],
+    errors: [
+      ...snapshot.errors,
+      ...unlisted,
+      ...(history.error === undefined ? [] : [history.error]),
+    ],
   });
-  const written = keptBoard(recorded, previous, gathered);
+  const board = carryFailingSince(keptBoard(recorded, previous, gathered), previous);
+  const delivered = await announce(gathered, previous, roots, options);
+  const upstream = await closeUpstreamIssues(gathered, previous, roots, options);
+  const written = withCollectionHits(board, gathered, collectionHits(delivered, upstream));
   const path = writeSnapshot(written, options);
   return {
     snapshot: written,
     path,
     code,
     read: true,
-    delivered: await announce(gathered, previous, roots, options),
-    unlisted: unlistedReport(roots, options),
+    delivered,
+    unlisted,
+    upstream,
   };
 }

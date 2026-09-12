@@ -40,6 +40,16 @@ source with nothing in it.** Anything that fails to collect says so, per project
 run. "Nothing to do" and "we could not look" are different answers and the screen has to
 tell them apart.
 
+The record and the screen are not the same thing. `errors[]` keeps every failure a reader
+hit, and a consumer that wants all of them reads it there. The board shows the ones a
+person can act on, because a band that is always full is a band nobody reads and a real
+failure then arrives invisible. A consequence is counted against its cause rather than
+listed beside it — 122 staleness checks that failed because one `gh` call was rate
+limited are one problem, not 123. A failure that clears itself waits six hours before it
+is anybody's. And a limitation every board carries on every run is documented rather than
+reported: a tracker records why an issue stopped and not when, so a note written since
+cannot always be placed, and nothing a person does will change that.
+
 ## Status
 
 Early, and honest about it. Working today:
@@ -155,7 +165,7 @@ anyone on the machine. Exit 0 means delivered, so read standard input before exi
 command that exits 0 without reading is taken at its word. Any other exit means the notice was
 not delivered, and what the command wrote on standard error becomes the recorded reason.
 
-The object carries `issueId`, `title`, `origin` — the `session` that asked and the `ref`
+The object carries `kind`, which is `completion` for these, `issueId`, `title`, `origin` — the `session` that asked and the `ref`
 that addresses it, which is the one to deliver to, because session names are neither unique
 nor stable — `text`, the line to deliver, and `pull` only where a pull request was open for
 the issue at the previous collection, as the snapshot records it. A notice is computed only
@@ -177,7 +187,96 @@ readable afterwards rather than lost. `snapshot` writes a line to standard error
 them as well, and
 where the tracker refused the note too — the one case where the reason would otherwise be
 written down nowhere — the notice is reported as an error on the board, beside everything
-else the collection could not do. Silence is not one of the outcomes.
+else the collection could not do. That row is carried by the snapshot the collection wrote and
+by no later one, so it is the alert and the bead is the archive. Silence is not one of the
+outcomes.
+
+## When the collection itself stops
+
+A board that cannot be collected says so on the screen, which reaches whoever is looking at
+it. Nobody need be: re-collection failing every minute for eighteen hours is one event that
+nobody sees until the morning, and the board it leaves behind is a day old and looks
+current enough to trust. That is the one thing worth reaching somebody over, and the only
+one — everything else the console knows belongs on the board.
+
+`pitwall serve` counts how long re-collection has been failing without a break. Past fifteen
+minutes it delivers one notice, and one more when the next collection succeeds: not one per
+attempt, and never a stop with no resume, because a resume nobody hears trains people to
+ignore both. Two notices an outage, whether it lasts sixteen minutes or eighteen hours.
+
+They go through the same `notify` command a completion notice goes through — the first
+workspace listed in `roots` that names one. A workspace found by scanning is never run, for
+the reason above. `PITWALL_SESSION_REF` does not apply: an outage is nobody's own work coming
+back at them, so a console with no session ref still says when the board has stopped moving.
+
+The object carries `kind` — `collection-failed` or `collection-recovered`, against
+`completion` for the notices above, so one command can tell the three apart without reading
+the rest — `since`, the first failure of the run of them, `forMs`, how long it had been
+failing when the notice was written, and `text`, the line to deliver. It carries no `origin`
+and no `issueId`: an outage belongs to no issue and no session asked for it, so the command
+decides who hears, and one written to read `origin` must check `kind` first.
+
+Where there is nothing to deliver through, the notice is not dropped quietly: what it said
+and why nobody was told becomes a row on the board against `pitwall serve: outbound notice`,
+beside everything else the console could not do.
+
+## Closing the issue a bead came from
+
+An issue filed on a public repository becomes a tracker item carrying an external reference
+back to it. Nothing in the tracker closes the public issue when that item closes, so a
+repository keeps advertising work that shipped days ago. Pitwall closes it, from the same two
+consecutive snapshots the notices are computed from: a bead that was open at the previous
+collection and closed at this one.
+
+The link is the bead's recorded external reference and nothing else. A title is not a link —
+two unrelated items can carry the same one with no tell — so a bead that records no reference
+closes nothing, however well its title matches. Only a `https://github.com/<owner>/<repo>/issues/<n>`
+reference is acted on, and only where `<owner>/<repo>` is the origin of one of the workspace's
+own checkouts: a reference to somebody else's tracker, or to a pull request, is read and left
+alone.
+
+What the comment may say is decided by the close reason alone, because that is the only thing
+the tracker holds that records something having shipped. The reason has to OPEN by naming a
+pull request or a revision — "Landed in cli #91", "Merged as 404sl/pitwall#94 (44cc687)" — and
+the comment quotes its first sentence, no further than that reference and never more than 120
+characters, so a remark meant for the tracker does not travel with it. Anything that opens some
+other way leaves the issue open however it goes on: "Will not do — out of scope. Related work
+landed in cli #77" reports nothing, because what shipped there is not what this bead did. So
+does a reason whose reference arrives only in a later sentence, and so does no reason at all —
+a pull request being open for that bead at the previous collection is not evidence that anything
+merged, and is never read as any. A bead closed as superseded, a duplicate, won't-do or not
+planned is not reported to its issue as shipped at all: what to do with somebody else's report
+is a person's decision, and the issue is left open with a line saying so.
+
+A number only becomes a link where two facts agree. `#91` in a comment on a public repository
+addresses that repository, which is the wrong one as often as the right one, so an unqualified
+number travels as literal text unless a pull request of that same bead carries that same
+number — then the comment names the pull request in full. A reference that already names its
+repository is left exactly as the reason wrote it.
+
+One direction only. The one thing this asks GitHub to do is close an issue with a comment;
+nothing reopens a bead, promotes anything into the tracker, or reads issue comments. It runs
+for a workspace you have listed in `roots`, on the same terms as a notice, and a workspace
+found by scanning closes nothing.
+
+Whether a reference is one of ours is answered by asking each checkout for its `origin`, and a
+checkout that will not answer is not the same as one that has nothing to say. A path that is no
+repository, or a repository with no `origin`, simply owns no reference. A checkout whose `git
+remote get-url origin` FAILS — a broken `.git`, an unreadable configuration, no `git` on the
+path — cannot be distinguished from one that does not own the reference, so for as long as that
+is true the run says so for every reference it could not place, naming the checkout and what git
+said. Turning the feature off quietly is the one outcome that is not allowed.
+
+A close that fails — no permission, no network, an issue since deleted — lands in three places:
+standard error, the bead, and the problems the board shows, as an error against `gh issue close`
+beside the project whose bead it was. It is not retried: the bead closes once, so the attempt
+happens once, and what did not happen is readable on the bead rather than lost. The row belongs
+to the snapshot that collection wrote and is gone from the next one, so the board is where
+somebody notices and the bead is where it stays.
+
+An issue deliberately LEFT open — nothing shipped, a veto, a checkout that would not answer —
+is written to standard error with the reason and is not appended to the bead, because the bead's
+own close reason already says what happened to it and the run is the thing that needs telling.
 
 ## How it is put together
 

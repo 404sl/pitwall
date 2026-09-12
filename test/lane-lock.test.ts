@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import { GIT_ENV } from "./support/git.js";
 import { runScript, type Call } from "./support/workflow.js";
 
 const SKILL = join(import.meta.dirname, "..", "plugins", "devloop", "skills", "devloop");
@@ -19,7 +20,10 @@ interface Released {
 }
 
 function release(args: string[]): Released {
-  const ran = spawnSync("bash", [RELEASE_LANE, ...args], { encoding: "utf8" });
+  const ran = spawnSync("bash", [RELEASE_LANE, ...args], {
+    encoding: "utf8",
+    env: { ...process.env, ...GIT_ENV },
+  });
   const out = ran.stdout ?? "";
   const word = (label: string) => {
     const line = out.split("\n").find((l) => l.startsWith(`${label}: `));
@@ -179,7 +183,10 @@ const TASK_ARGS = {
   root: "/root",
   skillDir: "/skill",
   lockPrefix: "pw",
-  repos: { site: { path: "repo", test: "npm test", role: "node" } },
+  repos: {
+    site: { path: "repo", test: "npm test", role: "node" },
+    integration: { path: "contract", test: "npm test", role: "node" },
+  },
 };
 
 const LANE_LOCK = "/tmp/pw-lane-4.lock";

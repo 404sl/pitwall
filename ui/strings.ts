@@ -12,6 +12,35 @@ export const strings = {
     versionLabel: "version",
     update: "{version} available",
   },
+  build: {
+    label: "build",
+    current: "current",
+    behindToken: { one: "1 behind", many: "{count} behind" },
+    unknownToken: "unknown",
+    headline: {
+      one: "1 commit on {branch} is not in this console.",
+      many: "{count} commits on {branch} are not in this console.",
+    },
+    serving: "Serving a build made {age} ago, at {commit}.",
+    servingUndated: "Serving a build that records no time, at {commit}.",
+    at: "{branch} is at {head}.",
+    restart: {
+      one: "Restart pitwall serve to pick it up.",
+      many: "Restart pitwall serve to pick them up.",
+    },
+    servedAt: "Build stamped {at}.",
+    stamped: "{commit} · {at}",
+    stampedUndated: "{commit}",
+    unknown: {
+      headline: "Cannot tell whether this console is serving the current build.",
+      notCurrent: "That is not the same as up to date.",
+      reasonLabel: "Reason",
+      noServer: "The server did not report its build.",
+      noStamp: "This build records no commit.",
+      checkout: "The checkout could not be read: {reason}",
+      diverged: "The build commit {commit} is not in {branch}.",
+    },
+  },
   band: {
     needsYou: "Needs you",
     running: "Running",
@@ -26,7 +55,7 @@ export const strings = {
     running: "No lane is running.",
     ready: "Nothing is ready to pick up.",
     parked: "Nothing parked.",
-    problems: "Every project read cleanly.",
+    problems: "Nothing needs a person.",
   },
   today: {
     landed: "landed {count}",
@@ -52,7 +81,7 @@ export const strings = {
     needsYou: "Issues waiting on a decision or an access grant, by project.",
     running: "Lanes in flight, by project and state.",
     ready: "Issues ready to pick up, by project.",
-    problems: "Sources that could not be read.",
+    problems: "Failures a person can act on.",
   },
   kind: {
     decision: "decision",
@@ -110,10 +139,36 @@ export const strings = {
   problems: {
     run: "run",
     console: "console",
+    prevented: {
+      one: "· prevented 1 staleness check",
+      many: "· prevented {count} staleness checks",
+    },
   },
   failure: {
     heading: "Nothing to show",
     unreachable: "Could not reach pitwall serve at",
+  },
+  actions: {
+    region: "Act on this issue",
+    answer: "Answer it",
+    ready: "Mark it ready",
+    notMine: "Not mine",
+    scope: "These write to the tracker. No lane runs, nothing merges or deploys.",
+    answerLabel: "Your answer",
+    answerHint: "It goes on the ticket. The lane that picks this up reads it.",
+    answerSubmit: "Write the answer",
+    notMineLabel: "Why this is not yours",
+    notMineHint: "It goes on the ticket, and it is how the board learns it classified this wrong.",
+    notMineSubmit: "Write the reason",
+    writing: "Writing to the tracker…",
+    waiting: "Reading the issue first — these open when it has loaded.",
+    doneAnswer:
+      "Answer written to {id}. needs-decision and needs-access are cleared. A lane can pick it up when nothing else holds it — the board catches up at its next snapshot.",
+    doneReady: "{id} is cleared for a lane. The board catches up at its next snapshot.",
+    doneNotMine:
+      "Reason written to {id}, and it is off your queue. The board catches up at its next snapshot.",
+    failed: "{id} was not changed.",
+    unreachable: "The console could not be reached, so nothing was written.",
   },
   issue: {
     back: "Back to the board",
@@ -128,10 +183,7 @@ export const strings = {
         stale: "Run this, or say it is already done — the check below found the reason may have expired.",
       },
       inFlight: "Nothing for you — a lane is working it.",
-      landing: {
-        standing: "Nothing for you — it is waiting to be landed.",
-        stale: "Its pull request merged. Close it, or record what is still open.",
-      },
+      landing: "Nothing for you — it is waiting to be landed.",
       ready: "Nothing for you — it is waiting for a lane to pick it up.",
       parked: "Nothing for you — it is parked: {reason}.",
       blocked: "Nothing for you — something else has to close first.",
@@ -180,17 +232,13 @@ export const strings = {
       neverChecked: "Nothing has checked whether this is still true.",
       noEvidence: "Checked; nothing has changed that this check can see.",
       unresolved: {
-        reference: {
-          one: "1 reference could not be checked; it is recorded under Problems.",
-          many: "{count} references could not be checked; they are recorded under Problems.",
-        },
         precondition: {
-          one: "1 precondition could not be run; it is recorded under Problems.",
-          many: "{count} preconditions could not be run; they are recorded under Problems.",
+          one: "1 precondition could not be run; it is recorded in the snapshot.",
+          many: "{count} preconditions could not be run; they are recorded in the snapshot.",
         },
       },
       method:
-        "This check reads the issue's own text: notes recorded after the parking label, issues and pull requests it names, and a short list of testable preconditions. It cannot see anything outside that.",
+        "This check reads the issue's own text: notes recorded after the parking label, issues it names, and a short list of testable preconditions. It cannot see anything outside that.",
       evidence: "Evidence",
     },
     deps: {

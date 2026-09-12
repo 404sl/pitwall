@@ -19,7 +19,7 @@
   },
   "homepage": "https://pitwall.build",
   "scripts": {
-    "build": "tsc -p tsconfig.json && vite build",
+    "build": "tsc -p tsconfig.json && node scripts/stamp-build.mjs && vite build",
     "test": "tsx --tsconfig tsconfig.ui.json --test test/*.test.ts",
     "lint": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.ui.json --noEmit && tsc -p tsconfig.test.json --noEmit",
     "build:ui": "vite build",

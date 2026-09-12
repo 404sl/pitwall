@@ -91,6 +91,39 @@ Without it two lanes share one test database and produce failures neither change
 `
   : ''
 
+const SHELL_FIRST = `EVERY COMMAND THAT RUNS git OR bundle STARTS WITH THESE TWO EXPORTS, and so does every
+command that runs a script which does:
+
+  export GIT_CONFIG_GLOBAL=/dev/null BUNDLE_USER_CONFIG=/dev/null && <your command>
+
+Each command you run is its own shell, so exporting them once at the start reaches nothing after
+it - they go at the front of the command, the way TEST_ENV_NUMBER already does. Lead with
+'export ... &&' rather than writing them as a prefix assignment: a $(...) inside the command
+expands BEFORE a prefix assignment takes effect, so the identity reads below would still go
+through the home config.
+
+A HOME-DIRECTORY CONFIG THAT CANNOT BE READ PRESENTS AS ANYTHING BUT ITSELF. Every git command
+fails with 'unknown error occurred while reading the configuration files', and every
+bundler-fronted command HANGS with no output at all - 60s of wall clock against 0.067s of user
+time, so blocked on I/O rather than slow. A hang and a slow machine look identical, so a run pays
+its full timeout before suspecting anything: three runs diagnosed this from scratch in one
+evening, one of them after killing two suites on timeouts. Whether a synced folder has
+materialised a file is not something a run controls, so those files are not read at all. The two
+exports cost a readable config nothing and are not conditional.
+
+COMMIT IDENTITY IS THE ONE THING THAT DOES NOT SURVIVE THEM, and every command that WRITES a
+commit needs it - commit, rebase, merge, cherry-pick. Pass it on the command, taken from the
+branch being built on:
+
+  git -c user.name="$(git log -1 --format=%an origin/master)" -c user.email="$(git log -1 --format=%ae origin/master)" commit -F <message file>
+
+Without it git either refuses outright, 'unable to auto-detect email address', or writes the
+wrong author - and nothing downstream notices the second. On this machine the credential helper
+sits in the system config rather than the home one, so pushes keep working - but that is this
+machine, not a rule: a workspace set up by 'gh auth setup-git' has the helper in the GLOBAL
+config, and these exports drop it. If a push asks for a password, say so rather than putting the
+home config back.`
+
 const RESOLVE = {
   type: 'object',
   required: ['status'],
@@ -158,6 +191,8 @@ Your job is the merge, and nothing else.
 DO NOT REDESIGN, REBUILD OR "IMPROVE" ANYTHING ON THIS BRANCH. If you find yourself writing a
 feature, you have misread the task. The only edits you make are inside conflict regions.
 
+${SHELL_FIRST}
+
 TAKE THE LANE LOCK FIRST, so you do not share a test database with another lane:
 
   mkdir ${LANE_LOCK} 2>/dev/null && printf '%s\\n' "${OWNER} slot ${SLOT} TEST_ENV_NUMBER ${LANE}" > ${OWNER_FILE} && echo GOT_LANE || echo LANE_BUSY
@@ -196,7 +231,7 @@ put it back once CI is green on the new head:
 
 MERGE MASTER IN. Do not rebase.
 
-  cd ${WT_PATH} && git merge --no-ff --no-commit origin/master
+  cd ${WT_PATH} && git -c user.name="$(git log -1 --format=%an origin/master)" -c user.email="$(git log -1 --format=%ae origin/master)" merge --no-ff --no-commit origin/master
 
 and then write the commit message YOURSELF, because a generated one says nothing. Its default
 reads
@@ -205,7 +240,7 @@ reads
 
 which tells a reader neither what conflicted nor what was kept. Say what the merge did instead:
 
-  git commit -F <a file with your message>
+  git -c user.name="$(git log -1 --format=%an origin/master)" -c user.email="$(git log -1 --format=%ae origin/master)" commit -F <a file with your message>
 
 Something like "Merge master into the <what this branch is> branch", then a paragraph naming the
 files that conflicted and what was kept from each side.
@@ -340,6 +375,8 @@ const handed = await agent(
   `Pull request #${PR} on ${SLUG} has been merged up to current master and pushed. Wait for CI on
 the NEW head and hand it back to the lander.
 
+${SHELL_FIRST}
+
   gh pr view ${PR} --repo ${SLUG} --json headRefOid,statusCheckRollup,mergeStateStatus
 
 WAIT for the rollup to be non-empty AND to describe the head that is actually on the branch. An
@@ -373,14 +410,29 @@ WHEN IT IS GREEN, hand off with the script rather than by hand:
 It reads the title, body and commit messages back from GitHub and git, runs the compliance check
 over them, refuses to label anything whose rollup is empty or stale, applies lane-verified, reads
 the label back, removes the worktree, appends your tracker note with --append-notes, and drops
-the lane lock last.
+the lane lock last. It does that for EVERY open pull request whose head is this branch across the
+repositories the workspace config names, not only the one you pass - so run it once, not once per
+repository.
 
-Exit 2 means non-compliant and NOTHING was labelled: it prints the offending lines, you judge
-them, you fix the text, you re-run. A product or vendor name that is the subject of the change is
-fine and the script cannot tell the difference - that judgement is yours.
+Exit 2 means non-compliant and NOTHING was labelled anywhere: it prints the offending lines
+against the pull request they came from, you judge them, you fix the text, you re-run. A product
+or vendor name that is the subject of the change is fine and the script cannot tell the difference
+- that judgement is yours. Exit 4 is the same promise for a pull request that is not green.
 
 Exit 5 means the label IS on and the worktree is gone, but the tracker note could not be
 confirmed. Do not re-run it - repair only the note, the way its message says.
+
+Exit 7 is NOT bad arguments: the set of pull requests on the branch could not be established -
+the workspace config could not be read, or a repository's pull requests or labels would not list,
+or the label could not be created in one of them. Nothing was labelled anywhere. Fix the one it
+names and re-run it, and note that the last of those is a permissions answer rather than a
+transient one: a repository that has no lane-verified label and will not take one needs somebody
+with write access there to create it once. Labelling the half you know about by hand is the
+failure it is refusing to cause.
+
+Exit 8 means labelling began and stopped part-way, and it prints which pull requests carry the
+label and which do not. Adding a label is idempotent and it stops before the worktree and the
+note, so re-run it once the cause it quotes is gone. Never remove a label to tidy that up.
 
 THE TRACKER NOTE must say the branch was brought up to master, name the files that were resolved,
 and say what was kept from each side. Append it, never replace: the notes field has no history and

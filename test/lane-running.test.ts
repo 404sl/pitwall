@@ -1,10 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { GIT_ENV } from "./support/git.js";
 
 const SCRIPT = join(
   dirname(fileURLToPath(import.meta.url)),
@@ -87,6 +88,7 @@ function ask(
     cwd: space.root,
     env: {
       ...process.env,
+      ...GIT_ENV,
       DEVLOOP_ROOT: space.root,
       DEVLOOP_WF: space.wf,
       DEVLOOP_TASKS: tasks ?? space.tasks,
@@ -105,6 +107,7 @@ function askAny(
     cwd: space.root,
     env: {
       ...process.env,
+      ...GIT_ENV,
       DEVLOOP_ROOT: space.root,
       DEVLOOP_WF: space.wf,
       DEVLOOP_TASKS: tasks ?? space.tasks,
@@ -260,7 +263,14 @@ test("an unresolvable workspace exits 3 rather than answering", () => {
   const ran = spawnSync("bash", [SCRIPT, "pitwall-90b"], {
     encoding: "utf8",
     cwd: space.root,
-    env: { ...process.env, DEVLOOP_ROOT: "", PITWALL_CONFIG: "", DEVLOOP_CONFIG: "", HOME: space.root },
+    env: {
+      ...process.env,
+      ...GIT_ENV,
+      DEVLOOP_ROOT: "",
+      PITWALL_CONFIG: "",
+      DEVLOOP_CONFIG: "",
+      HOME: space.root,
+    },
   });
   assert.equal(ran.status, 3, `${ran.stdout}${ran.stderr}`);
   assert.match(ran.stderr, /refusing to guess/);
@@ -392,6 +402,54 @@ test("a fresh agent transcript beside a cold journal is not silence", () => {
   assert.match(out, /^RUNNING/);
   assert.doesNotMatch(out, /journal silent/);
 });
+
+const AS_ROOT = process.getuid?.() === 0;
+
+function unmeasurable(space: Workspace, run: string): string {
+  const dir = join(space.wf, "session-1", "subagents", "workflows", run);
+  chmodSync(dir, 0o111);
+  return dir;
+}
+
+test(
+  "a RUNNING lane whose journal age cannot be measured says so instead of reading as freshly written",
+  { skip: AS_ROOT ? "root reads a directory whatever its mode, so no age can be made unmeasurable" : false },
+  () => {
+    const space = workspace([{ task: "w111", run: "wf_aaa", labels: ["fix:pitwall-90b"] }]);
+    const dir = unmeasurable(space, "wf_aaa");
+    try {
+      const { status, out } = askAny(space);
+      assert.equal(status, 0, out);
+      assert.match(out, /^RUNNING/);
+      assert.match(out, /journal age unknown/);
+      assert.doesNotMatch(out, /journal silent/);
+      assert.doesNotMatch(out, /kill-lane\.sh/);
+    } finally {
+      chmodSync(dir, 0o755);
+    }
+  },
+);
+
+test(
+  "an unmeasurable age is reported for one issue too, and the measured lane beside it is unchanged",
+  { skip: AS_ROOT ? "root reads a directory whatever its mode, so no age can be made unmeasurable" : false },
+  () => {
+    const space = workspace([
+      { task: "w111", run: "wf_aaa", labels: ["fix:pitwall-90b"] },
+      { task: "w222", run: "wf_bbb", labels: ["fix:pitwall-90b"] },
+    ]);
+    silence(space, "wf_aaa", 720);
+    const dir = unmeasurable(space, "wf_bbb");
+    try {
+      const { status, out } = ask(space, "pitwall-90b");
+      assert.equal(status, 0, out);
+      assert.match(out, /task w111, workflow wf_aaa, result not written, journal silent 7[0-9][0-9]m\.$/m);
+      assert.match(out, /task w222, workflow wf_bbb, result not written, journal age unknown\.$/m);
+    } finally {
+      chmodSync(dir, 0o755);
+    }
+  },
+);
 
 test("a result written in one task directory cancels an empty copy of it in another", () => {
   const space = workspace([{ task: "w111", run: "wf_aaa", labels: ["fix:pitwall-90b"] }]);

@@ -12,13 +12,14 @@ import {
   blockedSummary,
   buildBoard,
   buildIssueView,
+  buildState,
   parkedReasons,
   parkedSummary,
   previewIssue,
   problemKey,
   snapshotAge,
 } from "../ui/model.ts";
-import type { Board, FilterState, IssuePayload, IssuePreview } from "../ui/model.ts";
+import type { Board, BuildState, FilterState, IssuePayload, IssuePreview } from "../ui/model.ts";
 import { strings } from "../ui/strings.ts";
 import { countLabel } from "../ui/format.ts";
 import { boardHref, filterOf, filterQuery, issueHref, routeOf } from "../ui/routes.ts";
@@ -27,6 +28,7 @@ import { VERSION } from "../src/version.ts";
 
 register("./support/svg-stub.mjs", import.meta.url);
 const { Header } = await import("../ui/components/Header.tsx");
+const { BuildBanner, BuildToken } = await import("../ui/components/Build.tsx");
 
 const GENERATED_AT = "2026-09-08T14:11:00Z";
 const HEADER_NOW = Date.parse("2026-09-08T14:49:00Z");
@@ -37,17 +39,50 @@ function headerMarkup(
   generatedAt: string,
   update?: string,
   refreshFailure?: CollectionError,
+  build?: BuildState,
 ): string {
   const realNow = Date.now;
   Date.now = () => HEADER_NOW;
   try {
     return renderToStaticMarkup(
-      createElement(Header, { projectCount, generatedAt, version: VERSION, update, refreshFailure }),
+      createElement(Header, { projectCount, generatedAt, version: VERSION, update, refreshFailure, build }),
     );
   } finally {
     Date.now = realNow;
   }
 }
+
+const BUILT_AT = "2026-09-08T20:47:00Z";
+const BUILD_NOW = Date.parse("2026-09-10T19:47:00Z");
+const BUILT_FROM = "9f2c1ab0000000000000000000000000000000ab";
+const CHECKOUT_HEAD = "1a2b3c4000000000000000000000000000000000";
+
+function atBuildNow(render: () => string): string {
+  const realNow = Date.now;
+  Date.now = () => BUILD_NOW;
+  try {
+    return render();
+  } finally {
+    Date.now = realNow;
+  }
+}
+
+function bannerMarkup(build: BuildState): string {
+  return atBuildNow(() => renderToStaticMarkup(createElement(BuildBanner, { build })));
+}
+
+function tokenMarkup(build: BuildState): string {
+  return atBuildNow(() => renderToStaticMarkup(createElement(BuildToken, { build })));
+}
+
+const BEHIND: BuildState = {
+  kind: "behind",
+  branch: "master",
+  ahead: 23,
+  head: CHECKOUT_HEAD,
+  commit: BUILT_FROM,
+  at: BUILT_AT,
+};
 
 function headerAged(ms: number, projectCount = 3): string {
   return headerMarkup(projectCount, new Date(HEADER_NOW - ms).toISOString());
@@ -614,6 +649,140 @@ test("a header rendered from a stamp it cannot read shows the stamp and claims n
   assert.doesNotMatch(markup, /<time/);
 });
 
+
+test("a server that answers without build fields leaves the console unknown, never current", () => {
+  const answered = buildState({ kind: "read", version: { running: VERSION } });
+  assert.equal(answered.kind, "unknown");
+  assert.notEqual(answered.kind, "current");
+  assert.equal(answered.kind === "unknown" ? answered.because : "", strings.build.unknown.noServer);
+});
+
+test("a version route that answered nothing at all is unknown too, and waiting is neither", () => {
+  const unanswered = buildState({ kind: "unanswered" });
+  assert.equal(unanswered.kind, "unknown");
+  assert.notEqual(unanswered.kind, "current");
+  assert.equal(buildState({ kind: "waiting" }).kind, "absent");
+});
+
+test("a checkout that could not be read is named as the reason rather than counted as current", () => {
+  const failed = buildState({
+    kind: "read",
+    version: {
+      running: VERSION,
+      build: { commit: BUILT_FROM, at: BUILT_AT },
+      buildCheck: "unknown",
+      unknownBecause: { kind: "checkout", message: "fatal: not a git repository" },
+    },
+  });
+  assert.equal(failed.kind, "unknown");
+  assert.equal(
+    failed.kind === "unknown" ? failed.because : "",
+    "The checkout could not be read: fatal: not a git repository",
+  );
+});
+
+test("a build the checkout has never heard of reads as diverged, naming the commit and the branch", () => {
+  const diverged = buildState({
+    kind: "read",
+    version: {
+      running: VERSION,
+      build: { commit: BUILT_FROM },
+      checkout: { branch: "master", head: CHECKOUT_HEAD },
+      buildCheck: "unknown",
+      unknownBecause: { kind: "diverged" },
+    },
+  });
+  assert.equal(diverged.kind, "unknown");
+  assert.equal(diverged.kind === "unknown" ? diverged.because : "", "The build commit 9f2c1ab is not in master.");
+});
+
+test("a board served by a stale build names the count, the branch and both commits", () => {
+  const markup = bannerMarkup(BEHIND);
+  assert.match(markup, /23 commits on master are not in this console\./);
+  assert.match(markup, /Serving a build made 1d23h ago, at 9f2c1ab\./);
+  assert.match(markup, /master is at 1a2b3c4\./);
+  assert.match(markup, /Restart pitwall serve to pick them up\./);
+  assert.match(markup, /class="pw-call pw-call--yours pw-build__head"/);
+  assert.match(markup, new RegExp(`datetime="${BUILT_AT}"`, "i"));
+});
+
+test("one commit behind is one commit, not '1 commits'", () => {
+  const markup = bannerMarkup({ ...BEHIND, ahead: 1 });
+  assert.match(markup, /1 commit on master is not in this console\./);
+  assert.match(markup, /Restart pitwall serve to pick it up\./);
+  assert.doesNotMatch(markup, /1 commits/);
+  assert.doesNotMatch(markup, /pick them up/);
+});
+
+test("a build that records no time still names what it is serving rather than going silent", () => {
+  const markup = bannerMarkup({ kind: "behind", branch: "master", ahead: 2, head: CHECKOUT_HEAD, commit: BUILT_FROM });
+  assert.match(markup, /Serving a build that records no time, at 9f2c1ab\./);
+  assert.doesNotMatch(markup, /<time/);
+});
+
+test("a console that cannot tell says so on the board and declines to claim it is up to date", () => {
+  const markup = bannerMarkup({ kind: "unknown", commit: BUILT_FROM, at: BUILT_AT, because: "The server did not report its build." });
+  assert.match(markup, /Cannot tell whether this console is serving the current build\./);
+  assert.match(markup, /That is not the same as up to date\./);
+  assert.match(markup, /<span class="pw-call__ask-label">Reason<\/span>/);
+  assert.match(markup, /The server did not report its build\./);
+  assert.match(markup, /class="pw-call pw-call--waiting pw-build__head"/);
+  assert.doesNotMatch(markup, /pw-call--yours/);
+});
+
+test("an unknown with nothing stamped names the reason without inventing a commit", () => {
+  const markup = bannerMarkup({ kind: "unknown", because: strings.build.unknown.noStamp });
+  assert.match(markup, /This build records no commit\./);
+  assert.doesNotMatch(markup, /Serving a build/);
+  assert.doesNotMatch(markup, /title=/);
+});
+
+test("the banner stays off the board when the build is current, installed, or not yet answered", () => {
+  assert.equal(bannerMarkup({ kind: "current", branch: "master", commit: BUILT_FROM, at: BUILT_AT }), "");
+  assert.equal(bannerMarkup({ kind: "no-checkout", commit: BUILT_FROM, at: BUILT_AT }), "");
+  assert.equal(bannerMarkup({ kind: "absent" }), "");
+});
+
+test("the header token tells current apart from a console that has no such check", () => {
+  assert.match(tokenMarkup({ kind: "current", branch: "master", commit: BUILT_FROM, at: BUILT_AT }), /9f2c1ab/);
+  assert.match(
+    tokenMarkup({ kind: "current", branch: "master", commit: BUILT_FROM }),
+    /<span class="pw-header__build-state" role="status"><span aria-hidden="true"> · <\/span>current<\/span>/,
+  );
+  assert.match(
+    tokenMarkup({ kind: "no-checkout", commit: BUILT_FROM }),
+    /<span class="pw-header__build-state" role="status"><\/span>/,
+  );
+  assert.doesNotMatch(tokenMarkup({ kind: "no-checkout", commit: BUILT_FROM }), /current/);
+});
+
+test("the header token counts the commits it is behind, and reads unknown rather than current", () => {
+  assert.match(
+    tokenMarkup(BEHIND),
+    /<span class="pw-header__build-state pw-header__build-state--behind" role="status"><span aria-hidden="true"> · <\/span>23 behind<\/span>/,
+  );
+  assert.match(tokenMarkup({ ...BEHIND, ahead: 1 }), /> · <\/span>1 behind</);
+  assert.doesNotMatch(tokenMarkup({ ...BEHIND, ahead: 1 }), /1 behinds/);
+  assert.match(
+    tokenMarkup({ kind: "unknown", because: strings.build.unknown.noServer }),
+    /<span class="pw-header__build-state pw-header__build-state--unknown" role="status"><span aria-hidden="true"> · <\/span>unknown<\/span>/,
+  );
+});
+
+test("the live region is in the header before the first answer arrives, so the answer announces", () => {
+  const markup = tokenMarkup({ kind: "absent" });
+  assert.equal(markup, '<span class="pw-header__build-state" role="status"></span>');
+  assert.doesNotMatch(markup, /pw-header__build"/);
+});
+
+test("the build token is rendered beside the version, after the update it sits next to", () => {
+  const markup = headerMarkup(3, new Date(HEADER_NOW - 60_000).toISOString(), "0.1.99", undefined, BEHIND);
+  assert.ok(markup.indexOf("0.1.99 available") < markup.indexOf("pw-header__build"), "the build token follows the update");
+  assert.match(markup, /<span class="pw-sr">build <\/span><span class="pw-header__build">9f2c1ab<\/span>/);
+  assert.match(markup, /23 behind/);
+  assert.doesNotMatch(markup, /pw-header--stale/);
+});
+
 const { IssueDetail, IssuePage, LatestNote, Notes, callFor, reasonTemplate, shownOf } = await import(
   "../ui/components/IssuePage.tsx"
 );
@@ -843,19 +1012,14 @@ test("a call is a sentence about what to do, one per classification and verdict"
   });
   assert.equal(callFor("parked:tooling", "unchecked", false).text, "Nothing for you — it is parked: tooling.");
   assert.equal(callFor("in-flight", "unchecked", false).text, strings.issue.call.inFlight);
-  assert.equal(callFor("landing", "unchecked", false).text, strings.issue.call.landing.standing);
-  assert.deepEqual(callFor("landing", "still-blocking", false), {
-    text: strings.issue.call.landing.standing,
-    tone: "waiting",
-  });
-  assert.deepEqual(callFor("landing", "likely-stale", false), {
-    text: strings.issue.call.landing.stale,
-    tone: "yours",
-  });
-  assert.deepEqual(callFor("landing", "resolved", false), {
-    text: strings.issue.call.landing.stale,
-    tone: "yours",
-  });
+  assert.equal(callFor("landing", "unchecked", false).text, strings.issue.call.landing);
+  for (const verdict of ["still-blocking", "likely-stale", "resolved"] as const) {
+    assert.deepEqual(
+      callFor("landing", verdict, false),
+      { text: strings.issue.call.landing, tone: "waiting" },
+      verdict,
+    );
+  }
   assert.equal(callFor("ready", "unchecked", false).text, strings.issue.call.ready);
   assert.equal(callFor("blocked", "unchecked", false).text, strings.issue.call.blocked);
   assert.equal(callFor(undefined, "unchecked", true).text, strings.issue.call.closed);
@@ -867,21 +1031,15 @@ test("a call is a sentence about what to do, one per classification and verdict"
   }
 });
 
-test("a landing issue whose pull request merged asks the reader to close it", () => {
+test("a landing issue asks nothing of the reader, whatever verdict it carries", () => {
   const markup = pageMarkup(
     aPreview({
       classification: "landing",
-      staleness: {
-        verdict: "likely-stale",
-        checked: true,
-        checkedAt: "2026-09-10T09:40:00Z",
-        evidence: ["the pull request it waits on has merged: #91"],
-        unresolved: [],
-      },
+      staleness: { verdict: "unchecked", checked: false, evidence: [], unresolved: [] },
     }),
   );
-  assert.match(markup, /class="pw-call pw-call--yours">Its pull request merged\./);
-  assert.doesNotMatch(markup, /Nothing for you/, "the call no longer disagrees with the staleness band");
+  assert.match(markup, /class="pw-call pw-call--waiting">Nothing for you/);
+  assert.doesNotMatch(markup, /pull request/, "no call offers a pull request state");
   assert.match(markup, /pw-reason__token">landing</, "the classification is unchanged");
   assert.doesNotMatch(markup, /pw-call__ask/, "a landing issue still quotes no note");
 });
@@ -947,14 +1105,14 @@ test("the staleness band states its method once and never lists what it could no
         checked: true,
         checkedAt: "2026-09-08T13:00:00Z",
         evidence: ["it names sr-tot5, still open"],
-        unresolved: [{ kind: "reference", count: 3 }],
+        unresolved: [{ kind: "precondition", count: 3 }],
       },
     }),
   );
   const method = "It cannot see anything outside that.";
   assert.ok(strings.issue.stale.method.endsWith(method));
   assert.equal(markup.split(method).length - 1, 1, "the method is stated once, not once per finding");
-  assert.match(markup, /3 references could not be checked; they are recorded under Problems\./);
+  assert.match(markup, /3 preconditions could not be run; they are recorded in the snapshot\./);
   assert.doesNotMatch(markup, /could not resolve/);
 
   const one = pageMarkup(
@@ -963,18 +1121,18 @@ test("the staleness band states its method once and never lists what it could no
         verdict: "still-blocking",
         checked: true,
         evidence: ["a"],
-        unresolved: [{ kind: "reference", count: 1 }],
+        unresolved: [{ kind: "precondition", count: 1 }],
       },
     }),
   );
-  assert.match(one, /1 reference could not be checked; it is recorded under Problems\./);
+  assert.match(one, /1 precondition could not be run; it is recorded in the snapshot\./);
 
   const none = pageMarkup(aPreview());
-  assert.doesNotMatch(none, /could not be checked/);
+  assert.doesNotMatch(none, /could not be run/);
 });
 
-test("a precondition nobody could run is named as one, not as a reference nobody checked", () => {
-  const only = pageMarkup(
+test("the staleness band never claims a pull request nobody looked at", () => {
+  const markup = pageMarkup(
     aPreview({
       staleness: {
         verdict: "unchecked",
@@ -984,25 +1142,10 @@ test("a precondition nobody could run is named as one, not as a reference nobody
       },
     }),
   );
-  assert.match(only, /1 precondition could not be run; it is recorded under Problems\./);
-  assert.doesNotMatch(only, /could not be checked/, "there was no reference, so none is claimed");
-  assert.doesNotMatch(only, /reference/);
-
-  const both = pageMarkup(
-    aPreview({
-      staleness: {
-        verdict: "still-blocking",
-        checked: true,
-        evidence: ["a"],
-        unresolved: [
-          { kind: "reference", count: 2 },
-          { kind: "precondition", count: 3 },
-        ],
-      },
-    }),
-  );
-  assert.match(both, /2 references could not be checked; they are recorded under Problems\./);
-  assert.match(both, /3 preconditions could not be run; they are recorded under Problems\./);
+  assert.match(markup, /1 precondition could not be run; it is recorded in the snapshot\./);
+  assert.doesNotMatch(markup, /could not be checked/, "there was no reference, so none is claimed");
+  assert.doesNotMatch(markup, /reference/);
+  assert.doesNotMatch(strings.issue.stale.method, /pull request/);
 });
 
 test("a verdict with no evidence to act on says so rather than showing an empty list", () => {
@@ -1018,10 +1161,10 @@ test("a verdict with no evidence to act on says so rather than showing an empty 
 test("the preview a click starts from is the snapshot's own record of the issue", () => {
   const snapshot = snapshotOf([
     project("session-replay", {
-      issues: [issue("sr-15s2", "yours:decision", { labels: ["needs-access"], staleness: { verdict: "still-blocking", checkedAt: "2026-09-08T13:00:00Z", evidence: ["site#1128 is closed, not merged"] } })],
+      issues: [issue("sr-15s2", "yours:decision", { labels: ["needs-access"], staleness: { verdict: "still-blocking", checkedAt: "2026-09-08T13:00:00Z", evidence: ["it names sr-9, still open"] } })],
       errors: [
-        { source: "staleness sr-15s2", message: "3 references could not be checked: ext#144, ext#148, ext#150", at: GENERATED_AT },
-        { source: "staleness sr-other", message: "1 reference could not be checked: ext#9", at: GENERATED_AT },
+        { source: "staleness sr-15s2", message: "2 preconditions could not be run: `npm whoami`, `gh auth status`", at: GENERATED_AT },
+        { source: "staleness sr-other", message: "1 precondition could not be run: `npm whoami`", at: GENERATED_AT },
       ],
     }),
   ]);
@@ -1030,48 +1173,32 @@ test("the preview a click starts from is the snapshot's own record of the issue"
   assert.equal(preview?.projectName, "session-replay");
   assert.equal(preview?.classification, "yours:decision");
   assert.equal(preview?.closed, false);
-  assert.deepEqual(preview?.staleness.evidence, ["site#1128 is closed, not merged"]);
+  assert.deepEqual(preview?.staleness.evidence, ["it names sr-9, still open"]);
   assert.deepEqual(
     preview?.staleness.unresolved,
-    [{ kind: "reference", count: 3 }],
-    "only this issue's own failed lookups are counted",
+    [{ kind: "precondition", count: 2 }],
+    "only this issue's own failed checks are counted",
   );
   assert.equal(previewIssue(snapshot, "session-replay", "sr-nope"), undefined);
   assert.equal(previewIssue(snapshot, "nowhere", "sr-15s2"), undefined);
 });
 
-test("each kind of failed check is counted as its own kind, never summed into references", () => {
+test("a failed check is counted under the kind its message names, and an uncounted failure adds nothing", () => {
   const view = buildIssueView({
-    ...payload({ staleness: { verdict: "still-blocking", evidence: ["site#1128 is closed, not merged"] } }),
+    ...payload({ staleness: { verdict: "still-blocking", evidence: ["it names sr-9, still open"] } }),
     errors: [
-      { source: "staleness sr-i6yt", message: "2 references could not be checked: ext#144, ext#148", at: GENERATED_AT },
-      { source: "staleness sr-i6yt", message: "1 precondition could not be run: `npm whoami`", at: GENERATED_AT },
+      { source: "staleness sr-i6yt", message: "2 preconditions could not be run: `npm whoami`, `gh auth status`", at: GENERATED_AT },
     ],
   });
-  assert.deepEqual(view.staleness.unresolved, [
-    { kind: "reference", count: 2 },
-    { kind: "precondition", count: 1 },
-  ]);
-  assert.deepEqual(view.staleness.evidence, ["site#1128 is closed, not merged"]);
-
-  const probed = buildIssueView({
-    ...payload(),
-    errors: [
-      { source: "staleness sr-i6yt", message: "1 precondition could not be run: `npm whoami`", at: GENERATED_AT },
-    ],
-  });
-  assert.deepEqual(
-    probed.staleness.unresolved,
-    [{ kind: "precondition", count: 1 }],
-    "a probe nobody could run is no reference at all",
-  );
+  assert.deepEqual(view.staleness.unresolved, [{ kind: "precondition", count: 2 }]);
+  assert.deepEqual(view.staleness.evidence, ["it names sr-9, still open"]);
 
   const unnumbered = buildIssueView({
     ...payload(),
     errors: [
       {
         source: "staleness sr-i6yt",
-        message: "no pull request host is configured, so pull requests could not be looked up",
+        message: "the project records no issue id prefix, so referenced issues cannot be recognised",
         at: GENERATED_AT,
       },
     ],
@@ -1134,7 +1261,7 @@ test("two failures the run recorded at one instant are still two rows a reader c
         errors: [
           {
             source: "staleness",
-            message: "nothing records when an issue stopped, so a note written since cannot be recognised",
+            message: "the project records no issue id prefix, so referenced issues cannot be recognised",
             at,
           },
           {
@@ -1149,7 +1276,7 @@ test("two failures the run recorded at one instant are still two rows a reader c
   const keys = board.problems.map((row) => problemKey(row));
   assert.equal(new Set(keys).size, board.problems.length, "a row a React list drops is a failure nobody reads");
   const markup = renderToStaticMarkup(createElement(Problems, { rows: board.problems }));
-  assert.equal(markup.match(/nothing records when an issue stopped/g)?.length, 1);
+  assert.equal(markup.match(/records no issue id prefix/g)?.length, 1);
   assert.equal(markup.match(/no pull request host is configured/g)?.length, 1);
 });
 
@@ -1518,4 +1645,116 @@ test("metrics are per project, so a filtered today band says it is not filtered 
   );
   assert.deepEqual(board.today, { landed: 13, closed: 19 });
   assert.ok(todayMarkup(board).includes(strings.filters.notFiltered));
+});
+
+const { IssueActions } = await import("../ui/components/IssueActions.tsx");
+
+const ACTING_ROUTE = { project: "session-replay", id: "sr-15s2" };
+
+function actionsMarkup(over: Partial<IssuePreview> = {}, loaded = true): string {
+  return renderToStaticMarkup(
+    createElement(IssueActions, {
+      route: ACTING_ROUTE,
+      shown: aPreview(over),
+      loaded,
+      onOutcome: () => Promise.resolve(),
+    }),
+  );
+}
+
+function actingDetailMarkup(over: Partial<IssuePayload["issue"]> = {}): string {
+  const view = buildIssueView(payload(over));
+  return renderToStaticMarkup(
+    createElement(IssueDetail, {
+      shown: shownOf(view),
+      view,
+      route: ACTING_ROUTE,
+      onOutcome: () => Promise.resolve(),
+    }),
+  );
+}
+
+test("only an issue in the owner's own queue offers anything to do about it", () => {
+  assert.match(actionsMarkup(), /<section class="pw-actions"/);
+  assert.match(actionsMarkup({ classification: "yours:access" }), /<section class="pw-actions"/);
+  for (const classification of ["ready", "in-flight", "landing", "blocked", "parked:roadmap"] as const) {
+    assert.equal(
+      actionsMarkup({ classification }),
+      "",
+      `${classification} is nobody's queue, so the screen offers no control on it`,
+    );
+  }
+  assert.equal(actionsMarkup({ closed: true }), "", "a closed issue is not a queue either");
+  assert.equal(
+    actionsMarkup({ classification: undefined }),
+    "",
+    "an unclassified issue is not acted on, and reading one must not throw",
+  );
+});
+
+test("a ticket parked on a question arrives with the box open; one parked on access does not", () => {
+  const asked = actionsMarkup();
+  assert.match(asked, /<textarea[^>]*id="pw-action-text"/);
+  assert.match(asked, /aria-expanded="true"[^>]*aria-controls="pw-action-panel"/);
+  assert.ok(asked.includes(strings.actions.answerLabel));
+  assert.ok(asked.includes(strings.actions.answerHint));
+
+  const access = actionsMarkup({ classification: "yours:access" });
+  assert.doesNotMatch(access, /<textarea/, "the call there is to run it, not to type an answer");
+  assert.doesNotMatch(access, /aria-expanded="true"/);
+  for (const label of [strings.actions.answer, strings.actions.ready, strings.actions.notMine]) {
+    assert.ok(access.includes(label), `${label} is offered whatever parks the issue`);
+  }
+});
+
+test("nothing can be written until the issue itself has been read", () => {
+  const waiting = actionsMarkup({}, false);
+  assert.equal(
+    waiting.match(/<button[^>]*disabled/g)?.length,
+    4,
+    "a control enabled against the stale snapshot writes against data nobody has seen",
+  );
+  assert.ok(waiting.includes(strings.actions.waiting));
+  assert.match(actionsMarkup(), /<button type="submit"[^>]*disabled/, "an empty box cannot unpark a ticket");
+});
+
+test("the controls are grey, name the tracker as their whole reach, and never say dispatch", () => {
+  const markup = actionsMarkup();
+  assert.equal(markup.match(/class="pw-button"/g)?.length, 4);
+  assert.doesNotMatch(
+    markup,
+    /pw-signal|pw-alert|pw-hold|pw-row--|pw-band--alert/,
+    "a button is neither a lane running nor a lane needing a person",
+  );
+  assert.doesNotMatch(markup, /style=/, "appearance belongs in the stylesheet");
+  assert.ok(markup.includes(strings.actions.scope));
+  assert.doesNotMatch(markup, /[Dd]ispatch/, "the console clears a hold; the loop decides what to run");
+  assert.ok(markup.includes(strings.actions.ready));
+});
+
+test("the controls sit under the note being answered, not above it", () => {
+  const markup = actingDetailMarkup({ notes: THREE_NOTES });
+  const ask = markup.indexOf('class="pw-call__ask"');
+  const actions = markup.indexOf('<section class="pw-actions"');
+  const id = markup.indexOf('class="pw-issue__id"');
+  assert.ok(ask > -1 && actions > -1 && id > -1);
+  assert.ok(
+    ask < actions && actions < id,
+    "a box above the question is a box filled in blind",
+  );
+});
+
+test("a page with nothing to act on renders exactly as it did before", () => {
+  const view = buildIssueView(payload({ classification: "ready" }));
+  assert.equal(
+    renderToStaticMarkup(
+      createElement(IssueDetail, {
+        shown: shownOf(view),
+        view,
+        route: ACTING_ROUTE,
+        onOutcome: () => Promise.resolve(),
+      }),
+    ),
+    renderToStaticMarkup(createElement(IssueDetail, { shown: shownOf(view), view })),
+  );
 });

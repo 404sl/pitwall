@@ -29,5 +29,12 @@ case "$*" in
     printf '%s\n' "$2 $4" >> "$BD_NOTES_LOG"
     echo "✓ Updated issue: $2"
     ;;
+  "update "*" --remove-label "*)
+    if [ -n "$BD_LABELS_FAIL" ]; then
+      echo "Error: $BD_LABELS_FAIL" >&2
+      exit 1
+    fi
+    echo "✓ Updated issue: $2"
+    ;;
   *) echo "Error: unknown command: bd $*" >&2; exit 2 ;;
 esac

@@ -909,7 +909,9 @@ if age_min is not None and age_min > 90 and not merged_since:
     print("    That is the combination that means dead rather than slow. CONFIRM it before "
           "acting - `live.sh` lists runs whose result is not yet written, and a lander started "
           "within a minute of the lock is the one holding it. Only if no such run exists: "
-          f"`rmdir {LOCK}/holder` then `rmdir {LOCK}`, and relaunch land.js.")
+          f"`rmdir {LOCK}/holder` then `rmdir {LOCK}`, and relaunch land.js by building the "
+          "dispatch with config.sh --land - it mints the merge-lock token that run holds, and "
+          "land.js refuses to start without one.")
     sys.exit(1)
 
 if not quiet:
