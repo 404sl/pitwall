@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.68
+
+After `land-one.sh` rebases and pushes a branch, it waits up to three minutes for a check to register on the pushed head before reading the rollup, so a green branch that was behind master merges in the same round instead of being requeued as not_ready and landing a round later. An empty rollup on a branch the script did not push still exits 7 at once. Two new flags, `--register-wait` and `--register-interval`, set the window and the poll interval in seconds. The land brief now asks for a ten-minute tool timeout on the `land-one.sh` call, since after a rebase push the script blocks for check registration plus the full CI run and the Bash tool's two-minute default would kill it with no exit code to read.
+
 ## 0.1.67
 
 A run that wants to see why a probe or cleanup command failed is now told how: run it plainly and read stderr from the transcript, or redirect stderr alone into its scratch directory and read the file. The handoff step hands over the exact worktree-removal command and says that "is not a working tree" after a successful handoff is the expected outcome, not an error to investigate.
