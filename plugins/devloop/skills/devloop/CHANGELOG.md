@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.63
+
+The landers now take the merge lock inside the block that releases it, and release only a lock they proved they own. A run that stands down for another lander's lock, or whose lock step throws, no longer passes anywhere near `release-lock.sh`.
+
 ## 0.1.62
 
 A dead lane's changes to a tracked binary file are now rescued as a GIT binary patch, so the rescue diff `git apply`s as one patch. Previously such a file was saved as the one-line `Binary files a/x and b/x differ`, which counts as rescued but cannot be replayed.
