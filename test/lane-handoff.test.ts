@@ -132,7 +132,7 @@ function harness(seededNotes: string, second?: Second, detached?: boolean): Harn
       'case "$*" in',
       ...(second
         ? [
-            `  "pr list --repo acme/other"*)${
+            `  "api -X GET repos/acme/other/pulls"*)${
               second.listFails
                 ? ` echo "gh: could not read acme/other" >&2; exit 1 ;;`
                 : ` printf '%s\\n' '${second.list}' ;;`
@@ -171,7 +171,8 @@ function harness(seededNotes: string, second?: Second, detached?: boolean): Harn
               : []),
           ]
         : []),
-      `  "pr list --repo acme/thing"*) printf '[{"number":14}]\\n' ;;`,
+      `  "api -X GET repos/acme/thing/pulls"*) printf '[{"number":14}]\\n' ;;`,
+      `  "pr list"*) echo "GraphQL: API rate limit already exceeded for user ID 7195135" >&2; exit 1 ;;`,
       `  *statusCheckRollup*) printf '{"statusCheckRollup":[{"name":"ci","conclusion":"SUCCESS"}],"headRefOid":"${head}"}\\n' ;;`,
       `  *"--json title,body"*) printf '{"title":"Fix the thing","body":"It was broken. Now it is not."}\\n' ;;`,
       `  *"--json labels"*) printf '{"labels":[{"name":"lane-verified"}]}\\n' ;;`,
@@ -572,6 +573,25 @@ test("a repository whose open pull requests cannot be read is refused, not read 
   assert.equal(ran.status, 7, ran.stdout + ran.stderr);
   assert.match(ran.stderr, /could not list the open pull requests of acme\/other/);
   assert.equal(ran.labelled, false, "the pull request was labelled on an unreadable survey");
+});
+
+test("the sibling survey reads over REST, so a branch hands off while GraphQL refuses", () => {
+  const box = harness("", { list: "[]", rollup: READY, body: CLEAN });
+  const ran = handoff(box, [...required(box), "--issue", "acme-1", "--note-file", box.notePath], true);
+
+  assert.equal(ran.status, 0, ran.stdout + ran.stderr);
+  assert.match(ran.stdout, /handed off: acme\/thing#14/);
+  assert.doesNotMatch(ran.calls, /^pr list/m);
+  assert.match(ran.calls, /^api -X GET repos\/acme\/other\/pulls /m);
+});
+
+test("the sibling survey scopes the head filter to the owner, which GitHub needs to filter at all", () => {
+  const box = harness("", { list: "[]", rollup: READY, body: CLEAN });
+  const ran = handoff(box, [...required(box), "--issue", "acme-1", "--note-file", box.notePath], true);
+
+  assert.equal(ran.status, 0, ran.stdout + ran.stderr);
+  assert.match(ran.calls, /^api -X GET repos\/acme\/thing\/pulls -f head=acme:lane\/x -f state=open\b/m);
+  assert.match(ran.calls, /^api -X GET repos\/acme\/other\/pulls -f head=acme:lane\/x -f state=open\b/m);
 });
 
 test("a repository the config names with no pull request on the branch is not labelled", () => {

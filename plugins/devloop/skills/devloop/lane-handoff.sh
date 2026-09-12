@@ -373,13 +373,14 @@ while IFS="|" read -r rname rpath rslug; do
     echo "                 to it, then re-run." >&2
     exit 7
   fi
-  found=$(gh pr list --repo "$rslug" --head "$BRANCH" --state open --json number 2>/dev/null \
+  found=$(gh api -X GET "repos/${rslug}/pulls" -f head="${rslug%%/*}:${BRANCH}" -f state=open -F per_page=100 2>/dev/null \
     | python3 -c "
 import json,sys
 try: prs=json.load(sys.stdin)
 except Exception: raise SystemExit(1)
+if not isinstance(prs,list): raise SystemExit(1)
 for p in prs:
-    n=p.get('number')
+    n=(p or {}).get('number')
     if n: print(n)
 " 2>/dev/null)
   if [ $? != 0 ]; then
