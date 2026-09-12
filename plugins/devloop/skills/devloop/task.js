@@ -1063,6 +1063,36 @@ Otherwise:
    then push and open a PR with 'gh pr create' explaining what was wrong, why this fix, and
    what the test covers. Reference ${task.id}. Do NOT merge it.`}
 
+IF YOUR CHANGE TOUCHES plugins/ OR .claude-plugin/, LEAVE THE VERSION ALONE. Do not edit the
+version in .claude-plugin/marketplace.json, do not edit it in
+plugins/devloop/.claude-plugin/plugin.json, and do not add a version heading to
+plugins/devloop/skills/devloop/CHANGELOG.md. Leave all three files exactly as master has them.
+
+The number you would choose is already wrong. You read master when you started; by the time your
+pull request merges another lane has landed and moved it, and every lane in a pass reads the same
+master and picks the same number. On 2026-09-12 five plugin pull requests all declared 0.1.33:
+the first to land moved master to 0.1.33 and the other four were then equal rather than greater,
+were refused, and were retired - four sets of finished, reviewed, green work, each needing a full
+re-dispatch to recover. The lander assigns the number when it merges, which is the only moment
+anything knows what master holds.
+
+THE WORDS ARE STILL YOURS, because nothing else knows what you changed. Put your changelog entry
+in the PULL REQUEST BODY, under a heading of its own, and the lander copies it under the version
+it assigns:
+
+  ## Plugin changelog
+
+  What a session should do differently now - not what the diff was.
+
+One section, plain prose or bullets, no version number in it. With no such section the entry
+becomes your pull request title, which is worse than a sentence you wrote.
+
+If your change genuinely needs to edit one of those three files in SOMETHING OTHER than the
+version - a new field in the plugin manifest, a second entry in the marketplace - the lander
+refuses the pull request and names the file rather than quietly restoring master's copy over your
+edit. Say so in your summary so a person can sequence it: a lane and the lander cannot both own
+that file in one pass.
+
 ${LAW}
 
 Return the structured result, with the real final counts line from the test run in

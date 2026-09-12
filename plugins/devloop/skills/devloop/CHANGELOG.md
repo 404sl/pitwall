@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.1.38
+
+**A lane no longer chooses the plugin version, and must not touch the three files that carry
+it** - `.claude-plugin/marketplace.json`, `plugins/devloop/.claude-plugin/plugin.json`, and the
+version heading of this file. Every lane in a pass read the same `origin/master` and bumped to
+the same number, so the first to land moved master to it and the rest were equal rather than
+greater - which the version guard refuses. On 2026-09-12 five plugin pull requests all declared
+`0.1.33`, and four sets of finished, reviewed, green work were retired for a reason that had
+nothing to do with their content.
+
+`assign-plugin-version.sh` assigns the number instead, counted up from what master holds at the
+moment the branch is pushed for merging. `land-one.sh` runs it per pull request, inside the
+worktree it already rebases in, and `land-train.sh` runs it once per train. Two plugin pull
+requests queued at once now both land in one pass, with consecutive versions.
+
+**Write the entry in the PULL REQUEST BODY, under a `## Plugin changelog` heading.** The lander
+copies that section in under the version it assigns, so the words are still the lane's. A body
+with no such section - or a heading with nothing under it - gets the pull request title instead.
+A body that cannot be read at all REFUSES the merge rather than moving the version with nothing
+under its heading, and the next pass reads it again.
+
+**A lane that edits one of those three files beyond its version is now REFUSED by name** rather
+than having master's copy restored over it. That restore is whole-file: a branch shipping a new
+manifest field or a second marketplace entry had it deleted and merged anyway, and CI stays green
+because CI only asserts that the two manifests agree. On a train the refusal names the plugin
+changes the train is carrying, because up to eight already-green pull requests lose the pass with
+it.
+
+`land-one.sh` drops a version commit an earlier round wrote onto the branch before it rebases, so
+every round counts the number again from master as it is now. A pull request that does not merge
+in the round that prepared it - an empty check rollup is the ordinary reason - used to replay that
+commit onto a master whose own number had moved and conflict on this file, and a conflict retires
+a green pull request.
+
 ## 0.1.37
 
 **A release train acted on one repository and its result could not say so.** `land-train.js` took

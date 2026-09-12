@@ -213,7 +213,7 @@ function versionVerdict(read) {
   if (!ahead) {
     return {
       why: 'version_not_ahead',
-      detail: `the train declares devloop plugin version ${branch} and origin/master holds ${master}, which is not strictly greater. One of the branches on it has to bump ${PLUGIN_MANIFEST} and ${MARKETPLACE_MANIFEST} above ${master}.`,
+      detail: `the train declares devloop plugin version ${branch} and origin/master holds ${master}, which is not strictly greater. land-train.sh assigns that number as it builds the train, from what master held then, so this is its own arithmetic to read rather than a branch's guess - the 'version:' line in the build output says what it wrote. No branch is asked to bump ${PLUGIN_MANIFEST} or ${MARKETPLACE_MANIFEST}.`,
     }
   }
   return null
