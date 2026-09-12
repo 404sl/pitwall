@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { CHECK_EVERY_MS, REGISTRY_URL, createUpdateCheck, newerThan } from "../src/registry.ts";
+import { CHECK_EVERY_MS, REGISTRY_URL, createUpdateCheck, newerThan, readPublished } from "../src/registry.ts";
 
 const RUNNING = "0.1.2";
 
@@ -113,4 +113,26 @@ test("reading the update never waits on the registry, and never rejects", async 
   assert.equal(calls.length, 1);
   await check.refresh();
   assert.equal(check.update(), undefined);
+});
+
+test("a fresh read reports what the registry publishes now, even when the cache holds something newer", async () => {
+  const { fetch, calls } = answering([published("0.1.4"), published(RUNNING)]);
+  const check = createUpdateCheck({ running: RUNNING, fetch });
+  await check.refresh();
+  assert.equal(check.update(), "0.1.4");
+  assert.equal(await readPublished({ fetch }), RUNNING);
+  assert.deepEqual(calls, [REGISTRY_URL, REGISTRY_URL]);
+});
+
+test("a fresh read of a registry that cannot be reached or cannot be parsed reports nothing", async () => {
+  for (const answer of [
+    new Error("network down"),
+    new Response("not json at all", { status: 200 }),
+    new Response("{}", { status: 500 }),
+    published(undefined),
+    published(3),
+  ]) {
+    const { fetch } = answering([answer]);
+    assert.equal(await readPublished({ fetch }), undefined);
+  }
 });

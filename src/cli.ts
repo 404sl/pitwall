@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { realpathSync } from "node:fs";
 import { SCHEMA_VERSION } from "@404sl/pitwall-schema";
 import { diagnose, renderDoctor } from "./doctor.js";
+import { CONSIDER_EVERY_MS, createRestarter, type Launch } from "./handover.js";
 import { DEFAULT_PORT, HOST, consoleAnnouncer, consoleCollector, createConsoleServer, listen, parseServeArgs } from "./serve.js";
 import { undeliveredReport } from "./notify.js";
 import { emitSnapshot } from "./snapshot.js";
@@ -69,6 +70,17 @@ export function run(argv: string[]): CommandResult {
     return { code: 0, out: "", serve: parsed };
   }
   return { code: 2, out: `pitwall: unknown argument ${arg}\n\n${USAGE}` };
+}
+
+function followServing(serving: Launch): void {
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+    process.on(signal, () => {
+      serving.stop();
+    });
+  }
+  void serving.ended.then((code) => {
+    process.exit(code);
+  });
 }
 
 function quitQuietlyOnBrokenPipe(stream: NodeJS.WriteStream): void {
@@ -152,11 +164,26 @@ if (isEntry) {
   } else if (serve === undefined) {
     process.exit(code);
   } else {
-    listen(
-      createConsoleServer({ collect: consoleCollector(), announce: consoleAnnouncer() }),
-      serve.port,
-    ).then(
-      () => process.stdout.write(`pitwall console on http://${HOST}:${serve.port}/\n`),
+    const server = createConsoleServer({ collect: consoleCollector(), announce: consoleAnnouncer() });
+    listen(server, serve.port).then(
+      () => {
+        process.stdout.write(`pitwall console on http://${HOST}:${serve.port}/\n`);
+        const restarter = createRestarter({ server, port: serve.port });
+        const considering = setInterval(() => {
+          void restarter.consider().then(
+            (handover) => {
+              if (handover.kind !== "handed-over") {
+                return;
+              }
+              clearInterval(considering);
+              followServing(handover.serving);
+            },
+            (cause: Error) => {
+              process.stderr.write(`pitwall serve: no newer version was started: ${cause.message}\n`);
+            },
+          );
+        }, CONSIDER_EVERY_MS);
+      },
       (cause: NodeJS.ErrnoException) => {
         const why = cause.code === "EADDRINUSE" ? `port ${serve.port} is already in use` : cause.message;
         process.stderr.write(`pitwall: ${why}\n`);
