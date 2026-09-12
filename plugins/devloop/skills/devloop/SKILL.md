@@ -49,9 +49,9 @@ three times and spent 4h26m shipping 43 minutes of work, and the cost grew with 
 of lanes. The old merge lock serialised the merge but not the rebase-and-wait in front of it.
 
 **Never pick a slot from memory. Ask `slot.sh`.** A dispatch has no number left to pick:
-`config.sh --args <id>` calls `slot.sh` itself, carries the number it reserved into the args, and
-stops the dispatch when it cannot reserve one. Call `slot.sh` by hand to give a lane back, or to
-see who holds what.
+`config.sh --args <id>` and `config.sh --rework <id> <pr> <repo>` call `slot.sh` themselves, carry
+the number it reserved into the args, and stop the dispatch when it cannot reserve one. Call
+`slot.sh` by hand to give a lane back, or to see who holds what.
 
 ```
 slot=$(bash ${CLAUDE_PLUGIN_ROOT}/skills/devloop/slot.sh <issue-id>)   # reserves it, prints the number
@@ -71,10 +71,11 @@ has built its result before the release step answers, so for those three the log
 it appears. Every `rework.js` ending but an exception carries both answers, because the endings that
 used to return early set a result instead.
 
-A rework dispatched without a slot gives only the lane back. `config.sh --args` always reserves one,
-so that is the hand-built args object the dispatch documents rather than anything the pipeline
-produces - and slot 1, which the script falls back to for `TEST_ENV_NUMBER`, is whichever run
-actually reserved it. Its reservation is not this run's to remove.
+A rework dispatched without a slot does not start. `rework.js` used to fall back to slot 1 for
+`TEST_ENV_NUMBER`, which is whichever run actually reserved it, and gave only the lane back because
+the reservation was not its to remove. It now refuses an args object whose slot is not a number,
+and `config.sh --rework` is the only thing that builds one - so every rework carries the slot the
+registry names, and gives it back.
 
 The slot number IS the test database - task.js derives `TEST_ENV_NUMBER` from it - so two lanes
 on one slot share a database. `slot.sh` checks the lane lock before handing a number out, which
@@ -267,11 +268,11 @@ for anybody to notice or act on. Each copy is written under a temporary name and
 place, so a run that re-reads its script cannot see half a file.
 
 ```
-bash ${CLAUDE_PLUGIN_ROOT}/skills/devloop/run-script.sh rework.js   # when no --args mode fits
+bash ${CLAUDE_PLUGIN_ROOT}/skills/devloop/run-script.sh rework.js   # stages without dispatching
 ```
 
-Absolute path - the tool does not resolve `~`. `slot` is the lane `--args` reserved, and it
-only sets `TEST_ENV_NUMBER` so concurrent site runs do not share a test database; two live
+Absolute path - the tool does not resolve `~`. `slot` is the lane `--args` or `--rework` reserved,
+and it only sets `TEST_ENV_NUMBER` so concurrent site runs do not share a test database; two live
 workflows must never carry the same one, which is what reserving it is for. Other args:
 `maxAttempts` (3), `root`, `worktrees`.
 
@@ -472,18 +473,25 @@ refuses a pull request whose work is already done and already green - it bounces
 process and site#739 was dropped by two trains in a row for the same two conflicts.
 
 ```
-# --args reserves the lane and carries root, repos and skillDir, which rework.js refuses to
-# run without. Add the pull request and the repo key to what it printed.
-args=$(bash ${CLAUDE_PLUGIN_ROOT}/skills/devloop/config.sh --args app-st1o.1.2)
-script=$(bash ${CLAUDE_PLUGIN_ROOT}/skills/devloop/run-script.sh rework.js)
+# BUILD THE ARGS WITH config.sh --rework. Do not hand-write them, and do not pass a slot.
+args=$(bash ${CLAUDE_PLUGIN_ROOT}/skills/devloop/config.sh --rework app-st1o.1.2 739 site)
 
-Workflow({ scriptPath: <script>,
-           args: { ...<the object config.sh printed>, pr: 739, repo: "site" } })
+Workflow({ scriptPath: <the scriptPath in it>,
+           args: <the object config.sh printed> })
 ```
+
+`--rework` is `--args` for a dropped pull request: it stages `rework.js`, reserves the lane through
+`slot.sh`, and prints one object carrying the issue id, the pull request, the repo key, the slot,
+`scriptPath`, `root`, `repos` and `skillDir`. It checks the pull request is a number and the repo
+is one this config names BEFORE it reserves anything, so a refused dispatch strands no lane. When
+no lane can be reserved it prints nothing and exits non-zero - the dispatch stops rather than
+sending a rework at a database another run holds. `rework.js` refuses an args object with no slot
+for the same reason, so the two-command form this used to document - `--args` spread by hand with
+`pr` and `repo` added - no longer runs.
 
 Two agents, no design and no review: rebase onto master keeping BOTH sides of every conflict, push
 with a lease, wait for CI on the new head, re-apply `lane-verified`. It takes a lane the same way
-`task.js` does, so give it a free slot, and it gives the lane back the same way - in a `finally`, so
+`task.js` does, and it gives the lane and the slot back the same way - in a `finally`, so
 a `red`, a `blocked` and an exception all go through it rather than only the handoff. It strips the label while it works, because a
 `lane-verified` branch that cannot merge is a lie the lander keeps acting on.
 

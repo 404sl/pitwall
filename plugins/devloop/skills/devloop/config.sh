@@ -17,6 +17,12 @@
 #                                   dispatch, carrying the scriptPath to dispatch. An optional
 #                                   third argument is checked against the reservation, never used
 #                                   instead of it.
+#   config.sh --rework <id> <pr> <repo>
+#                                   stage the workflow scripts through run-script.sh, reserve a
+#                                   lane through slot.sh, and print the args object for a rework
+#                                   dispatch, carrying the scriptPath to dispatch, the pull
+#                                   request and the repository key. The slot is never an
+#                                   argument here: the reservation decides it.
 #   config.sh --land [repo#n ...]   stage the workflow scripts and print the args object for a
 #                                   land.js run, naming the pre-flighted PRs it is allowed to
 #                                   merge, the scriptPath to dispatch, and the merge-lock token
@@ -184,6 +190,50 @@ print(json.dumps({
     "slot": int(sys.argv[3]),
     "skillDir": sys.argv[4],
     "scriptPath": sys.argv[5],
+    "root": cfg["root"],
+    "idPrefix": cfg.get("idPrefix", "sr"),
+    "lockPrefix": cfg.get("lockPrefix", "devloop"),
+    "repos": cfg.get("repos", {}),
+}))
+PY
+    ;;
+  --rework)
+    [ $# -eq 4 ] || { echo "usage: config.sh --rework <issue-id> <pr-number> <repo>" >&2; exit 2; }
+    case "$3" in
+      ''|*[!0-9]*)
+        echo "config.sh --rework: pull request must be a number, got '$3' - dispatch stops." >&2
+        exit 2 ;;
+    esac
+    python3 - "$CONFIG" "$4" <<'PY' || exit 2
+import json, sys
+repos = json.load(open(sys.argv[1])).get("repos", {})
+if sys.argv[2] not in repos:
+    sys.stderr.write("config.sh --rework: no repository %s in this config - have: %s\n"
+                     % (sys.argv[2], ", ".join(sorted(repos)))); sys.exit(2)
+PY
+    SCRIPT_PATH="$(PITWALL_CONFIG="$CONFIG" bash "$SKILL_DIR/run-script.sh" rework.js)" || {
+      echo "config.sh --rework: run-script.sh could not stage rework.js - dispatch stops." >&2
+      exit 1
+    }
+    SLOT="$(PITWALL_CONFIG="$CONFIG" bash "$SKILL_DIR/slot.sh" "$2")" || {
+      echo "config.sh --rework: slot.sh would not reserve a lane for $2 - dispatch stops." >&2
+      exit 1
+    }
+    case "$SLOT" in
+      ''|*[!0-9]*)
+        echo "config.sh --rework: slot.sh printed '$SLOT', which is not a lane number - dispatch stops." >&2
+        exit 1 ;;
+    esac
+    python3 - "$CONFIG" "$2" "$3" "$4" "$SLOT" "$SKILL_DIR" "$SCRIPT_PATH" <<'PY'
+import json, sys
+cfg = json.load(open(sys.argv[1]))
+print(json.dumps({
+    "id": sys.argv[2],
+    "pr": int(sys.argv[3]),
+    "repo": sys.argv[4],
+    "slot": int(sys.argv[5]),
+    "skillDir": sys.argv[6],
+    "scriptPath": sys.argv[7],
     "root": cfg["root"],
     "idPrefix": cfg.get("idPrefix", "sr"),
     "lockPrefix": cfg.get("lockPrefix", "devloop"),

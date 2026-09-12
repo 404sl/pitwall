@@ -428,26 +428,19 @@ test("a rework whose step throws does not take the lane with it", async () => {
   reworkRelease(calls);
 });
 
-test("a rework dispatched with no slot asks for no slot back and says so", async () => {
+test("a rework dispatched with no slot refuses before it claims any lane", async () => {
   const args: Record<string, unknown> = { ...REWORK_ARGS };
   delete args["slot"];
-  const { calls, done } = runScript("rework.js", args, (call, n) => {
-    if (n === 1) return RESOLVED;
-    if (n === 2) return { status: "verified", ciConclusion: "success", notes: "labelled" };
-    return { lane: "already_gone" };
-  });
+  const { calls, done } = runScript("rework.js", args, () => RESOLVED);
 
   const result = await done;
-  const release = reworkRelease(calls);
+  assert.equal(result["status"], "error");
+  assert.match(String(result["notes"]), /config\.sh --rework/);
   assert.equal(
-    /--slot/.test(release.prompt),
-    false,
-    "a run given no slot was told to give back slot 1, which belongs to whichever run reserved it",
+    calls.length,
+    0,
+    "a run given no slot went on to take lane 2, which belongs to whichever run reserved slot 1",
   );
-  assert.match(release.prompt, /--lane \/tmp\/pw-lane-2\.lock --owner 'zz-aaa1'/);
-  assert.deepEqual((release.schema as { required: string[] }).required, ["lane"]);
-  assert.equal(result["lane"], "already_gone");
-  assert.match(String(result["slot"]), /^not_reserved/);
 });
 
 test("a rework release step that answers nothing is reported as a leak naming what to read", async () => {
@@ -486,19 +479,30 @@ test("a rework's release step is one command and carries no backtick", async () 
   assert.equal(/\brmdir\b|\brm -/.test(prompt), false, "the release step is told to remove something by hand");
 });
 
-test("a rework given a slot as a string releases the lane its own brief claimed", async () => {
-  const { calls, done } = runScript("rework.js", { ...REWORK_ARGS, slot: "3" }, (call, n) => {
+test("a rework whose slot is not a lane number refuses the same way", async () => {
+  for (const slot of ["3", 0, -1, 2.5, null]) {
+    const { calls, done } = runScript("rework.js", { ...REWORK_ARGS, slot }, () => RESOLVED);
+    const result = await done;
+    assert.equal(result["status"], "error", `slot ${JSON.stringify(slot)} was accepted`);
+    assert.equal(calls.length, 0, `slot ${JSON.stringify(slot)} reached a brief`);
+  }
+});
+
+test("a rework carrying the slot the registry named claims that lane and gives both back", async () => {
+  const { calls, done } = runScript("rework.js", REWORK_ARGS, (call, n) => {
     if (n === 1) return { status: "blocked", notes: "the push was refused" };
     return { lane: "released", slot: "released" };
   });
 
-  await done;
+  const result = await done;
   const claimed = calls[0]?.prompt.match(/mkdir (\S+\.lock)/);
   assert.ok(claimed, "the resolve brief no longer tells the lane which lock to take");
+  assert.equal(claimed[1], LANE_LOCK);
+  assert.match(calls[0]!.prompt, /TEST_ENV_NUMBER 4/);
   assert.match(
     reworkRelease(calls).prompt,
-    new RegExp(`--lane ${claimed[1]?.replace(/[/.]/g, "\\$&")} `),
-    "the release names a different lane from the one the brief told the run to claim, so the lock " +
-      "it actually holds is left standing and reads already_gone",
+    new RegExp(`--lane ${LANE_LOCK.replace(/[/.]/g, "\\$&")} --slot ${SLOT_FILE.replace(/[/.]/g, "\\$&")} --owner 'zz-aaa1'`),
   );
+  assert.equal(result["lane"], "released");
+  assert.equal(result["slot"], "released");
 });
