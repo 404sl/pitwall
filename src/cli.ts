@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { realpathSync } from "node:fs";
 import { SCHEMA_VERSION } from "@404sl/pitwall-schema";
 import { diagnose, renderDoctor } from "./doctor.js";
+import { CLOSE_GRACE_MS, CONSIDER_EVERY_MS, createRestarter, type Launch } from "./handover.js";
 import { DEFAULT_PORT, HOST, consoleAnnouncer, consoleCollector, createConsoleServer, listen, parseServeArgs } from "./serve.js";
 import { undeliveredReport } from "./notify.js";
 import { emitSnapshot } from "./snapshot.js";
@@ -69,6 +70,59 @@ export function run(argv: string[]): CommandResult {
     return { code: 0, out: "", serve: parsed };
   }
   return { code: 2, out: `pitwall: unknown argument ${arg}\n\n${USAGE}` };
+}
+
+export const STOP_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
+
+export type StopSignal = (typeof STOP_SIGNALS)[number];
+
+export interface ServeLifecycleOptions {
+  port: number;
+  current: () => Launch | undefined;
+  closeGraceMs?: number;
+  log?: (line: string) => void;
+  exit?: (code: number) => void;
+  on?: (signal: StopSignal, handler: () => void) => void;
+  sleep?: (ms: number) => Promise<void>;
+}
+
+export interface ServeLifecycle {
+  follow: (version: string, serving: Launch) => void;
+}
+
+export function serveLifecycle(options: ServeLifecycleOptions): ServeLifecycle {
+  const log = options.log ?? ((line: string) => void process.stderr.write(`pitwall serve: ${line}\n`));
+  const exit = options.exit ?? ((code: number) => process.exit(code));
+  const on = options.on ?? ((signal: StopSignal, handler: () => void) => void process.on(signal, handler));
+  const sleep = options.sleep ?? ((ms: number) => new Promise<void>((done) => setTimeout(done, ms)));
+  const graceMs = options.closeGraceMs ?? CLOSE_GRACE_MS;
+  let stopping = false;
+  for (const signal of STOP_SIGNALS) {
+    on(signal, () => {
+      stopping = true;
+      const child = options.current();
+      if (child === undefined) {
+        exit(0);
+        return;
+      }
+      child.stop();
+      void Promise.race([child.ended, sleep(graceMs)]).then(() => {
+        exit(0);
+      });
+    });
+  }
+  return {
+    follow: (version: string, serving: Launch) => {
+      void serving.ended.then((code) => {
+        if (!stopping) {
+          log(
+            `Port ${String(options.port)}: ${version} stopped (exit ${String(code)}). Nothing is serving - start the console again.`,
+          );
+        }
+        exit(stopping ? 0 : code);
+      });
+    },
+  };
 }
 
 function quitQuietlyOnBrokenPipe(stream: NodeJS.WriteStream): void {
@@ -152,11 +206,27 @@ if (isEntry) {
   } else if (serve === undefined) {
     process.exit(code);
   } else {
-    listen(
-      createConsoleServer({ collect: consoleCollector(), announce: consoleAnnouncer() }),
-      serve.port,
-    ).then(
-      () => process.stdout.write(`pitwall console on http://${HOST}:${serve.port}/\n`),
+    const server = createConsoleServer({ collect: consoleCollector(), announce: consoleAnnouncer() });
+    listen(server, serve.port).then(
+      () => {
+        process.stdout.write(`pitwall console on http://${HOST}:${serve.port}/\n`);
+        const restarter = createRestarter({ server, port: serve.port });
+        const lifecycle = serveLifecycle({ port: serve.port, current: () => restarter.current() });
+        const considering = setInterval(() => {
+          void restarter.consider().then(
+            (handover) => {
+              if (handover.kind !== "handed-over") {
+                return;
+              }
+              clearInterval(considering);
+              lifecycle.follow(handover.version, handover.serving);
+            },
+            (cause: Error) => {
+              process.stderr.write(`pitwall serve: no newer version was started: ${cause.message}\n`);
+            },
+          );
+        }, CONSIDER_EVERY_MS);
+      },
       (cause: NodeJS.ErrnoException) => {
         const why = cause.code === "EADDRINUSE" ? `port ${serve.port} is already in use` : cause.message;
         process.stderr.write(`pitwall: ${why}\n`);

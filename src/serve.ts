@@ -740,11 +740,16 @@ export function createConsoleServer(options: ServeOptions = {}): Server {
 
 export function listen(server: Server, port: number): Promise<Server> {
   return new Promise((done, failed) => {
-    const onError = (cause: Error) => failed(cause);
-    server.once("error", onError);
-    server.listen(port, HOST, () => {
+    const onListening = () => {
       server.removeListener("error", onError);
       done(server);
-    });
+    };
+    const onError = (cause: Error) => {
+      server.removeListener("listening", onListening);
+      failed(cause);
+    };
+    server.once("error", onError);
+    server.once("listening", onListening);
+    server.listen(port, HOST);
   });
 }
