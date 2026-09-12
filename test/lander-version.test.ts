@@ -23,6 +23,7 @@ const SHA = "e1a54123ca4d0b6a32479f49da4d26893f648206";
 
 type Declared = {
   status: string;
+  prStatus?: string;
   masterVersion: string;
   branchVersion: string;
   touchesPlugin: boolean;
@@ -34,6 +35,7 @@ type Declared = {
 function declared(over: Partial<Declared> = {}): Declared {
   return {
     status: "read",
+    prStatus: "read",
     masterVersion: "0.1.21",
     branchVersion: "0.1.22",
     touchesPlugin: true,
@@ -402,4 +404,74 @@ test("land.js refuses an unreadable master even when the step also reports the l
   assert.equal(calls.filter((c) => c.label.startsWith("retire:")).length, 0, `it was un-queued on ignorance: ${labels(calls)}`);
   assert.equal(out.stopped[0]?.why, "version_unreadable");
   assert.match(out.stopped[0]?.detail || "", /git fetch origin exited 128/);
+});
+
+test("land.js lands a branch touching no plugin file when the manifest could not be read, because the guard does not govern it", async () => {
+  const { calls, done } = lander(
+    declared({ status: "unreadable", masterVersion: "", branchVersion: "", touchesPlugin: false, notes: "git show origin/master exited 128" }),
+  );
+  const out = await done;
+
+  assert.equal(
+    calls.filter((c) => c.label.startsWith("land:")).length,
+    1,
+    `a branch changing nothing under plugins/ or .claude-plugin/ was refused over a number the ` +
+      `guard never compares for it: ${labels(calls)}`,
+  );
+  assert.deepEqual(out.stopped, []);
+  assert.equal(out.landed.length, 1);
+});
+
+test("land.js calls an unreadable pull request pr_unreadable, and does not spend a merge agent on it", async () => {
+  const { calls, logs, done } = lander(
+    declared({
+      prStatus: "unreadable",
+      labelled: false,
+      open: false,
+      notes: "gh pr view 37 failed with exit code 1: GraphQL API rate limit already exceeded",
+    }),
+  );
+  const out = await done;
+
+  assert.equal(out.stopped[0]?.why, "pr_unreadable");
+  assert.match(out.stopped[0]?.detail || "", /rate limit already exceeded/);
+  assert.equal(
+    calls.filter((c) => c.label.startsWith("land:")).length,
+    0,
+    `a merge agent was spawned while gh could not answer, and land-one.sh reads an unanswerable ` +
+      `rollup as red and exits 4 - which retires the pull request: ${labels(calls)}`,
+  );
+  assert.equal(
+    calls.filter((c) => c.label.startsWith("retire:")).length,
+    0,
+    `it was un-queued because gh was rate limited: ${labels(calls)}`,
+  );
+  assert.ok(
+    !logs.some((l) => /is gone|closed, merged or draft/.test(l)),
+    `labelled and open were read as facts from a gh call that printed nothing: ${logs.join("\n")}`,
+  );
+});
+
+test("land.js keeps a rate-limited read off the version verdict even when the branch ships a plugin file", async () => {
+  const { done } = lander(declared({ prStatus: "unreadable", touchesPlugin: true, labelled: false, open: false, notes: "API rate limit exceeded" }));
+  const out = await done;
+
+  assert.equal(
+    out.stopped[0]?.why,
+    "pr_unreadable",
+    `a failed pull request read was reported as a version problem, which sends a reader to ` +
+      `manifests and version arithmetic that were never wrong`,
+  );
+});
+
+test("the version prompt asks for the manifest read and the pull request read as separate fields", async () => {
+  const { calls, done } = lander(declared());
+  await done;
+
+  const prompt = calls.find((c) => c.label.startsWith("version:"))?.prompt || "";
+  assert.match(prompt, /prStatus/, "the step has no field to report a failed gh call in");
+  assert.ok(
+    !/gh pr view printed no answer\. Say which in notes/.test(prompt),
+    "the prompt still routes a failed gh call into status, which is the field the version verdict reads",
+  );
 });
