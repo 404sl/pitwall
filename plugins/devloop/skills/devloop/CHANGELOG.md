@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.60
+
+`lane-running.sh`, `lanes.sh` and `kill-lane.sh` now refuse a flag that takes a value when none is given - `--stale-minutes`, `--slot`, `--id`, `--repo` - naming the flag and exiting 6 instead of hanging. A session that sees one of these scripts never return should no longer suspect a dropped value.
+
+Refs pitwall-a9u
+
 ## 0.1.59
 
 **`land-one.sh` reported a rollup it could not read as a red one.** The read was one pipeline with
