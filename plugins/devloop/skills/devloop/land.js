@@ -583,12 +583,9 @@ function versionVerdict(read) {
   return null
 }
 
-function prVerdict(read) {
+function prUnreadable(read) {
   if (!read || read.prStatus !== 'unreadable') return null
-  return {
-    why: 'pr_unreadable',
-    detail: `gh could not read pull request state - ${trimmed(read.notes) || 'the version step reported no answer from gh pr view'}. Nothing is known about the version here: this says the PULL REQUEST could not be read, not that a number could not be. Nothing was merged, the label was left on, and the next run picks it up when gh answers again.`
-  }
+  return `pr_unreadable - gh could not read pull request state - ${trimmed(read.notes) || 'the version step reported no answer from gh pr view'}. This says the PULL REQUEST could not be read, not that a number could not be, so the version raises no objection and land-one.sh decides in shell: it reads the rollup and the label itself, and exits without merging when gh still cannot answer, so the pull request goes back for a later round rather than being retired.`
 }
 
 const REFUSED_WHATEVER_THE_ROUND = [
@@ -1178,10 +1175,9 @@ ${LAW}`
 // finished - a timing accident that the next round should retry), 'merge_shaped' (the branch
 // needs rebuilding onto master, and un-queueing it would reopen an issue whose work is fine),
 // 'version_unreadable' (the number could not be read at all, which is ignorance rather than a
-// finding), 'pr_unreadable' (gh could not be asked about the PR, which is the same ignorance
-// about a different read), 'fetch_failed' (the refs everything else was read from may be stale,
-// which is ignorance about all of them at once), and 'agent_error' (we do not know what
-// happened, and un-queueing on ignorance loses work silently).
+// finding), 'fetch_failed' (the refs everything else was read from may be stale, which is
+// ignorance about all of them at once), and 'agent_error' (we do not know what happened, and
+// un-queueing on ignorance loses work silently).
 const RETIRE = { type: 'object', required: ['status'], additionalProperties: false, properties: {
   status: { enum: ['retired', 'partial', 'nothing_to_do'] },
   retired: { type: 'array', items: { type: 'string' } },
@@ -1535,13 +1531,17 @@ try {
       const declared = await agent(versionPrompt(pr), {
         label: `version:${keyOf(pr)}`, phase: 'Land', schema: VERSION, model: 'haiku', effort: 'low'
       })
-      const stale = versionVerdict(declared) || prVerdict(declared)
+      const stale = versionVerdict(declared)
       if (stale) {
         stopped.push({ ...pr, why: stale.why, detail: stale.detail })
         log(`STOPPED ${keyOf(pr)} - ${stale.why}\n    ${stale.detail}`)
         continue
       }
-      if (declared && (declared.labelled === false || declared.open === false)) {
+      const unreadPr = prUnreadable(declared)
+      if (unreadPr) {
+        log(`${keyOf(pr)} - ${unreadPr}`)
+      }
+      if (declared && declared.prStatus !== 'unreadable' && (declared.labelled === false || declared.open === false)) {
         log(`${keyOf(pr)} - the version step reports it is no longer the pull request this run was asked to merge (${LABEL} ${declared.labelled === false ? 'is gone' : 'still on'}, ${declared.open === false ? 'closed, merged or draft' : 'open'}), and its declared version raises no objection, so land-one.sh decides in shell whether it still merges`)
       }
       if (declared && declared.status !== 'no_manifest' && !declared.touchesPlugin) {
