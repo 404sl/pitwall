@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.43
+
+A refusal from the handoff compliance check is terminal. Your judgement picks how to
+reword an offending line, never whether to proceed past one, and the only route to a
+label is a re-run of the script that exits 0 - never a label applied by hand.
+
+The handoff label token has no subject-matter exemption and no spelling that passes:
+the check greps the literal token, so backticks, a code fence and a quotation from a
+file in the repository all still hit. Reword by naming the label in words instead.
+That applies equally to documentation about the handoff mechanics and to a sentence
+reporting a pull request's own state - both get the same rewrite.
+
+The by-hand label steps in the brief apply only when the script file is absent. A
+refusal is not a missing script.
+
 ## 0.1.42
 
 The lander no longer calls a failed `gh pr view` a version problem. A pull

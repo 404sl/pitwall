@@ -216,9 +216,18 @@ check_one() {
     echo "non-compliant: ${_slug}#${_pr} was NOT labelled. Offending lines:"
     printf '%s\n' "$hits"
     echo ""
-    echo "Fix the PR body or the commit message, then run this again. Note that a vendor or"
-    echo "product name that is the SUBJECT of the change is fine - the test is whether the text"
-    echo "claims who or what wrote the code. Judge each hit; do not blanket-rewrite."
+    echo "Fix the PR body or the commit message, then run this again. THIS REFUSAL IS TERMINAL:"
+    echo "your judgement decides HOW TO REWORD a hit, never whether to proceed past it. Nothing"
+    echo "here is labelled by hand instead, and a hit you believe is a false positive is still a"
+    echo "rewrite - the only way to a label is a re-run of this script that exits 0."
+    echo "A vendor or product name that is the SUBJECT of the change is fine - the test is whether"
+    echo "the text claims who or what wrote the code. THE HANDOFF LABEL TOKEN HAS NO SUCH"
+    echo "EXEMPTION AND NO COMPLIANT SPELLING: this grep reads the literal token, so backticks,"
+    echo "a code fence and a quotation from a file in the repository all still hit. That applies"
+    echo "whether the sentence reports THIS pull request's own state or is documentation about the"
+    echo "handoff mechanics - both are reworded the same way, by naming the label in words instead"
+    echo "of writing the token: 'the handoff label' carries the meaning and passes."
+    echo "Judge each hit to choose the rewording; do not blanket-rewrite."
     return 2
   fi
 
