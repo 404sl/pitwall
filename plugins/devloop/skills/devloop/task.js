@@ -283,9 +283,9 @@ NON-NEGOTIABLE RULES. They outrank speed, and they outrank finishing the task.
    and close it. If a match exists, append your evidence to it instead of creating a sibling -
    your diagnosis is usually worth keeping even when the ticket is not.
 
-   --append-notes ON 'bd create' IS SILENTLY DROPPED. The issue is created, the command
-   succeeds, and notes come back null. Create first, then apply notes with a separate
-   'bd update --append-notes', and read the field back.
+   NOTES PASSED TO 'bd create' ARE SILENTLY DROPPED. The issue is created, the command
+   succeeds, and notes come back null. Create first, then write the note with a separate
+   run of bd-note.sh (rule 9), and read the field back.
 
    BEFORE FILING THAT SOMETHING IS MISSING FROM MASTER, ASK MASTER - NOT YOUR WORKTREE. Your
    checkout was cut from whatever master was when this lane started, and other lanes have been
@@ -355,10 +355,20 @@ NON-NEGOTIABLE RULES. They outrank speed, and they outrank finishing the task.
    linked source or nowhere. Two halves that fix independently are two tickets - a run does
    the tractable half and the other acceptance goes quietly unmet.
 
-9. Write notes with --append-notes, NEVER --notes. Despite bd's own help calling it
-   "Additional notes", --notes REPLACES everything already there - which has already
-   destroyed a decision somebody recorded and a workflow's own diagnosis. --append-notes
-   adds with a newline separator. The same applies to anything you tell another agent to run.
+9. WRITE EVERY TRACKER NOTE THROUGH bd-note.sh, FROM A FILE, and NEVER with 'bd update --notes':
+     cd ${ROOT} && PITWALL_SESSION=lane-devloop/<id> bash ${SKILL_DIR}/bd-note.sh <id> --note-file <path>
+   The text comes from a FILE so that a backtick or a $( in the note cannot be evaluated by the
+   shell before bd ever sees it. That has already stored a note with the one line carrying its
+   evidence cut off, while bd reported "Updated issue" and the shell's error went to a stream
+   nobody was reading.
+   The script is also the only writer that takes the write lock, stamps the note with the date
+   and the writer, and reads it back. A bare 'bd update' append is an unserialised read-modify-
+   write: two overlapping notes silently become one, exit 0 both times. A non-zero exit from the
+   script means the note did NOT land after its own retries and the text is on stderr - say so,
+   do not report it recorded.
+   'bd update --notes' REPLACES everything already there, despite bd's own help calling it
+   "Additional notes", and has already destroyed a decision somebody recorded and a workflow's
+   own diagnosis. The same applies to anything you tell another agent to run.
 10. The tracker is at ${ROOT}. bd resolves to the NEAREST .beads directory, and site and
    extension still contain dead ones left over from before the tracker moved - running bd
    inside either repo silently rewrites the wrong tracker and dirties files in somebody's
@@ -951,7 +961,11 @@ code, from ${ROOT}:
   whose condition had been met hours earlier. They found them by browsing.
 
   bd label add ${task.id} <needs-decision if a choice only a person can make, needs-access if it needs a deploy/dashboard/device they have and you do not>
-  bd update ${task.id} -s open --append-notes "<what you found, the exact decision needed, and the options with your recommendation>"
+  Write what you found, the exact decision needed, and the options with your recommendation to
+  ${scratch}/park-note.txt. Then record it and reopen, the note first, so that a crash between
+  the two leaves the question written down rather than a reopened issue nobody can answer:
+  cd ${ROOT} && PITWALL_SESSION=lane-${branch} bash ${SKILL_DIR}/bd-note.sh ${task.id} --note-file ${scratch}/park-note.txt
+  cd ${ROOT} && bd update ${task.id} -s open
 Then return status 'needs_feedback' with that question. Leave the worktree and any branch in
 place. This is a good outcome, not a failure - a wrong guess shipped unattended is worse.
 
@@ -1058,7 +1072,7 @@ Otherwise:
                           out of date silently while the code moves.
      the PR body          for what the reader of a diff needs.
      the tracker issue    for a decision, a rejected alternative, or a past failure. That is
-                          what --append-notes is for and it is already the habit here.
+                          what the notes field is for and it is already the habit here.
 
    So a past incident, a constraint that is invisible in the code, a reason an obvious
    approach was rejected - all of that still gets written down. It goes in the commit message
@@ -1336,7 +1350,7 @@ PR: ${work.prUrl || work.prNumber}
    It reads the title and body back from GitHub and the commit messages back from git, runs the
    compliance grep over both, checks the rollup is non-empty and describes the head that is
    actually on the branch, labels, reads the label back, removes YOUR worktree, appends your
-   note with --append-notes and reads it back, and drops your lane lock last.
+   note through bd-note.sh and reads it back, and drops your lane lock last.
 
    IT HANDLES EVERY PULL REQUEST ON THE BRANCH, not only the one you name. It asks every
    repository the workspace config names for its open pull requests whose head is --branch, and
@@ -1452,12 +1466,16 @@ PR: ${work.prUrl || work.prNumber}
    looks like the merge failed:
      cd ${repo} && git worktree remove ${wtPath} --force
 
-5. Record where it stands, from ${ROOT}:
-     bd update ${task.id} --append-notes "<what the change does, the PR url, and that it is green and labelled lane-verified awaiting the lander>"
+5. Record where it stands. Write what the change does, the PR url, and that it is green and
+   labelled lane-verified awaiting the lander to ${SCRATCH}/${task.id}/handoff-note.txt, then
+   pass that file - never an inline argument, where a backtick or a $( in the note is evaluated
+   by the shell first:
+     mkdir -p ${SCRATCH}/${task.id}
+     cd ${ROOT} && PITWALL_SESSION=lane-devloop/${task.id} bash ${SKILL_DIR}/bd-note.sh ${task.id} --note-file ${SCRATCH}/${task.id}/handoff-note.txt
 
    LEAVE THE ISSUE OPEN AND in_progress. Do NOT close it - it is not deployed yet, and the
-   lander closes it when it is. Use --append-notes, never --notes: --notes overwrites the
-   whole field and has already destroyed a decision somebody recorded.
+   lander closes it when it is. Never 'bd update --notes': it overwrites the whole field and
+   has already destroyed a decision somebody recorded.
 
 ${LAW}
 
@@ -1484,9 +1502,13 @@ is what they asked for - a bare label with no question cannot be answered.
 
 From ${ROOT}:
 1. bd label add ${task.id} <needs-decision if a choice only a person can make, needs-access if it needs a deploy/dashboard/device they have and you do not>
-2. bd update ${task.id} -s open --append-notes "<what was attempted across the three rounds, what
-   the reviewer would not accept and why, what you believe the real decision or difficulty
-   is, and where the branch and PR are>"
+2. Write what was attempted across the three rounds, what the reviewer would not accept and
+   why, what you believe the real decision or difficulty is, and where the branch and PR are to
+   ${SCRATCH}/${task.id}/giveup-note.txt - a file rather than an argument, so that a backtick or
+   a $( in it cannot be evaluated by the shell. Then record it and reopen, the note first:
+     mkdir -p ${SCRATCH}/${task.id}
+     cd ${ROOT} && PITWALL_SESSION=lane-devloop/${task.id} bash ${SKILL_DIR}/bd-note.sh ${task.id} --note-file ${SCRATCH}/${task.id}/giveup-note.txt
+     cd ${ROOT} && bd update ${task.id} -s open
    Write it so somebody can pick this up without reading three transcripts.
 3. Leave the branch and the PR open. Do not merge, do not close, do not delete the worktree.
 4. Run bd show ${task.id} once more and return its first six lines VERBATIM as 'verification'.
@@ -1854,8 +1876,11 @@ is what they asked for - a bare label with no question cannot be answered.
 
 
   bd label add ${ID} umbrella
-  bd update ${ID} -s open --append-notes "Split into <the child ids>, <one-line reason>. The work
-  now lives in the children; this stays as the umbrella."
+  Write 'Split into <the child ids>, <one-line reason>. The work now lives in the children; this
+  stays as the umbrella.' to ${SCRATCH}/${ID}/split-note.txt, then record it and reopen:
+  mkdir -p ${SCRATCH}/${ID}
+  cd ${ROOT} && PITWALL_SESSION=devloop-triage bash ${SKILL_DIR}/bd-note.sh ${ID} --note-file ${SCRATCH}/${ID}/split-note.txt
+  cd ${ROOT} && bd update ${ID} -s open
 Use the label, not a type change: bd 0.20.1 has no --type on update, bd edit only touches
 text fields, and import refuses the round trip as a collision. The queue treats 'umbrella'
 exactly as it treats 'needs-feedback'. Do not write to the database directly to get around
@@ -1905,8 +1930,13 @@ if (!triage.eligible) {
 
 Hand it to a person, from ${ROOT}:
   bd label add ${ID} <needs-decision if a choice only a person can make, needs-access if it needs a deploy/dashboard/device they have and you do not>
-  bd update ${ID} -s open --append-notes "<why this needs a person, and the exact question or
-  decision, written so somebody can answer it without re-reading the code>"
+  Write why this needs a person, and the exact question or decision, so that somebody can answer
+  it without re-reading the code, to ${SCRATCH}/${ID}/handover-note.txt. It goes in a file rather
+  than an argument so that a backtick or a $( in it cannot be evaluated by the shell. Then record
+  it and reopen, the note first:
+  mkdir -p ${SCRATCH}/${ID}
+  cd ${ROOT} && PITWALL_SESSION=devloop-triage bash ${SKILL_DIR}/bd-note.sh ${ID} --note-file ${SCRATCH}/${ID}/handover-note.txt
+  cd ${ROOT} && bd update ${ID} -s open
 
 Then run bd show ${ID} once more and return its first six lines verbatim as 'verification',
 so this can be checked. Do not paraphrase them and do not report success you have not seen:

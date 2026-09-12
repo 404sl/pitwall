@@ -540,11 +540,16 @@ the workspace root - not from inside a repository.
 For each pull request, find its issue (the branch is devloop/<issue-id>, and the issue is also
 named in the pull request body), then:
 
-  bd update <id> --append-notes "<what landed, and the merge sha>"
+  Write what landed, and the merge sha, to a file - a file rather than an argument, so that a
+  backtick or a $( in it cannot be evaluated by the shell - then:
+
+  cd ${ROOT} && PITWALL_SESSION=land-train bash ${SKILL_DIR}/bd-note.sh <id> --note-file <that file>
   bd close <id>
 
---append-notes, NEVER --notes. The notes field has no history and an overwrite is simply gone;
-that has already destroyed a recorded decision on this tracker.
+THROUGH bd-note.sh, NEVER 'bd update --notes'. The script takes the write lock, stamps the note
+with the date and the writer, and reads it back; a bare append is an unserialised read-modify-
+write and loses one of two overlapping notes silently. The notes field has no history and an
+overwrite is simply gone; that has already destroyed a recorded decision on this tracker.
 
 THAT LIST IS THE WHOLE JOB. Do not survey the tracker for other issues, do not close anything
 that is not above, and do not reopen anything. If an issue is already closed, say so and move

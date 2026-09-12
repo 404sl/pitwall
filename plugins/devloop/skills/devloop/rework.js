@@ -409,7 +409,7 @@ WHEN IT IS GREEN, hand off with the script rather than by hand:
 
 It reads the title, body and commit messages back from GitHub and git, runs the compliance check
 over them, refuses to label anything whose rollup is empty or stale, applies lane-verified, reads
-the label back, removes the worktree, appends your tracker note with --append-notes, and drops
+the label back, removes the worktree, appends your tracker note through bd-note.sh, and drops
 the lane lock last. It does that for EVERY open pull request whose head is this branch across the
 repositories the workspace config names, not only the one you pass - so run it once, not once per
 repository.
