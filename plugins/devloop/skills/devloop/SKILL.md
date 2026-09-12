@@ -435,7 +435,7 @@ the one step that currently needs none.
 
 A train that meets a file-level conflict DROPS that branch and carries on. The branch is not
 rejected and nothing about its work is wrong - it has fallen behind master. Nothing re-queues it,
-so it is dropped by every later train too, silently, until somebody merges master into it.
+so it is dropped by every later train too, silently, until somebody brings it up to master.
 
 Do NOT send it back through `task.js`. That script builds features, and its triage gate correctly
 refuses a pull request whose work is already done and already green - it bounces with
@@ -452,8 +452,8 @@ Workflow({ scriptPath: <script>,
            args: { ...<the object config.sh printed>, pr: 739, repo: "site" } })
 ```
 
-Two agents, no design and no review: merge master in keeping BOTH sides of every conflict, push
-without force, wait for CI on the new head, re-apply `lane-verified`. It takes a lane the same way
+Two agents, no design and no review: rebase onto master keeping BOTH sides of every conflict, push
+with a lease, wait for CI on the new head, re-apply `lane-verified`. It takes a lane the same way
 `task.js` does, so give it a free slot, and it gives the lane back the same way - in a `finally`, so
 a `red`, a `blocked` and an exception all go through it rather than only the handoff. It strips the label while it works, because a
 `lane-verified` branch that cannot merge is a lie the lander keeps acting on.

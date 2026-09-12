@@ -2,7 +2,7 @@ export const meta = {
   name: 'devloop-rework',
   description: 'Bring a pull request that the release train dropped back onto current master, and hand it back green',
   phases: [
-    { title: 'Resolve', detail: 'merge master into the branch, resolve conflicts keeping both sides, push' },
+    { title: 'Resolve', detail: 'rebase the branch onto master, resolve conflicts keeping both sides, push' },
     { title: 'Handoff', detail: 'wait for CI on the new head, then re-label lane-verified' },
   ],
 }
@@ -186,7 +186,7 @@ phase('Resolve')
 const resolved = await agent(
   `Bring pull request #${PR} on ${SLUG} back onto current master. It was DROPPED by the release
 train for conflicting - not rejected, not found wrong. Its own work is fine and shipped green.
-Your job is the merge, and nothing else.
+Your job is bringing it up to master, and nothing else.
 
 DO NOT REDESIGN, REBUILD OR "IMPROVE" ANYTHING ON THIS BRANCH. If you find yourself writing a
 feature, you have misread the task. The only edits you make are inside conflict regions.
@@ -229,35 +229,40 @@ put it back once CI is green on the new head:
 
   gh pr edit ${PR} --repo ${SLUG} --remove-label lane-verified
 
-MERGE MASTER IN. Do not rebase.
+REBASE ONTO MASTER. Do not merge master in.
 
-  cd ${WT_PATH} && git -c user.name="$(git log -1 --format=%an origin/master)" -c user.email="$(git log -1 --format=%ae origin/master)" merge --no-ff --no-commit origin/master
+  cd ${WT_PATH} && git -c user.name="$(git log -1 --format=%an origin/master)" -c user.email="$(git log -1 --format=%ae origin/master)" rebase origin/master
 
-and then write the commit message YOURSELF, because a generated one says nothing. Its default
-reads
+The rebase stops at each commit that conflicts. Resolve inside the conflict regions, stage what
+you resolved, and continue:
 
-  Merge remote-tracking branch 'origin/master' into devloop/<id>
+  cd ${WT_PATH} && git add <the files you resolved>
+  cd ${WT_PATH} && git -c user.name="$(git log -1 --format=%an origin/master)" -c user.email="$(git log -1 --format=%ae origin/master)" -c core.editor=true rebase --continue
 
-which tells a reader neither what conflicted nor what was kept. Say what the merge did instead:
+THE IDENTITY GOES ON '--continue' TOO, not only on the first command. Continuing is what writes
+the replayed commit, so without it the rebase stops again with 'unable to auto-detect email
+address' and leaves the branch mid-rebase.
 
-  git -c user.name="$(git log -1 --format=%an origin/master)" -c user.email="$(git log -1 --format=%ae origin/master)" commit -F <a file with your message>
+AND SO DOES AN EDITOR IT CAN RUN, for the same reason and on the same line. '--continue' opens an
+editor on the replayed commit's message, and the exports take core.editor away with the rest of
+the home config, so git falls back to vi - which with no terminal prints 'Vim: Error reading
+input, exiting...', exits 1 and leaves the branch mid-rebase exactly as a missing identity does.
+'-c core.editor=true' accepts the message unchanged. Do not reach for 'git commit' with a message
+of your own instead: that REPLACES the message the replayed commit already carries.
 
-Something like "Merge master into the <what this branch is> branch", then a paragraph naming the
-files that conflicted and what was kept from each side.
+REBASE, NOT MERGE, AND THE REASON IS THE LANDER. land-one.sh runs a plain rebase onto
+origin/master on whatever branch it is handed, and a rebase replays the branch's OWN commits - a
+resolution that exists only inside a merge commit is not one of them, so it is dropped. That is
+not theoretical: the pitwall-qku6 branch was merged up to master, master moved, and the lander's
+rebase lost a line from a test file and left a version line unmerged. The rebase exited non-zero,
+which the lander reads as a branch that cannot land - the issue is retired rather than deferred,
+and the work is thrown away. A branch that is already linear replays to nothing and survives that
+step untouched.
 
-A NOTE ON THE COMPLIANCE CHECK, because this was got wrong once. The default message trips the
-leakage pattern on the branch name, and on 2026-08-30 a whole branch history was collapsed and
-force-pushed to remove that one line. That was over-cautious. The rule forbids claiming the work
-was written or assisted by an AI; a branch name is not such a claim, it is already public in the
-pull request's own headRefName, and this repository documents its pipeline openly. A lane that
-reads such a hit and judges it a keep is doing exactly what the script asks - the refusal exists
-so somebody looks, not so everything it flags gets deleted. Write a real message because a
-generated one is useless to a reader, not because the generated one is forbidden.
-
-Merge, not rebase, for two reasons. The train squashes every branch it takes
-(git merge --squash), so a merge commit on this branch never reaches master and costs nothing.
-And a rebase rewrites published history and needs a force-push, which turns a recoverable
-mistake into an unrecoverable one on a branch somebody may be reading.
+IF THE BRANCH ALREADY CARRIES A MERGE COMMIT from an earlier round of this shape, the rebase drops
+it and the conflicts it resolved come back, one commit at a time. That is expected rather than a
+sign something is wrong. Resolve them again; this time the resolutions live inside the replayed
+commits, where the lander's rebase cannot lose them.
 
 RESOLVING. Most conflicts here are one shape: master added entries and this branch added
 different ones, in the same region. KEEP BOTH SIDES. Taking one side wholesale - --ours, --theirs,
@@ -266,7 +271,7 @@ or already reviewed on this branch, and the suite may well stay green while it d
 
 "KEEP BOTH" IS ABOUT ADDITIONS, AND IT IS THE WRONG RULE WHEN THE BRANCH DELETED SOMETHING ON
 PURPOSE. Before applying it, ask what each side actually did to the region: added, changed, or
-removed. A branch that removes an entry must have that removal honoured, or the merge quietly
+removed. A branch that removes an entry must have that removal honoured, or the resolution quietly
 undoes the change the branch exists to make - and the suite stays green, because putting an entry
 back is not something a test is watching for.
 
@@ -288,7 +293,7 @@ generator would emit, and the next person to run the generator gets a diff nobod
 
   db/schema.rb        take master's version wholesale, then re-run the migrations and let Rails
                       rewrite it:
-                        git checkout --theirs db/schema.rb   # or: git checkout origin/master -- db/schema.rb
+                        git checkout origin/master -- db/schema.rb
                         TEST_ENV_NUMBER=${LANE} RAILS_ENV=test bundle exec rails db:migrate
                       The version line at the top must end up naming the LATEST migration across
                       both sides. Check that before committing - a schema.rb whose version is
@@ -314,23 +319,34 @@ equivalent check is that
 'git -C ${WT_PATH} status' reports no unmerged paths and 'git -C ${WT_PATH} merge-base --is-ancestor origin/master HEAD'
 succeeds.
 
+AND THE BRANCH MUST BE LINEAR. 'git -C ${WT_PATH} rev-list --merges origin/master..HEAD' prints
+NOTHING. A line there is a merge commit, and a merge commit is what the lander's rebase drops -
+along with every resolution that only exists inside it.
+
 RUN THE TESTS THAT COVER THE CONFLICTED FILES, not the whole suite - the full suite is CI's job
 and takes ten minutes locally against about two and a half in CI. If a conflicted file is a spec,
 run that spec. If it is a script with its own check, run that check. Say which you ran.
 ${repo.test ? `  tests:  ${repo.test}` : ''}
 ${repo.lint ? `  lint:   ${repo.lint}` : ''}
 
-PUSH to the same branch. No force. If a plain push is refused, STOP and report status "blocked"
-with what git said - a refused push means somebody else moved the branch, and forcing over them
-is exactly the unrecoverable case this instruction exists to prevent.
+PUSH to the same branch. A rebase rewrites the commits, so a plain push is refused and the push
+has to be forced - force it WITH A LEASE, against the head you recorded before you started:
 
-COMMIT MESSAGE RULES. The message is outward-facing text. Say what the merge did in the words a
-person would use - which entries were kept from each side. Never mention the pipeline, lanes,
-labels, trains, worktrees, temporary paths, or any tooling or assistance. Read the message back
-from git after committing and check it yourself.
+  cd ${WT_PATH} && git push --force-with-lease=<the branch>:<the head you recorded> origin HEAD
+
+The lease is the whole safety of this step: it refuses if the branch moved after you read it,
+which is exactly the case where forcing would destroy somebody else's work. If the lease is
+refused, STOP and report status "blocked" with what git said. Never fall back to a plain --force,
+and never widen the lease to the bare branch name.
+
+COMMIT MESSAGE RULES. A rebase composes no message of its own: the replayed commits keep the ones
+the branch already carried, so there is nothing here for you to write. If a resolution makes one of
+those messages wrong and you amend it, it is outward-facing text - say what the code does in the
+words a person would use, never mention the pipeline, lanes, labels, trains, worktrees, temporary
+paths, or any tooling or assistance, and read it back from git afterwards and check it yourself.
 
 REPORT: status, the branch name, the old head, the new head, and the files you resolved. If the
-merge turns out to be clean already because something else landed in the meantime, that is
+rebase turns out to be clean already because something else landed in the meantime, that is
 status "already_clean" - say so rather than inventing a change.`,
   { schema: RESOLVE, phase: 'Resolve', label: ID ? `resolve:${ID}#${PR}` : `resolve:#${PR}` },
 )
@@ -372,7 +388,7 @@ const HANDOFF = {
 }
 
 const handed = await agent(
-  `Pull request #${PR} on ${SLUG} has been merged up to current master and pushed. Wait for CI on
+  `Pull request #${PR} on ${SLUG} has been rebased onto current master and pushed. Wait for CI on
 the NEW head and hand it back to the lander.
 
 ${SHELL_FIRST}
@@ -434,7 +450,7 @@ Exit 8 means labelling began and stopped part-way, and it prints which pull requ
 label and which do not. Adding a label is idempotent and it stops before the worktree and the
 note, so re-run it once the cause it quotes is gone. Never remove a label to tidy that up.
 
-THE TRACKER NOTE must say the branch was brought up to master, name the files that were resolved,
+THE TRACKER NOTE must say the branch was rebased onto master, name the files that were resolved,
 and say what was kept from each side. Append it, never replace: the notes field has no history and
 an overwrite is simply gone.
 
