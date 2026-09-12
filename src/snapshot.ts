@@ -19,7 +19,14 @@ import {
   type RootsOptions,
 } from "./config.js";
 import { recordSnapshot, type HistoryMetrics } from "./history.js";
-import { deliver, noticesFor, type Delivered, type Noter, type Sender } from "./notify.js";
+import {
+  deliver,
+  lostNotices,
+  noticesFor,
+  type Delivered,
+  type Noter,
+  type Sender,
+} from "./notify.js";
 import { issueMatcher, readPipeline } from "./pipeline.js";
 import { preconditionProbe, pullLookup } from "./probes.js";
 import { carryFailingSince } from "./problems.js";
@@ -28,6 +35,7 @@ import { readSnapshot, writeSnapshot } from "./state.js";
 import {
   closeUpstream,
   closuresFor,
+  failedClosures,
   githubCloser,
   ownedRepos,
   upstreamIssueOf,
@@ -447,6 +455,61 @@ function withHistory(project: Project, derived: HistoryMetrics | undefined): Pro
   return { ...project, metrics };
 }
 
+interface Hit {
+  issueId: string;
+  error: CollectionError;
+}
+
+function collectionHits(delivered: readonly Delivered[], upstream: UpstreamRun): Hit[] {
+  return [
+    ...delivered.flatMap((entry) =>
+      lostNotices([entry]).map((error) => ({ issueId: entry.notice.issueId, error })),
+    ),
+    ...upstream.reported.flatMap((entry) =>
+      failedClosures({ reported: [entry], left: [] }).map((error) => ({
+        issueId: entry.closure.issueId,
+        error,
+      })),
+    ),
+  ];
+}
+
+function closedBy(gathered: readonly Gathered[]): Map<string, string> {
+  const owner = new Map<string, string>();
+  for (const entry of gathered) {
+    for (const issue of entry.closed) {
+      owner.set(issue.id, entry.project.id);
+    }
+  }
+  return owner;
+}
+
+function withCollectionHits(
+  snapshot: Snapshot,
+  gathered: readonly Gathered[],
+  hits: readonly Hit[],
+): Snapshot {
+  if (hits.length === 0) {
+    return snapshot;
+  }
+  const owner = closedBy(gathered);
+  const rendered = new Set(snapshot.projects.map((project) => project.id));
+  const placed = (hit: Hit): string | undefined => {
+    const id = owner.get(hit.issueId);
+    return id !== undefined && rendered.has(id) ? id : undefined;
+  };
+  const against = (id: string | undefined): CollectionError[] =>
+    hits.filter((hit) => placed(hit) === id).map((hit) => hit.error);
+  return {
+    ...snapshot,
+    errors: [...snapshot.errors, ...against(undefined)],
+    projects: snapshot.projects.map((project) => {
+      const added = against(project.id);
+      return added.length === 0 ? project : { ...project, errors: [...project.errors, ...added] };
+    }),
+  };
+}
+
 export async function emitSnapshot(options: SnapshotOptions = {}): Promise<SnapshotResult> {
   const previous = readSnapshot(options).snapshot;
   const { snapshot, code, gathered, roots } = await assemble(options);
@@ -479,9 +542,10 @@ export async function emitSnapshot(options: SnapshotOptions = {}): Promise<Snaps
       ...(history.error === undefined ? [] : [history.error]),
     ],
   });
-  const written = carryFailingSince(keptBoard(recorded, previous, gathered), previous);
+  const board = carryFailingSince(keptBoard(recorded, previous, gathered), previous);
   const delivered = await announce(gathered, previous, roots, options);
   const upstream = await closeUpstreamIssues(gathered, previous, roots, options);
+  const written = withCollectionHits(board, gathered, collectionHits(delivered, upstream));
   const path = writeSnapshot(written, options);
   return {
     snapshot: written,

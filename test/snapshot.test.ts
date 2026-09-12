@@ -1,6 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { fileURLToPath } from "node:url";
 import { basename, dirname, join } from "node:path";
 import {
@@ -24,9 +26,11 @@ import { collectSnapshot, emitSnapshot } from "../src/snapshot.ts";
 import { historyPath } from "../src/history.ts";
 import { SESSION_REF_VAR } from "../src/sender.ts";
 import { readSnapshot, snapshotPath } from "../src/state.ts";
+import { renderStatus } from "../src/status.ts";
 import { CLOSE_SOURCE, upstreamReport, type Closure } from "../src/upstream.ts";
 import { VERSION } from "../src/version.ts";
 import { nullGlobalGitConfig, spawnGit } from "./support/git.js";
+const { Problems } = await import("../ui/components/Problems.tsx");
 
 nullGlobalGitConfig();
 
@@ -556,6 +560,76 @@ test("a notice the tracker would not record reaches the board as an error", asyn
   );
   assert.match(lost[0]?.message ?? "", /was not delivered/);
   assert.match(lost[0]?.message ?? "", /could not be recorded on the issue either/);
+});
+
+function writtenBoard(place: Workspace): Snapshot {
+  const stored = readSnapshot({ env: place.env, home: place.home }).snapshot;
+  assert.ok(stored, "the collection wrote no snapshot to render");
+  return stored;
+}
+
+function problemsOf(stored: Snapshot, matching: RegExp) {
+  return buildBoard(stored).problems.filter((row) => matching.test(row.message));
+}
+
+function problemsSection(stored: Snapshot): string {
+  const out = renderStatus(stored, { now: Date.parse(stored.generatedAt), width: 100 });
+  return out.slice(out.indexOf("PROBLEMS"));
+}
+
+test("a notice the tracker would not record is a row on the board the collection writes", async () => {
+  const place = withConfig("{}");
+  notifyingRoot(place);
+  await emitSnapshot({ ...options(place), env: place.env });
+  await emitSnapshot({
+    ...options(place),
+    env: { ...place.env, BD_LIST_FIXTURE: "landed" },
+  });
+  const stored = writtenBoard(place);
+  const lost = problemsOf(stored, /notice for mw-planning-session/);
+  assert.deepEqual(
+    lost.map((row) => [row.scope, row.source]),
+    [
+      ["project", "mw-1"],
+      ["project", "mw-1.1"],
+    ],
+  );
+  const markup = renderToStaticMarkup(
+    createElement(Problems, { rows: buildBoard(stored).problems }),
+  );
+  assert.equal(markup.match(/could not be recorded on the issue either/g)?.length, 2);
+  assert.match(problemsSection(stored), /mw-1 +.*was not delivered/);
+});
+
+test("a closure the upstream refused is a row on the board the collection writes", async () => {
+  const place = workspace([pipelineRoot("https://github.com/acme/site.git")]);
+  const env = { ...place.env, PATH: PATH_WITH_GH, GH_OUTPUT: RECORDED };
+  await emitSnapshot({ ...options(place), env });
+  await emitSnapshot({
+    ...options(place),
+    env: { ...env, BD_LIST_FIXTURE: "shipped" },
+    sender: () => Promise.resolve({ delivered: true as const }),
+    note: () => Promise.resolve(),
+    closer: () => Promise.resolve({ closed: false as const, reason: "HTTP 403: Resource not accessible" }),
+  });
+  const stored = writtenBoard(place);
+  const refused = problemsOf(stored, /was not commented and not closed/);
+  assert.deepEqual(
+    refused.map((row) => [row.scope, row.source]),
+    [["project", CLOSE_SOURCE]],
+  );
+  assert.match(refused[0]?.message ?? "", /HTTP 403: Resource not accessible/);
+  assert.match(refused[0]?.message ?? "", /nothing retries it/);
+  const markup = renderToStaticMarkup(
+    createElement(Problems, { rows: buildBoard(stored).problems }),
+  );
+  assert.equal(markup.match(/nothing retries it/g)?.length, 1);
+  const problems = problemsSection(stored);
+  assert.match(problems, new RegExp(`${CLOSE_SOURCE} .*nothing retries it`));
+  assert.ok(
+    problems.split("\n").some((line) => line.includes("nothing retries it")),
+    "an error is never cut short to fit the screen",
+  );
 });
 
 function pipelineRoot(remote: string, where?: string): string {

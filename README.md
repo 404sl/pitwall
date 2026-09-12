@@ -187,7 +187,9 @@ readable afterwards rather than lost. `snapshot` writes a line to standard error
 them as well, and
 where the tracker refused the note too — the one case where the reason would otherwise be
 written down nowhere — the notice is reported as an error on the board, beside everything
-else the collection could not do. Silence is not one of the outcomes.
+else the collection could not do. That row is carried by the snapshot the collection wrote and
+by no later one, so it is the alert and the bead is the archive. Silence is not one of the
+outcomes.
 
 ## When the collection itself stops
 
@@ -265,12 +267,12 @@ path — cannot be distinguished from one that does not own the reference, so fo
 is true the run says so for every reference it could not place, naming the checkout and what git
 said. Turning the feature off quietly is the one outcome that is not allowed.
 
-A close that fails — no permission, no network, an issue since deleted — is appended to the
-bead with the reason and written to standard error by `snapshot`. It is not retried: the bead
-closes once, so the attempt happens once, and what did not happen is readable on the bead
-rather than lost. It does not reach the board: the collection carries the failure as an error
-against `gh issue close`, and the board renders only the errors the snapshot itself was written
-with.
+A close that fails — no permission, no network, an issue since deleted — lands in three places:
+standard error, the bead, and the problems the board shows, as an error against `gh issue close`
+beside the project whose bead it was. It is not retried: the bead closes once, so the attempt
+happens once, and what did not happen is readable on the bead rather than lost. The row belongs
+to the snapshot that collection wrote and is gone from the next one, so the board is where
+somebody notices and the bead is where it stays.
 
 An issue deliberately LEFT open — nothing shipped, a veto, a checkout that would not answer —
 is written to standard error with the reason and is not appended to the bead, because the bead's
