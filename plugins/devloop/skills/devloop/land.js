@@ -738,17 +738,24 @@ a report to the supervisor, not a problem for you to solve.
                     second. THIS is the one part of landing that needs you.
      4  red         CI FAILED on the rebased head. Return status 'red_after_rebase' with the
                     failing examples in failureDetail.
-     7  not_ready   the rollup is empty, describes an older head, or the label has gone. NOT a
-                    failure: CI has probably not finished registering, or a lane pulled the
-                    label back. Return status 'blocked' with the line it printed in 'notes',
-                    VERBATIM - the run puts it back for a later round instead of retiring it,
-                    and that line is the only record of why. Do NOT report this as red.
+     7  not_ready   the rollup is empty, has a check that has not concluded, describes an older
+                    head, or the label has gone. NOT a failure: CI has probably not finished
+                    registering, or a lane pulled the label back. Return status 'blocked' with
+                    the line it printed in 'notes', VERBATIM - the run puts it back for a later
+                    round instead of retiring it, and that line is the only record of why. Do
+                    NOT report this as red.
      8  merge_shaped the branch already carries a merge commit of its own, and rebasing it onto
                     master would drop whatever exists only in that merge's resolution. Nothing
                     was touched. NOT a failure and NOT a conflict: return status 'merge_shaped'
                     with the line it printed in 'notes', VERBATIM - the label stays on and the
                     branch goes back for rework onto master. Do NOT rebase, merge or push it by
                     hand, and do not report this as a conflict.
+     9  unreadable  the rollup could not be READ - gh failed, was throttled, or returned
+                    something that did not parse. Nothing is known about the checks, which is
+                    not the same as knowing they failed. Return status 'blocked' with the
+                    sentences it printed, and do NOT report this as red or as a failing build:
+                    secondary rate limits read as full in 'gh api rate_limit', so a throttled
+                    read looks like nothing at all from here.
      5  master_red  master was not green. Nothing was touched. Return status 'master_red'.
      6  usage       the arguments, the repository or the plugin version it had to assign are
                     wrong. Return status 'blocked' with the line it printed in 'notes',
@@ -1511,8 +1518,9 @@ try {
       const detail = trimmed(r && (r.failureDetail || r.notes))
 
       // 'blocked' carries every reason land-one.sh exits without merging and nothing is wrong
-      // with the pull request: an empty or stale rollup, and every usage refusal too. Keeping it
-      // in `seen` retires it from this whole run, and the rebase it already did is thrown away.
+      // with the pull request: an empty, stale or unreadable rollup, and every usage refusal too.
+      // Only the attempt knows which, so its own sentences are what gets logged. Keeping it in
+      // `seen` retires it from this whole run, and the rebase it already did is thrown away.
       // Put it back so a later round finds the run finished - but only when a later round could
       // read something different, which a refused version never can.
       if (why === 'blocked') {
@@ -1523,9 +1531,9 @@ try {
           continue
         }
         seen.delete(keyOf(pr))
-        const said = detail || 'the land step printed no reason, and CI had probably not finished'
+        const said = detail
         deferred.set(keyOf(pr), said)
-        log(`DEFERRED ${keyOf(pr)} - it goes back for a later round: ${said}`)
+        log(`DEFERRED ${keyOf(pr)} - it goes back for a later round\n    ${said || 'the attempt reported no cause'}`)
         continue
       }
 
@@ -1560,9 +1568,10 @@ try {
   const acted = new Set([...landed, ...stopped, ...skipped].map(keyOf))
   for (const [key, pr] of surveyedEver) {
     if (acted.has(key)) continue
+    const said = trimmed(deferred.get(key))
     const why = masterBroken
       ? 'not attempted - master was red in front of it, so nothing behind it was tried'
-      : `surveyed but not landed after ${MAX_ROUNDS} rounds - ${deferred.get(key) || 'CI had not finished in the time this run had'}; still labelled, lands next run`
+      : `surveyed but not landed after ${MAX_ROUNDS} rounds - ${said || 'the attempt reported no cause'}; still labelled, lands next run`
     skipped.push({ ...pr, why })
     log(`NOT ACTED ON ${key} - ${why}`)
   }
