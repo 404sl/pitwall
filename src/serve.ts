@@ -73,7 +73,7 @@ export function consoleAnnouncer(options: OutboundOptions = {}): Announcer {
 
 export function consoleCollector(options: SnapshotOptions = {}): Collector {
   return async () => {
-    const { snapshot, read, delivered, unlisted, upstream } = await emitSnapshot(options);
+    const { snapshot, read, delivered, upstream } = await emitSnapshot(options);
     return {
       read,
       errors: [
@@ -81,7 +81,6 @@ export function consoleCollector(options: SnapshotOptions = {}): Collector {
         ...snapshot.projects.flatMap((project) => project.errors),
         ...lostNotices(delivered),
         ...failedClosures(upstream),
-        ...unlisted,
       ],
     };
   };
