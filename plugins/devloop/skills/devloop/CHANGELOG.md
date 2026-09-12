@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.64
+
+`land-one.sh` and `lane-handoff.sh` now read a commit status (`StatusContext`: `context` + `state`) as well as a check run (`CheckRun`: `name` + `conclusion`) in a pull request's status rollup. A repository whose pull requests carry a Codecov, Vercel, Netlify or any other commit status no longer defers every round as "unreadable": all-success merges, a failed or errored status is red and names its context, and a pending or expected one is not ready.
+
 ## 0.1.63
 
 The landers now take the merge lock inside the block that releases it, and release only a lock they proved they own. A run that stands down for another lander's lock, or whose lock step throws, no longer passes anywhere near `release-lock.sh`.

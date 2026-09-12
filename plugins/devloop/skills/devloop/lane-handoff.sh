@@ -290,7 +290,11 @@ m=str(d.get('mergeable') or '').upper()
 s=str(d.get('mergeStateStatus') or '').upper()
 c='CONFLICTED' if m == 'CONFLICTING' or s == 'DIRTY' else ''
 if not r: print('EMPTY||'+c); raise SystemExit
-bad=[c2.get('name') for c2 in r if c2.get('conclusion') not in ('SUCCESS','NEUTRAL','SKIPPED')]
+def green(c2):
+    if c2.get('__typename')=='StatusContext' or ('state' in c2 and 'conclusion' not in c2):
+        return str(c2.get('state') or '').upper()=='SUCCESS'
+    return str(c2.get('conclusion') or '').upper() in ('SUCCESS','NEUTRAL','SKIPPED')
+bad=[c2.get('name') or c2.get('context') or c2.get('__typename') or 'unnamed' for c2 in r if not green(c2)]
 print(('BAD:'+','.join(bad) if bad else 'GREEN')+'|'+(d.get('headRefOid') or '')+'|'+c)
 " 2>"$rollup_err")
   read_rc=$?

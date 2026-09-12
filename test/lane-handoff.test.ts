@@ -845,3 +845,48 @@ test("a head sha GitHub will not report is refused instead of reported as not-gr
   assert.doesNotMatch(ran.stdout, /not-green/);
   assert.equal(ran.labelled, false, "a pull request was labelled on an unreadable head sha");
 });
+
+test("a second repository's commit statuses are read, not reported as a rollup that did not parse", () => {
+  const box = harness("", {
+    list: '[{"number":7}]',
+    rollup: '[{"__typename":"StatusContext","context":"codecov/project","state":"SUCCESS"}]',
+    body: CLEAN,
+  });
+  const ran = handoff(box, [...required(box), "--issue", "acme-1", "--note-file", box.notePath], true);
+
+  assert.equal(ran.status, 0, ran.stdout + ran.stderr);
+  assert.doesNotMatch(ran.stdout, /unreadable/);
+  assert.match(ran.stdout, /also labelled lane-verified on lane\/x: acme\/other#7/);
+});
+
+test("a second repository's failed commit status is not-green and names the context", () => {
+  const box = harness("", {
+    list: '[{"number":7}]',
+    rollup:
+      '[{"__typename":"CheckRun","name":"ci","conclusion":"SUCCESS"},' +
+      '{"__typename":"StatusContext","context":"codecov/project","state":"FAILURE"}]',
+    body: CLEAN,
+    mergeable: "MERGEABLE",
+    mergeState: "CLEAN",
+  });
+  const ran = handoff(box, [...required(box), "--issue", "acme-1", "--note-file", box.notePath], true);
+
+  assert.equal(ran.status, 4, ran.stdout + ran.stderr);
+  assert.match(ran.stdout, /not-green: BAD:codecov\/project on acme\/other#7/);
+  assert.doesNotMatch(ran.stdout, /unreadable/);
+  assert.equal(ran.labelled, false, "a pull request with a failed commit status was labelled");
+});
+
+test("a second repository's pending commit status is not-green, not unreadable", () => {
+  const box = harness("", {
+    list: '[{"number":7}]',
+    rollup: '[{"__typename":"StatusContext","context":"codecov/project","state":"PENDING"}]',
+    body: CLEAN,
+  });
+  const ran = handoff(box, [...required(box), "--issue", "acme-1", "--note-file", box.notePath], true);
+
+  assert.equal(ran.status, 4, ran.stdout + ran.stderr);
+  assert.match(ran.stdout, /not-green: BAD:codecov\/project on acme\/other#7/);
+  assert.doesNotMatch(ran.stdout, /unreadable/);
+  assert.equal(ran.labelled, false, "a pull request with a pending commit status was labelled");
+});
