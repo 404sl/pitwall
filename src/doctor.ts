@@ -124,7 +124,7 @@ function labelsOf(dirs: readonly string[]): Map<string, string> {
         depth = Math.max(depth, sharedTail(own, theirs) + 1);
       }
     }
-    labels.set(dir, depth >= own.length ? dir : own.slice(-depth).join(sep));
+    labels.set(dir, depth > own.length ? dir : own.slice(-depth).join(sep));
   }
   return labels;
 }

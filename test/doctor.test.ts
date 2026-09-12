@@ -306,6 +306,17 @@ test("a root whose whole path is the tail of another root's path is named in ful
   assert.equal(diagnosis.code, 0);
 });
 
+test("a root is named in full only when its whole path is the tail of another root's path", async () => {
+  const tail = await diagnose(options(["/a/work/pitwall", "/x/a/work/pitwall"]));
+  assert.equal(named(tail, "/a/work/pitwall").severity, "fail");
+  assert.equal(named(tail, "x/a/work/pitwall").severity, "fail");
+  assert.equal(tail.checks.filter((check) => check.name === "/x/a/work/pitwall").length, 0);
+  const shallow = await diagnose(options(["/home/pitwall", "/srv/pitwall"]));
+  assert.equal(named(shallow, "home/pitwall").severity, "fail");
+  assert.equal(named(shallow, "srv/pitwall").severity, "fail");
+  assert.equal(shallow.checks.filter((check) => check.name.startsWith("/")).length, 0);
+});
+
 test("a colliding root listed twice is reported as listed under its disambiguated name", async () => {
   const work = healthy("work", join(root(), "pitwall"));
   const archive = healthy("archive", join(root(), "pitwall"));
