@@ -1400,23 +1400,6 @@ for (const name of DEPLOYS) {
   log(`BEFORE ANYTHING MERGES - ${why}. ${commands.length ? 'An environment nobody can ask rests' : `Anything landing in ${name} rests`} on whatever the deploy step says, with no revision this lander read back - it closes on that word unless a revision the step itself names is not the sha that merged, and then nothing closes.`)
 }
 
-// Taken before anything is surveyed and given back in the finally below, whatever happened.
-// A person merges by hand in these repositories - twice in one session, most recently while a
-// supervisor was mid-investigation - so being the only lander is not the same as being the
-// only thing merging.
-const lock = await agent(lockPrompt(), { label: 'lock', phase: 'Survey', schema: LOCK, model: 'haiku', effort: 'low' })
-const holder = trimmed(lock && lock.holder)
-if (!lock || lock.status !== 'taken') {
-  log(`merge lock held by ${holder || 'somebody'} - not landing anything this run`)
-  return { landed: [], stopped: [], skipped: [], deployed: 'not_needed', lockedOutBy: lock ? holder : null }
-}
-
-if (holder !== LOCK_TOKEN) {
-  const unproven = `LEAKED - the lock step reported taken, but ${MERGE_LOCK}/holder reads [${holder}] against a token of [${LOCK_TOKEN}], so this run cannot prove the lock is its own. Nothing was landed and nothing was removed. Read ${MERGE_LOCK}/holder: if it names a run that has finished, clear it; if it names another lander, it is theirs and they give it back themselves.`
-  log(unproven)
-  return { landed: [], stopped: [], skipped: [], deployed: 'not_needed', lock: unproven, lockedOutBy: holder }
-}
-
 const landed = []
 const stopped = []
 const deferred = new Map()
@@ -1434,8 +1417,27 @@ let deployed = 'not_needed'
 let closed = null
 let unclosed = []
 let lockState = `LEAKED - the release step never reported. Read ${MERGE_LOCK}/holder before touching anything.`
+let lockOwned = false
 
 try {
+  // Taken before anything is surveyed and given back in the finally below, whatever happened.
+  // A person merges by hand in these repositories - twice in one session, most recently while a
+  // supervisor was mid-investigation - so being the only lander is not the same as being the
+  // only thing merging.
+  const lock = await agent(lockPrompt(), { label: 'lock', phase: 'Survey', schema: LOCK, model: 'haiku', effort: 'low' })
+  const holder = trimmed(lock && lock.holder)
+  if (!lock || lock.status !== 'taken') {
+    log(`merge lock held by ${holder || 'somebody'} - not landing anything this run`)
+    return { landed: [], stopped: [], skipped: [], deployed: 'not_needed', lockedOutBy: lock ? holder : null }
+  }
+
+  if (holder !== LOCK_TOKEN) {
+    const unproven = `LEAKED - the lock step reported taken, but ${MERGE_LOCK}/holder reads [${holder}] against a token of [${LOCK_TOKEN}], so this run cannot prove the lock is its own. Nothing was landed and nothing was removed. Read ${MERGE_LOCK}/holder: if it names a run that has finished, clear it; if it names another lander, it is theirs and they give it back themselves.`
+    log(unproven)
+    return { landed: [], stopped: [], skipped: [], deployed: 'not_needed', lock: unproven, lockedOutBy: holder }
+  }
+  lockOwned = true
+
   // Drained rather than surveyed once: a lane can label a PR while this run is working, and
   // "deploy when lane-verified is empty" is only true if we look again before believing it.
   // Capped because a queue that refills forever should hand back rather than never return.
@@ -1779,20 +1781,22 @@ try {
     log('master is red - nothing deployed and nothing closed')
   }
 } finally {
-  // However this ended. A run that merged and then died before releasing held every other
-  // lane up for twenty minutes with nothing behind it.
-  const released = await agent(releasePrompt(LOCK_TOKEN), { label: 'release', phase: 'Deploy', model: 'haiku', effort: 'low', schema: RELEASE })
-  if (released && released.status === 'released') {
-    lockState = 'released'
-  } else if (released && released.status === 'not_mine') {
-    lockState = `not_mine - ${MERGE_LOCK}/holder did not hold ${LOCK_TOKEN}, so nothing was removed and nothing should be`
-    log(`${lockState}.\n    ${released.notes || 'the script reported NOT_MINE and says what the holder file read instead'}`)
-  } else if (released && released.status === 'already_gone') {
-    lockState = `already_gone - ${MERGE_LOCK} was not there to release`
-    log(`${lockState}. Something removed this run's lock while it was working, so another lander may have been running beside it.\n    ${released.notes || ''}`)
-  } else {
-    lockState = `LEAKED - ${MERGE_LOCK} still held ${LOCK_TOKEN} after the release step, or the step answered nothing. Check ${MERGE_LOCK}/holder still reads ${LOCK_TOKEN} before removing it - if it reads anything else, another lander has it and it is not yours.`
-    log(`${lockState}\n    ${(released && released.notes) || 'the release agent returned nothing'}`)
+  if (lockOwned) {
+    // However this ended. A run that merged and then died before releasing held every other
+    // lane up for twenty minutes with nothing behind it.
+    const released = await agent(releasePrompt(LOCK_TOKEN), { label: 'release', phase: 'Deploy', model: 'haiku', effort: 'low', schema: RELEASE })
+    if (released && released.status === 'released') {
+      lockState = 'released'
+    } else if (released && released.status === 'not_mine') {
+      lockState = `not_mine - ${MERGE_LOCK}/holder did not hold ${LOCK_TOKEN}, so nothing was removed and nothing should be`
+      log(`${lockState}.\n    ${released.notes || 'the script reported NOT_MINE and says what the holder file read instead'}`)
+    } else if (released && released.status === 'already_gone') {
+      lockState = `already_gone - ${MERGE_LOCK} was not there to release`
+      log(`${lockState}. Something removed this run's lock while it was working, so another lander may have been running beside it.\n    ${released.notes || ''}`)
+    } else {
+      lockState = `LEAKED - ${MERGE_LOCK} still held ${LOCK_TOKEN} after the release step, or the step answered nothing. Check ${MERGE_LOCK}/holder still reads ${LOCK_TOKEN} before removing it - if it reads anything else, another lander has it and it is not yours.`
+      log(`${lockState}\n    ${(released && released.notes) || 'the release agent returned nothing'}`)
+  }
   }
 }
 
