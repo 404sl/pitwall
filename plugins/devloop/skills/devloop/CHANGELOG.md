@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.51
+
+A release train no longer closes tracker issues on the strength of a deploy step nobody read. The
+deploy step must report `deployed` - confirmed by what the hosts are serving - before anything is
+closed; a step that reports nothing is reported as unknown rather than as a failure, and the
+issues stay open with the merge sha named so a person can settle it. The close step now reports
+which pull requests it closed an issue for, and anything it does not name comes back as unclosed
+rather than being assumed done.
+
 ## 0.1.50
 
 The lander's merge-lock token is now minted by `config.sh --land` and carried in `args` as `lockToken`, not made up by the lock step. Launch `land.js` with the object that command printed - it refuses to start without a token and will not mint one for itself, so an args object assembled by hand lands nothing. A relaunch after a stall goes through the same command. The lock step is handed the token to write and is asked only for what `cat` printed back; it must not substitute a timestamp or a pid of its own.
