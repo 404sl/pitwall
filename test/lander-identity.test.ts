@@ -4,16 +4,16 @@ import { chmodSync, mkdirSync, mkdtempSync, readdirSync, symlinkSync, unlinkSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { GIT_ENV, spawnGit } from "./support/git.js";
 
 const SKILL = join(import.meta.dirname, "..", "plugins", "devloop", "skills", "devloop");
 
 const AUTHOR = { name: "Release Author", email: "release@example.invalid" };
 
 function git(cwd: string, ...argv: string[]): string {
-  const run = spawnSync(
-    "git",
+  const run = spawnGit(
     ["-c", `user.name=${AUTHOR.name}`, "-c", `user.email=${AUTHOR.email}`, ...argv],
-    { cwd, encoding: "utf8", env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" } },
+    { cwd },
   );
   assert.equal(run.status, 0, `git ${argv.join(" ")} in ${cwd} failed: ${run.stderr}`);
   return (run.stdout || "").trim();
@@ -99,8 +99,7 @@ function run(script: string, argv: string[], root: string, bin: string, skill: s
     env: {
       ...process.env,
       PATH: `${bin}:${process.env.PATH}`,
-      GIT_CONFIG_GLOBAL: "/dev/null",
-      GIT_CONFIG_NOSYSTEM: "1",
+      ...GIT_ENV,
       GIT_CONFIG_COUNT: "1",
       GIT_CONFIG_KEY_0: "user.useConfigOnly",
       GIT_CONFIG_VALUE_0: "true",

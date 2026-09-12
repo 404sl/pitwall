@@ -24,7 +24,11 @@ import { collectSnapshot, emitSnapshot } from "../src/snapshot.ts";
 import { historyPath } from "../src/history.ts";
 import { SESSION_REF_VAR } from "../src/sender.ts";
 import { readSnapshot, snapshotPath } from "../src/state.ts";
+import { CLOSE_SOURCE, upstreamReport, type Closure } from "../src/upstream.ts";
 import { VERSION } from "../src/version.ts";
+import { nullGlobalGitConfig, spawnGit } from "./support/git.js";
+
+nullGlobalGitConfig();
 
 const hasSqlite = await import("node:sqlite").then(
   () => true,
@@ -493,8 +497,9 @@ test("a notice the tracker would not record reaches the board as an error", asyn
   assert.match(lost[0]?.message ?? "", /could not be recorded on the issue either/);
 });
 
-function pipelineRoot(remote: string): string {
-  const root = mkdtempSync(join(tmpdir(), "pitwall-pipeline-snapshot-"));
+function pipelineRoot(remote: string, where?: string): string {
+  const root = where ?? mkdtempSync(join(tmpdir(), "pitwall-pipeline-snapshot-"));
+  mkdirSync(root, { recursive: true });
   cpSync(join(TRACKER, "bd-output"), join(root, "bd-output"), { recursive: true });
   writeFileSync(
     join(root, ".pitwall.json"),
@@ -503,7 +508,7 @@ function pipelineRoot(remote: string): string {
   const dir = join(root, "site");
   mkdirSync(dir, { recursive: true });
   for (const args of [["init", "--quiet"], ["remote", "add", "origin", remote]]) {
-    const ran = spawnSync("git", args, { cwd: dir, encoding: "utf8" });
+    const ran = spawnGit(args, { cwd: dir });
     assert.equal(ran.status, 0, ran.stderr);
   }
   return root;
@@ -579,6 +584,85 @@ test("gh that is not installed at all leaves the run exiting zero", async () => 
   assert.match(project?.errors[0]?.message ?? "", /ENOENT/);
   assert.equal(project?.issues.length, 15);
   assert.equal(result.code, 0);
+});
+
+test("a bead that closed carrying an external-ref closes the issue it came from", async () => {
+  const place = workspace([pipelineRoot("https://github.com/acme/site.git")]);
+  const env = { ...place.env, PATH: PATH_WITH_GH, GH_OUTPUT: RECORDED };
+  await emitSnapshot({ ...options(place), env });
+  const asked: Closure[] = [];
+  const result = await emitSnapshot({
+    ...options(place),
+    env: { ...env, BD_LIST_FIXTURE: "shipped" },
+    sender: () => Promise.resolve({ delivered: true as const }),
+    note: () => Promise.reject(new Error("no note should be needed")),
+    closer: (closure: Closure) => {
+      asked.push(closure);
+      return Promise.resolve({ closed: true as const });
+    },
+  });
+  assert.deepEqual(
+    asked.map((closure) => [closure.issueId, closure.issue.url]),
+    [["mw-1", "https://github.com/acme/site/issues/7"]],
+  );
+  assert.equal(asked[0]?.comment, "Landed in site `#101`. Tracked as mw-1.");
+  assert.deepEqual(result.upstream.left, []);
+  assert.deepEqual(
+    result.upstream.reported.map((entry) => entry.result.closed),
+    [true],
+  );
+  assert.deepEqual(upstreamReport(result.upstream), []);
+});
+
+test("a workspace found by scanning closes nothing on GitHub", async () => {
+  const place = withConfig("{}");
+  rmSync(place.configPath);
+  pipelineRoot("https://github.com/acme/site.git", join(place.home, "work", "scanned"));
+  const env = { ...place.env, PATH: PATH_WITH_GH, GH_OUTPUT: RECORDED };
+  await emitSnapshot({ ...options(place), env });
+  const result = await emitSnapshot({
+    ...options(place),
+    env: { ...env, BD_LIST_FIXTURE: "shipped" },
+  });
+  assert.deepEqual(result.upstream, { reported: [], left: [] });
+});
+
+test("a checkout that will not say what its origin is turns nothing off quietly", async () => {
+  const root = pipelineRoot("https://github.com/acme/site.git");
+  const place = workspace([root]);
+  const env = { ...place.env, PATH: PATH_WITH_GH, GH_OUTPUT: RECORDED };
+  await emitSnapshot({ ...options(place), env });
+  const repo = join(root, "site");
+  rmSync(join(repo, ".git"), { recursive: true, force: true });
+  writeFileSync(join(repo, ".git"), `gitdir: ${join(root, "nowhere")}\n`);
+  const result = await emitSnapshot({
+    ...options(place),
+    env: { ...env, BD_LIST_FIXTURE: "shipped" },
+    closer: () => Promise.reject(new Error("nothing may be closed when ownership is unknown")),
+    note: () => Promise.reject(new Error("nothing may be noted when ownership is unknown")),
+  });
+  assert.deepEqual(result.upstream.reported, []);
+  assert.equal(result.upstream.left.length, 1);
+  assert.match(result.upstream.left[0]?.reason ?? "", /could not tell whether acme\/site/);
+  assert.match(result.upstream.left[0]?.reason ?? "", /site would not say what its origin is/);
+  assert.match(upstreamReport(result.upstream)[0] ?? "", /was left open because/);
+});
+
+test("an issue that could not be closed is recorded on the bead and collected as an error", async () => {
+  const place = workspace([pipelineRoot("https://github.com/acme/site.git")]);
+  const env = { ...place.env, PATH: PATH_WITH_GH, GH_OUTPUT: RECORDED };
+  await emitSnapshot({ ...options(place), env });
+  const { errors } = await consoleCollector({
+    ...options(place),
+    env: { ...env, BD_LIST_FIXTURE: "shipped", BD_NOTES_LOG: join(place.home, "notes.log") },
+    closer: () =>
+      Promise.resolve({ closed: false as const, reason: "HTTP 403: Resource not accessible" }),
+  })();
+  const refused = errors.filter((error) => error.source === CLOSE_SOURCE);
+  assert.equal(refused.length, 1);
+  assert.match(refused[0]?.message ?? "", /acme\/site\/issues\/7 was not commented and not closed/);
+  assert.match(refused[0]?.message ?? "", /HTTP 403: Resource not accessible/);
+  assert.match(readFileSync(join(place.home, "notes.log"), "utf8"), /mw-1 .*HTTP 403/);
 });
 
 test("the snapshot reports whether the reason an issue stopped is still true", async () => {

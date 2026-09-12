@@ -3,13 +3,14 @@ import assert from "node:assert/strict";
 import { connect } from "node:net";
 import { createServer, request } from "node:http";
 import { networkInterfaces, tmpdir } from "node:os";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
 import { SCHEMA_VERSION, parseSnapshot } from "@404sl/pitwall-schema";
 import {
+  ACTIONS,
   DEFAULT_PORT,
   HOST,
   NOTHING_READ,
@@ -17,9 +18,12 @@ import {
   listen,
   parseServeArgs,
   sendIssueFailure,
+  type Announcer,
   type Collection,
 } from "../src/serve.ts";
-import { REFRESH_SOURCE } from "../src/board.ts";
+import type { CollectionNotice, Delivery } from "../src/notify.ts";
+import { NOTICE_SOURCE, REFRESH_SOURCE } from "../src/board.ts";
+import type { BuildCheck, BuildReport } from "../src/build.ts";
 import { snapshotPath, stateHome } from "../src/state.ts";
 import { VERSION } from "../src/version.ts";
 
@@ -39,6 +43,15 @@ function stateWith(contents?: string): { env: Record<string, string | undefined>
   }
   return { env: { XDG_STATE_HOME: home }, path };
 }
+
+const BUILT_AT = "2026-09-08T20:47:00.000Z";
+const BUILT_FROM = "9f2c1ab0000000000000000000000000000000ab";
+
+function builds(report: BuildReport): BuildCheck {
+  return { state: () => report, refresh: () => {} };
+}
+
+const NO_CHECKOUT: BuildReport = { build: { commit: BUILT_FROM, at: BUILT_AT }, buildCheck: "no-checkout" };
 
 const OUTSIDE_THE_CONSOLE = "a file the console must never hand out\n";
 
@@ -127,6 +140,7 @@ test("the version endpoint names the running process, not the process that wrote
     env,
     uiDir: builtConsole(),
     updates: { update: () => undefined, refresh: () => Promise.resolve() },
+    builds: builds(NO_CHECKOUT),
   });
   t.after(() => server.close());
   const { origin } = await started(server);
@@ -144,12 +158,62 @@ test("the version endpoint carries the newer release once a check has confirmed 
     env,
     uiDir: builtConsole(),
     updates: { update: () => "9.9.9", refresh: () => Promise.resolve() },
+    builds: builds(NO_CHECKOUT),
   });
   t.after(() => server.close());
   const { origin } = await started(server);
 
   const response = await fetch(`${origin}/api/version`);
-  assert.deepEqual(await response.json(), { running: VERSION, update: "9.9.9" });
+  assert.deepEqual(await response.json(), {
+    running: VERSION,
+    update: "9.9.9",
+    build: { commit: BUILT_FROM, at: BUILT_AT },
+    buildCheck: "no-checkout",
+  });
+});
+
+test("the version endpoint says which build it is serving and how far the checkout has moved", async (t) => {
+  const { env } = stateWith(JSON.stringify(SNAPSHOT));
+  const server = createConsoleServer({
+    env,
+    uiDir: builtConsole(),
+    updates: { update: () => undefined, refresh: () => Promise.resolve() },
+    builds: builds({
+      build: { commit: BUILT_FROM, at: BUILT_AT },
+      checkout: { branch: "master", head: "1a2b3c4000000000000000000000000000000000", ahead: 23 },
+      buildCheck: "behind",
+    }),
+  });
+  t.after(() => server.close());
+  const { origin } = await started(server);
+
+  const response = await fetch(`${origin}/api/version`);
+  assert.deepEqual(await response.json(), {
+    running: VERSION,
+    build: { commit: BUILT_FROM, at: BUILT_AT },
+    checkout: { branch: "master", head: "1a2b3c4000000000000000000000000000000000", ahead: 23 },
+    buildCheck: "behind",
+  });
+});
+
+test("a console that cannot tell says unknown, and never answers that it is current", async (t) => {
+  const { env } = stateWith(JSON.stringify(SNAPSHOT));
+  const server = createConsoleServer({
+    env,
+    uiDir: builtConsole(),
+    updates: { update: () => undefined, refresh: () => Promise.resolve() },
+    builds: builds({ buildCheck: "unknown", unknownBecause: { kind: "no-stamp" } }),
+  });
+  t.after(() => server.close());
+  const { origin } = await started(server);
+
+  const body = (await (await fetch(`${origin}/api/version`)).json()) as Record<string, unknown>;
+  assert.deepEqual(body, {
+    running: VERSION,
+    buildCheck: "unknown",
+    unknownBecause: { kind: "no-stamp" },
+  });
+  assert.notEqual(body.buildCheck, "current");
 });
 
 test("the snapshot endpoint keeps its shape - the version is served beside it, never inside it", async (t) => {
@@ -158,6 +222,7 @@ test("the snapshot endpoint keeps its shape - the version is served beside it, n
     env,
     uiDir: builtConsole(),
     updates: { update: () => "9.9.9", refresh: () => Promise.resolve() },
+    builds: builds(NO_CHECKOUT),
   });
   t.after(() => server.close());
   const { origin } = await started(server);
@@ -857,4 +922,402 @@ test("a 503 with a collection that read nothing and named no cause still reads a
   const { message } = (await (await fetch(`${origin}/api/snapshot`)).json()) as { message: string };
   assert.match(message, /The last collection could read no project either\.$/);
   assert.doesNotMatch(message, /still shows the last snapshot/);
+});
+
+interface Sent {
+  status: number;
+  body: string;
+  headers: Record<string, string | string[] | undefined>;
+}
+
+function call(
+  origin: string,
+  path: string,
+  method: string,
+  headers: Record<string, string>,
+  payload = "",
+): Promise<Sent> {
+  const { hostname, port } = new URL(origin);
+  return new Promise((done, failed) => {
+    const sending = request(
+      {
+        host: hostname,
+        port,
+        path,
+        method,
+        headers: { ...headers, "content-length": String(Buffer.byteLength(payload)) },
+      },
+      (response) => {
+        let body = "";
+        response.setEncoding("utf8");
+        response.on("data", (chunk: string) => {
+          body += chunk;
+        });
+        response.on("end", () =>
+          done({ status: response.statusCode ?? 0, body, headers: response.headers }),
+        );
+      },
+    );
+    sending.on("error", failed);
+    sending.end(payload);
+  });
+}
+
+interface ActionBox {
+  server: Server;
+  origin: string;
+  log: string;
+  notes: string;
+  post: (path: string, options?: { text?: string; headers?: Record<string, string>; bare?: boolean }) => Promise<Sent>;
+}
+
+const ACTING_HOST = "127.0.0.1";
+
+async function acting(
+  closing: { after: (teardown: () => void) => void },
+  issues: Array<Record<string, unknown>> = [indexed("mw-3", "open", "yours:decision")],
+  extra: Record<string, string> = {},
+): Promise<ActionBox> {
+  const room = mkdtempSync(join(tmpdir(), "pitwall-acting-"));
+  const log = join(room, "calls.log");
+  const notes = join(room, "notes.log");
+  const server = trackerServer("ok", issues, [], { BD_CALL_LOG: log, BD_NOTES_LOG: notes, ...extra });
+  closing.after(() => server.close());
+  const { origin, port } = await started(server);
+  const host = `${ACTING_HOST}:${String(port)}`;
+  return {
+    server,
+    origin,
+    log,
+    notes,
+    post: (path, options = {}) =>
+      call(
+        origin,
+        path,
+        "POST",
+        {
+          host,
+          "content-type": "application/json",
+          ...(options.bare === true ? {} : { "x-pitwall-action": "1" }),
+          ...options.headers,
+        },
+        options.text === undefined ? "" : JSON.stringify({ text: options.text }),
+      ),
+  };
+}
+
+function logged(path: string): string[] {
+  return existsSync(path)
+    ? readFileSync(path, "utf8")
+        .split("\n")
+        .filter((line) => line !== "")
+    : [];
+}
+
+function writtenTo(path: string): string[] {
+  return logged(path).filter(
+    (line) => line.includes("--append-notes") || line.includes("--remove-label"),
+  );
+}
+
+test("a console action with no action header is refused, and the tracker is never touched", async (t) => {
+  const box = await acting(t);
+  const refusedAction = await box.post("/api/issue/mw/mw-3/ready", { bare: true });
+
+  assert.equal(refusedAction.status, 403);
+  assert.match(refusedAction.body, /x-pitwall-action/);
+  assert.deepEqual(
+    logged(box.log),
+    [],
+    "the header gate let a request reach bd, so a cross-origin page could write",
+  );
+});
+
+test("a write claiming another origin, or one the browser calls cross-site, is refused", async (t) => {
+  const box = await acting(t);
+  const foreign = await box.post("/api/issue/mw/mw-3/ready", {
+    headers: { origin: "http://pitwall.build.evil.example" },
+  });
+  assert.equal(foreign.status, 403);
+  assert.match(foreign.body, /pitwall\.build\.evil\.example/);
+
+  const opaque = await box.post("/api/issue/mw/mw-3/ready", { headers: { origin: "null" } });
+  assert.equal(opaque.status, 403);
+
+  const crossSite = await box.post("/api/issue/mw/mw-3/ready", {
+    headers: { "sec-fetch-site": "cross-site" },
+  });
+  assert.equal(crossSite.status, 403);
+  assert.deepEqual(writtenTo(box.log), [], "a refused action still wrote to the tracker");
+
+  const own = await box.post("/api/issue/mw/mw-3/ready", {
+    headers: { origin: box.origin, "sec-fetch-site": "same-origin" },
+  });
+  assert.equal(own.status, 200, own.body);
+});
+
+test("the preflight a cross-origin write would need is answered by nothing", async (t) => {
+  const box = await acting(t);
+  const asked = await call(box.origin, "/api/issue/mw/mw-3/ready", "OPTIONS", {
+    host: ACTING_HOST,
+    origin: "http://pitwall.build.evil.example",
+    "access-control-request-method": "POST",
+    "access-control-request-headers": "x-pitwall-action",
+  });
+
+  assert.equal(asked.headers["access-control-allow-origin"], undefined);
+  assert.equal(asked.headers["access-control-allow-headers"], undefined);
+  assert.deepEqual(writtenTo(box.log), []);
+});
+
+test("an answer lands on the ticket before the labels that park it are cleared", async (t) => {
+  const box = await acting(t);
+  const answered = await box.post("/api/issue/mw/mw-3/answer", {
+    text: "credit the account, and record the amount on the ticket",
+  });
+
+  assert.equal(answered.status, 200, answered.body);
+  assert.match(
+    readFileSync(box.notes, "utf8"),
+    /mw-3 Answered from the console: credit the account, and record the amount on the ticket/,
+  );
+  const writes = writtenTo(box.log);
+  assert.equal(writes.length, 2);
+  assert.match(writes[0] ?? "", /--append-notes/);
+  assert.match(
+    writes[1] ?? "",
+    /^update mw-3 --remove-label needs-decision --remove-label needs-access$/,
+    "the labels were cleared before the answer was on the ticket, so a lane could run without it",
+  );
+});
+
+test("marking it ready clears both labels and says the console did it", async (t) => {
+  const box = await acting(t);
+  const ready = await box.post("/api/issue/mw/mw-3/ready");
+
+  assert.equal(ready.status, 200, ready.body);
+  assert.match(readFileSync(box.notes, "utf8"), /mw-3 Marked ready from the console\./);
+  assert.deepEqual((JSON.parse(ready.body) as { removedLabels: string[] }).removedLabels, [
+    "needs-decision",
+    "needs-access",
+  ]);
+});
+
+test("pushing an issue off the owner's queue records the classification it is correcting", async (t) => {
+  const box = await acting(t);
+  const returned = await box.post("/api/issue/mw/mw-3/not-mine", {
+    text: "any engineer can pick the refund path",
+  });
+
+  assert.equal(returned.status, 200, returned.body);
+  assert.match(
+    readFileSync(box.notes, "utf8"),
+    /mw-3 Not mine — the console classified this yours:decision\. Reason: any engineer can pick the refund path/,
+  );
+});
+
+test("an empty box cannot unpark an issue", async (t) => {
+  const box = await acting(t);
+  const blank = await box.post("/api/issue/mw/mw-3/answer", { text: "   " });
+  assert.equal(blank.status, 400);
+  assert.match(blank.body, /mw-3 was not changed/);
+
+  const unsaid = await box.post("/api/issue/mw/mw-3/not-mine", { text: "" });
+  assert.equal(unsaid.status, 400);
+  assert.deepEqual(writtenTo(box.log), []);
+});
+
+test("the console does not act on an issue it no longer classifies", async (t) => {
+  const box = await acting(t, [indexed("mw-9", "closed", "ready")]);
+  const closed = await box.post("/api/issue/mw/mw-9/ready");
+
+  assert.equal(closed.status, 400);
+  assert.match(closed.body, /acts on open work only/);
+  assert.deepEqual(writtenTo(box.log), []);
+});
+
+test("an action on an issue the tracker has never heard of is a 404", async (t) => {
+  const box = await acting(t);
+  const missing = await box.post("/api/issue/mw/mw-404/ready");
+
+  assert.equal(missing.status, 404);
+  assert.match(missing.body, /milliwatt has no issue mw-404/);
+  assert.deepEqual(writtenTo(box.log), []);
+});
+
+test("an unknown action is a 404 that names the actions that exist", async (t) => {
+  const box = await acting(t);
+  const merged = await box.post("/api/issue/mw/mw-3/merge");
+
+  assert.equal(merged.status, 404);
+  for (const action of ACTIONS) {
+    assert.match(merged.body, new RegExp(action));
+  }
+  assert.deepEqual(writtenTo(box.log), []);
+});
+
+test("a write that got the note on but not the labels off says so, rather than 'nothing changed'", async (t) => {
+  const box = await acting(t, undefined, { BD_LABELS_FAIL: "label needs-decision is not set" });
+  const tried = await box.post("/api/issue/mw/mw-3/ready");
+
+  assert.equal(tried.status, 502);
+  assert.match(readFileSync(box.notes, "utf8"), /mw-3 Marked ready from the console\./);
+  assert.match(tried.body, /mw-3 carries the note but is still parked/);
+  assert.match(tried.body, /--remove-label/);
+  assert.doesNotMatch(
+    tried.body,
+    /was not changed/,
+    "the note is already on the ticket, and a re-submit would put a second one there",
+  );
+});
+
+test("a note that will not write stops the action, so no issue is unparked without it", async (t) => {
+  const box = await acting(t, undefined, { BD_NOTES_LOG: "" });
+  const tried = await box.post("/api/issue/mw/mw-3/answer", { text: "credit the account" });
+
+  assert.equal(tried.status, 502);
+  assert.match(tried.body, /mw-3 was not changed/);
+  assert.deepEqual(
+    logged(box.log).filter((line) => line.includes("--remove-label")),
+    [],
+    "the labels were cleared after the note failed, so a lane can take work whose answer was lost",
+  );
+});
+
+function announcer(delivery: Delivery = { delivered: true }): {
+  sent: CollectionNotice[];
+  announce: Announcer;
+} {
+  const sent: CollectionNotice[] = [];
+  return {
+    sent,
+    announce: (notice) => {
+      sent.push(notice);
+      return Promise.resolve(delivery);
+    },
+  };
+}
+
+const OFF_PATH = () => Promise.reject(new Error("bd is not on PATH"));
+
+async function attempts(
+  origin: string,
+  calls: Array<Promise<Collection>>,
+  clock: { at: number },
+  times: readonly number[],
+): Promise<void> {
+  for (const at of times) {
+    clock.at = at;
+    await (await fetch(`${origin}/api/snapshot`)).json();
+    await (calls[calls.length - 1] as Promise<Collection>).catch(() => undefined);
+    await settle();
+  }
+}
+
+test("a collection failing for longer than the threshold is announced once, not once an attempt", async (t) => {
+  const { env } = stateWith(JSON.stringify(SNAPSHOT));
+  const clock = { at: 0 };
+  const { sent, announce } = announcer();
+  const { collect, calls } = collector([OFF_PATH]);
+  const server = createConsoleServer({
+    env,
+    uiDir: builtConsole(),
+    collect,
+    announce,
+    refreshFloorMs: 0,
+    outageAfterMs: 60_000,
+    now: () => clock.at,
+  });
+  t.after(() => server.close());
+  const { origin } = await started(server);
+
+  await attempts(origin, calls, clock, [0, 30_000, 60_000, 90_000, 120_000]);
+
+  assert.equal(calls.length, 5);
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0]?.kind, "collection-failed");
+  assert.match(sent[0]?.text ?? "", /Collection has failed for 1m/);
+  assert.match(sent[0]?.text ?? "", /bd is not on PATH/);
+});
+
+test("a collection that fails for less than the threshold reaches nobody at all", async (t) => {
+  const { env } = stateWith(JSON.stringify(SNAPSHOT));
+  const clock = { at: 0 };
+  const { sent, announce } = announcer();
+  const { collect, calls } = collector([OFF_PATH, OFF_PATH, () => Promise.resolve(READ)]);
+  const server = createConsoleServer({
+    env,
+    uiDir: builtConsole(),
+    collect,
+    announce,
+    refreshFloorMs: 0,
+    outageAfterMs: 60_000,
+    now: () => clock.at,
+  });
+  t.after(() => server.close());
+  const { origin } = await started(server);
+
+  await attempts(origin, calls, clock, [0, 30_000, 45_000, 200_000]);
+
+  assert.equal(calls.length, 4);
+  assert.deepEqual(sent, []);
+});
+
+test("a collection that comes back is announced once too, and nothing is said after that", async (t) => {
+  const { env } = stateWith(JSON.stringify(SNAPSHOT));
+  const clock = { at: 0 };
+  const { sent, announce } = announcer();
+  const { collect, calls } = collector([OFF_PATH, OFF_PATH, () => Promise.resolve(READ)]);
+  const server = createConsoleServer({
+    env,
+    uiDir: builtConsole(),
+    collect,
+    announce,
+    refreshFloorMs: 0,
+    outageAfterMs: 60_000,
+    now: () => clock.at,
+  });
+  t.after(() => server.close());
+  const { origin } = await started(server);
+
+  await attempts(origin, calls, clock, [0, 60_000, 90_000, 150_000]);
+
+  assert.deepEqual(
+    sent.map((notice) => notice.kind),
+    ["collection-failed", "collection-recovered"],
+  );
+  assert.match(sent[1]?.text ?? "", /Collection recovered after 1m/);
+});
+
+test("a notice nobody could be handed is a row on the board, not a silence", async (t) => {
+  const { env } = stateWith(JSON.stringify(SNAPSHOT));
+  const clock = { at: 0 };
+  const { announce } = announcer({
+    delivered: false,
+    reason: "no notify command is configured in the workspace file in /w",
+  });
+  const { collect, calls } = collector([OFF_PATH]);
+  const server = createConsoleServer({
+    env,
+    uiDir: builtConsole(),
+    collect,
+    announce,
+    refreshFloorMs: 0,
+    outageAfterMs: 60_000,
+    now: () => clock.at,
+  });
+  t.after(() => server.close());
+  const { origin } = await started(server);
+
+  await attempts(origin, calls, clock, [0, 60_000]);
+
+  const errors = errorsOf(await (await fetch(`${origin}/api/snapshot`)).json());
+  const unreached = errors.find((error) => error.source === NOTICE_SOURCE);
+  assert.notEqual(unreached, undefined);
+  assert.match(unreached?.message ?? "", /Collection has failed for 1m/);
+  assert.match(unreached?.message ?? "", /Nobody was told: no notify command is configured/);
+  assert.notEqual(
+    errors.find((error) => error.source === REFRESH_SOURCE),
+    undefined,
+  );
 });

@@ -5,6 +5,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LOCK_ROOT, slotsPath } from "../src/lanes.ts";
+import { GIT_ENV } from "./support/git.js";
 
 const SCRIPT = join(
   import.meta.dirname,
@@ -69,6 +70,7 @@ function args(box: Harness, ...rest: string[]): Ran {
     cwd: box.root,
     env: {
       ...process.env,
+      ...GIT_ENV,
       PATH: `${box.bin}:${process.env["PATH"] ?? ""}`,
       PITWALL_CONFIG: box.config,
       BEADS_DIR: "",

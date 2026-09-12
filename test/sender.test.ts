@@ -5,11 +5,12 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { Origin } from "@404sl/pitwall-schema";
-import type { Notice } from "../src/notify.ts";
+import type { CollectionNotice, Notice } from "../src/notify.ts";
 import {
   SESSION_REF_FIELD,
   SESSION_REF_VAR,
   commandSender,
+  outboundPath,
   sessionRefOf,
   workspaceSender,
 } from "../src/sender.ts";
@@ -19,6 +20,7 @@ const LISTED = { source: "config", configPath: "/nowhere/config.json" } as const
 const ASKED: Origin = { session: "dev-loop", ref: "c1796a" };
 
 const NOTICE: Notice = {
+  kind: "completion",
   issueId: "mw-1",
   title: "mw-1 title",
   origin: ASKED,
@@ -50,6 +52,7 @@ test("a configured command is handed the notice as JSON on its standard input", 
   const delivery = await commandSender([execPath, path])(NOTICE);
   assert.deepEqual(delivery, { delivered: true });
   assert.deepEqual(JSON.parse(readFileSync(log, "utf8")), {
+    kind: "completion",
     issueId: "mw-1",
     title: "mw-1 title",
     origin: { session: "dev-loop", ref: "c1796a" },
@@ -175,4 +178,58 @@ test(`a scanned workspace cannot name the collecting session either, only ${SESS
     sessionRefOf(dir, { source: "scan", env: { [SESSION_REF_VAR]: "from-env" } }),
     "from-env",
   );
+});
+
+const OUTAGE: CollectionNotice = {
+  kind: "collection-failed",
+  since: "2026-09-10T15:49:00Z",
+  forMs: 65_400_000,
+  text: "Collection has failed for 18h10m, every attempt since 2026-09-10T15:49:00Z. The board is not current.",
+};
+
+function config(roots: readonly string[]): string {
+  const path = join(mkdtempSync(join(tmpdir(), "pitwall-config-")), "config.json");
+  writeFileSync(path, JSON.stringify({ roots }));
+  return path;
+}
+
+test("the console's one outbound path is the first listed workspace that names a command", async () => {
+  const log = join(mkdtempSync(join(tmpdir(), "pitwall-outage-")), "notice.json");
+  const path = script(
+    `import { readFileSync, writeFileSync } from "node:fs";
+     writeFileSync(${JSON.stringify(log)}, readFileSync(0, "utf8"));`,
+  );
+  const quiet = root({ idPrefix: "q" });
+  const named = root({ idPrefix: "mw", notify: [execPath, path] });
+  const found = outboundPath({ env: { PITWALL_CONFIG: config([quiet, named]) } });
+  if ("reason" in found) {
+    assert.fail(found.reason);
+  }
+
+  assert.deepEqual(await found.send(OUTAGE), { delivered: true });
+  assert.deepEqual(JSON.parse(readFileSync(log, "utf8")), OUTAGE);
+});
+
+test("a console whose workspaces were only found by scanning has no outbound path", () => {
+  const parent = mkdtempSync(join(tmpdir(), "pitwall-scan-"));
+  const child = join(parent, "alpha");
+  mkdirSync(child);
+  writeFileSync(join(child, ".pitwall.json"), JSON.stringify({ notify: ["true"] }));
+  const found = outboundPath({
+    env: { PITWALL_CONFIG: join(parent, "no-config.json") },
+    cwd: child,
+  });
+  if (!("reason" in found)) {
+    assert.fail("a scanned workspace must never be run");
+  }
+  assert.match(found.reason, /found by scanning/);
+  assert.match(found.reason, /listed in roots/);
+});
+
+test("a listed workspace that names no command is a reason the board can carry", () => {
+  const found = outboundPath({ env: { PITWALL_CONFIG: config([root({ idPrefix: "mw" })]) } });
+  if (!("reason" in found)) {
+    assert.fail("there is nothing to deliver through");
+  }
+  assert.match(found.reason, /no notify command is configured/);
 });

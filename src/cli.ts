@@ -3,10 +3,11 @@ import { fileURLToPath } from "node:url";
 import { realpathSync } from "node:fs";
 import { SCHEMA_VERSION } from "@404sl/pitwall-schema";
 import { diagnose, renderDoctor } from "./doctor.js";
-import { DEFAULT_PORT, HOST, consoleCollector, createConsoleServer, listen, parseServeArgs } from "./serve.js";
+import { DEFAULT_PORT, HOST, consoleAnnouncer, consoleCollector, createConsoleServer, listen, parseServeArgs } from "./serve.js";
 import { undeliveredReport } from "./notify.js";
 import { emitSnapshot } from "./snapshot.js";
 import { readSnapshot, readSnapshotFrom, snapshotPath } from "./state.js";
+import { upstreamReport } from "./upstream.js";
 import { missingSnapshotMessage, parseStatusArgs, renderStatus, terminalWidth, wantsColor } from "./status.js";
 import { VERSION } from "./version.js";
 
@@ -115,6 +116,9 @@ if (isEntry) {
         for (const line of undeliveredReport(result.delivered)) {
           process.stderr.write(`pitwall snapshot: ${line}\n`);
         }
+        for (const line of upstreamReport(result.upstream)) {
+          process.stderr.write(`pitwall snapshot: ${line}\n`);
+        }
         for (const unlisted of result.unlisted) {
           process.stderr.write(`pitwall snapshot: ${unlisted.message}\n`);
         }
@@ -148,7 +152,10 @@ if (isEntry) {
   } else if (serve === undefined) {
     process.exit(code);
   } else {
-    listen(createConsoleServer({ collect: consoleCollector() }), serve.port).then(
+    listen(
+      createConsoleServer({ collect: consoleCollector(), announce: consoleAnnouncer() }),
+      serve.port,
+    ).then(
       () => process.stdout.write(`pitwall console on http://${HOST}:${serve.port}/\n`),
       (cause: NodeJS.ErrnoException) => {
         const why = cause.code === "EADDRINUSE" ? `port ${serve.port} is already in use` : cause.message;

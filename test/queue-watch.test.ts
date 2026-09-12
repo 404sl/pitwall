@@ -5,6 +5,7 @@ import { mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from 
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { GIT_ENV } from "./support/git.js";
 
 const SKILL = join(
   dirname(fileURLToPath(import.meta.url)),
@@ -150,6 +151,7 @@ function run(space: Workspace, lines: readonly string[]): string {
     cwd: space.root,
     env: {
       ...process.env,
+      ...GIT_ENV,
       DEVLOOP_ROOT: space.root,
       DEVLOOP_WF: space.wf,
       DEVLOOP_TASKS: space.tasks,

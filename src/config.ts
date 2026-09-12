@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type { CollectionError, Project } from "@404sl/pitwall-schema";
@@ -20,6 +20,7 @@ export interface RootsOptions {
 export interface ResolvedRoots {
   roots: string[];
   listed: string[];
+  considered: number;
   source: RootsSource;
   from: string;
   configPath: string;
@@ -79,7 +80,15 @@ export function historyLimits(options: RootsOptions = {}): HistoryLimits {
   };
 }
 
-function scanForWorkspaces(parent: string, errors: CollectionError[]): string[] {
+function isDirectory(path: string): boolean {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function directoriesIn(parent: string, errors: CollectionError[]): string[] {
   let entries: string[];
   try {
     entries = readdirSync(parent);
@@ -87,10 +96,20 @@ function scanForWorkspaces(parent: string, errors: CollectionError[]): string[] 
     errors.push(collectionError(parent, cause));
     return [];
   }
-  return entries
-    .map((entry) => join(parent, entry))
-    .filter((dir) => workspaceFile(dir) !== undefined)
-    .sort();
+  return entries.map((entry) => join(parent, entry)).filter(isDirectory);
+}
+
+interface Scan {
+  listed: string[];
+  considered: number;
+}
+
+function scanForWorkspaces(parent: string, errors: CollectionError[]): Scan {
+  const candidates = [parent, ...directoriesIn(parent, errors)];
+  return {
+    listed: candidates.filter((dir) => workspaceFile(dir) !== undefined).sort(),
+    considered: candidates.length,
+  };
 }
 
 function locateRoots(options: RootsOptions): LocatedRoots {
@@ -98,14 +117,24 @@ function locateRoots(options: RootsOptions): LocatedRoots {
   const errors: CollectionError[] = [];
   if (existsSync(path)) {
     try {
-      return { listed: readRoots(path), source: "config", from: path, configPath: path, errors };
+      const listed = readRoots(path);
+      return {
+        listed,
+        considered: listed.length,
+        source: "config",
+        from: path,
+        configPath: path,
+        errors,
+      };
     } catch (cause) {
       errors.push(collectionError(path, cause));
     }
   }
   const parent = dirname(resolve(options.cwd ?? process.cwd()));
+  const scanned = scanForWorkspaces(parent, errors);
   return {
-    listed: scanForWorkspaces(parent, errors),
+    listed: scanned.listed,
+    considered: scanned.considered,
     source: "scan",
     from: parent,
     configPath: path,
@@ -127,11 +156,12 @@ export function describeRoots(resolved: ResolvedRoots): string {
   if (resolved.source === "config") {
     return `${count} from ${resolved.from}`;
   }
+  const scanned = `${resolved.considered} director${resolved.considered === 1 ? "y" : "ies"} at ${resolved.from}`;
   const rejected = resolved.errors.find((error) => error.source === resolved.configPath);
   if (rejected) {
-    return `${count} found by falling back to scanning ${resolved.from}, because the config at ${resolved.configPath} could not be read: ${rejected.message}`;
+    return `${count} found by falling back to scanning ${scanned}, because the config at ${resolved.configPath} could not be read: ${rejected.message}`;
   }
-  return `${count} found by falling back to scanning ${resolved.from}, because there is no config at ${resolved.configPath}`;
+  return `${count} found by falling back to scanning ${scanned}, because there is no config at ${resolved.configPath}`;
 }
 
 export function collectProjects(options: RootsOptions = {}): {

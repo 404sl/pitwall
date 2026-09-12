@@ -85,6 +85,7 @@ export interface ReadIssueOptions {
 export interface ClosedIssue extends UnclassifiedIssue {
   closedAt: string | undefined;
   closeReason: string | undefined;
+  externalRef: string | undefined;
 }
 
 export interface IssueText {
@@ -305,6 +306,7 @@ function toIssue(
     origin: originOf(row["metadata"]),
     closedAt: textOf(row["closed_at"]),
     closeReason: textOf(row["close_reason"]),
+    externalRef: textOf(row["external_ref"]),
   };
 }
 
@@ -392,6 +394,66 @@ export function noteAppender(
       });
     } catch (cause) {
       throw new Error(`bd update ${id} --append-notes: ${failureOf(cause, timeoutMs)}`);
+    }
+  };
+}
+
+export const OWNER_LABELS = ["needs-decision", "needs-access"] as const;
+
+export interface IssueAction {
+  note?: string;
+  removeLabels?: readonly string[];
+}
+
+export type IssueActor = (id: string, action: IssueAction) => Promise<void>;
+
+export class IssueActionFailure extends Error {
+  readonly noted: boolean;
+
+  constructor(message: string, noted: boolean) {
+    super(message);
+    this.name = "IssueActionFailure";
+    this.noted = noted;
+  }
+}
+
+export function removeLabelArgs(id: string, labels: readonly string[]): string[] {
+  return ["update", id, ...labels.flatMap((label) => ["--remove-label", label])];
+}
+
+export function issueActor(
+  root: string,
+  options: Omit<ReadIssuesOptions, "errors"> = {},
+): IssueActor {
+  const beadsDir = join(resolve(root), BEADS_DIR);
+  const env = options.env ?? process.env;
+  const timeoutMs = options.timeoutMs ?? TIMEOUT_MS;
+  const call = async (args: readonly string[], described: string): Promise<void> => {
+    try {
+      await run("bd", args as string[], {
+        encoding: "utf8",
+        env: { ...env, [BEADS_DIR_VAR]: beadsDir },
+        maxBuffer: MAX_OUTPUT,
+        timeout: timeoutMs,
+      });
+    } catch (cause) {
+      throw new Error(`${described}: ${failureOf(cause, timeoutMs)}`);
+    }
+  };
+  return async (id, action) => {
+    const { note } = action;
+    const labels = action.removeLabels ?? [];
+    let noted = false;
+    try {
+      if (note !== undefined && note !== "") {
+        await call(appendNotesArgs(id, note), `bd update ${id} --append-notes`);
+        noted = true;
+      }
+      if (labels.length > 0) {
+        await call(removeLabelArgs(id, labels), `bd update ${id} --remove-label`);
+      }
+    } catch (cause) {
+      throw new IssueActionFailure(cause instanceof Error ? cause.message : String(cause), noted);
     }
   };
 }

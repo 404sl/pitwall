@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { GIT_ENV, spawnGit } from "./support/git.js";
 
 const SCRIPT = join(
   import.meta.dirname,
@@ -33,6 +34,9 @@ interface Second {
   list: string;
   rollup: string;
   body: string;
+  mergeable?: string;
+  mergeState?: string;
+  message?: string;
   listFails?: boolean;
   omitPath?: boolean;
   editFails?: boolean;
@@ -45,7 +49,7 @@ interface Second {
 }
 
 function git(dir: string, ...args: string[]): string {
-  const ran = spawnSync("git", args, { cwd: dir, encoding: "utf8" });
+  const ran = spawnGit(args, { cwd: dir });
   assert.equal(ran.status, 0, ran.stderr);
   return (ran.stdout ?? "").trim();
 }
@@ -111,7 +115,7 @@ function harness(seededNotes: string, second?: Second, detached?: boolean): Harn
     git(other, "update-ref", "refs/remotes/origin/master", otherBase);
     writeFileSync(join(other, "b.txt"), "two\n");
     git(other, "add", "b.txt");
-    git(other, "commit", "--quiet", "-m", "Regenerate the artwork from the same source");
+    git(other, "commit", "--quiet", "-m", second.message ?? "Regenerate the artwork from the same source");
     otherHead = git(other, "rev-parse", "HEAD");
     git(other, "update-ref", `refs/remotes/origin/${BRANCH}`, otherHead);
     git(other, "checkout", "--quiet", otherBase);
@@ -131,7 +135,9 @@ function harness(seededNotes: string, second?: Second, detached?: boolean): Harn
                 ? ` echo "gh: could not read acme/other" >&2; exit 1 ;;`
                 : ` printf '%s\\n' '${second.list}' ;;`
             }`,
-            `  *"--repo acme/other"*statusCheckRollup*) printf '{"statusCheckRollup":%s,"headRefOid":"%s"}\\n' '${second.rollup}' '${otherHead}' ;;`,
+            `  *"--repo acme/other"*statusCheckRollup*) printf '{"statusCheckRollup":%s,"headRefOid":"%s"${
+              second.mergeable ? `,"mergeable":"${second.mergeable}"` : ""
+            }${second.mergeState ? `,"mergeStateStatus":"${second.mergeState}"` : ""}}\\n' '${second.rollup}' '${otherHead}' ;;`,
             `  *"--repo acme/other --json title,body"*) printf '%s\\n' '${second.body}' ;;`,
             `  "label list --repo acme/other"*)${
               second.labelListFails
@@ -214,6 +220,7 @@ function handoff(
     encoding: "utf8",
     env: {
       ...process.env,
+      ...GIT_ENV,
       PATH: `${box.bin}:${process.env["PATH"] ?? ""}`,
       PITWALL_CONFIG: box.config,
       BEADS_DIR: "",
@@ -321,6 +328,69 @@ test("a second repository's pull request that is not green leaves NOTHING labell
   assert.equal(ran.labelled, false, "a pull request was labelled while a second one was not ready");
 });
 
+test("a conflicted pull request is reported as conflicted rather than waited on as pending", () => {
+  const box = harness("", {
+    list: '[{"number":7}]',
+    rollup: "[]",
+    body: CLEAN,
+    mergeable: "CONFLICTING",
+    mergeState: "DIRTY",
+  });
+  const ran = handoff(box, [...required(box), "--issue", "acme-1", "--note-file", box.notePath], true);
+
+  assert.equal(ran.status, 3, ran.stdout + ran.stderr);
+  assert.match(ran.stdout, /conflicted: acme\/other#7 conflicts with master/);
+  assert.doesNotMatch(ran.stdout, /not-green/);
+  assert.equal(ran.labelled, false, "a conflicted pull request was labelled");
+});
+
+test("an uncomputed mergeability is not read as a conflict", () => {
+  const box = harness("", {
+    list: '[{"number":7}]',
+    rollup: "[]",
+    body: CLEAN,
+    mergeable: "UNKNOWN",
+    mergeState: "UNKNOWN",
+  });
+  const ran = handoff(box, [...required(box), "--issue", "acme-1", "--note-file", box.notePath], true);
+
+  assert.equal(ran.status, 4, ran.stdout + ran.stderr);
+  assert.match(ran.stdout, /not-green: rollup is empty on acme\/other#7/);
+  assert.doesNotMatch(ran.stdout, /conflicted/);
+  assert.equal(ran.labelled, false, "an unready pull request was labelled");
+});
+
+test("a failing check is reported as red, not as a conflict", () => {
+  const box = harness("", {
+    list: '[{"number":7}]',
+    rollup: '[{"name":"ci","conclusion":"FAILURE"}]',
+    body: CLEAN,
+    mergeable: "MERGEABLE",
+    mergeState: "CLEAN",
+  });
+  const ran = handoff(box, [...required(box), "--issue", "acme-1", "--note-file", box.notePath], true);
+
+  assert.equal(ran.status, 4, ran.stdout + ran.stderr);
+  assert.match(ran.stdout, /not-green: BAD:ci on acme\/other#7/);
+  assert.doesNotMatch(ran.stdout, /conflicted/);
+  assert.equal(ran.labelled, false, "a red pull request was labelled");
+});
+
+test("a green pull request that conflicts with master is still handed off for the lander to rebase", () => {
+  const box = harness("", {
+    list: '[{"number":7}]',
+    rollup: READY,
+    body: CLEAN,
+    mergeable: "CONFLICTING",
+    mergeState: "DIRTY",
+  });
+  const ran = handoff(box, [...required(box), "--issue", "acme-1", "--note-file", box.notePath], true);
+
+  assert.equal(ran.status, 0, ran.stdout + ran.stderr);
+  assert.match(ran.stdout, /handed off: acme\/thing#14/);
+  assert.match(ran.stdout, /also labelled lane-verified on lane\/x: acme\/other#7/);
+});
+
 test("a second repository's pull request whose body names the pipeline leaves NOTHING labelled", () => {
   const box = harness("", {
     list: '[{"number":7}]',
@@ -332,6 +402,75 @@ test("a second repository's pull request whose body names the pipeline leaves NO
   assert.equal(ran.status, 2, ran.stdout + ran.stderr);
   assert.match(ran.stdout, /non-compliant: acme\/other#7/);
   assert.equal(ran.labelled, false, "a pull request was labelled despite a non-compliant sibling");
+});
+
+test("a commit message naming the plugin manifest and skill directories is compliant", () => {
+  const box = harness("", {
+    list: '[{"number":7}]',
+    rollup: READY,
+    body: CLEAN,
+    message: "Bump the manifests\n\n.claude-plugin/marketplace.json, plugins/devloop/.claude-plugin/plugin.json and plugins/devloop/skills/devloop/CHANGELOG.md all moved together.",
+  });
+  const ran = handoff(box, [...required(box), "--issue", "acme-1", "--note-file", box.notePath], true);
+
+  assert.equal(ran.status, 0, ran.stdout + ran.stderr);
+  assert.doesNotMatch(ran.stdout, /non-compliant/);
+  assert.match(ran.calls, /pr edit 7 --repo acme\/other/);
+});
+
+test("a body claiming a machine author leaves NOTHING labelled", () => {
+  const box = harness("", {
+    list: '[{"number":7}]',
+    rollup: READY,
+    body: '{"title":"Regenerate the artwork","body":"Generated with Claude Code."}',
+  });
+  const ran = handoff(box, [...required(box), "--issue", "acme-1", "--note-file", box.notePath], true);
+
+  assert.equal(ran.status, 2, ran.stdout + ran.stderr);
+  assert.match(ran.stdout, /non-compliant: acme\/other#7/);
+  assert.equal(ran.labelled, false, "a pull request was labelled despite an authorship claim");
+});
+
+test("a commit carrying an authorship trailer leaves NOTHING labelled", () => {
+  const box = harness("", {
+    list: '[{"number":7}]',
+    rollup: READY,
+    body: CLEAN,
+    message: "Regenerate the artwork\n\nCo-Authored-By: Nobody <nobody@example.invalid>",
+  });
+  const ran = handoff(box, [...required(box), "--issue", "acme-1", "--note-file", box.notePath], true);
+
+  assert.equal(ran.status, 2, ran.stdout + ran.stderr);
+  assert.match(ran.stdout, /non-compliant: acme\/other#7/);
+  assert.equal(ran.labelled, false, "a pull request was labelled despite an authorship trailer");
+});
+
+test("a commit message naming a scratch checkout path leaves NOTHING labelled", () => {
+  const box = harness("", {
+    list: '[{"number":7}]',
+    rollup: READY,
+    body: CLEAN,
+    message: "Regenerate the artwork\n\nCaptured under /tmp/lanes/acme-14/repo while checking.",
+  });
+  const ran = handoff(box, [...required(box), "--issue", "acme-1", "--note-file", box.notePath], true);
+
+  assert.equal(ran.status, 2, ran.stdout + ran.stderr);
+  assert.match(ran.stdout, /non-compliant: acme\/other#7/);
+  assert.equal(ran.labelled, false, "a pull request was labelled despite a scratch path");
+});
+
+test("a bare pipeline noun outside a path is still not compliant", () => {
+  const box = harness("", {
+    list: '[{"number":7}]',
+    rollup: READY,
+    body: CLEAN,
+    message: "Regenerate the artwork\n\nThe devloop takes ready work and lands it.",
+  });
+  const ran = handoff(box, [...required(box), "--issue", "acme-1", "--note-file", box.notePath], true);
+
+  assert.equal(ran.status, 2, ran.stdout + ran.stderr);
+  assert.match(ran.stdout, /non-compliant: acme\/other#7/);
+  assert.equal(ran.labelled, false, "a pull request was labelled despite a bare pipeline noun");
 });
 
 test("a repository whose open pull requests cannot be read is refused, not read as having none", () => {

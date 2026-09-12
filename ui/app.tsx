@@ -1,7 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Snapshot } from "@404sl/pitwall-schema";
-import { buildBoard, previewIssue, type FilterState, type ProblemRow } from "./model.js";
+import type { BuildStamp, BuildVerdict, CheckoutState, UnknownReason } from "../src/build.js";
+import {
+  buildBoard,
+  buildState,
+  previewIssue,
+  type BuildState,
+  type FilterState,
+  type ProblemRow,
+  type RunningVersion,
+} from "./model.js";
 import { Band } from "./components/Band.js";
+import { BuildBanner } from "./components/Build.js";
 import { Failure } from "./components/Failure.js";
 import { Filters, filterSentence } from "./components/Filters.js";
 import { Header } from "./components/Header.js";
@@ -19,11 +29,6 @@ import { strings } from "./strings.js";
 const SNAPSHOT_URL = "/api/snapshot";
 const VERSION_URL = "/api/version";
 const POLL_MS = 30_000;
-
-interface RunningVersion {
-  running: string;
-  update?: string;
-}
 
 class SnapshotFailure extends Error {
   readonly source: string;
@@ -60,6 +65,58 @@ async function readSnapshot(signal: AbortSignal): Promise<Snapshot> {
   return JSON.parse(body) as Snapshot;
 }
 
+function stampOf(value: unknown): BuildStamp | undefined {
+  if (typeof value !== "object" || value === null) {
+    return undefined;
+  }
+  const { commit, at } = value as { commit?: unknown; at?: unknown };
+  if (typeof commit !== "string") {
+    return undefined;
+  }
+  return typeof at === "string" ? { commit, at } : { commit };
+}
+
+function checkoutOf(value: unknown): CheckoutState | undefined {
+  if (typeof value !== "object" || value === null) {
+    return undefined;
+  }
+  const { branch, head, ahead } = value as { branch?: unknown; head?: unknown; ahead?: unknown };
+  if (typeof branch !== "string" || typeof head !== "string") {
+    return undefined;
+  }
+  return Number.isInteger(ahead) ? { branch, head, ahead: ahead as number } : { branch, head };
+}
+
+function verdictOf(value: unknown): BuildVerdict | undefined {
+  return value === "current" || value === "behind" || value === "unknown" || value === "no-checkout"
+    ? value
+    : undefined;
+}
+
+function becauseOf(value: unknown): UnknownReason | undefined {
+  if (typeof value !== "object" || value === null) {
+    return undefined;
+  }
+  const { kind, message } = value as { kind?: unknown; message?: unknown };
+  if (kind === "no-stamp" || kind === "diverged") {
+    return { kind };
+  }
+  return kind === "checkout" && typeof message === "string" ? { kind, message } : undefined;
+}
+
+function buildFields(body: Record<string, unknown>): Omit<RunningVersion, "running" | "update"> {
+  const build = stampOf(body.build);
+  const checkout = checkoutOf(body.checkout);
+  const buildCheck = verdictOf(body.buildCheck);
+  const unknownBecause = becauseOf(body.unknownBecause);
+  return {
+    ...(build === undefined ? {} : { build }),
+    ...(checkout === undefined ? {} : { checkout }),
+    ...(buildCheck === undefined ? {} : { buildCheck }),
+    ...(unknownBecause === undefined ? {} : { unknownBecause }),
+  };
+}
+
 async function readVersion(signal: AbortSignal): Promise<RunningVersion | undefined> {
   try {
     const response = await fetch(VERSION_URL, { signal, headers: { accept: "application/json" } });
@@ -74,7 +131,11 @@ async function readVersion(signal: AbortSignal): Promise<RunningVersion | undefi
     if (typeof running !== "string") {
       return undefined;
     }
-    return typeof update === "string" ? { running, update } : { running };
+    return {
+      running,
+      ...(typeof update === "string" ? { update } : {}),
+      ...buildFields(body as Record<string, unknown>),
+    };
   } catch {
     return undefined;
   }
@@ -111,36 +172,36 @@ export function App() {
   const [loading, setLoading] = useState(true);
   const [version, setVersion] = useState("");
   const [update, setUpdate] = useState<string | undefined>(undefined);
+  const [build, setBuild] = useState<BuildState>(() => buildState({ kind: "waiting" }));
   const held = useRef<Snapshot | undefined>(undefined);
 
   const load = useCallback(async (signal: AbortSignal) => {
-    try {
-      const [snapshot, running] = await Promise.all([readSnapshot(signal), readVersion(signal)]);
-      if (signal.aborted) {
-        return;
+    const [snapshot, running] = await Promise.allSettled([readSnapshot(signal), readVersion(signal)]);
+    if (signal.aborted) {
+      return;
+    }
+    if (running.status === "fulfilled") {
+      const answered = running.value;
+      if (answered !== undefined) {
+        setVersion(answered.running);
+        setUpdate(answered.update);
       }
-      if (running !== undefined) {
-        setVersion(running.running);
-        setUpdate(running.update);
-      }
-      held.current = snapshot;
-      setTaken(snapshot);
+      setBuild(buildState(answered === undefined ? { kind: "unanswered" } : { kind: "read", version: answered }));
+    }
+    if (snapshot.status === "fulfilled") {
+      held.current = snapshot.value;
+      setTaken(snapshot.value);
       setFailure(undefined);
       setRefetchFailure(undefined);
-    } catch (cause) {
-      if (signal.aborted) {
-        return;
-      }
+    } else {
+      const cause: unknown = snapshot.reason;
       if (held.current === undefined) {
         setFailure(cause instanceof Error ? cause.message : String(cause));
       } else {
         setRefetchFailure(consoleProblem(cause));
       }
-    } finally {
-      if (!signal.aborted) {
-        setLoading(false);
-      }
     }
+    setLoading(false);
   }, []);
 
   useEffect(() => {
@@ -173,10 +234,12 @@ export function App() {
             generatedAt={board.generatedAt}
             version={version}
             update={update}
+            build={build}
             refreshFailure={board.refreshFailure}
           />
         )}
         <main className="pw-console">
+          <BuildBanner build={build} />
           <IssuePage
             route={route}
             filter={filter}
@@ -190,6 +253,7 @@ export function App() {
   if (board === undefined) {
     return (
       <main className="pw-console">
+        <BuildBanner build={build} />
         {loading ? <p className="pw-empty">{strings.empty.loading}</p> : <Failure message={failure ?? ""} />}
       </main>
     );
@@ -206,9 +270,11 @@ export function App() {
         generatedAt={board.generatedAt}
         version={version}
         update={update}
+        build={build}
         refreshFailure={board.refreshFailure}
       />
       <main className="pw-console">
+        <BuildBanner build={build} />
         <Filters filter={filter} options={board.options} shown={board.issueCount} total={board.totals.issues} />
         <Band
           id="needs"

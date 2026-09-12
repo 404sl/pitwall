@@ -543,9 +543,23 @@ red, the failure is yours to fix exactly as a local one would be - read the run,
 again. A red CI run on YOUR OWN BRANCH is the normal way to find a break here; it costs a
 2.6-minute cycle instead of a ten-minute one.
 
+IF IT SAYS 'no checks reported', DO NOT WAIT AGAIN - READ WHETHER THE BRANCH CONFLICTS:
+
+  cd ${wtPath} && gh pr view <your PR number> --repo ${cfg.slug || '<owner/name>'} --json mergeable,mergeStateStatus
+
+mergeable CONFLICTING, or mergeStateStatus DIRTY, means GitHub cannot build the merge ref the
+workflow runs on, so it scheduled NO RUN AT ALL - not queued, not skipped, absent. An empty rollup
+from a conflict is the same shape as one that is a minute old, which is why a lane sat on pitwall#120
+for two hours re-triggering a run that was never coming. Closing and reopening the PR does not
+resolve a conflict and will not produce one either. Merge origin/master into your branch, resolve,
+push, and wait on the new head.
+
+mergeable UNKNOWN means GitHub has not computed it yet. Re-read it; conclude nothing from one read.
+
 WHAT THIS DOES NOT CHANGE: the PR still has to be green before it is labelled, and
 lane-handoff.sh refuses to label anything whose rollup is empty, failing, or describing a stale
-head. The gate did not move, only where the suite runs.
+head - and exits 3 'conflicted' rather than 4 when a conflict is what emptied it. The gate did not
+move, only where the suite runs.
 
 IF YOU EDIT A FILE WITH THE Edit TOOL, READ IT WITH THE Read TOOL FIRST. Inspecting it with
 'cat' through Bash does not count: Edit refuses with "File has not been read yet" and the call
@@ -1148,13 +1162,30 @@ Repo: ${task.repo}
 PR: ${work.prUrl || work.prNumber}
 
 1. WAIT FOR THE PR'S OWN CHECKS AND CONFIRM THEY ARE GREEN. Poll, do not assume:
-     cd ${repo} && gh pr view ${work.prNumber} --repo ${slug} --json statusCheckRollup,headRefOid
+     cd ${repo} && gh pr view ${work.prNumber} --repo ${slug} --json statusCheckRollup,headRefOid,mergeable,mergeStateStatus
 
    Every check must have conclusion SUCCESS, AND THERE MUST BE AT LEAST ONE. For the first
    minute or so after a push the rollup is an EMPTY ARRAY - GitHub has not registered the run
    yet. "All of them are green" is TRUE of no checks at all, in jq and in English, so a
    waiting loop built on all(...) exits instantly having seen nothing. Treat an empty rollup
    as "not started, keep waiting", never as a pass.
+
+   READ THE MERGEABILITY IN THE SAME CALL, AND BEFORE YOU SETTLE IN TO WAIT. mergeable
+   CONFLICTING, or mergeStateStatus DIRTY, means the branch conflicts with master - and a
+   pull_request workflow runs on refs/pull/<n>/merge, which GitHub cannot build while it
+   conflicts, so it schedules NO RUN AT ALL. Not queued, not skipped, absent. The rollup stays
+   empty for good and looks exactly like one that is a minute old, which is how a lane waited two
+   hours on pitwall#120 and learned nothing. Closing and reopening the PR does not resolve a
+   conflict: that was tried there, one second apart, and changed nothing.
+
+   A CONFLICT IS NOT YOURS TO RESOLVE HERE - you are not rebasing and not merging in this step.
+   Return status 'blocked' with 'conflicted with master' and the mergeStateStatus in 'notes'. The
+   run then ends NOT LABELLED with the conflict on the record, which is what whoever reads it needs
+   to send the branch for a merge from master. Nothing is lost by stopping: the wait could not have
+   ended.
+
+   mergeable UNKNOWN means GitHub has not computed it yet, which is neither a conflict nor a
+   clean merge. Re-read it on the next poll; never conclude a conflict from one read.
 
    DO NOT FALL BACK TO THE LEGACY COMBINED-STATUS ENDPOINT while you wait. The endpoint
    repos/<owner>/<repo>/commits/<sha>/status answers state "pending" with total_count 0 on
@@ -1251,12 +1282,19 @@ PR: ${work.prUrl || work.prNumber}
 
    Exit codes: 0 handed off, 2 non-compliant (NOTHING was labelled anywhere - it prints the
    offending lines against the pull request they came from, you judge them, you fix, you re-run),
+   3 a pull request on the branch conflicts with master so no check will ever be scheduled for it,
    4 a pull request on the branch is not in a state to label (nothing was labelled anywhere),
    5 labelled and cleaned up but the tracker note could not be confirmed, 6 bad arguments,
    7 the set of pull requests on the branch could not be established - the config could not be
    read, a repository's pull requests or labels could not be listed, the label could not be
    created in one of them, or a checkout named by the config has no origin/<branch> (nothing was
    labelled anywhere), 8 labelling began and stopped part-way.
+
+   EXIT 3 IS NOT A WAIT AND NOT A RE-RUN. The pull request conflicts with master, so GitHub builds
+   no merge ref and schedules no checks for it - the rollup you are waiting on will never fill.
+   Nothing you can do in this step changes that, and a second run reads the same conflict again:
+   return 'blocked' with what it printed. The remedy is a merge from master, and it is not yours
+   here.
 
    EXIT 7 IS NOT 'BAD ARGUMENTS'. Your arguments were fine and nothing was labelled: something it
    has to read or prepare to cover the full set of pull requests would not answer. READ WHICH ONE

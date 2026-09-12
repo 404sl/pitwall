@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.35
+## 0.1.36
 
 **Rule 3 of every lane brief named a binary no lane could run.** `git-guard` resolved to a file
 outside any of these repositories, mode 700, which a lane can neither read nor execute: `head`
@@ -56,6 +56,66 @@ of the push.
   whose guard is missing, and against one that refuses with a reason, and read the summary line
   back: a guard that could not be run must not be reported as a refusal, and a refusal must carry
   the guard's own sentence. All three fail against the callers as they were.
+
+## 0.1.35
+
+**The compliance gate could not pass a commit in this repository, because this repository's own
+directory layout matches its leakage and authorship patterns.** The manifest directory and the
+plugin's own source tree are named after the pipeline, so naming any file a plugin change touched
+tripped the bare-noun leakage pattern, and naming either manifest tripped the authorship pattern
+on the vendor name inside the dot-directory. A commit message that did the ordinary thing - say
+which files it changed - therefore could not pass, and the only compliant message was one that
+refused to name its own subject. It refused a green pull request on exactly three lines, all
+paths, and the run could not be rescued by rework because amending a pushed merge commit is
+refused to a lane by design.
+
+The reasoning that the repository had a convention of avoiding those literals was checked and is
+false: across the last 40 commits on `master` the bare noun appears 8 times and the manifest
+directory 3 times. The owner had also already settled the authorship half on 2026-09-09 - the rule
+is about AUTHORSHIP, trailers and generated-with footers, and does not forbid the literal when it
+is a path or a filename.
+
+The fix is the neutralising `sed`, not the patterns: widening either pattern would weaken a check
+that has caught real violations. Three path forms are now neutralised before the test, the same
+shape the script already used for `CLAUDE.md` and `AGENTS.md`, and anchored as paths so they
+cannot launder prose. A bare pipeline noun outside a path is still caught - that IS the leakage
+the pattern is for.
+
+Five tests, one failing before: a message naming all three manifest and skill paths is compliant,
+and a generated-with footer, an authorship trailer, a scratch checkout path and a bare pipeline
+noun in prose each still leave nothing labelled.
+
+## 0.1.33
+
+**A lane waited two hours on a pull request whose checks GitHub was never going to schedule.**
+To run a `pull_request` workflow GitHub builds `refs/pull/<n>/merge`, and it cannot build that ref
+while the branch conflicts with base - so for a conflicted pull request no run is created at all.
+Not queued, not skipped, not failed: absent. `statusCheckRollup` is `[]` and stays `[]`, which is
+the same shape as a rollup a minute after a push, so every poller in the pipeline read "not ready
+yet" and waited. `pitwall#120` sat like that while Actions was demonstrably healthy, and the usual
+re-trigger - close, reopen one second later - changed nothing, because reopening does not resolve a
+conflict.
+
+`lane-handoff.sh` now reads `mergeable` and `mergeStateStatus` in the same call as the rollup, and
+a conflict is its own outcome with its own exit code:
+
+    3  conflicted  the branch conflicts with master, so no check is coming. Nothing was labelled.
+                   The remedy is a merge from master and a push, not another wait.
+
+`mergeable` `CONFLICTING` or `mergeStateStatus` `DIRTY` is a conflict. `UNKNOWN`, or the field
+missing entirely, is GitHub still computing it and means nothing either way - it is never read as a
+conflict. A pull request that is green on its current head is untouched whatever its mergeability
+says: the lander rebases and waits for CI again, which the handoff brief already promises, and
+`land-one.sh` already owns that path.
+
+The lane briefs in `task.js` say the same thing at the two places a lane waits: after a push, when
+`gh pr checks` answers "no checks reported", and in the handoff step, which returns `blocked`
+with the conflict on the record rather than polling a rollup that cannot fill.
+
+Four tests, the first failing before the change: an empty rollup with `CONFLICTING`/`DIRTY` exits 3
+and says `conflicted`, the same rollup with `UNKNOWN` still exits 4 and says `not-green`, a failing
+check exits 4 and is not called a conflict, and a green pull request that conflicts is still handed
+off. Every existing green test sends no mergeability fields at all, which is the absent case.
 
 ## 0.1.32
 

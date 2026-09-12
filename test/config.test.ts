@@ -104,6 +104,7 @@ test("no config falls back to scanning the parent of the working directory", () 
   assert.equal(resolved.source, "scan");
   assert.equal(resolved.from, SCAN);
   assert.deepEqual(resolved.roots, [join(SCAN, "alpha"), join(SCAN, "beta")]);
+  assert.equal(resolved.considered, 4);
   assert.deepEqual(resolved.errors, []);
 });
 
@@ -115,12 +116,41 @@ test("a fallback scan that finds nothing says so rather than reporting an empty 
   const resolved = resolveRoots({ env: {}, home, cwd });
   assert.equal(resolved.source, "scan");
   assert.deepEqual(resolved.roots, []);
+  assert.equal(resolved.considered, 2);
   assert.equal(resolved.errors.length, 1);
   assert.equal(resolved.errors[0]?.source, parent);
   const said = resolved.errors[0]?.message ?? "";
   assert.match(said, /falling back/);
+  assert.match(said, /scanning 2 directories/);
   assert.ok(said.includes(parent));
   assert.ok(said.includes(resolved.configPath));
+});
+
+test("a scan counts the directory it is standing in as a root of its own", () => {
+  const home = mkdtempSync(join(tmpdir(), "pitwall-nohome-"));
+  const workspace = mkdtempSync(join(tmpdir(), "pitwall-standing-"));
+  writeFileSync(join(workspace, WORKSPACE_FILE), JSON.stringify({ idPrefix: "pw", repos: {} }));
+  const checkout = join(workspace, "checkout");
+  mkdirSync(checkout);
+  const resolved = resolveRoots({ env: {}, home, cwd: checkout });
+  assert.equal(resolved.source, "scan");
+  assert.equal(resolved.from, workspace);
+  assert.deepEqual(resolved.roots, [workspace]);
+  assert.deepEqual(resolved.errors, []);
+  assert.equal(
+    describeRoots(resolved),
+    `1 workspace root found by falling back to scanning 2 directories at ${workspace}, because there is no config at ${resolved.configPath}`,
+  );
+});
+
+test("a file beside the working directory is not counted as a directory considered", () => {
+  const home = mkdtempSync(join(tmpdir(), "pitwall-nohome-"));
+  const parent = mkdtempSync(join(tmpdir(), "pitwall-files-"));
+  const cwd = join(parent, "here");
+  mkdirSync(cwd);
+  writeFileSync(join(parent, "notes.md"), "");
+  const resolved = resolveRoots({ env: {}, home, cwd });
+  assert.equal(resolved.considered, 2);
 });
 
 test("a configured roots list that is empty is not described as a fallback scan", () => {
@@ -250,6 +280,7 @@ test("the scan finds a workspace under either name", () => {
   const resolved = resolveRoots({ env: {}, home, cwd: join(NAMES, "newonly") });
   assert.equal(resolved.source, "scan");
   assert.deepEqual(resolved.roots, [
+    NAMES,
     join(NAMES, "both"),
     join(NAMES, "newonly"),
     join(NAMES, "oldonly"),

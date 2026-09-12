@@ -27,6 +27,7 @@ export type RunningState = "working" | "awaiting-lander" | "stranded";
 export type ProblemScope = "run" | "console" | "project";
 
 export const REFRESH_SOURCE = "pitwall serve: re-collection";
+export const NOTICE_SOURCE = "pitwall serve: outbound notice";
 export const PARTIAL_SOURCE = "pitwall snapshot: partial collection";
 export const KEPT_SOURCE = "pitwall snapshot: kept from the last readable collection";
 

@@ -5,6 +5,7 @@ import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { GIT_ENV } from "./support/git.js";
 
 const SCRIPT = join(
   dirname(fileURLToPath(import.meta.url)),
@@ -87,6 +88,7 @@ function ask(
     cwd: space.root,
     env: {
       ...process.env,
+      ...GIT_ENV,
       DEVLOOP_ROOT: space.root,
       DEVLOOP_WF: space.wf,
       DEVLOOP_TASKS: tasks ?? space.tasks,
@@ -105,6 +107,7 @@ function askAny(
     cwd: space.root,
     env: {
       ...process.env,
+      ...GIT_ENV,
       DEVLOOP_ROOT: space.root,
       DEVLOOP_WF: space.wf,
       DEVLOOP_TASKS: tasks ?? space.tasks,
@@ -260,7 +263,14 @@ test("an unresolvable workspace exits 3 rather than answering", () => {
   const ran = spawnSync("bash", [SCRIPT, "pitwall-90b"], {
     encoding: "utf8",
     cwd: space.root,
-    env: { ...process.env, DEVLOOP_ROOT: "", PITWALL_CONFIG: "", DEVLOOP_CONFIG: "", HOME: space.root },
+    env: {
+      ...process.env,
+      ...GIT_ENV,
+      DEVLOOP_ROOT: "",
+      PITWALL_CONFIG: "",
+      DEVLOOP_CONFIG: "",
+      HOME: space.root,
+    },
   });
   assert.equal(ran.status, 3, `${ran.stdout}${ran.stderr}`);
   assert.match(ran.stderr, /refusing to guess/);
