@@ -62,6 +62,10 @@ export interface Assessment {
 
 export const STALENESS_SOURCE = "staleness";
 
+export const PULL_SOURCE = "gh pr view";
+
+export const UNRECORDED = "nothing records ";
+
 export function stalenessSource(id: string): string {
   return `${STALENESS_SOURCE} ${id}`;
 }
@@ -211,7 +215,7 @@ function couldNotPlace(
   return [
     {
       scope: "run",
-      message: `nothing records ${unknown.join(" or ")}, so a note written since cannot be recognised`,
+      message: `${UNRECORDED}${unknown.join(" or ")}, so a note written since cannot be recognised`,
     },
   ];
 }

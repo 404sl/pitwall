@@ -55,7 +55,7 @@ export const strings = {
     running: "No lane is running.",
     ready: "Nothing is ready to pick up.",
     parked: "Nothing parked.",
-    problems: "Every project read cleanly.",
+    problems: "Nothing needs a person.",
   },
   today: {
     landed: "landed {count}",
@@ -81,7 +81,7 @@ export const strings = {
     needsYou: "Issues waiting on a decision or an access grant, by project.",
     running: "Lanes in flight, by project and state.",
     ready: "Issues ready to pick up, by project.",
-    problems: "Sources that could not be read.",
+    problems: "Failures a person can act on.",
   },
   kind: {
     decision: "decision",
@@ -139,6 +139,10 @@ export const strings = {
   problems: {
     run: "run",
     console: "console",
+    prevented: {
+      one: "· prevented 1 staleness check",
+      many: "· prevented {count} staleness checks",
+    },
   },
   failure: {
     heading: "Nothing to show",
@@ -232,12 +236,12 @@ export const strings = {
       noEvidence: "Checked; nothing has changed that this check can see.",
       unresolved: {
         reference: {
-          one: "1 reference could not be checked; it is recorded under Problems.",
-          many: "{count} references could not be checked; they are recorded under Problems.",
+          one: "1 reference could not be checked; it is recorded in the snapshot.",
+          many: "{count} references could not be checked; they are recorded in the snapshot.",
         },
         precondition: {
-          one: "1 precondition could not be run; it is recorded under Problems.",
-          many: "{count} preconditions could not be run; they are recorded under Problems.",
+          one: "1 precondition could not be run; it is recorded in the snapshot.",
+          many: "{count} preconditions could not be run; they are recorded in the snapshot.",
         },
       },
       method:

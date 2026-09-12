@@ -207,7 +207,7 @@ test("projects with nothing to do read differently from having no projects", () 
   assert.match(out, /No lane is running\./);
   assert.match(out, /Nothing is ready to pick up\./);
   assert.match(out, /Nothing parked\./);
-  assert.match(out, /Every project read cleanly\./);
+  assert.match(out, /Nothing needs a person\./);
 });
 
 test("colour is off unless it is asked for, and the plain text is the same words", () => {

@@ -40,6 +40,16 @@ source with nothing in it.** Anything that fails to collect says so, per project
 run. "Nothing to do" and "we could not look" are different answers and the screen has to
 tell them apart.
 
+The record and the screen are not the same thing. `errors[]` keeps every failure a reader
+hit, and a consumer that wants all of them reads it there. The board shows the ones a
+person can act on, because a band that is always full is a band nobody reads and a real
+failure then arrives invisible. A consequence is counted against its cause rather than
+listed beside it — 122 staleness checks that failed because one `gh` call was rate
+limited are one problem, not 123. A failure that clears itself waits six hours before it
+is anybody's. And a limitation every board carries on every run is documented rather than
+reported: a tracker records why an issue stopped and not when, so a note written since
+cannot always be placed, and nothing a person does will change that.
+
 ## Status
 
 Early, and honest about it. Working today:

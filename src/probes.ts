@@ -2,13 +2,18 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { CollectionError } from "@404sl/pitwall-schema";
 import { collectionError, failureOf, recordOnce } from "./errors.js";
-import { PRECONDITIONS, type PullFacts, type PullReference, type PullState } from "./staleness.js";
+import {
+  PRECONDITIONS,
+  PULL_SOURCE,
+  type PullFacts,
+  type PullReference,
+  type PullState,
+} from "./staleness.js";
 
 const run = promisify(execFile);
 
 const PROBE_TIMEOUT_MS = 10_000;
 const MAX_OUTPUT = 1024 * 1024;
-const PULL_SOURCE = "gh pr view";
 const NO_SUCH_PULL = /Could not resolve to a PullRequest/;
 
 const PULL_STATES = new Map<string, PullState>([
