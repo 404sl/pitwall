@@ -390,6 +390,19 @@ test("--stale-minutes is the window the silence is measured against", () => {
   assert.doesNotMatch(askAny(space, ["--stale-minutes", "45"]).out, /journal silent/);
 });
 
+test("--stale-minutes with no value is refused, not looped on forever", () => {
+  const space = workspace([{ task: "w111", run: "wf_aaa", labels: ["fix:pitwall-90b"] }]);
+  const ran = spawnSync("bash", [SCRIPT, "--any", "--stale-minutes"], {
+    encoding: "utf8",
+    cwd: space.root,
+    timeout: 5000,
+    env: { ...process.env, ...GIT_ENV, DEVLOOP_ROOT: space.root, DEVLOOP_WF: space.wf, DEVLOOP_TASKS: space.tasks },
+  });
+  assert.equal(ran.signal, null, "the script had to be killed");
+  assert.equal(ran.status, 6, `${ran.stdout}${ran.stderr}`);
+  assert.match(ran.stderr, /--stale-minutes needs a value/);
+});
+
 test("a fresh agent transcript beside a cold journal is not silence", () => {
   const space = workspace([{ task: "w111", run: "wf_aaa", labels: ["fix:pitwall-90b"] }]);
   writeFileSync(
