@@ -33,7 +33,7 @@ function stub(): Stub {
     launch: {
       stop: () => {
         stops += 1;
-        setTimeout(() => finish("it was stopped by SIGTERM", 0), 0);
+        setTimeout(() => finish("it was stopped by SIGTERM", 143), 0);
       },
       gone: () => gone,
       ended,
@@ -138,7 +138,8 @@ test("a console stopped on purpose does not report the version it was serving as
 
   assert.deepEqual(lines, []);
   assert.equal(one.stops(), 1);
-  assert.equal(exits[0], 0);
+  assert.equal(await one.launch.ended, 143);
+  assert.deepEqual([...new Set(exits)], [0]);
 });
 
 test("a stop with no newer version running exits without waiting for one", () => {

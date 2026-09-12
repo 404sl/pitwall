@@ -119,7 +119,7 @@ export function serveLifecycle(options: ServeLifecycleOptions): ServeLifecycle {
             `Port ${String(options.port)}: ${version} stopped (exit ${String(code)}). Nothing is serving - start the console again.`,
           );
         }
-        exit(code);
+        exit(stopping ? 0 : code);
       });
     },
   };
