@@ -64,6 +64,8 @@ function oneLandedInSite(survey: unknown, included: number[] = [1287]): Reply {
       };
     }
     if (call.label.startsWith("merge:")) return { status: "merged", mergeSha: SHA, masterGreen: true, notes: "" };
+    if (call.label === "deploy") return { status: "deployed", environments: [{ environment: "staging", revision: SHA }], notes: "" };
+    if (call.label === "close") return { status: "closed", closed: included.map((pr) => ({ pr, issue: `pitwall-${pr}` })), notes: "" };
     if (call.label === "left-behind") return survey;
     return { status: "released" };
   };
