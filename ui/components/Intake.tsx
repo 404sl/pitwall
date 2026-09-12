@@ -5,7 +5,7 @@ import {
   MAX_FILES,
   MAX_FILE_BYTES,
   MAX_REQUEST_BYTES,
-  megabytes,
+  fileSize,
   planningSession,
   sift,
   type RefusalKind,
@@ -25,9 +25,13 @@ export interface Drop {
   files: readonly File[];
 }
 
+export function carriesFiles(event: { dataTransfer: { types: readonly string[] } }): boolean {
+  return event.dataTransfer.types.includes("Files");
+}
+
 export type IntakeOutcome =
   | { kind: "recorded"; id: string; project: string; assignee: string; label: string; attached: number; refused: number }
-  | { kind: "partial"; id: string; project: string; reason: string }
+  | { kind: "partial"; id: string; project: string; reason: string; attached: number }
   | { kind: "failed"; message: string };
 
 interface Answer {
@@ -62,7 +66,7 @@ export function outcomeOf(ok: boolean, raw: string, refused: number): IntakeOutc
     return { kind: "failed", message: textOf(answer.message) ?? strings.intake.failed };
   }
   if (!ok) {
-    return { kind: "partial", id, project, reason: textOf(answer.reason) ?? "" };
+    return { kind: "partial", id, project, reason: textOf(answer.reason) ?? "", attached };
   }
   return {
     kind: "recorded",
@@ -96,14 +100,14 @@ export function refusalReason(kind: RefusalKind, name: string, bytes: number): s
   if (kind === "size") {
     return fill(strings.intake.refusedSize, {
       name,
-      size: megabytes(bytes),
-      cap: megabytes(MAX_FILE_BYTES),
+      size: fileSize(bytes),
+      cap: fileSize(MAX_FILE_BYTES),
     });
   }
   if (kind === "count") {
     return fill(strings.intake.refusedNumber, { name, count: String(MAX_FILES) });
   }
-  return fill(strings.intake.refusedTotal, { name, cap: megabytes(MAX_REQUEST_BYTES) });
+  return fill(strings.intake.refusedTotal, { name, cap: fileSize(MAX_REQUEST_BYTES) });
 }
 
 export function refusalLine(reasons: readonly string[]): string {
@@ -292,7 +296,7 @@ export function Intake({
                     key={entry.key}
                   >
                     <span className="pw-cell--data pw-intake__file-name">{entry.name}</span>
-                    <span className="pw-intake__file-size">{megabytes(entry.bytes)}</span>
+                    <span className="pw-intake__file-size">{fileSize(entry.bytes)}</span>
                     {kind === undefined ? null : (
                       <span className="pw-intake__file-size">{strings.intake.refusedFlag}</span>
                     )}
@@ -373,7 +377,10 @@ function IntakeNotice({
   if (outcome.kind === "partial") {
     return (
       <p className="pw-notice pw-notice--alert" role="alert" ref={notice} tabIndex={-1}>
-        {link} {fill(strings.intake.partial, { reason: outcome.reason })}
+        {link}{" "}
+        {fill(outcome.attached === 0 ? strings.intake.partial : strings.intake.partialNote, {
+          reason: outcome.reason,
+        })}
       </p>
     );
   }

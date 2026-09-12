@@ -15,7 +15,7 @@ import { BuildBanner } from "./components/Build.js";
 import { Failure } from "./components/Failure.js";
 import { Filters, filterSentence } from "./components/Filters.js";
 import { Header } from "./components/Header.js";
-import { Intake, type Drop } from "./components/Intake.js";
+import { carriesFiles, Intake, type Drop } from "./components/Intake.js";
 import { NeedsYou } from "./components/NeedsYou.js";
 import { Parked } from "./components/Parked.js";
 import { Problems } from "./components/Problems.js";
@@ -230,9 +230,18 @@ export function App() {
   const board = useMemo(() => (taken === undefined ? undefined : buildBoard(taken, filter)), [taken, filter]);
 
   const onDragEnter = useCallback((event: DragEvent<HTMLElement>) => {
+    if (!carriesFiles(event)) {
+      return;
+    }
     event.preventDefault();
     dragging.current += 1;
     setDropping(true);
+  }, []);
+
+  const onDragOver = useCallback((event: DragEvent<HTMLElement>) => {
+    if (carriesFiles(event)) {
+      event.preventDefault();
+    }
   }, []);
 
   const onDragLeave = useCallback(() => {
@@ -243,6 +252,9 @@ export function App() {
   }, []);
 
   const onDrop = useCallback((event: DragEvent<HTMLElement>) => {
+    if (!carriesFiles(event)) {
+      return;
+    }
     event.preventDefault();
     dragging.current = 0;
     setDropping(false);
@@ -300,7 +312,7 @@ export function App() {
       <main
         className={dropping ? "pw-console pw-console--dropping" : "pw-console"}
         onDragEnter={onDragEnter}
-        onDragOver={(event) => event.preventDefault()}
+        onDragOver={onDragOver}
         onDragLeave={onDragLeave}
         onDrop={onDrop}
       >

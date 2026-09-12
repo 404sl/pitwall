@@ -195,7 +195,9 @@ export const strings = {
     onlyRefused: { one: "1 file refused", many: "{count} files refused" },
     assigned: "Assigned to {assignee}, labelled {label}.",
     catchUp: "The board catches up at its next snapshot.",
-    partial: "recorded, but its files were not: {reason} The text is safe on the ticket.",
+    partial: "recorded, but its files were not saved: {reason} The text is safe on the ticket.",
+    partialNote:
+      "recorded and its files are on disk, but the ticket does not list them: {reason} The text is safe on the ticket.",
     failed: "Nothing was recorded.",
     unreachable: "The console could not be reached, so nothing was recorded.",
   },

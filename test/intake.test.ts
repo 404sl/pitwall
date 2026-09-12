@@ -15,9 +15,11 @@ import { createdId, createArgs, setMetadataArgs } from "../src/beads.ts";
 import {
   INTAKE_DIR,
   INTAKE_ROUTE,
+  INTAKE_TYPE,
+  MAX_BODY_BYTES,
   MAX_FILES,
   MAX_FILE_BYTES,
-  megabytes,
+  fileSize,
   planningSession,
   safeName,
   sift,
@@ -35,8 +37,12 @@ const BOUNDARY = "----pitwallTestBoundary";
 const CREATED = "mw-new";
 
 test("a cap refusal names the file, its size and the real cap", () => {
-  assert.equal(megabytes(12_998_493), "12.4 MB");
-  assert.equal(megabytes(MAX_FILE_BYTES), "10 MB");
+  assert.equal(fileSize(12_998_493), "12.4 MB");
+  assert.equal(fileSize(MAX_FILE_BYTES), "10 MB");
+  assert.equal(fileSize(860_160), "840 KB");
+  assert.equal(fileSize(4_096), "4 KB");
+  assert.equal(fileSize(200), "200 B");
+  assert.equal(fileSize(1_048_575), "1 MB");
 
   const sifted = sift([
     { name: "shot.png", bytes: 4 },
@@ -100,14 +106,14 @@ test("bd is asked to create the issue the ticket describes, and its id is read b
     metadataFile: "/tmp/meta.json",
     assignee: "mw-planning-session",
     labels: ["unrefined"],
-    issueType: "feature",
+    issueType: INTAKE_TYPE,
   });
 
   assert.deepEqual(args, [
     "create",
     "a title",
     "--type",
-    "feature",
+    INTAKE_TYPE,
     "--assignee",
     "mw-planning-session",
     "--labels",
@@ -146,7 +152,7 @@ function multipart(parts: readonly Buffer[]): Buffer {
   return Buffer.concat([...parts, Buffer.from(`--${BOUNDARY}--\r\n`, "utf8")]);
 }
 
-test("multipart text survives the parser exactly, CRLF and all", () => {
+test("the parser hands back part bodies byte for byte, CRLF and all", () => {
   assert.equal(boundaryOf(`multipart/form-data; boundary=${BOUNDARY}`), BOUNDARY);
   assert.equal(boundaryOf(`multipart/form-data; boundary="${BOUNDARY}"`), BOUNDARY);
   assert.equal(boundaryOf("application/json"), undefined);
@@ -268,7 +274,7 @@ function calls(path: string): string[] {
     : [];
 }
 
-const TYPED = "  the console cannot record a new request  \r\n\nsecond line, ünicode, trailing space  ";
+const TYPED = "  the console cannot record a new request  \n\nsecond line, ünicode, trailing space  ";
 
 test("text and a dropped screenshot become one bead whose raw text is byte for byte what was typed", async (t) => {
   const box = await recording(t);
@@ -305,6 +311,39 @@ test("text and a dropped screenshot become one bead whose raw text is byte for b
   assert.match(created[0] ?? "", /--assignee mw-planning-session/);
   assert.match(created[0] ?? "", /--labels unrefined/);
   assert.doesNotMatch(created[0] ?? "", /devloop/, "intake assigned a bead to a lane");
+});
+
+test("what the browser's own encoder sends is stored exactly as it was typed", async (t) => {
+  const box = await recording(t);
+  const typed = "  the console cannot record a new request  \n\nsecond line, ünicode, trailing space  ";
+  const dropped = "first\r\nsecond\r\n";
+  const form = new FormData();
+  form.append("text", typed);
+  form.append("project", "mw");
+  form.append("files", new Blob([Buffer.from(dropped, "utf8")]), "log.txt");
+  const encoded = new Response(form);
+  const contentType = encoded.headers.get("content-type") ?? "";
+  const payload = Buffer.from(await encoded.arrayBuffer());
+
+  assert.ok(
+    payload.toString("utf8").includes("request  \r\n\r\nsecond line"),
+    "the encoder no longer folds a typed newline to CRLF, and this test no longer proves anything",
+  );
+
+  const answered = await box.post(payload, { headers: { "content-type": contentType } });
+  assert.equal(answered.status, 200, answered.body);
+
+  assert.equal(readFileSync(box.body, "utf8"), typed, "the description is not what was typed");
+  const written = JSON.parse(readFileSync(box.meta, "utf8")) as { intake: { raw: string } };
+  assert.equal(written.intake.raw, typed, "metadata.intake.raw is not what was typed");
+
+  const home = intakePath(box.root, CREATED);
+  assert.equal(
+    readFileSync(join(home, "log.txt"), "utf8"),
+    dropped,
+    "a dropped file's own bytes were rewritten",
+  );
+  assert.match(calls(box.log).find((line) => line.startsWith("create ")) ?? "", /--type task/);
 });
 
 test("a dropped file leaves the checkout it landed in clean", async (t) => {
@@ -356,6 +395,18 @@ test("an empty box records nothing, and neither does one over the cap", async (t
   assert.deepEqual(calls(box.log), [], "a request over the cap still reached the tracker");
 });
 
+test("a request past the body cap is refused in words, not by a dropped connection", async (t) => {
+  const box = await recording(t);
+
+  const answered = await box.post(
+    multipart([part("text", "a big one"), part("files", "x".repeat(MAX_BODY_BYTES), "huge.bin")]),
+  );
+
+  assert.equal(answered.status, 413, answered.body);
+  assert.match(answered.body, /over the 25 MB cap/);
+  assert.deepEqual(calls(box.log), [], "a request over the body cap still reached the tracker");
+});
+
 test("when the files cannot be recorded the bead and its id still come back", async (t) => {
   const box = await recording(t, { BD_METADATA_FAIL: "the tracker is locked" });
 
@@ -365,11 +416,16 @@ test("when the files cannot be recorded the bead and its id still come back", as
   const answer = JSON.parse(answered.body) as { id: string; reason: string; message: string };
   assert.equal(answer.id, CREATED, "a half-written request lost the id the owner has to follow");
   assert.match(answer.reason, /bd update mw-new --metadata/);
+  assert.match(
+    answer.message,
+    /its files are on disk, but the ticket does not list them/,
+    "a partial notice told the owner files were lost that are on disk",
+  );
   assert.match(answer.message, /The text is safe on the ticket/);
   assert.equal(readFileSync(box.body, "utf8"), TYPED);
 });
 
-const { Intake, attachedSentence, outcomeOf, refusalLine, refusalReason } = await import(
+const { Intake, attachedSentence, carriesFiles, outcomeOf, refusalLine, refusalReason } = await import(
   "../ui/components/Intake.tsx"
 );
 
@@ -400,7 +456,7 @@ test("the success line leads with the number, and a refusal is never silent", ()
 
 test("a half-written answer reads as partial, and a bodiless failure as a failure", () => {
   const partial = outcomeOf(false, JSON.stringify({ id: "mw-9", project: "mw", reason: "disk full." }), 0);
-  assert.deepEqual(partial, { kind: "partial", id: "mw-9", project: "mw", reason: "disk full." });
+  assert.deepEqual(partial, { kind: "partial", id: "mw-9", project: "mw", reason: "disk full.", attached: 0 });
 
   const failed = outcomeOf(false, JSON.stringify({ message: "Nothing was recorded - no snapshot." }), 0);
   assert.deepEqual(failed, { kind: "failed", message: "Nothing was recorded - no snapshot." });
@@ -419,4 +475,10 @@ test("a half-written answer reads as partial, and a bodiless failure as a failur
     attached: 1,
     refused: 1,
   });
+});
+
+test("a drag that carries no file never opens the box", () => {
+  assert.equal(carriesFiles({ dataTransfer: { types: ["Files"] } }), true);
+  assert.equal(carriesFiles({ dataTransfer: { types: ["text/plain", "text/html"] } }), false);
+  assert.equal(carriesFiles({ dataTransfer: { types: [] } }), false);
 });

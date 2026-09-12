@@ -22,7 +22,7 @@ import {
   MAX_FILES,
   MAX_FILE_BYTES,
   MAX_REQUEST_BYTES,
-  megabytes,
+  fileSize,
   planningSession,
   sift,
 } from "./intake.js";
@@ -691,15 +691,22 @@ async function serveAction(
   });
 }
 
+export class BodyTooLarge extends Error {}
+
 function readBytes(req: IncomingMessage, limit: number): Promise<Buffer> {
   return new Promise((done, failed) => {
     const chunks: Buffer[] = [];
     let size = 0;
+    let over = false;
     req.on("data", (chunk: Buffer) => {
+      if (over) {
+        return;
+      }
       size += chunk.length;
       if (size > limit) {
-        failed(new Error(`it is longer than ${String(limit)} bytes`));
-        req.destroy();
+        over = true;
+        chunks.length = 0;
+        failed(new BodyTooLarge(`it carries more than ${fileSize(limit)}`));
         return;
       }
       chunks.push(chunk);
@@ -725,7 +732,11 @@ function droppedIn(body: Buffer, boundary: string): Dropped {
   const fieldOf = (name: string) =>
     parts.find((part) => part.name === name && part.filename === undefined)?.body.toString("utf8") ??
     "";
-  return { raw: fieldOf("text"), project: fieldOf("project"), files };
+  return {
+    raw: fieldOf("text").replace(/\r\n/g, "\n"),
+    project: fieldOf("project"),
+    files,
+  };
 }
 
 function overCap(files: readonly DroppedFile[]): string | undefined {
@@ -735,12 +746,12 @@ function overCap(files: readonly DroppedFile[]): string | undefined {
     return undefined;
   }
   if (first.kind === "size") {
-    return `${first.name} is ${megabytes(first.bytes)}, over the ${megabytes(MAX_FILE_BYTES)} cap`;
+    return `${first.name} is ${fileSize(first.bytes)}, over the ${fileSize(MAX_FILE_BYTES)} cap`;
   }
   if (first.kind === "count") {
     return `it carried more than ${String(MAX_FILES)} files`;
   }
-  return `the files together are over the ${megabytes(MAX_REQUEST_BYTES)} cap`;
+  return `the files together are over the ${fileSize(MAX_REQUEST_BYTES)} cap`;
 }
 
 function intakeProject(snapshot: Snapshot, named: string): Project | { message: string } {
@@ -778,8 +789,12 @@ async function serveIntake(
   try {
     dropped = droppedIn(await readBytes(req, MAX_BODY_BYTES), boundary);
   } catch (cause) {
-    sendJson(res, 400, {
-      message: `Nothing was recorded - the request body could not be read: ${cause instanceof Error ? cause.message : String(cause)}`,
+    const reason = cause instanceof Error ? cause.message : String(cause);
+    sendJson(res, cause instanceof BodyTooLarge ? 413 : 400, {
+      message:
+        cause instanceof BodyTooLarge
+          ? `Nothing was recorded - ${reason}, over the ${fileSize(MAX_REQUEST_BYTES)} cap on the files in one request.`
+          : `Nothing was recorded - the request body could not be read: ${reason}`,
     });
     return;
   }
@@ -835,7 +850,10 @@ async function serveIntake(
     sendJson(res, 502, {
       ...recorded,
       reason: recording.reason,
-      message: `${recording.id} was recorded, but its files were not: ${recording.reason} The text is safe on the ticket.`,
+      message:
+        recording.files.length === 0
+          ? `${recording.id} was recorded, but its files were not saved: ${recording.reason} The text is safe on the ticket.`
+          : `${recording.id} was recorded and its files are on disk, but the ticket does not list them: ${recording.reason} The text is safe on the ticket.`,
     });
     return;
   }
