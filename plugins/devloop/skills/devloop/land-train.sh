@@ -143,7 +143,27 @@ msgfile=$(mktemp "${TMPDIR:-/tmp}/train-msg.XXXXXX")
 
 while IFS="$(printf '\t')" read -r num branch title; do
   [ -n "$num" ] || continue
-  if ! git_with_identity merge --squash "origin/${branch}" >/dev/null 2>/dev/null; then
+  squash_ref="origin/${branch}"
+  dropped=0
+  while [ "$dropped" -lt 20 ]; do
+    case "$(git log -1 --format=%s "$squash_ref" 2>/dev/null)" in
+      "Set the plugin version "*|"Set devloop plugin version "*) ;;
+      *) break ;;
+    esac
+    parent=$(git rev-parse --verify --quiet "${squash_ref}^1" 2>/dev/null)
+    [ -n "$parent" ] || break
+    [ "$(git rev-list --count "origin/master..$parent" 2>/dev/null || echo 0)" -ge 1 ] || break
+    changed=$(git diff --name-only "$parent" "$squash_ref" 2>/dev/null)
+    [ -n "$changed" ] || break
+    printf '%s\n' "$changed" \
+      | grep -qvE '^(\.claude-plugin/marketplace\.json|plugins/devloop/\.claude-plugin/plugin\.json|plugins/devloop/skills/devloop/CHANGELOG\.md)$' \
+      && break
+    squash_ref="$parent"
+    dropped=$((dropped + 1))
+  done
+  drop_note=""
+  [ "$dropped" = "0" ] || drop_note=" - dropped ${dropped} version commit(s) an earlier round wrote, the train's own number covers it"
+  if ! git_with_identity merge --squash "$squash_ref" >/dev/null 2>/dev/null; then
     files=$(git diff --name-only --diff-filter=U 2>/dev/null | tr '\n' ' ')
     git reset --hard HEAD >/dev/null 2>/dev/null
     git clean -fd >/dev/null 2>/dev/null
@@ -164,7 +184,7 @@ while IFS="$(printf '\t')" read -r num branch title; do
     skipped="${skipped}${num} "
     continue
   }
-  say "  added   #${num} ${branch}"
+  say "  added   #${num} ${branch}${drop_note}"
   included="${included}${num} "
   if git show --name-only --format= HEAD 2>/dev/null | grep -qE '^(plugins/|\.claude-plugin/)'; then
     plugin_prs="${plugin_prs}${num} "
