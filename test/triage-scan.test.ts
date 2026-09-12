@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { GIT_ENV } from "./support/git.js";
 
 const SCRIPT = join(
   import.meta.dirname,
@@ -100,6 +101,7 @@ function scan(box: Harness, mark: boolean): Ran {
     encoding: "utf8",
     env: {
       ...process.env,
+      ...GIT_ENV,
       PATH: `${box.bin}:${process.env["PATH"] ?? ""}`,
       HOME: box.home,
       DEVLOOP_ROOT: box.root,
