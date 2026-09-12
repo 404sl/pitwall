@@ -102,19 +102,29 @@ function timesListed(roots: ResolvedRoots): Map<string, number> {
   return counted;
 }
 
-function suffixOf(dir: string, depth: number): string {
-  const segments = dir.split(sep).filter((segment) => segment !== "");
-  return depth >= segments.length ? dir : segments.slice(-depth).join(sep);
+function segmentsOf(dir: string): string[] {
+  return dir.split(sep).filter((segment) => segment !== "");
+}
+
+function sharedTail(a: readonly string[], b: readonly string[]): number {
+  let shared = 0;
+  while (shared < a.length && shared < b.length && a[a.length - 1 - shared] === b[b.length - 1 - shared]) {
+    shared += 1;
+  }
+  return shared;
 }
 
 function labelsOf(dirs: readonly string[]): Map<string, string> {
+  const segments = new Map(dirs.map((dir) => [dir, segmentsOf(dir)]));
   const labels = new Map<string, string>();
-  for (const dir of dirs) {
+  for (const [dir, own] of segments) {
     let depth = 1;
-    while (dirs.some((other) => other !== dir && suffixOf(other, depth) === suffixOf(dir, depth))) {
-      depth += 1;
+    for (const [other, theirs] of segments) {
+      if (other !== dir) {
+        depth = Math.max(depth, sharedTail(own, theirs) + 1);
+      }
     }
-    labels.set(dir, suffixOf(dir, depth));
+    labels.set(dir, depth >= own.length ? dir : own.slice(-depth).join(sep));
   }
   return labels;
 }

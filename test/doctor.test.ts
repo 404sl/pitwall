@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { cpSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WORKSPACE_FILE } from "../src/autofix.ts";
 import { diagnose, renderDoctor, type Check, type Diagnosis } from "../src/doctor.ts";
@@ -280,7 +280,7 @@ test("two roots sharing a basename are named by the shortest suffix that tells t
   assert.equal(diagnosis.code, 0);
 });
 
-test("a root whose path is the tail of another root's path still gets a name of its own", async () => {
+test("two roots sharing a basename and a parent name are told apart by the grandparent", async () => {
   const parent = root();
   const shorter = healthy("shorter", join(parent, "work", "pitwall"));
   const longer = healthy("longer", join(parent, "x", "work", "pitwall"));
@@ -289,6 +289,20 @@ test("a root whose path is the tail of another root's path still gets a name of 
   assert.ok(names.has(`${basename(parent)}/work/pitwall bd`), [...names].join(", "));
   assert.ok(names.has("x/work/pitwall bd"), [...names].join(", "));
   assert.equal(diagnosis.checks.filter((check) => check.name === "work/pitwall bd").length, 0);
+  assert.equal(diagnosis.code, 0);
+});
+
+test("a root whose whole path is the tail of another root's path is named in full, and the other by one segment more", async () => {
+  const base = root();
+  const shorter = healthy("shorter", join(base, "work", "pitwall"));
+  const longer = healthy("longer", join(base, ...base.split(sep).filter(Boolean), "work", "pitwall"));
+  const diagnosis = await diagnose(options([shorter, longer]));
+  const longerName = [basename(base), ...shorter.split(sep).filter(Boolean)].join(sep);
+  assert.equal(named(diagnosis, `${shorter} bd`).severity, "ok");
+  assert.equal(named(diagnosis, `${longerName} bd`).severity, "ok");
+  const bd = diagnosis.checks.filter((check) => check.name.endsWith(" bd")).map((check) => check.name);
+  assert.deepEqual(bd, [`${shorter} bd`, `${longerName} bd`]);
+  assert.equal(diagnosis.checks.filter((check) => check.name === `${shorter.slice(1)} bd`).length, 0);
   assert.equal(diagnosis.code, 0);
 });
 
