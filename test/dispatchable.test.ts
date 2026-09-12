@@ -17,9 +17,9 @@ type Issue = {
   labels?: readonly string[];
 };
 
-type Run = { status: number; out: string; err: string };
+type Run = { status: number; signal: string | null; out: string; err: string };
 
-function runDispatchable(cwd: string, extraPath: string, declareRoot = true): Run {
+function runDispatchable(cwd: string, extraPath: string, declareRoot = true, args: readonly string[] = []): Run {
   const env: Record<string, string | undefined> = {
     ...process.env,
     ...GIT_ENV,
@@ -29,8 +29,8 @@ function runDispatchable(cwd: string, extraPath: string, declareRoot = true): Ru
     LOCK_PREFIX: undefined,
     PATH: `${extraPath}:${process.env["PATH"] ?? ""}`,
   };
-  const ran = spawnSync("bash", [DISPATCHABLE_SH], { encoding: "utf8", cwd, env });
-  return { status: ran.status ?? -1, out: ran.stdout ?? "", err: ran.stderr ?? "" };
+  const ran = spawnSync("bash", [DISPATCHABLE_SH, ...args], { encoding: "utf8", cwd, env, timeout: 5000 });
+  return { status: ran.status ?? -1, signal: ran.signal, out: ran.stdout ?? "", err: ran.stderr ?? "" };
 }
 
 function stubBd(issues: readonly Issue[]): string {
@@ -163,4 +163,14 @@ test("dispatchable.sh refuses rather than guessing whose workspace it is reading
     "the refusal names a config field rather than the missing config file",
   );
   assert.match(err, /refusing to guess/);
+});
+
+test("dispatchable.sh refuses --limit with no value instead of looping on it forever", () => {
+  const root = mkdtempSync(join(tmpdir(), "pitwall-dispatchable-novalue-"));
+
+  const { status, signal, out, err } = runDispatchable(root, stubBd([]), true, ["--limit"]);
+
+  assert.equal(signal, null, "the script had to be killed");
+  assert.equal(status, 6, `${out}${err}`);
+  assert.match(err, /--limit needs a value/);
 });

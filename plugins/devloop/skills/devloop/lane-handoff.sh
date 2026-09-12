@@ -59,15 +59,33 @@ REPO_PATH=""; SLUG=""; PR=""; BRANCH=""; ISSUE=""; NOTE_FILE=""; WT=""; LOCK="";
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --repo-path) REPO_PATH="${2:-}"; shift 2 ;;
-    --slug)      SLUG="${2:-}";      shift 2 ;;
-    --pr)        PR="${2:-}";        shift 2 ;;
-    --branch)    BRANCH="${2:-}";    shift 2 ;;
-    --issue)     ISSUE="${2:-}";     shift 2 ;;
-    --note-file) NOTE_FILE="${2:-}"; shift 2 ;;
-    --worktree)  WT="${2:-}";        shift 2 ;;
-    --lane-lock) LOCK="${2:-}";      shift 2 ;;
-    --label)     LABEL="${2:-}";     shift 2 ;;
+    --repo-path)
+      [ $# -ge 2 ] || { echo "--repo-path needs a value" >&2; exit 6; }
+      REPO_PATH="${2:-}"; shift 2 ;;
+    --slug)
+      [ $# -ge 2 ] || { echo "--slug needs a value" >&2; exit 6; }
+      SLUG="${2:-}"; shift 2 ;;
+    --pr)
+      [ $# -ge 2 ] || { echo "--pr needs a value" >&2; exit 6; }
+      PR="${2:-}"; shift 2 ;;
+    --branch)
+      [ $# -ge 2 ] || { echo "--branch needs a value" >&2; exit 6; }
+      BRANCH="${2:-}"; shift 2 ;;
+    --issue)
+      [ $# -ge 2 ] || { echo "--issue needs a value" >&2; exit 6; }
+      ISSUE="${2:-}"; shift 2 ;;
+    --note-file)
+      [ $# -ge 2 ] || { echo "--note-file needs a value" >&2; exit 6; }
+      NOTE_FILE="${2:-}"; shift 2 ;;
+    --worktree)
+      [ $# -ge 2 ] || { echo "--worktree needs a value" >&2; exit 6; }
+      WT="${2:-}"; shift 2 ;;
+    --lane-lock)
+      [ $# -ge 2 ] || { echo "--lane-lock needs a value" >&2; exit 6; }
+      LOCK="${2:-}"; shift 2 ;;
+    --label)
+      [ $# -ge 2 ] || { echo "--label needs a value" >&2; exit 6; }
+      LABEL="${2:-}"; shift 2 ;;
     --check-only) CHECK_ONLY=1;      shift 1 ;;
     *) echo "unknown argument: $1" >&2; exit 6 ;;
   esac

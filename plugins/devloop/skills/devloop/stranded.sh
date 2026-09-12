@@ -40,7 +40,9 @@ LOCK_PREFIX="${LOCK_PREFIX:-$(bash "$HERE/config.sh" lockPrefix 2>/dev/null || e
 ONLY=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --repo) ONLY="${2:-}"; shift 2 ;;
+    --repo)
+      [ $# -ge 2 ] || { echo "--repo needs a value" >&2; exit 6; }
+      ONLY="${2:-}"; shift 2 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done

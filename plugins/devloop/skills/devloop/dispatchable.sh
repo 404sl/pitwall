@@ -45,7 +45,9 @@ set -u
 LIMIT=0
 while [ $# -gt 0 ]; do
   case "$1" in
-    --limit) LIMIT="${2:-0}"; shift 2 ;;
+    --limit)
+      [ $# -ge 2 ] || { echo "--limit needs a value" >&2; exit 6; }
+      LIMIT="${2:-0}"; shift 2 ;;
     *) echo "unknown argument: $1" >&2; exit 6 ;;
   esac
 done

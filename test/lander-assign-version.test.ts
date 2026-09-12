@@ -101,12 +101,18 @@ function branch(repo: Repo, name: string, touch: () => void, message = "Work on 
   git(repo.dir, "commit", "--quiet", "-m", message);
 }
 
-function assign(repo: Repo, args: string[] = []): { status: number; out: string } {
+function assign(repo: Repo, args: string[] = []): { status: number; signal: string | null; out: string; err: string } {
   const ran = spawnSync("bash", [SCRIPT, "--worktree", repo.dir, ...args], {
     encoding: "utf8",
+    timeout: 5000,
     env: { ...process.env, ...GIT_ENV, PATH: `${repo.bin}:${process.env.PATH ?? ""}` },
   });
-  return { status: ran.status ?? -1, out: `${ran.stdout ?? ""}${ran.stderr ?? ""}` };
+  return {
+    status: ran.status ?? -1,
+    signal: ran.signal,
+    out: `${ran.stdout ?? ""}${ran.stderr ?? ""}`,
+    err: ran.stderr ?? "",
+  };
 }
 
 function entryFile(text: string): string {
@@ -445,4 +451,15 @@ test("the commit the lander writes carries nothing the handoff gate screens for"
       "branch, so nothing re-reads it before it is on public master",
   );
   assert.match(message, /^Set the plugin version 0\.1\.34$/m);
+});
+
+test("a flag that takes a value is refused when given none, not looped on forever", () => {
+  const repo = repoAt("0.1.33");
+  for (const flag of ["--worktree", "--base", "--slug", "--pr", "--entry-file"]) {
+    const { status, signal, out, err } = assign(repo, [flag]);
+
+    assert.equal(signal, null, `${flag}: the script had to be killed`);
+    assert.equal(status, 6, `${flag}: ${out}`);
+    assert.match(err, new RegExp(`${flag} needs a value`));
+  }
 });

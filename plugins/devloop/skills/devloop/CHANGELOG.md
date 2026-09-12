@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.66
+
+A value-taking flag given as the last argument to assign-plugin-version.sh, land-train.sh, dispatchable.sh, lane-handoff.sh, land-one.sh or stranded.sh now exits 6 and names the flag, instead of spinning forever. A session that sees exit 6 from one of these with "needs a value" on stderr dropped or misplaced a flag's value in the invocation.
+
 ## 0.1.65
 
 A pull request whose state gh could not read no longer stops the landing pass. The read is logged as `pr_unreadable` and the pull request is handed to `land-one.sh`, which reads master, the rollup and the label itself and exits without merging when gh still cannot answer, so the pull request is deferred to a later round rather than stopped or retired. `land-one.sh` now reports a master run list gh could not answer as `unreadable` (exit 9) instead of as a red master, so a throttled or logged-out gh no longer stops a whole pass, skips its deploy or leaves merged issues open.

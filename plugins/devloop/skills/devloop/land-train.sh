@@ -41,13 +41,27 @@ REPO_PATH=""; SLUG=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --repo-path) REPO_PATH="${2:-}"; shift 2 ;;
-    --slug)      SLUG="${2:-}";      shift 2 ;;
-    --label)     LABEL="${2:-}";     shift 2 ;;
-    --max)       MAX="${2:-}";       shift 2 ;;
-    --only)      ONLY="${2:-}";      shift 2 ;;
-    --suffix)    SUFFIX="${2:-}";    shift 2 ;;
-    --prefix)    PREFIX="${2:-}";    shift 2 ;;
+    --repo-path)
+      [ $# -ge 2 ] || { echo "--repo-path needs a value" >&2; exit 6; }
+      REPO_PATH="${2:-}"; shift 2 ;;
+    --slug)
+      [ $# -ge 2 ] || { echo "--slug needs a value" >&2; exit 6; }
+      SLUG="${2:-}"; shift 2 ;;
+    --label)
+      [ $# -ge 2 ] || { echo "--label needs a value" >&2; exit 6; }
+      LABEL="${2:-}"; shift 2 ;;
+    --max)
+      [ $# -ge 2 ] || { echo "--max needs a value" >&2; exit 6; }
+      MAX="${2:-}"; shift 2 ;;
+    --only)
+      [ $# -ge 2 ] || { echo "--only needs a value" >&2; exit 6; }
+      ONLY="${2:-}"; shift 2 ;;
+    --suffix)
+      [ $# -ge 2 ] || { echo "--suffix needs a value" >&2; exit 6; }
+      SUFFIX="${2:-}"; shift 2 ;;
+    --prefix)
+      [ $# -ge 2 ] || { echo "--prefix needs a value" >&2; exit 6; }
+      PREFIX="${2:-}"; shift 2 ;;
     *) echo "unknown argument: $1" >&2; exit 6 ;;
   esac
 done
