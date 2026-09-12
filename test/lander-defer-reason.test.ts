@@ -6,6 +6,7 @@ import { runScript, type Call } from "./support/workflow.js";
 const ARGS = {
   skillDir: "/skill",
   root: "/root",
+  lockToken: "lander-1788964650-29574",
   repos: { site: { path: "cli", slug: "404sl/pitwall" } },
 };
 
