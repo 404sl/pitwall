@@ -39,11 +39,21 @@ help() {
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --worktree)   WT="${2:-}";         shift 2 ;;
-    --base)       BASE="${2:-}";       shift 2 ;;
-    --slug)       SLUG="${2:-}";       shift 2 ;;
-    --pr)         PRS="${PRS}${2:-} "; shift 2 ;;
-    --entry-file) ENTRY_FILE="${2:-}"; shift 2 ;;
+    --worktree)
+      [ $# -ge 2 ] || { say "usage: --worktree needs a value" >&2; exit 6; }
+      WT="${2:-}"; shift 2 ;;
+    --base)
+      [ $# -ge 2 ] || { say "usage: --base needs a value" >&2; exit 6; }
+      BASE="${2:-}"; shift 2 ;;
+    --slug)
+      [ $# -ge 2 ] || { say "usage: --slug needs a value" >&2; exit 6; }
+      SLUG="${2:-}"; shift 2 ;;
+    --pr)
+      [ $# -ge 2 ] || { say "usage: --pr needs a value" >&2; exit 6; }
+      PRS="${PRS}${2:-} "; shift 2 ;;
+    --entry-file)
+      [ $# -ge 2 ] || { say "usage: --entry-file needs a value" >&2; exit 6; }
+      ENTRY_FILE="${2:-}"; shift 2 ;;
     -h|--help)    help; exit 0 ;;
     *) say "usage: unknown argument: $1"; exit 6 ;;
   esac

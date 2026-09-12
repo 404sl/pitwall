@@ -48,12 +48,24 @@ REPO_PATH=""; SLUG=""; PR=""; BRANCH=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --repo-path) REPO_PATH="${2:-}"; shift 2 ;;
-    --slug)      SLUG="${2:-}";      shift 2 ;;
-    --pr)        PR="${2:-}";        shift 2 ;;
-    --branch)    BRANCH="${2:-}";    shift 2 ;;
-    --prefix)    PREFIX="${2:-}";    shift 2 ;;
-    --label)     LABEL="${2:-}";     shift 2 ;;
+    --repo-path)
+      [ $# -ge 2 ] || { echo "--repo-path needs a value" >&2; exit 6; }
+      REPO_PATH="${2:-}"; shift 2 ;;
+    --slug)
+      [ $# -ge 2 ] || { echo "--slug needs a value" >&2; exit 6; }
+      SLUG="${2:-}"; shift 2 ;;
+    --pr)
+      [ $# -ge 2 ] || { echo "--pr needs a value" >&2; exit 6; }
+      PR="${2:-}"; shift 2 ;;
+    --branch)
+      [ $# -ge 2 ] || { echo "--branch needs a value" >&2; exit 6; }
+      BRANCH="${2:-}"; shift 2 ;;
+    --prefix)
+      [ $# -ge 2 ] || { echo "--prefix needs a value" >&2; exit 6; }
+      PREFIX="${2:-}"; shift 2 ;;
+    --label)
+      [ $# -ge 2 ] || { echo "--label needs a value" >&2; exit 6; }
+      LABEL="${2:-}"; shift 2 ;;
     *) echo "unknown argument: $1" >&2; exit 6 ;;
   esac
 done

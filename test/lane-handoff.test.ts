@@ -257,6 +257,7 @@ function harness(
 
 interface Ran {
   status: number;
+  signal: string | null;
   stdout: string;
   stderr: string;
   labelled: boolean;
@@ -268,9 +269,11 @@ function handoff(
   args: string[],
   record: boolean,
   env: Record<string, string> = {},
+  timeout?: number,
 ): Ran {
   const ran = spawnSync("bash", [SCRIPT, ...args], {
     encoding: "utf8",
+    timeout,
     env: {
       ...process.env,
       ...GIT_ENV,
@@ -290,6 +293,7 @@ function handoff(
   }
   return {
     status: ran.status ?? -1,
+    signal: ran.signal,
     stdout: ran.stdout ?? "",
     stderr: ran.stderr ?? "",
     labelled: calls.includes("pr edit"),
@@ -889,4 +893,17 @@ test("a second repository's pending commit status is not-green, not unreadable",
   assert.match(ran.stdout, /not-green: BAD:codecov\/project on acme\/other#7/);
   assert.doesNotMatch(ran.stdout, /unreadable/);
   assert.equal(ran.labelled, false, "a pull request with a pending commit status was labelled");
+});
+
+test("a flag that takes a value is refused when given none, not looped on forever", () => {
+  const box = harness("");
+  const flags = ["--repo-path", "--slug", "--pr", "--branch", "--issue", "--note-file", "--worktree", "--lane-lock", "--label"];
+  for (const flag of flags) {
+    const ran = handoff(box, [...required(box), flag], true, {}, 5000);
+
+    assert.equal(ran.signal, null, `${flag}: the script had to be killed`);
+    assert.equal(ran.status, 6, `${flag}: ${ran.stdout}${ran.stderr}`);
+    assert.match(ran.stderr, new RegExp(`${flag} needs a value`));
+    assert.equal(ran.labelled, false, `${flag}: the pull request was labelled despite the refusal`);
+  }
 });
