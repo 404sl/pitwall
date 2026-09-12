@@ -47,6 +47,16 @@ ID_RE="${ID_PFX}-[a-z0-9][a-z0-9]*\(\.[0-9][0-9]*\)*"
 
 now=$(date +%s)
 
+label_ids() {
+  local labels ids
+  labels=$(grep -oE '"label":"[^"]*"' "$1" 2>/dev/null | sed 's/^"label":"//; s/"$//')
+  [ -n "$labels" ] || return 0
+  ids=$(printf '%s\n' "$labels" | sed 's/^[^:]*://; s/#[0-9]*$//' |
+        grep -E '^[A-Za-z0-9]+-[A-Za-z0-9._-]+$' | sort -u | tr '\n' ' ')
+  ids="${ids% }"
+  printf '%s' "${ids:-no id in its labels}"
+}
+
 echo "LIVE WORKFLOWS (result not yet written)"
 found=0
 for f in "$TASKS"/w*.output; do
@@ -69,6 +79,8 @@ for d in $(ls -t "$WF" 2>/dev/null | head -14); do
   # unknown rather than skipped.
   iid=$(cat "$WF/$d"/agent-*.jsonl 2>/dev/null | grep -oham1 "$ID_RE" | head -1)
   [ -z "$iid" ] && iid="UNKNOWN - could not identify"
+  labelled=$(label_ids "$WF/$d/journal.jsonl")
+  [ -n "$labelled" ] && iid=$labelled
   state="idle"
   [ "$age" -lt 10 ] && state="working"
   printf "  %-20s %-14s %-8s last write %dmin ago\n" "$d" "$iid" "$state" "$age"
