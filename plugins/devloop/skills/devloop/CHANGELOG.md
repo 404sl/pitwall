@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.1.54
+
+A rework session now rebases a dropped pull request onto master instead of
+merging master into it, and must leave the branch linear before handing it back -
+`rev-list --merges origin/master..HEAD` has to print nothing. Because a rebase
+rewrites the commits, the push is forced with a lease bound to the head recorded
+before the rebase started; a plain force-push, or a lease widened to the bare
+branch name, is never the fallback. There is no merge message to write any more,
+since the replayed commits keep the ones the branch already carried.
+
+Finishing a stopped rebase needs `-c core.editor=true` alongside the identity on
+the same `--continue`, because `--continue` opens an editor on the replayed
+message and a session has neither a home config to take `core.editor` from nor a
+terminal to answer `vi` on. Do not finish one by writing a commit message
+instead - that throws away the message the replayed commit already carries.
+
+When a rebase conflicts on a generated file, take master's copy by naming it -
+`git checkout origin/master -- <file>`. `--theirs` means the commit being
+replayed during a rebase, not master, and `--ours` part way through a multi-commit
+rebase is master plus whatever has already replayed.
+
 ## 0.1.53
 
 A pull request the lander defers now says in the run log what land-one.sh actually printed, instead of reporting every reason as unfinished CI. A plugin version refusal that no later round can clear - a version file changed beyond its version, or a master version that does not read as three numbers - is reported as stopped instead of being retried every round; the label stays on and the branch is untouched, so it is surveyed again next run. An empty or stale rollup is still deferred and still retried. When land-one.sh exits 6 or 7, put the line it printed into 'notes' verbatim: the run reads that line to tell a refusal it can wait out from one it cannot.
