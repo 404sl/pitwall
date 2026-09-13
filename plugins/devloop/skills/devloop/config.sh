@@ -164,6 +164,37 @@ PY
   --args)
     # config.sh --args <issue-id> [slot]  ->  the args object for a task.js dispatch
     [ $# -ge 2 ] || { echo "usage: config.sh --args <issue-id> [slot]" >&2; exit 2; }
+    if command -v bd >/dev/null 2>&1; then
+      ROOT_DIR="${DEVLOOP_ROOT:-$(read_field root 2>/dev/null)}"
+      [ -n "$ROOT_DIR" ] && [ -d "$ROOT_DIR" ] || ROOT_DIR="$(dirname "$CONFIG")"
+      REWORK="$( (cd "$ROOT_DIR" && BEADS_DIR="${BEADS_DIR:-$ROOT_DIR/.beads}" bd show "$2" --json) | python3 -c '
+import json, sys
+try:
+    i = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+i = i[0] if isinstance(i, list) else i
+meta = i.get("metadata") if isinstance(i, dict) else None
+if isinstance(meta, str):
+    try:
+        meta = json.loads(meta)
+    except Exception:
+        meta = None
+r = (meta or {}).get("rework") if isinstance(meta, dict) else None
+pr = r.get("pr") if isinstance(r, dict) else None
+if isinstance(pr, str) and pr.isdigit():
+    pr = int(pr)
+if isinstance(pr, int) and not isinstance(pr, bool) and pr > 0:
+    repo = r.get("repo")
+    print("%d %s" % (pr, repo if isinstance(repo, str) and repo else "<repo>"))
+' 2>/dev/null)"
+      if [ -n "$REWORK" ]; then
+        echo "config.sh --args: $2 is a retired pull request waiting for rework, not a task - dispatch stops." >&2
+        echo "                  task.js triage bounces a pull request that is done and green. Build it with:" >&2
+        echo "                    config.sh --rework $2 ${REWORK}" >&2
+        exit 1
+      fi
+    fi
     SCRIPT_PATH="$(PITWALL_CONFIG="$CONFIG" bash "$SKILL_DIR/run-script.sh" task.js)" || {
       echo "config.sh --args: run-script.sh could not stage task.js - dispatch stops." >&2
       exit 1

@@ -509,11 +509,16 @@ single textual conflict and the result did not compile - two import lines, after
 #185 changed `live.sh`, and five tests master had added failed against it.
 
 The lander detects this - it rebases and waits for CI on the new head - and retires the pull
-request with the failures written onto the issue. Dispatch that retirement the same way as a
-dropped pull request - `config.sh --rework <id> <pr> <repo>` - reading the issue and the pull
-request number out of the lander's retirement note. `task.js` is the wrong door for what follows,
-for the same reason as above: the work is done, and triage says so. So `rework.js` has a **Repair**
-step between its handoff and its label. When CI is red on the rebased head it runs the repository's
+request with the failures written onto the issue, the pull request number and the repository
+written onto it as `rework` metadata, and the issue set back to open. From there it needs nobody
+to read anything: `queue.sh --next` sees the metadata and prints the issue as a five-field rework
+line - `<id> <slot> rework <pr> <repo>` - and the loop dispatches it with
+`config.sh --rework <id> <pr> <repo>` exactly as it would a dropped pull request. A retirement for
+`conflict` takes the same route, because the same step in `land.js` retires both. A pull request
+the TRAIN dropped is not a retirement - its label stays on and its issue stays `in_progress` - so
+it still arrives through `stranded.sh` and a hand-built `--rework`. `task.js` is the wrong door for
+what follows, for the same reason as above: the work is done, and triage says so. So `rework.js`
+has a **Repair** step between its handoff and its label. When CI is red on the rebased head it runs the repository's
 own tests in the worktree, reads what master changed under the failing files, and mends the break
 so the branch follows master - never by softening what master landed, and never by redesigning the
 feature. Then it waits for CI once more.
@@ -523,7 +528,12 @@ a rule master added, means the branch and master disagree about what the code sh
 is a person's call. The run ends `red`, the diagnosis is on the tracker issue, the pull request is
 left open and unlabelled, and the branch is left as pushed. A rework that ended `red` is NOT
 dispatched to rework again - a second run would get a second repair, and that is the loop this
-limit exists to prevent. A person picks it up from the diagnosis on the issue.
+limit exists to prevent. So the agent that ends it takes the `rework` metadata off the issue,
+labels it `needs-decision` and sets it open: parked in a person's queue, visible, and routed
+nowhere until somebody removes the label. Two `red` endings run no such agent - a repair step
+that returned nothing, and one that reported a fix whose head did not move - so the result's
+`notes` carry that one command for the supervisor to run by hand. A person picks it up from the
+diagnosis on the issue.
 
 A retired branch arrives ALREADY ON MASTER: `land-one.sh` pushes the rebased head before it waits
 on CI. So the resolve step's rebase replays nothing, it pushes nothing, and it answers
@@ -547,8 +557,22 @@ Then, from the numbers it printed:
 - If fewer, claim and dispatch the shortfall:
 
 ```bash
-${CLAUDE_PLUGIN_ROOT}/skills/devloop/queue.sh --next 2   # claims 2, prints "<id> <slot>" a line
+${CLAUDE_PLUGIN_ROOT}/skills/devloop/queue.sh --next 2   # claims 2, prints one line per issue
 ```
+
+Each line is one of two shapes, and the shape decides the script:
+
+```
+app-xxxx 3                       a task:    config.sh --args app-xxxx        -> task.js
+app-yyyy 4 rework 186 site       a rework:  config.sh --rework app-yyyy 186 site -> rework.js
+```
+
+The five-field line is an issue the lander retired - `red_after_rebase` or `conflict` - and it
+carries the pull request number and the repository key from the issue's `rework` metadata, which
+`land.js` writes as it retires. Its work is done and green; `task.js` triage bounces it, so it is
+never sent there. `config.sh --args` refuses an issue carrying that metadata and prints the
+`--rework` command instead, so the wrong door does not open by mistake. The slot on the line is
+the one `config.sh --rework` hands back, because `slot.sh` returns an id's existing reservation.
 
 **A dispatch that returns `error`.** The script cannot run `bd`, so a workflow that bails
 before its first agent - bad args, missing id - leaves the issue claimed and does nothing
@@ -559,14 +583,23 @@ launching, if a workflow returns an `error` result, release its issue yourself:
 bd update <id> -s open
 ```
 
+The same for a rework that returns `blocked` or `error` before it wrote anything on the issue -
+a refused lease, a worktree that would not add. Its `rework` metadata is still on, so `-s open`
+offers it to `rework.js` again on the next tick; if the block is one a retry cannot clear, take
+the route off first with `bd update <id> --unset-metadata rework` and park it for a person. A
+rework that ends `red` usually has both done by its last agent; when its result's `notes` end
+with the hand-back command, the run could not confirm that - run the command before anything
+reopens the issue, or the reopen sends it round for the second repair the one-attempt limit
+exists to stop. It is a no-op when the metadata is already gone.
+
 `args` must be an actual JSON object in the tool call, not a JSON-encoded string. The script
 now coerces a string rather than no-opping, but the object form is what to write.
 
 `--next` sets each issue to `in_progress` **as it hands the id back**, so two ticks - or two
-supervisors - cannot dispatch the same issue. It prints one `<id> <slot>` pair per line.
-Launch one `task.js` workflow per line, passing **exactly the slot it was given** -
-`{ id: "app-xxxx", slot: 3 }` - all in the background. Never dispatch an id `--next` did not
-give you, and never choose a slot yourself.
+supervisors - cannot dispatch the same issue. It prints one line per issue, in one of the two
+shapes above. Launch one workflow per line - `task.js` for a two-field line, `rework.js` for a five-field one -
+passing **exactly the slot it was given** - `{ id: "app-xxxx", slot: 3 }` - all in the background.
+Never dispatch an id `--next` did not give you, and never choose a slot yourself.
 
 The slot is not decoration: `task.js` derives `TEST_ENV_NUMBER` from it, so the slot number
 *is* the test database. Two live workflows on one slot share a database and corrupt each

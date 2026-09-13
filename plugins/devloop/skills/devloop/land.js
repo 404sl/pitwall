@@ -1171,9 +1171,10 @@ ${LAW}`
 // repeat inside one run and does nothing across runs.
 //
 // So a stop is recorded where it survives: the label comes off, the finding goes onto the
-// tracker issue, and the issue goes back to open so a lane can pick up the rework with the
-// diagnosis already written down. Nothing is force-pushed and no branch is deleted - the
-// author's work is left exactly as it was, only un-queued.
+// tracker issue, the pull request number goes onto it as rework metadata, and the issue goes
+// back to open so queue.sh hands it to rework.js with the diagnosis already written down.
+// Nothing is force-pushed and no branch is deleted - the author's work is left exactly as it
+// was, only un-queued.
 //
 // NOT retired: 'master_red' (nothing is wrong with the PR), 'blocked' (CI simply had not
 // finished - a timing accident that the next round should retry), 'merge_shaped' (the branch
@@ -1188,6 +1189,18 @@ const RETIRE = { type: 'object', required: ['status'], additionalProperties: fal
   notes: { type: 'string' },
 } }
 
+function routes(dead) {
+  const named = dead.filter((d) => d.issue)
+  if (!named.length) return '     (none of these named a tracker issue, so there is nowhere to record it - skip this step)'
+  return named.map((d) => `     cd ${ROOT} && bd update ${d.issue} --metadata '${JSON.stringify({ rework: { pr: Number(d.number), repo: d.repo || null, why: d.why } })}'`).join('\n')
+}
+
+function reopens(dead) {
+  const named = dead.filter((d) => d.issue)
+  if (!named.length) return '     (no tracker issue named - nothing to reopen)'
+  return named.map((d) => `     cd ${ROOT} && bd update ${d.issue} --status open`).join('\n')
+}
+
 function retirePrompt(dead) {
   return `Take these pull requests out of the merge queue. They were attempted this run and
 could not be landed, and the reason is recorded below. Leaving them labelled means every future
@@ -1196,7 +1209,7 @@ lander run attempts them again and rediscovers the same thing, at six to ten min
 ${dead.map((d) => `  ${d.slug}#${d.number} in ${REPOS[d.repo]} - ${d.why}${d.issue ? ` (tracker ${d.issue})` : ' (no tracker issue named)'}
     ${(d.detail || '').split('\n').join('\n    ').slice(0, 1200)}`).join('\n\n')}
 
-FOR EACH ONE, three things, in this order:
+FOR EACH ONE, four things, in this order:
 
 1. Append the finding to its tracker issue, if it named one. Write the text to a file first and
    pass it with --append-notes, never --notes and never an inline double-quoted string:
@@ -1206,12 +1219,23 @@ FOR EACH ONE, three things, in this order:
    the label was removed, and that the branch was left untouched. Somebody reworking this needs
    the diagnosis more than they need the verdict.
 
-2. Set the issue back to open, so the queue offers it again:
-     cd ${ROOT} && bd update <id> --status open
+2. Record where the issue goes next, exactly as written here - one command per issue, nothing
+   to substitute:
+${routes(dead)}
+   This is what takes the issue to rework.js rather than to task.js: queue.sh --next reads the
+   rework metadata and hands the issue out as a rework with its pull request number, and
+   config.sh --args refuses to build task.js arguments for an issue that carries it. --metadata
+   merges into what is already there, so the issue's origin is kept. Without this record the
+   queue offers the issue as ordinary work, and task.js triage bounces a pull request that is
+   done and green - the number would then exist only as prose in the note above, for a person
+   to read.
+
+3. Set the issue back to open, so the queue offers it again:
+${reopens(dead)}
    An issue left in_progress behind a dead pull request is invisible to the queue and stalls
    forever. That has stranded work here before.
 
-3. Remove the label, LAST, so a crash between steps leaves the finding recorded rather than a
+4. Remove the label, LAST, so a crash between steps leaves the finding recorded rather than a
    pull request silently un-queued with no explanation anywhere:
      cd <that repo's checkout> && gh pr edit <number> --repo <owner/name> --remove-label ${LABEL}
 
