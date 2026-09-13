@@ -390,6 +390,7 @@ test("a rework whose pull request comes back red gives its lane and its slot bac
   const { calls, done } = runScript("rework.js", REWORK_ARGS, (call, n) => {
     if (n === 1) return RESOLVED;
     if (n === 2) return { status: "red", ciConclusion: "failure", notes: "two specs failed" };
+    if (n === 3) return { status: "blocked", notes: "the two specs assert what master now forbids" };
     return { lane: "released", slot: "released", notes: "lane: RELEASED" };
   });
 

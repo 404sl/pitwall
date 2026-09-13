@@ -3,6 +3,7 @@ export const meta = {
   description: 'Bring a pull request that the release train dropped back onto current master, and hand it back green',
   phases: [
     { title: 'Resolve', detail: 'rebase the branch onto master, resolve conflicts keeping both sides, push' },
+    { title: 'Repair', detail: 'if CI is red on the rebased head, mend what master changed underneath it - once' },
     { title: 'Handoff', detail: 'wait for CI on the new head, then re-label lane-verified' },
   ],
 }
@@ -20,7 +21,9 @@ export const meta = {
 // would re-derive a feature that already exists, which is both wasteful and how a good branch
 // gets quietly rewritten into a different one.
 //
-// So: two agents, no design, no review. Resolve, then hand back.
+// So: no design, no review. Resolve, then hand back - with one repair in between when the
+// rebased head is red, because a branch whose diff is unchanged and whose tests now fail has
+// been broken by master, not by its author.
 
 const input = (typeof args === 'string' ? JSON.parse(args) : args) || {}
 
@@ -182,9 +185,24 @@ try {
 phase('Resolve')
 
 const resolved = await agent(
-  `Bring pull request #${PR} on ${SLUG} back onto current master. It was DROPPED by the release
-train for conflicting - not rejected, not found wrong. Its own work is fine and shipped green.
-Your job is bringing it up to master, and nothing else.
+  `Bring pull request #${PR} on ${SLUG} back onto current master. It arrives here one of two ways,
+and neither is a rejection - its own work is fine and shipped green:
+
+  DROPPED by the release train for CONFLICTING. The branch is behind master and a rebase stops
+  on textual conflicts. Your job is bringing it up to master, and nothing else.
+
+  RETIRED by the lander as RED AFTER REBASE. land-one.sh already rebased the branch onto master
+  and PUSHED the rebased head before it waited on CI, so the branch ALREADY SITS ON TOP OF
+  MASTER when you get it. The rebase below replays nothing, HEAD after it equals the head you
+  record before it, there is nothing to push, and the answer is status 'already_clean' - with
+  both heads reported, the same sha. What is wrong with it is SEMANTIC and is not your job: a
+  later step in this run repairs it from what CI says. Do not go looking for the break here.
+
+Check which one you have as soon as the worktree below exists, before you touch anything:
+
+  git -C ${WT_PATH} merge-base --is-ancestor origin/master HEAD && echo ON_MASTER || echo BEHIND
+
+ON_MASTER is the second arrival.
 
 DO NOT REDESIGN, REBUILD OR "IMPROVE" ANYTHING ON THIS BRANCH. If you find yourself writing a
 feature, you have misread the task. The only edits you make are inside conflict regions.
@@ -241,6 +259,9 @@ and it is currently sitting on a head that cannot merge. Remove it now and let t
 put it back once CI is green on the new head:
 
   gh pr edit ${PR} --repo ${SLUG} --remove-label lane-verified
+
+A retired pull request has already had it removed by the lander; the command succeeds on a label
+that is not there, and its absence is expected rather than a sign something else is going on.
 
 REBASE ONTO MASTER. Do not merge master in.
 
@@ -361,8 +382,12 @@ words a person would use, never mention the pipeline, lanes, labels, trains, wor
 paths, or any tooling or assistance, and read it back from git afterwards and check it yourself.
 
 REPORT: status, the branch name, the old head, the new head, and the files you resolved. If the
-rebase turns out to be clean already because something else landed in the meantime, that is
-status "already_clean" - say so rather than inventing a change.`,
+rebase replays nothing - because the lander already pushed the rebased head before retiring it,
+or because something else landed in the meantime - HEAD after the rebase equals the head you
+recorded, nothing was pushed, and that is status "already_clean" with oldHead and newHead both
+set to that sha and an empty files list. Say so rather than inventing a change, and never call it
+"resolved": resolved with a head that did not move is read as a resolution that was never
+pushed.`,
   { schema: RESOLVE, phase: 'Resolve', label: ID ? `resolve:${ID}#${PR}` : `resolve:#${PR}` },
 )
 
@@ -375,21 +400,21 @@ if (!resolved || resolved.status === 'blocked') {
   }
 }
 
-// A head that did not move means nothing was pushed, whatever the agent believes it did. The
-// whole point of this run is that the branch changes; reporting success without that is how a
-// pull request gets handed back into a train that drops it again for the same reason.
-if (!result && resolved.status === 'resolved' && resolved.oldHead && resolved.newHead && resolved.oldHead === resolved.newHead) {
+// A head that did not move after files were resolved means nothing was pushed, whatever the
+// agent believes it did: a resolution that exists only in the worktree is how a pull request
+// gets handed back into a train that drops it again for the same reason. A head that did not
+// move with NOTHING resolved is the other arrival - the lander already pushed the rebased head
+// before retiring it red - and is 'already_clean' whatever word the agent chose.
+if (!result && resolved.status === 'resolved' && resolved.oldHead && resolved.newHead && resolved.oldHead === resolved.newHead && (resolved.files || []).length) {
   result = {
     pr: PR,
     id: ID,
     outcome: 'blocked',
-    notes: `resolve reported success but the branch head did not move (${resolved.oldHead}). Nothing was pushed, so the next train would drop this again for the same conflicts.`,
+    notes: `resolve reported ${resolved.files.length} file(s) resolved but the branch head did not move (${resolved.oldHead}). Nothing was pushed, so the next train would drop this again for the same conflicts.`,
   }
 }
 
 if (!result) {
-
-phase('Handoff')
 
 const HANDOFF = {
   type: 'object',
@@ -398,15 +423,45 @@ const HANDOFF = {
     status: { type: 'string', enum: ['verified', 'red', 'blocked'] },
     ciConclusion: { type: 'string' },
     mergeable: { type: 'string' },
+    failures: { type: 'string', description: 'when red: every failing test, example or compiler error with its message, verbatim from the CI log - the repair step works from this and nothing else' },
     notes: { type: 'string' },
   },
 }
 
 const BRANCH = resolved.branch || '<the branch>'
 
-const handed = await agent(
-  `Pull request #${PR} on ${SLUG} has been rebased onto current master and pushed. Wait for CI on
-the NEW head and hand it back to the lander.
+const REPAIR = {
+  type: 'object',
+  required: ['status'],
+  properties: {
+    status: { type: 'string', enum: ['repaired', 'blocked'] },
+    head: { type: 'string', description: 'the head you pushed, full sha' },
+    files: { type: 'array', items: { type: 'string' } },
+    notes: { type: 'string' },
+  },
+}
+
+const MAX_REPAIRS = 1
+let repairs = 0
+let repaired = null
+let handed = null
+
+const HAND_BACK = ID
+  ? `WRITE IT ON THE TRACKER ISSUE BEFORE YOU REPORT, because the person who takes this over reads
+the issue and not this run. Put the text in a file and append it - never --notes, which replaces
+the field:
+
+  cd ${ROOT} && export BEADS_DIR=${ROOT}/.beads && PITWALL_SESSION='rework-${OWNER}' bash ${SKILL_DIR}/bd-note.sh ${ID} --note-file <that file>
+
+Say that the branch was rebased onto master and is red on the new head for a reason a rebase
+cannot see, name each failure with its file and assertion, say what master changed that it
+collides with, and what was tried. Leave the pull request open and unlabelled.`
+  : `Leave the pull request open and unlabelled, and put everything a person needs in 'notes' - there is
+no tracker issue for this run to write on.`
+
+function handoffPrompt(head, afterRepair) {
+  return `Pull request #${PR} on ${SLUG} has been rebased onto current master and pushed${afterRepair ? ', and a repair step has since pushed a fix for the failures CI found on the rebased head' : ''}. Wait for CI on
+the NEW head${head ? ` - ${head} -` : ''} and hand it back to the lander.
 
 ${SHELL_FIRST}
 
@@ -428,9 +483,23 @@ re-checked in the foreground, but the next one might not. Whatever you poll with
 unknown case loop rather than fall through, and finish with a direct read of statusCheckRollup
 rather than trusting the loop's last value.
 
-If CI comes back RED, read the failures. A failure in a file you resolved is very likely your
-resolution having dropped one side of a conflict - go back and look at both sides again rather
-than adjusting the test. Report status "red" with what failed; do not label it.
+IF CI COMES BACK RED, READ THE FAILURES AND REPORT THEM - DO NOT FIX THEM HERE. Report status
+"red", do not label it, and put every failing test, example or compiler error WITH ITS MESSAGE
+in 'failures', verbatim from the log:
+
+  gh run view <the run id from the rollup> --repo ${SLUG} --log-failed
+
+${afterRepair
+    ? `This head already carries one repair. A red result now ends the run and goes to a person, so
+'failures' is what they will read: name the file and the assertion for each one, and say whether
+it is the same failure the repair was meant to mend or a different one.
+
+${HAND_BACK}`
+    : `A step after this one gets exactly that text and a worktree, and works from it: a red head
+whose diff is unchanged means master moved under the branch rather than the branch being wrong,
+and the failure names the file and the symbol. A failure in a file that was resolved in a
+conflict is very likely the resolution having dropped one side - say so in 'failures' so the
+repair looks at both sides again rather than at the test.`}
 
 WHEN IT IS GREEN, hand off with the script rather than by hand:
 
@@ -468,7 +537,9 @@ label and which do not. Adding a label is idempotent and it stops before the wor
 note, so re-run it once the cause it quotes is gone. Never remove a label to tidy that up.
 
 THE TRACKER NOTE must say the branch was rebased onto master, name the files that were resolved,
-and say what was kept from each side. Append it, never replace: the notes field has no history and
+and say what was kept from each side.${afterRepair ? ` It must also say that CI was red on the rebased head, name
+the files the repair step changed and what it changed in them - that is the only record of a
+fix that was never reviewed as part of the branch.` : ''} Append it, never replace: the notes field has no history and
 an overwrite is simply gone.
 
 ONCE THE LABEL IS ON - lane-handoff.sh exited 0 or 5, and on no other exit - remove the task lane's
@@ -485,9 +556,136 @@ else: never a path guess, never the main checkout, and never this run's own work
 detached and has no branch line. On exit 2, 4, 7 or 8 LEAVE IT WHERE IT IS and report: until the
 label is on, that worktree is the only copy of the lane's own state a person can still inspect.
 
-Report the CI conclusion, whether the label is on, and what the removal printed.`,
+Report the CI conclusion, whether the label is on, and what the removal printed.`
+}
+
+function repairPrompt(failures) {
+  return `Pull request #${PR} on ${SLUG} was rebased onto current master, the rebase was clean or was
+resolved, it was pushed, and CI is RED on the new head. This is a SEMANTIC conflict: the diff this
+branch carries is the same one that was green before, and master moved underneath it - something
+merged since changed a file, a symbol, a path or a rule that this branch's code or tests assumed.
+Nothing in a rebase can see that, which is why the branch is here rather than merged.
+
+YOUR JOB IS TO MEND THAT BREAK AND NOTHING ELSE. You get ONE attempt, and the next step waits
+for CI once more. If it is red again the run ends and a person takes it, so a narrow fix that is
+right beats a wide one that might be.
+
+DO NOT REDESIGN, REBUILD OR "IMPROVE" THE FEATURE. Its work was reviewed and was green. If you
+find yourself rewriting how it works rather than what it is plugged into, you have misread the
+task: stop and report status "blocked" with what you found.
+
+WHAT CI SAID, verbatim from the failed run:
+
+${failures || '(the handoff step reported red and recorded no failures - read them yourself: gh run list --repo ' + SLUG + ' --branch ' + (resolved.branch || '<the branch>') + ' --limit 1 --json databaseId, then gh run view <id> --repo ' + SLUG + ' --log-failed)'}
+
+${SHELL_FIRST}
+
+THE WORKTREE IS ${WT_PATH}, on the branch as pushed. The lane lock is already held for this run;
+do not take or release it. Record the head before you touch anything - the push at the end is
+leased against it:
+
+  cd ${WT_PATH} && git fetch origin && git status --short && git rev-parse HEAD
+${railsSetup}
+REPRODUCE IT LOCALLY FIRST. Run the repository's own checks in the worktree and read the failure
+from the output, not from memory:
+${repo.test ? `  tests:  ${repo.test}` : ''}
+${repo.lint ? `  lint:   ${repo.lint}` : ''}
+Narrow to the failing files while you work, and run everything once at the end. If the suite is
+GREEN locally on the same head CI failed on, say so and report status "blocked" - a failure you
+cannot reproduce is not one you can claim to have fixed, and a run's difference from CI is a
+person's question.
+
+THEN FIND WHAT MASTER CHANGED, because that is where the answer is. For each failing file:
+
+  cd ${WT_PATH} && git log -p -5 origin/master -- <the file the failure names>
+${resolved.oldHead && resolved.oldHead !== resolved.newHead
+    ? `  cd ${WT_PATH} && git diff ${resolved.oldHead}...origin/master -- <that file>
+
+The second command shows everything master gained in that file since the branch forked from it.`
+    : `The branch already sat on top of master when this run began, so a three-dot diff from the head
+it had would compare master with itself and show nothing - read the log above, and if the file
+the failure names is one this branch changed, 'git log -p -10 origin/master -- <that file>' reaches
+the commits master landed before the lander rebased onto them.`}
+
+A compiler error naming a symbol that no longer exists, an import of a path master moved, a test
+master added that asserts a rule this branch's code does not yet honour, a helper whose signature
+changed - each one says exactly what to change. The three branches that first hit this on
+2026-09-08 all imported collectionError from ./autofix.js after master had moved it to
+./errors.js: two import lines, and nothing else.
+
+MASTER IS WHAT LANDED, SO THE BRANCH ADAPTS TO MASTER. Never resolve the break by reverting or
+softening what master did - not a test it added, not a rename, not a rule. If master's test and
+this branch's intent genuinely contradict - the test asserts the opposite of what the branch
+exists to do - that is a decision, not a repair: report status "blocked", quote both sides, and
+name the commits. The same for a failure whose fix would weaken an assertion or delete a test.
+
+Keep the change inside the files the failures name plus whatever they directly import. Write no
+comments in the code. Match the surrounding style.
+
+WHEN IT IS GREEN LOCALLY, commit and push:
+
+  cd ${WT_PATH} && git add <the files you changed>
+  cd ${WT_PATH} && git -c user.name="$(git log -1 --format=%an origin/master)" -c user.email="$(git log -1 --format=%ae origin/master)" commit -F <a message file>
+  cd ${WT_PATH} && git push --force-with-lease=refs/heads/<the branch>:<the head you recorded> origin HEAD:refs/heads/<the branch>
+
+ONE COMMIT ON TOP, not an amend: the commits underneath were reviewed and their messages are
+theirs. BOTH ENDS OF THE PUSH ARE NAMED IN FULL because the worktree is detached - a bare 'origin
+HEAD' has no branch to resolve its destination from and git refuses it. The lease is the safety
+of the push - it refuses if the branch moved after you read it, which is exactly the case where
+pushing would destroy somebody else's work. If it is refused, STOP and report "blocked" with what
+git said. Never fall back to a plain --force.
+
+THE COMMIT MESSAGE is outward-facing text: say what the code now does and what on master it
+follows, in the words a person would use. Never mention the pipeline, lanes, labels, trains,
+worktrees, temporary paths, CI runs by id, or any tooling or assistance. Read it back with
+'git log -1 --format=%B' and check it yourself before pushing.
+
+REPORT status "repaired" with the head you pushed and the files you changed, and in 'notes' what
+master changed and what you changed to follow it - that text goes into the tracker and is the
+only record of a fix nobody reviewed as part of the branch. The handoff step that follows writes
+the tracker note for a repair that went through; you do not.
+
+OR status "blocked" with why, in enough detail that a person can act without re-running anything.
+ONLY WHEN YOU ARE BLOCKED: ${HAND_BACK}
+
+Never use 2>&1.`
+}
+
+phase('Handoff')
+
+handed = await agent(
+  handoffPrompt(resolved.newHead, false),
   { schema: HANDOFF, phase: 'Handoff', label: ID ? `handoff:${ID}#${PR}` : `handoff:#${PR}` },
 )
+
+while (handed && handed.status === 'red' && repairs < MAX_REPAIRS) {
+  repairs += 1
+  phase('Repair')
+  log(`${OWNER}: CI red on the rebased head - one repair attempt, then a person (repair ${repairs} of ${MAX_REPAIRS})`)
+  repaired = await agent(
+    repairPrompt(handed.failures || handed.notes),
+    { schema: REPAIR, phase: 'Repair', label: ID ? `repair:${ID}#${PR}` : `repair:#${PR}` },
+  )
+  if (!repaired || repaired.status !== 'repaired') {
+    handed = {
+      ...handed,
+      notes: `${handed.notes || 'CI red on the rebased head'}\n\nrepair: ${repaired ? (repaired.notes || 'blocked with no reason given') : 'the repair step returned nothing'}`,
+    }
+    break
+  }
+  if (repaired.head && resolved.newHead && repaired.head === resolved.newHead) {
+    handed = {
+      ...handed,
+      notes: `${handed.notes || 'CI red on the rebased head'}\n\nrepair reported success but the branch head did not move (${repaired.head}). Nothing was pushed, so CI would answer the same way.`,
+    }
+    break
+  }
+  phase('Handoff')
+  handed = await agent(
+    handoffPrompt(repaired.head, true),
+    { schema: HANDOFF, phase: 'Handoff', label: ID ? `handoff:${ID}#${PR}` : `handoff:#${PR}` },
+  )
+}
 
 result = {
   pr: PR,
@@ -496,8 +694,10 @@ result = {
   outcome: handed ? handed.status : 'blocked',
   branch: resolved.branch || null,
   oldHead: resolved.oldHead || null,
-  newHead: resolved.newHead || null,
+  newHead: (repaired && repaired.status === 'repaired' && repaired.head) || resolved.newHead || null,
   files: resolved.files || [],
+  repairs,
+  repaired: repaired && repaired.status === 'repaired' ? (repaired.files || []) : [],
   ci: handed ? handed.ciConclusion : null,
   notes: handed ? handed.notes : 'handoff agent returned nothing',
 }

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.77
+
+A branch that is red after a clean rebase now has somewhere to go. `rework.js` repairs a semantic break once - CI red on the rebased head, diff unchanged - by running the repository's tests in the worktree and making the branch follow what master changed, then waits for CI again. Red a second time goes to a person with the diagnosis on the issue. A branch the lander retired arrives already on master: the resolve step answers `already_clean` with an unmoved head and the run carries on to the repair rather than stopping. Dispatch a `red_after_rebase` retirement with `config.sh --rework <id> <pr> <repo>`, exactly like a dropped pull request - and only the retirement. A rework that ended `red` is not dispatched to rework again; a person picks it up from the diagnosis on the issue.
+
+Refs pitwall-7bn
+
 ## 0.1.76
 
 `live.sh` and `lanes.sh` now find workflow runs written at `<session>/subagents/workflows/wf_*/` as well as directly under the project directory. A session reading `UNKNOWN - could not identify` on every row, or `no workflow transcript found` for a lane that is visibly running, should re-run them after updating rather than pointing the workflow directory environment variable at a session subdirectory by hand.

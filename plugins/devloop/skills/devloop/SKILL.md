@@ -489,14 +489,46 @@ sending a rework at a database another run holds. `rework.js` refuses an args ob
 for the same reason, so the two-command form this used to document - `--args` spread by hand with
 `pr` and `repo` added - no longer runs.
 
-Two agents, no design and no review: rebase onto master keeping BOTH sides of every conflict, push
-with a lease, wait for CI on the new head, re-apply `lane-verified`. It takes a lane the same way
+No design and no review: rebase onto master keeping BOTH sides of every conflict, push with a
+lease, wait for CI on the new head, re-apply `lane-verified`. It takes a lane the same way
 `task.js` does, and it gives the lane and the slot back the same way - in a `finally`, so
 a `red`, a `blocked` and an exception all go through it rather than only the handoff. It strips the label while it works, because a
 `lane-verified` branch that cannot merge is a lie the lander keeps acting on.
 
 Find the dropped ones in the train's own result - `stranded` - or on the pull requests, which each
 get a comment saying they were dropped rather than rejected.
+
+## A pull request that is red after a clean rebase
+
+The same lane takes a branch the lander retired as `red_after_rebase`. That is a SEMANTIC
+conflict: the rebase was clean or was resolved, the diff is the one that was green, and the
+combined tree fails anyway because something merged since moved a symbol, a path, a helper's
+signature or a rule the branch assumed. On 2026-09-08 three green branches merged without a
+single textual conflict and the result did not compile - two import lines, after master had moved
+`collectionError` into its own file. On 2026-09-12 #186 rebased cleanly onto master after #183 and
+#185 changed `live.sh`, and five tests master had added failed against it.
+
+The lander detects this - it rebases and waits for CI on the new head - and retires the pull
+request with the failures written onto the issue. Dispatch that retirement the same way as a
+dropped pull request - `config.sh --rework <id> <pr> <repo>` - reading the issue and the pull
+request number out of the lander's retirement note. `task.js` is the wrong door for what follows,
+for the same reason as above: the work is done, and triage says so. So `rework.js` has a **Repair**
+step between its handoff and its label. When CI is red on the rebased head it runs the repository's
+own tests in the worktree, reads what master changed under the failing files, and mends the break
+so the branch follows master - never by softening what master landed, and never by redesigning the
+feature. Then it waits for CI once more.
+
+**Exactly one attempt.** Red a second time, or a repair that would have to weaken a test or revert
+a rule master added, means the branch and master disagree about what the code should do, and that
+is a person's call. The run ends `red`, the diagnosis is on the tracker issue, the pull request is
+left open and unlabelled, and the branch is left as pushed. A rework that ended `red` is NOT
+dispatched to rework again - a second run would get a second repair, and that is the loop this
+limit exists to prevent. A person picks it up from the diagnosis on the issue.
+
+A retired branch arrives ALREADY ON MASTER: `land-one.sh` pushes the rebased head before it waits
+on CI. So the resolve step's rebase replays nothing, it pushes nothing, and it answers
+`already_clean` with the same head twice - that is the expected shape of this arrival, not a
+resolve that failed, and the run goes on to wait for CI and repair from there.
 
 ## The loop
 
