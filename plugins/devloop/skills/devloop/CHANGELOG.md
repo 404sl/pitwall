@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.73
+
+`land-one.sh` lands a branch that another worktree still has checked out. It works detached from `origin/<branch>` throughout, pushes `HEAD:refs/heads/<branch>` with a lease on the head it read, and refuses `master` or `main` as the branch to land. When a leftover worktree holds the branch it prints a `held:` line naming the path and leaves that worktree alone. A refused worktree add or push now quotes what git said instead of a bare refusal, and a checkout refusal is no longer reported as a push refusal.
+
 ## 0.1.72
 
 `queue-watch.sh` announces NEW WORK and STUCK in every workspace, not only the one whose id prefix it used to hardcode - it builds its id patterns from the workspace's `idPrefix`. It refuses to start, exit 3, when that prefix cannot be read from the config, because a watcher defaulting to another project's prefix goes silent rather than wrong, and its silence reads as an idle queue. A STUCK header names only issue ids: a worktree path or a repository name that happens to share the prefix is no longer reported as one, so acknowledging the real id in a "lane died holding its worktree" finding now silences it.
