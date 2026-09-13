@@ -523,6 +523,11 @@ left open and unlabelled, and the branch is left as pushed. Dispatch it the same
 pull request - `config.sh --rework <id> <pr> <repo>` - reading the issue and the pull request
 number out of the lander's retirement note.
 
+A retired branch arrives ALREADY ON MASTER: `land-one.sh` pushes the rebased head before it waits
+on CI. So the resolve step's rebase replays nothing, it pushes nothing, and it answers
+`already_clean` with the same head twice - that is the expected shape of this arrival, not a
+resolve that failed, and the run goes on to wait for CI and repair from there.
+
 ## The loop
 
 Each tick, about a minute apart:

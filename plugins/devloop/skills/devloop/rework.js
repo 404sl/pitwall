@@ -185,9 +185,24 @@ try {
 phase('Resolve')
 
 const resolved = await agent(
-  `Bring pull request #${PR} on ${SLUG} back onto current master. It was DROPPED by the release
-train for conflicting - not rejected, not found wrong. Its own work is fine and shipped green.
-Your job is bringing it up to master, and nothing else.
+  `Bring pull request #${PR} on ${SLUG} back onto current master. It arrives here one of two ways,
+and neither is a rejection - its own work is fine and shipped green:
+
+  DROPPED by the release train for CONFLICTING. The branch is behind master and a rebase stops
+  on textual conflicts. Your job is bringing it up to master, and nothing else.
+
+  RETIRED by the lander as RED AFTER REBASE. land-one.sh already rebased the branch onto master
+  and PUSHED the rebased head before it waited on CI, so the branch ALREADY SITS ON TOP OF
+  MASTER when you get it. The rebase below replays nothing, HEAD after it equals the head you
+  record before it, there is nothing to push, and the answer is status 'already_clean' - with
+  both heads reported, the same sha. What is wrong with it is SEMANTIC and is not your job: a
+  later step in this run repairs it from what CI says. Do not go looking for the break here.
+
+Check which one you have as soon as the worktree below exists, before you touch anything:
+
+  git -C ${WT_PATH} merge-base --is-ancestor origin/master HEAD && echo ON_MASTER || echo BEHIND
+
+ON_MASTER is the second arrival.
 
 DO NOT REDESIGN, REBUILD OR "IMPROVE" ANYTHING ON THIS BRANCH. If you find yourself writing a
 feature, you have misread the task. The only edits you make are inside conflict regions.
@@ -244,6 +259,9 @@ and it is currently sitting on a head that cannot merge. Remove it now and let t
 put it back once CI is green on the new head:
 
   gh pr edit ${PR} --repo ${SLUG} --remove-label lane-verified
+
+A retired pull request has already had it removed by the lander; the command succeeds on a label
+that is not there, and its absence is expected rather than a sign something else is going on.
 
 REBASE ONTO MASTER. Do not merge master in.
 
@@ -364,8 +382,12 @@ words a person would use, never mention the pipeline, lanes, labels, trains, wor
 paths, or any tooling or assistance, and read it back from git afterwards and check it yourself.
 
 REPORT: status, the branch name, the old head, the new head, and the files you resolved. If the
-rebase turns out to be clean already because something else landed in the meantime, that is
-status "already_clean" - say so rather than inventing a change.`,
+rebase replays nothing - because the lander already pushed the rebased head before retiring it,
+or because something else landed in the meantime - HEAD after the rebase equals the head you
+recorded, nothing was pushed, and that is status "already_clean" with oldHead and newHead both
+set to that sha and an empty files list. Say so rather than inventing a change, and never call it
+"resolved": resolved with a head that did not move is read as a resolution that was never
+pushed.`,
   { schema: RESOLVE, phase: 'Resolve', label: ID ? `resolve:${ID}#${PR}` : `resolve:#${PR}` },
 )
 
@@ -378,15 +400,17 @@ if (!resolved || resolved.status === 'blocked') {
   }
 }
 
-// A head that did not move means nothing was pushed, whatever the agent believes it did. The
-// whole point of this run is that the branch changes; reporting success without that is how a
-// pull request gets handed back into a train that drops it again for the same reason.
-if (!result && resolved.status === 'resolved' && resolved.oldHead && resolved.newHead && resolved.oldHead === resolved.newHead) {
+// A head that did not move after files were resolved means nothing was pushed, whatever the
+// agent believes it did: a resolution that exists only in the worktree is how a pull request
+// gets handed back into a train that drops it again for the same reason. A head that did not
+// move with NOTHING resolved is the other arrival - the lander already pushed the rebased head
+// before retiring it red - and is 'already_clean' whatever word the agent chose.
+if (!result && resolved.status === 'resolved' && resolved.oldHead && resolved.newHead && resolved.oldHead === resolved.newHead && (resolved.files || []).length) {
   result = {
     pr: PR,
     id: ID,
     outcome: 'blocked',
-    notes: `resolve reported success but the branch head did not move (${resolved.oldHead}). Nothing was pushed, so the next train would drop this again for the same conflicts.`,
+    notes: `resolve reported ${resolved.files.length} file(s) resolved but the branch head did not move (${resolved.oldHead}). Nothing was pushed, so the next train would drop this again for the same conflicts.`,
   }
 }
 
@@ -573,8 +597,15 @@ person's question.
 
 THEN FIND WHAT MASTER CHANGED, because that is where the answer is. For each failing file:
 
-  cd ${WT_PATH} && git log --oneline -5 origin/master -- <the file the failure names>
-  cd ${WT_PATH} && git diff ${resolved.oldHead || '<the head before the rebase>'}...origin/master -- <that file>
+  cd ${WT_PATH} && git log -p -5 origin/master -- <the file the failure names>
+${resolved.oldHead && resolved.oldHead !== resolved.newHead
+    ? `  cd ${WT_PATH} && git diff ${resolved.oldHead}...origin/master -- <that file>
+
+The second command shows everything master gained in that file since the branch forked from it.`
+    : `The branch already sat on top of master when this run began, so a three-dot diff from the head
+it had would compare master with itself and show nothing - read the log above, and if the file
+the failure names is one this branch changed, 'git log -p -10 origin/master -- <that file>' reaches
+the commits master landed before the lander rebased onto them.`}
 
 A compiler error naming a symbol that no longer exists, an import of a path master moved, a test
 master added that asserts a rule this branch's code does not yet honour, a helper whose signature
@@ -595,12 +626,14 @@ WHEN IT IS GREEN LOCALLY, commit and push:
 
   cd ${WT_PATH} && git add <the files you changed>
   cd ${WT_PATH} && git -c user.name="$(git log -1 --format=%an origin/master)" -c user.email="$(git log -1 --format=%ae origin/master)" commit -F <a message file>
-  cd ${WT_PATH} && git push --force-with-lease=<the branch>:<the head you recorded> origin HEAD
+  cd ${WT_PATH} && git push --force-with-lease=refs/heads/<the branch>:<the head you recorded> origin HEAD:refs/heads/<the branch>
 
 ONE COMMIT ON TOP, not an amend: the commits underneath were reviewed and their messages are
-theirs. The lease is the safety of the push - it refuses if the branch moved after you read it,
-which is exactly the case where pushing would destroy somebody else's work. If it is refused,
-STOP and report "blocked" with what git said. Never fall back to a plain --force.
+theirs. BOTH ENDS OF THE PUSH ARE NAMED IN FULL because the worktree is detached - a bare 'origin
+HEAD' has no branch to resolve its destination from and git refuses it. The lease is the safety
+of the push - it refuses if the branch moved after you read it, which is exactly the case where
+pushing would destroy somebody else's work. If it is refused, STOP and report "blocked" with what
+git said. Never fall back to a plain --force.
 
 THE COMMIT MESSAGE is outward-facing text: say what the code now does and what on master it
 follows, in the words a person would use. Never mention the pipeline, lanes, labels, trains,
@@ -609,10 +642,11 @@ worktrees, temporary paths, CI runs by id, or any tooling or assistance. Read it
 
 REPORT status "repaired" with the head you pushed and the files you changed, and in 'notes' what
 master changed and what you changed to follow it - that text goes into the tracker and is the
-only record of a fix nobody reviewed as part of the branch.
+only record of a fix nobody reviewed as part of the branch. The handoff step that follows writes
+the tracker note for a repair that went through; you do not.
 
 OR status "blocked" with why, in enough detail that a person can act without re-running anything.
-${HAND_BACK}
+ONLY WHEN YOU ARE BLOCKED: ${HAND_BACK}
 
 Never use 2>&1.`
 }

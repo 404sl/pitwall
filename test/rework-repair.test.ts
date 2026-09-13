@@ -51,6 +51,7 @@ test("a rework whose rebased head is red gets one repair step, briefed from the 
   assert.ok(repair.prompt.includes("lint:   npm run lint"), "the repair step is not told how this repository lints");
   assert.ok(repair.prompt.includes("git diff aaaaaaa...origin/master"), "the repair step is not pointed at what master changed since the branch forked");
   assert.ok(repair.prompt.includes("--force-with-lease="), "the repair step pushes without a lease");
+  assert.ok(repair.prompt.includes("origin HEAD:refs/heads/<the branch>"), "the repair step pushes a bare HEAD from a detached worktree, which git refuses as an unqualified destination");
   assert.equal(/\bgit push --force\b(?!-with-lease)/.test(repair.prompt), false, "the repair step is offered a plain force push");
   assert.ok(/DO NOT REDESIGN, REBUILD OR "IMPROVE"/.test(repair.prompt), "the repair step is not told to leave the feature alone");
   assert.ok(repair.prompt.includes("ONE attempt"), "the repair step is not told it gets one attempt");
@@ -69,6 +70,80 @@ test("a rework whose rebased head is red gets one repair step, briefed from the 
   assert.deepEqual(result["repaired"], ["src/live.ts"]);
   assert.equal(result["lane"], "released");
   assert.equal(result["slot"], "released");
+});
+
+const ON_MASTER = { branch: `devloop/${ID}`, oldHead: "bbbbbbb", newHead: "bbbbbbb", files: [] };
+
+for (const status of ["already_clean", "resolved"] as const) {
+  test(`a branch the lander already rebased and pushed - resolve answers ${status} with an unmoved head - still reaches the repair step`, async () => {
+    const { calls, done } = runScript("rework.js", ARGS, (_call, n) => {
+      if (n === 1) return { status, ...ON_MASTER };
+      if (n === 2) return RED;
+      if (n === 3) return REPAIRED;
+      if (n === 4) return GREEN;
+      return RELEASED;
+    });
+
+    const result = await done;
+    assert.deepEqual(
+      calls.map((c) => c.label),
+      [`resolve:${ID}#${PR}`, `handoff:${ID}#${PR}`, `repair:${ID}#${PR}`, `handoff:${ID}#${PR}`, `release:${ID}#${PR}`],
+      "a rebase that replayed nothing onto a head already on master was read as a resolution that was never pushed",
+    );
+
+    const repair = labelled(calls, `repair:${ID}#${PR}`)[0]!;
+    assert.ok(repair.prompt.includes("git log -p -5 origin/master"), "the repair step is not pointed at master's own history of the failing file");
+    assert.equal(repair.prompt.includes("git diff bbbbbbb...origin/master"), false, "the repair step is handed a three-dot diff from master's own tip, which shows nothing");
+    assert.ok(/already sat on top of master/.test(repair.prompt), "the repair step is not told why there is no diff to read");
+    assert.equal(repair.prompt.includes("`"), false, "a backtick in the repair brief closes its template literal early");
+
+    assert.equal(result["outcome"], "verified");
+    assert.equal(result["repairs"], 1);
+    assert.equal(result["oldHead"], "bbbbbbb");
+    assert.equal(result["newHead"], "ccccccc", "the result does not name the repaired head that was actually labelled");
+    assert.deepEqual(result["repaired"], ["src/live.ts"]);
+    assert.equal(result["lane"], "released");
+  });
+}
+
+test("a resolve that names resolved files but did not move the head is still not believed", async () => {
+  const { calls, done } = runScript("rework.js", ARGS, (_call, n) => {
+    if (n === 1) return { status: "resolved", ...ON_MASTER, files: ["db/schema.rb"] };
+    return RELEASED;
+  });
+
+  const result = await done;
+  assert.deepEqual(calls.map((c) => c.label), [`resolve:${ID}#${PR}`, `release:${ID}#${PR}`]);
+  assert.equal(result["outcome"], "blocked");
+  assert.match(String(result["notes"]), /1 file\(s\) resolved but the branch head did not move/);
+});
+
+test("the resolve step is told a retired branch already sits on master and answers already_clean", async () => {
+  const { calls, done } = runScript("rework.js", ARGS, (_call, n) => {
+    if (n === 1) return RESOLVED;
+    if (n === 2) return GREEN;
+    return RELEASED;
+  });
+  await done;
+  const resolve = labelled(calls, `resolve:${ID}#${PR}`)[0]!;
+  assert.ok(/RED AFTER REBASE/.test(resolve.prompt), "the resolve brief names only the conflicting arrival");
+  assert.ok(resolve.prompt.includes("merge-base --is-ancestor origin/master HEAD && echo ON_MASTER"), "the resolve step is not given a way to tell the two arrivals apart");
+  assert.ok(/never call it\n?"resolved"/.test(resolve.prompt), "the resolve step is not warned off answering resolved for a rebase that replayed nothing");
+  assert.equal(resolve.prompt.includes("`"), false, "a backtick in the resolve brief closes its template literal early");
+});
+
+test("a repair that goes through is not told to write a red-head note on the issue", async () => {
+  const { calls, done } = runScript("rework.js", ARGS, (_call, n) => {
+    if (n === 1) return RESOLVED;
+    if (n === 2) return RED;
+    if (n === 3) return REPAIRED;
+    if (n === 4) return GREEN;
+    return RELEASED;
+  });
+  await done;
+  const repair = labelled(calls, `repair:${ID}#${PR}`)[0]!;
+  assert.ok(repair.prompt.includes("ONLY WHEN YOU ARE BLOCKED: WRITE IT ON THE TRACKER ISSUE"), "the tracker note in the repair brief is not gated on being blocked");
+  assert.ok(/handoff step that follows writes\nthe tracker note/.test(repair.prompt), "a successful repair is not told who writes its note");
 });
 
 test("a repair is attempted exactly once - red again ends the run for a person", async () => {
