@@ -165,7 +165,9 @@ PY
     # config.sh --args <issue-id> [slot]  ->  the args object for a task.js dispatch
     [ $# -ge 2 ] || { echo "usage: config.sh --args <issue-id> [slot]" >&2; exit 2; }
     if command -v bd >/dev/null 2>&1; then
-      REWORK="$(bd show "$2" --json 2>/dev/null | python3 -c '
+      ROOT_DIR="${DEVLOOP_ROOT:-$(read_field root 2>/dev/null)}"
+      [ -n "$ROOT_DIR" ] && [ -d "$ROOT_DIR" ] || ROOT_DIR="$(dirname "$CONFIG")"
+      REWORK="$( (cd "$ROOT_DIR" && BEADS_DIR="${BEADS_DIR:-$ROOT_DIR/.beads}" bd show "$2" --json) | python3 -c '
 import json, sys
 try:
     i = json.load(sys.stdin)

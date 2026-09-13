@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -91,7 +91,7 @@ test("a retirement that names no tracker issue is told there is nowhere to recor
 
 type Issue = { id: string; title: string; metadata?: Record<string, unknown> };
 
-type Bd = { bin: string; log: string };
+type Bd = { bin: string; log: string; cwd: string };
 
 function stubBd(open: readonly Issue[]): Bd {
   const payload = JSON.stringify(
@@ -111,12 +111,14 @@ function stubBd(open: readonly Issue[]): Bd {
   );
   const bin = mkdtempSync(join(tmpdir(), "pitwall-retire-route-bin-"));
   const log = join(bin, "calls.log");
+  const cwd = join(bin, "cwd.log");
   const stub = join(bin, "bd");
   writeFileSync(
     stub,
     [
       "#!/bin/sh",
       `echo "$*" >> ${JSON.stringify(log)}`,
+      `pwd -P >> ${JSON.stringify(cwd)}`,
       'case "$*" in',
       "  *'--status open --json'*)",
       "    cat <<'JSON'",
@@ -134,7 +136,7 @@ function stubBd(open: readonly Issue[]): Bd {
     ].join("\n"),
   );
   chmodSync(stub, 0o755);
-  return { bin, log };
+  return { bin, log, cwd };
 }
 
 const REWORK: Issue = {
@@ -166,10 +168,10 @@ function clean(ws: { root: string; prefix: string }): void {
   rmSync(ws.root, { recursive: true, force: true });
 }
 
-function run(script: string, ws: { root: string; config: string }, bd: Bd, args: readonly string[]): { status: number; out: string; err: string } {
+function run(script: string, ws: { root: string; config: string }, bd: Bd, args: readonly string[], cwd = ws.root): { status: number; out: string; err: string } {
   const ran = spawnSync("bash", [script, ...args], {
     encoding: "utf8",
-    cwd: ws.root,
+    cwd,
     env: {
       ...process.env,
       ...GIT_ENV,
@@ -186,6 +188,10 @@ function run(script: string, ws: { root: string; config: string }, bd: Bd, args:
 
 function calls(bd: Bd): readonly string[] {
   return existsSync(bd.log) ? readFileSync(bd.log, "utf8").trim().split("\n") : [];
+}
+
+function ranFrom(bd: Bd): readonly string[] {
+  return existsSync(bd.cwd) ? readFileSync(bd.cwd, "utf8").trim().split("\n") : [];
 }
 
 test("queue.sh --next hands a retired issue out as a rework, with its pull request and repository, and never as a task", () => {
@@ -231,6 +237,27 @@ test("config.sh --args refuses an issue carrying rework metadata and names the c
     assert.equal(ran.out, "");
     assert.match(ran.err, /config\.sh --rework fixture-rework 186 site/);
     assert.equal(existsSync(join(slotsPath(ws.prefix), "1")), false, "a lane was reserved for a dispatch that was refused");
+  } finally {
+    clean(ws);
+  }
+});
+
+test("config.sh --args asks bd from the tracker root, so the refusal holds when the supervisor sits inside a repository", () => {
+  const ws = workspace();
+  const bd = stubBd([REWORK]);
+  try {
+    const repo = join(ws.root, "repo");
+    mkdirSync(repo);
+    const ran = run(CONFIG_SH, ws, bd, ["--args", "fixture-rework"], repo);
+    assert.notEqual(ran.status, 0, `task.js args were built for a retired pull request from inside a repository:\n${ran.out}`);
+    assert.match(ran.err, /config\.sh --rework fixture-rework 186 site/);
+    const from = ranFrom(bd);
+    assert.ok(from.length > 0, "bd was never asked");
+    assert.deepEqual(
+      [...new Set(from)],
+      [realpathSync(ws.root)],
+      `bd resolves its database from the working directory and answers "no beads database found" from inside a repository; it ran from ${from.join(", ")}`,
+    );
   } finally {
     clean(ws);
   }
@@ -287,3 +314,27 @@ test("a rework that ends for a person clears the route and parks the issue, so a
     assert.ok(call.prompt.includes("--status open"), `the ${name} brief leaves the issue in_progress behind a dead pull request`);
   }
 });
+
+const HAND_BACK = "cd /root && bd update zz-aaa1 --unset-metadata rework --add-label needs-decision --status open";
+
+for (const [ending, repair] of [
+  ["reports a fix whose head did not move", { ...REPAIRED, head: RESOLVED.newHead }],
+  ["returns nothing", undefined],
+] as const) {
+  test(`a rework whose repair ${ending} ends red with the hand-back command in its notes, because no agent ran it`, async () => {
+    const { calls: made, done } = runScript("rework.js", REWORK_ARGS, (_call, n) => {
+      if (n === 1) return RESOLVED;
+      if (n === 2) return RED;
+      if (n === 3) return repair;
+      return RELEASED;
+    });
+    const result = await done;
+    assert.equal(result["outcome"], "red");
+    assert.equal(result["repairs"], 1);
+    assert.equal(made.filter((c) => c.label === "handoff:zz-aaa1#186").length, 1, "a second handoff ran against a head that was never pushed");
+    assert.ok(
+      String(result["notes"]).includes(HAND_BACK),
+      `the run ended red with the rework route still on the issue and told nobody how to take it off - the next reopen runs a second repair:\n${String(result["notes"])}`,
+    );
+  });
+}
