@@ -509,8 +509,10 @@ single textual conflict and the result did not compile - two import lines, after
 #185 changed `live.sh`, and five tests master had added failed against it.
 
 The lander detects this - it rebases and waits for CI on the new head - and retires the pull
-request with the failures written onto the issue. `task.js` is the wrong door for what follows, for
-the same reason as above: the work is done, and triage says so. So `rework.js` has a **Repair**
+request with the failures written onto the issue. Dispatch that retirement the same way as a
+dropped pull request - `config.sh --rework <id> <pr> <repo>` - reading the issue and the pull
+request number out of the lander's retirement note. `task.js` is the wrong door for what follows,
+for the same reason as above: the work is done, and triage says so. So `rework.js` has a **Repair**
 step between its handoff and its label. When CI is red on the rebased head it runs the repository's
 own tests in the worktree, reads what master changed under the failing files, and mends the break
 so the branch follows master - never by softening what master landed, and never by redesigning the
@@ -519,9 +521,9 @@ feature. Then it waits for CI once more.
 **Exactly one attempt.** Red a second time, or a repair that would have to weaken a test or revert
 a rule master added, means the branch and master disagree about what the code should do, and that
 is a person's call. The run ends `red`, the diagnosis is on the tracker issue, the pull request is
-left open and unlabelled, and the branch is left as pushed. Dispatch it the same way as a dropped
-pull request - `config.sh --rework <id> <pr> <repo>` - reading the issue and the pull request
-number out of the lander's retirement note.
+left open and unlabelled, and the branch is left as pushed. A rework that ended `red` is NOT
+dispatched to rework again - a second run would get a second repair, and that is the loop this
+limit exists to prevent. A person picks it up from the diagnosis on the issue.
 
 A retired branch arrives ALREADY ON MASTER: `land-one.sh` pushes the rebased head before it waits
 on CI. So the resolve step's rebase replays nothing, it pushes nothing, and it answers
