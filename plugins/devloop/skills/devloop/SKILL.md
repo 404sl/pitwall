@@ -528,9 +528,12 @@ a rule master added, means the branch and master disagree about what the code sh
 is a person's call. The run ends `red`, the diagnosis is on the tracker issue, the pull request is
 left open and unlabelled, and the branch is left as pushed. A rework that ended `red` is NOT
 dispatched to rework again - a second run would get a second repair, and that is the loop this
-limit exists to prevent. So the run takes the `rework` metadata off the issue, labels it
-`needs-decision` and sets it open: parked in a person's queue, visible, and routed nowhere until
-somebody removes the label. A person picks it up from the diagnosis on the issue.
+limit exists to prevent. So the agent that ends it takes the `rework` metadata off the issue,
+labels it `needs-decision` and sets it open: parked in a person's queue, visible, and routed
+nowhere until somebody removes the label. Two `red` endings run no such agent - a repair step
+that returned nothing, and one that reported a fix whose head did not move - so the result's
+`notes` carry that one command for the supervisor to run by hand. A person picks it up from the
+diagnosis on the issue.
 
 A retired branch arrives ALREADY ON MASTER: `land-one.sh` pushes the rebased head before it waits
 on CI. So the resolve step's rebase replays nothing, it pushes nothing, and it answers
@@ -584,7 +587,9 @@ The same for a rework that returns `blocked` or `error` before it wrote anything
 a refused lease, a worktree that would not add. Its `rework` metadata is still on, so `-s open`
 offers it to `rework.js` again on the next tick; if the block is one a retry cannot clear, take
 the route off first with `bd update <id> --unset-metadata rework` and park it for a person. A
-rework that ends `red` has already done both itself.
+rework that ends `red` usually has both done by its last agent; when its result's `notes` end
+with the hand-back command, no agent ran it - run that command before anything reopens the
+issue, or the reopen sends it round for the second repair the one-attempt limit exists to stop.
 
 `args` must be an actual JSON object in the tool call, not a JSON-encoded string. The script
 now coerces a string rather than no-opping, but the object form is what to write.

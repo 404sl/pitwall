@@ -459,6 +459,11 @@ let repairs = 0
 let repaired = null
 let handed = null
 
+const HAND_BACK_CMD = `cd ${ROOT} && bd update ${ID} --unset-metadata rework --add-label needs-decision --status open`
+const HAND_BACK_NOTE = ID
+  ? `\n\nIf the issue still carries its rework route, hand it to a person before reopening it, in one command:\n  ${HAND_BACK_CMD}`
+  : ''
+
 const HAND_BACK = ID
   ? `WRITE IT ON THE TRACKER ISSUE BEFORE YOU REPORT, because the person who takes this over reads
 the issue and not this run. Put the text in a file and append it - never --notes, which replaces
@@ -472,7 +477,7 @@ collides with, and what was tried. Leave the pull request open and unlabelled.
 
 THEN HAND THE ISSUE TO A PERSON, in one command, exactly as written:
 
-  cd ${ROOT} && bd update ${ID} --unset-metadata rework --add-label needs-decision --status open
+  ${HAND_BACK_CMD}
 
 The rework metadata is what routed this issue here; left on, the next reopen sends it straight
 back for a second repair, which is the loop the one-attempt limit exists to prevent. Left
@@ -703,14 +708,14 @@ while (handed && handed.status === 'red' && repairs < MAX_REPAIRS) {
   if (!repaired || repaired.status !== 'repaired') {
     handed = {
       ...handed,
-      notes: `${handed.notes || 'CI red on the rebased head'}\n\nrepair: ${repaired ? (repaired.notes || 'blocked with no reason given') : 'the repair step returned nothing'}`,
+      notes: `${handed.notes || 'CI red on the rebased head'}\n\nrepair: ${repaired ? (repaired.notes || 'blocked with no reason given') : 'the repair step returned nothing'}${HAND_BACK_NOTE}`,
     }
     break
   }
   if (repaired.head && resolved.newHead && repaired.head === resolved.newHead) {
     handed = {
       ...handed,
-      notes: `${handed.notes || 'CI red on the rebased head'}\n\nrepair reported success but the branch head did not move (${repaired.head}). Nothing was pushed, so CI would answer the same way.`,
+      notes: `${handed.notes || 'CI red on the rebased head'}\n\nrepair reported success but the branch head did not move (${repaired.head}). Nothing was pushed, so CI would answer the same way.${HAND_BACK_NOTE}`,
     }
     break
   }
