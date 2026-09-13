@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.74
+
+`lock-check.sh` and `lanes.sh` now read file ages correctly on Linux as well as macOS. On GNU coreutils they used to die on the first mtime read, so a session running the skill there got no lane report and no answer about the merge lock; both now answer the same way on either platform.
+
 ## 0.1.73
 
 `land-one.sh` lands a branch that another worktree still has checked out. It works detached from `origin/<branch>` throughout, pushes `HEAD:refs/heads/<branch>` with a lease on the head it read, and refuses `master` or `main` as the branch to land. When a leftover worktree holds the branch it prints a `held:` line naming the path and leaves that worktree alone. A refused worktree add or push now quotes what git said instead of a bare refusal, and a checkout refusal is no longer reported as a push refusal.
