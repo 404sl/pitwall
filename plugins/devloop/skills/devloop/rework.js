@@ -216,7 +216,22 @@ SET UP:
 
   cd ${REPO_PATH} && git fetch origin
   branch=$(gh pr view ${PR} --repo ${SLUG} --json headRefName --jq .headRefName)
-  git worktree add ${WT_PATH} -B "$branch" "origin/$branch"
+  git worktree add --detach ${WT_PATH} "origin/$branch"
+
+THE WORKTREE IS DETACHED ON PURPOSE. 'git status' will say 'HEAD detached at origin/...' for the
+whole run, and that is correct - do not check the branch out to tidy it. The task lane that built
+this branch ended without handing off, so its own worktree very often still has the branch checked
+out, and git refuses to check one branch out in two worktrees: an earlier version of this step ran
+'git worktree add -B "$branch"' and was refused with 'is already checked out at', and two reworks
+were then found improvising, sitting detached beside their lane worktrees. Detached, nothing here
+needs the branch name until the push, and the push names it in full.
+
+IF 'git worktree list' SHOWS ANOTHER WORKTREE WITH THE BRANCH CHECKED OUT, that is the task lane's
+worktree, and its local ref is the SUPERSEDED head: the one this round is about to replace, or the
+one an earlier round already did. Never rebase in it and never push from it. A rebase there replays
+the stale head over master, and a push from it under a lease read from the freshly fetched remote
+replaces the newer head with the stale one. Leave it alone. The handoff step removes it once the
+label is on, and not before.
 
 Record the branch head BEFORE you touch it - you will need to prove it moved:
   git -C ${WT_PATH} rev-parse HEAD
@@ -330,12 +345,14 @@ ${repo.lint ? `  lint:   ${repo.lint}` : ''}
 PUSH to the same branch. A rebase rewrites the commits, so a plain push is refused and the push
 has to be forced - force it WITH A LEASE, against the head you recorded before you started:
 
-  cd ${WT_PATH} && git push --force-with-lease=<the branch>:<the head you recorded> origin HEAD
+  cd ${WT_PATH} && git push --force-with-lease=refs/heads/<the branch>:<the head you recorded> origin HEAD:refs/heads/<the branch>
 
-The lease is the whole safety of this step: it refuses if the branch moved after you read it,
-which is exactly the case where forcing would destroy somebody else's work. If the lease is
-refused, STOP and report status "blocked" with what git said. Never fall back to a plain --force,
-and never widen the lease to the bare branch name.
+BOTH ENDS ARE NAMED IN FULL because HEAD is detached: a bare 'origin HEAD' has no branch to
+resolve its destination from and git refuses it as an unqualified destination. The lease is the
+whole safety of this step: it refuses if the branch moved after you read it, which is exactly the
+case where forcing would destroy somebody else's work. If the lease is refused, STOP and report
+status "blocked" with what git said. Never fall back to a plain --force, and never widen the lease
+to the bare branch name.
 
 COMMIT MESSAGE RULES. A rebase composes no message of its own: the replayed commits keep the ones
 the branch already carried, so there is nothing here for you to write. If a resolution makes one of
@@ -385,6 +402,8 @@ const HANDOFF = {
   },
 }
 
+const BRANCH = resolved.branch || '<the branch>'
+
 const handed = await agent(
   `Pull request #${PR} on ${SLUG} has been rebased onto current master and pushed. Wait for CI on
 the NEW head and hand it back to the lander.
@@ -416,7 +435,7 @@ than adjusting the test. Report status "red" with what failed; do not label it.
 WHEN IT IS GREEN, hand off with the script rather than by hand:
 
   bash ${SKILL_DIR}/lane-handoff.sh --repo-path ${REPO_PATH} --slug ${SLUG} \\
-    --pr ${PR} --branch ${resolved.branch || '<the branch>'} \\
+    --pr ${PR} --branch ${BRANCH} \\
     ${ID ? `--issue ${ID} --note-file <a file holding your tracker note>` : ''} \\
     --worktree ${WT_PATH} \\
     --lane-lock ${LANE_LOCK}
@@ -452,7 +471,21 @@ THE TRACKER NOTE must say the branch was rebased onto master, name the files tha
 and say what was kept from each side. Append it, never replace: the notes field has no history and
 an overwrite is simply gone.
 
-Report the CI conclusion and whether the label is on.`,
+ONCE THE LABEL IS ON - lane-handoff.sh exited 0 or 5, and on no other exit - remove the task lane's
+worktree that still has the branch checked out. lane-handoff.sh removes only the worktree it was
+passed, which is this run's own detached one. The lane that built the branch ended without handing
+off, so its worktree is still holding the branch, at the head this round superseded; left there it
+refuses the next 'git worktree add' of the branch and trips the lander's --delete-branch. Run this
+once, exactly as it stands:
+
+  cd ${REPO_PATH} && held=$(git worktree list --porcelain | awk -v want='branch refs/heads/${BRANCH}' '/^worktree /{path=substr($0,10)} $0==want{print path; exit}') && main=$(git worktree list --porcelain | awk '/^worktree /{print substr($0,10); exit}') && if [ -z "$held" ]; then echo "NO_HOLDER: nothing else has ${BRANCH} checked out"; elif [ "$held" = "$main" ]; then echo "REFUSED: $held is the main checkout, not a lane worktree"; else git worktree remove --force "$held" && git worktree prune && echo "REMOVED: $held"; fi
+
+It matches on the 'branch refs/heads/...' line of 'git worktree list --porcelain' and on nothing
+else: never a path guess, never the main checkout, and never this run's own worktree, which is
+detached and has no branch line. On exit 2, 4, 7 or 8 LEAVE IT WHERE IT IS and report: until the
+label is on, that worktree is the only copy of the lane's own state a person can still inspect.
+
+Report the CI conclusion, whether the label is on, and what the removal printed.`,
   { schema: HANDOFF, phase: 'Handoff', label: ID ? `handoff:${ID}#${PR}` : `handoff:#${PR}` },
 )
 
