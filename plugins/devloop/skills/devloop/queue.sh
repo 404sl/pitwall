@@ -149,8 +149,26 @@ def eligible(i):
             and not parked(i)
             and i["id"] not in blocked_ids)
 
+def rework_of(i):
+    meta = i.get("metadata")
+    if isinstance(meta, str):
+        try:
+            meta = json.loads(meta)
+        except Exception:
+            meta = None
+    r = (meta or {}).get("rework") if isinstance(meta, dict) else None
+    if not isinstance(r, dict):
+        return None
+    pr = r.get("pr")
+    if isinstance(pr, str) and pr.isdigit():
+        pr = int(pr)
+    if not isinstance(pr, int) or isinstance(pr, bool) or pr < 1:
+        return None
+    repo = r.get("repo")
+    return (pr, repo if isinstance(repo, str) and repo else "-")
+
 ready = sorted([i for i in open_ if eligible(i)],
-               key=lambda i: (i.get("priority", 9), i.get("created_at", "")))
+               key=lambda i: (i.get("priority", 9), 0 if rework_of(i) else 1, i.get("created_at", "")))
 waiting = sorted([i for i in open_ if parked(i)], key=lambda i: i.get("priority", 9))
 today = datetime.date.today().isoformat()
 closed_today = [i for i in closed if (i.get("updated_at") or "")[:10] == today]
@@ -180,11 +198,12 @@ print(bar)
 # lane dead.
 _working = []
 for _i in running:
-    _wt = f"/tmp/{PFX}-worktrees/" + _i["id"]
-    if not os.path.isdir(_wt):
+    _wts = [d for d in (f"/tmp/{PFX}-worktrees/" + _i["id"], f"/tmp/{PFX}-worktrees/" + _i["id"] + "-rework")
+            if os.path.isdir(d)]
+    if not _wts:
         continue
     try:
-        if subprocess.run(["find", _wt, "-mmin", "-20"],
+        if subprocess.run(["find", *_wts, "-mmin", "-20"],
                           capture_output=True, text=True, timeout=20).stdout.strip():
             _working.append(_i)
     except Exception:
@@ -256,7 +275,9 @@ if running:
 
 print(" NEXT UP")
 for i in ready[:8]:
-    print(f"   {i['id']:<10} P{i.get('priority','?')}  {i.get('issue_type',''):<7} {i['title'][:55]}")
+    rw = rework_of(i)
+    tag = f"  rework #{rw[0]} {rw[1]}" if rw else ""
+    print(f"   {i['id']:<10} P{i.get('priority','?')}  {i.get('issue_type',''):<7} {i['title'][:55]}{tag}")
 if not ready:
     if ACTOR:
         print(f"   (nothing in {ACTOR}'s queue - every open issue is in another queue, needs a "
@@ -334,8 +355,8 @@ if want > 0:
         taken[slot] = i["id"]
         with open(os.path.join(SLOTDIR, str(slot)), "w") as f:
             f.write(i["id"])
-        handed.append((i["id"], slot))
+        handed.append((i["id"], slot, rework_of(i)))
 
-    for issue_id, slot in handed:
-        print(f"{issue_id} {slot}")
+    for issue_id, slot, rw in handed:
+        print(f"{issue_id} {slot} rework {rw[0]} {rw[1]}" if rw else f"{issue_id} {slot}")
 PY

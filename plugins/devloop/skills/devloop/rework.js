@@ -468,7 +468,16 @@ the field:
 
 Say that the branch was rebased onto master and is red on the new head for a reason a rebase
 cannot see, name each failure with its file and assertion, say what master changed that it
-collides with, and what was tried. Leave the pull request open and unlabelled.`
+collides with, and what was tried. Leave the pull request open and unlabelled.
+
+THEN HAND THE ISSUE TO A PERSON, in one command, exactly as written:
+
+  cd ${ROOT} && bd update ${ID} --unset-metadata rework --add-label needs-decision --status open
+
+The rework metadata is what routed this issue here; left on, the next reopen sends it straight
+back for a second repair, which is the loop the one-attempt limit exists to prevent. Left
+in_progress, the issue is invisible to the queue behind a dead pull request. needs-decision parks
+it in a person's queue with the diagnosis you just wrote, and open keeps it visible there.`
   : `Leave the pull request open and unlabelled, and put everything a person needs in 'notes' - there is
 no tracker issue for this run to write on.`
 
