@@ -43,7 +43,7 @@ SLOTS="/tmp/${PFX}-slots"
 # These used to be one machine's absolute paths, pinned to one project and one session of it.
 # Anywhere else that reported another project's runs as though they were this workspace's.
 # The harness names its per-project directory after the workspace path with the separators
-# swapped, so it can be computed; the session inside it is whichever ran most recently.
+# swapped, so it can be computed; the runs inside it are read from every session, nested or flat.
 CFG="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/config.sh"
 ROOT="${DEVLOOP_ROOT:-$(bash "$CFG" root 2>/dev/null)}"
 [ -n "$ROOT" ] || { echo "$(basename "${BASH_SOURCE[0]}"): no workspace resolved - refusing to guess." >&2; exit 6; }
@@ -108,7 +108,7 @@ freshest_for() {
 transcript_age() {
   local id="$1" newest=0 m d
   [ -d "$WF" ] || { echo ""; return; }
-  for d in "$WF"/*/; do
+  for d in "$WF"/*/subagents/workflows/*/ "$WF"/*/; do
     [ -f "$d/journal.jsonl" ] || continue
     grep -q -- "$id" "$d/journal.jsonl" 2>/dev/null || continue
     for f in "$d"/agent-*.jsonl "$d/journal.jsonl"; do

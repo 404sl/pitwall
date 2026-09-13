@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.76
+
+`live.sh` and `lanes.sh` now find workflow runs written at `<session>/subagents/workflows/wf_*/` as well as directly under the project directory. A session reading `UNKNOWN - could not identify` on every row, or `no workflow transcript found` for a lane that is visibly running, should re-run them after updating rather than pointing the workflow directory environment variable at a session subdirectory by hand.
+
 ## 0.1.75
 
 The rework takes its worktree detached from `origin/<branch>`, so a task lane's leftover worktree holding the branch no longer blocks it, and pushes `HEAD:refs/heads/<branch>` under a lease on the head it recorded. The resolve brief says the lane's leftover worktree holds a superseded head and must not be rebased or pushed from. Once `lane-handoff.sh` has labelled the pull request, the handoff removes the worktree still holding the branch, matched by its branch line in `git worktree list --porcelain`, never the main checkout and never the rework's own.

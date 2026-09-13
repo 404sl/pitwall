@@ -27,7 +27,7 @@
 # These used to be one machine's absolute paths, pinned to one project and one session of it.
 # Anywhere else that reported another project's runs as though they were this workspace's.
 # The harness names its per-project directory after the workspace path with the separators
-# swapped, so it can be computed; the session inside it is whichever ran most recently.
+# swapped, so it can be computed; the runs inside it are read from every session, nested or flat.
 CFG="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/config.sh"
 ROOT="${DEVLOOP_ROOT:-$(bash "$CFG" root 2>/dev/null)}"
 [ -n "$ROOT" ] || { echo "$(basename "${BASH_SOURCE[0]}"): no workspace resolved - refusing to guess." >&2; exit 6; }
@@ -72,7 +72,12 @@ done
 
 echo
 echo "WORKFLOW DIRECTORIES BY LAST WRITE"
-for d in $(ls -t "$WF" 2>/dev/null | head -14); do
+shown=0
+ls -dt "$WF"/*/subagents/workflows/*/ "$WF"/*/ 2>/dev/null | while IFS= read -r run; do
+  [ -f "$run/journal.jsonl" ] || ls "$run"/agent-*.jsonl >/dev/null 2>/dev/null || continue
+  [ "$shown" -lt 14 ] || break
+  shown=$((shown + 1))
+  d="${run#"$WF"/}"; d="${d%/}"
   age=$(( (now - $(date -r "$WF/$d" +%s)) / 60 ))
   # Take the issue id from any agent transcript, not a guessed filename, and strip the
   # trailing punctuation that a sentence leaves on it. An unidentified run is reported as
@@ -83,7 +88,7 @@ for d in $(ls -t "$WF" 2>/dev/null | head -14); do
   [ -n "$labelled" ] && iid=$labelled
   state="idle"
   [ "$age" -lt 10 ] && state="working"
-  printf "  %-20s %-14s %-8s last write %dmin ago\n" "$d" "$iid" "$state" "$age"
+  printf "  %-20s %-14s %-8s last write %dmin ago\n" "${d##*/}" "$iid" "$state" "$age"
 done
 
 echo
