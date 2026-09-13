@@ -588,8 +588,9 @@ a refused lease, a worktree that would not add. Its `rework` metadata is still o
 offers it to `rework.js` again on the next tick; if the block is one a retry cannot clear, take
 the route off first with `bd update <id> --unset-metadata rework` and park it for a person. A
 rework that ends `red` usually has both done by its last agent; when its result's `notes` end
-with the hand-back command, no agent ran it - run that command before anything reopens the
-issue, or the reopen sends it round for the second repair the one-attempt limit exists to stop.
+with the hand-back command, the run could not confirm that - run the command before anything
+reopens the issue, or the reopen sends it round for the second repair the one-attempt limit
+exists to stop. It is a no-op when the metadata is already gone.
 
 `args` must be an actual JSON object in the tool call, not a JSON-encoded string. The script
 now coerces a string rather than no-opping, but the object form is what to write.
