@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.72
+
+`queue-watch.sh` announces NEW WORK and STUCK in every workspace, not only the one whose id prefix it used to hardcode - it builds its id patterns from the workspace's `idPrefix`. It refuses to start, exit 3, when that prefix cannot be read from the config, because a watcher defaulting to another project's prefix goes silent rather than wrong, and its silence reads as an idle queue. A STUCK header names only issue ids: a worktree path or a repository name that happens to share the prefix is no longer reported as one, so acknowledging the real id in a "lane died holding its worktree" finding now silences it.
+
 ## 0.1.71
 
 `live.sh` names a run by the issue id in its journal labels before it reads the transcript, so a lock path or a repository name quoted early in a prompt no longer becomes the run's issue. A lander, whose labels carry no issue id, reads `no id in its labels` - the phrase the run-status script uses - rather than a repository name. A run with no journal still falls back to the transcript grep, and an unidentified run still has its UNKNOWN row.
