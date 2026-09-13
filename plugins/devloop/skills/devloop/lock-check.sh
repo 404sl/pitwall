@@ -43,9 +43,15 @@ lock="/tmp/${PFX}-merge.lock"
 
 [ -d "$lock" ] || { [ "$quiet" = 1 ] || echo "no merge lock held"; exit 0; }
 
+mtime_of() {
+  stat -c %Y "$1" 2>/dev/null && return 0
+  stat -f %m "$1" 2>/dev/null
+}
+
 token=$(cat "$lock/holder" 2>/dev/null)
 now=$(date +%s)
-held_since=$(stat -f %m "$lock/holder" 2>/dev/null || stat -c %Y "$lock/holder" 2>/dev/null || echo "$now")
+held_since=$(mtime_of "$lock/holder")
+case "$held_since" in ''|*[!0-9]*) held_since=$now ;; esac
 held_min=$(( (now - held_since) / 60 ))
 
 if [ -z "$token" ]; then
@@ -103,7 +109,8 @@ fi
 
 newest=$(ls -t "$owner"/*.jsonl 2>/dev/null | head -1)
 [ -n "$newest" ] || newest="$owner/journal.jsonl"
-last=$(stat -f %m "$newest" 2>/dev/null || stat -c %Y "$newest" 2>/dev/null || echo "$now")
+last=$(mtime_of "$newest")
+case "$last" in ''|*[!0-9]*) last=$now ;; esac
 idle=$(( now - last ))
 
 if [ "$idle" -lt "$silent_for" ]; then
