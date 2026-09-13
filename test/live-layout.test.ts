@@ -59,6 +59,15 @@ function run(space: Space, dir: string, id: string): void {
 function nested(space: Space, session: string, name: string, id: string): void {
   run(space, join(space.wf, session, "subagents", "workflows", name), id);
   writeFileSync(join(space.wf, `${session}.jsonl`), `${JSON.stringify({ type: "user" })}\n`);
+  mkdirSync(join(space.wf, session, "tool-results"), { recursive: true });
+}
+
+function transcriptOnly(dir: string, id: string): void {
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, "agent-a1.jsonl"),
+    `${JSON.stringify({ type: "user", message: `Issue: ${id} - no journal yet` })}\n`,
+  );
 }
 
 function flat(space: Space, name: string, id: string): void {
@@ -159,4 +168,40 @@ test("a harness directory whose path contains a space still lists every run", ()
   assert.match(out.stdout, /^ {2}wf_flat +sr-flat1 /m);
   assert.match(out.stdout, /^ {2}wf_aaa +sr-nest1 /m);
   assert.doesNotMatch(out.stdout, /UNKNOWN/);
+});
+
+test("a flat run that has written a transcript but no journal is still listed by its id", () => {
+  const space = workspace();
+  transcriptOnly(join(space.wf, "wf_flat"), "sr-flat1");
+
+  const out = live(space);
+
+  assert.equal(out.status, 0, out.stderr);
+  assert.match(out.stdout, /^ {2}wf_flat +sr-flat1 +(idle|working) /m);
+});
+
+test("a nested run that has written a transcript but no journal is still listed by its id", () => {
+  const space = workspace();
+  transcriptOnly(
+    join(space.wf, "11111111-aaaa-4bbb-8ccc-000000000001", "subagents", "workflows", "wf_aaa"),
+    "sr-nest1",
+  );
+
+  const out = live(space);
+
+  assert.equal(out.status, 0, out.stderr);
+  assert.match(out.stdout, /^ {2}wf_aaa +sr-nest1 +(idle|working) /m);
+  assert.doesNotMatch(out.stdout, /11111111-aaaa/);
+});
+
+test("a directory holding neither a journal nor a transcript is not a run", () => {
+  const space = workspace();
+  nested(space, "11111111-aaaa-4bbb-8ccc-000000000001", "wf_aaa", "sr-nest1");
+  mkdirSync(join(space.wf, "memory"), { recursive: true });
+
+  const out = live(space);
+
+  assert.equal(out.status, 0, out.stderr);
+  assert.match(out.stdout, /^ {2}wf_aaa +sr-nest1 /m);
+  assert.doesNotMatch(out.stdout, /^ {2}(memory|tool-results|11111111-aaaa)/m);
 });

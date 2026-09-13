@@ -74,7 +74,7 @@ echo
 echo "WORKFLOW DIRECTORIES BY LAST WRITE"
 shown=0
 ls -dt "$WF"/*/subagents/workflows/*/ "$WF"/*/ 2>/dev/null | while IFS= read -r run; do
-  [ -f "$run/journal.jsonl" ] || continue
+  [ -f "$run/journal.jsonl" ] || ls "$run"/agent-*.jsonl >/dev/null 2>/dev/null || continue
   [ "$shown" -lt 14 ] || break
   shown=$((shown + 1))
   d="${run#"$WF"/}"; d="${d%/}"
