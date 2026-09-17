@@ -24,6 +24,10 @@ const HOLED =
 const HOLE = "`quiet = argv[1]`";
 const HOLED_EARLY = "Line 221 is the argv slot and the block unpacks it twice.";
 const HOLE_EARLY = "221 is the argv";
+const TAGGED = "Lane 3 failed <typecheck> on the second pass.";
+const TAGGED_HOLE = "<typecheck>";
+const SHORT_TAGGED = "Fixed by <land.js> now.";
+const SHORT_TAGGED_HOLE = "<land.js>";
 const SHARED_RUN_SEED =
   "\n2026-09-16T09:00:00Z lane-acme-9\n" +
   "PARKED pending review - see https://github.com/404sl/pitwall/pull/195 for the earlier attempt.\n";
@@ -43,7 +47,7 @@ function executable(path: string, body: string): void {
   chmodSync(path, 0o755);
 }
 
-function harness(seededNotes: string, frozenNow?: string): Harness {
+function harness(seededNotes: string, frozenNow?: string, onlyReadAfterWrite = false): Harness {
   const root = mkdtempSync(join(tmpdir(), "pitwall-bdnote-"));
   const bin = join(root, "bin");
   mkdirSync(bin);
@@ -54,6 +58,7 @@ function harness(seededNotes: string, frozenNow?: string): Harness {
   const notesFile = join(root, "notes.txt");
   writeFileSync(notesFile, seededNotes);
 
+  const wrote = join(root, "wrote.flag");
   executable(
     join(bin, "bd"),
     [
@@ -61,9 +66,11 @@ function harness(seededNotes: string, frozenNow?: string): Harness {
       'case "$1" in',
       "  update)",
       '    [ "${BD_RECORD:-0}" = "1" ] && python3 -c \'import sys; sys.stdout.write(sys.argv[1].replace(sys.argv[2], "") + "\\n")\' "$4" "${BD_DROP:-}" >> "$BD_NOTES"',
+      ...(onlyReadAfterWrite ? [`    : > "${wrote}"`] : []),
       '    echo "Updated issue: $2"',
       "    ;;",
       "  show)",
+      ...(onlyReadAfterWrite ? [`    [ -f "${wrote}" ] || exit 1`, `    rm -f "${wrote}"`] : []),
       "    python3 -c 'import io,json,sys; print(json.dumps({\"id\": sys.argv[1], \"status\": \"open\", \"notes\": io.open(sys.argv[2]).read()}))' \"$2\" \"$BD_NOTES\"",
       "    ;;",
       '  *) echo "bd stub: unhandled $*" >&2; exit 2 ;;',
@@ -276,4 +283,45 @@ test("a note that never lands is reported lost even when an earlier note shares 
   const notes = readFileSync(box.notesFile, "utf8");
   assert.equal(notes, SHARED_RUN_SEED, "a note that recorded nothing left the field changed");
   assert.equal(stampLines(notes).length, 1, "a lost note was counted into the field");
+});
+
+test("a note whose surviving fragments are all short is reported once, not appended three times", () => {
+  const box = harness("");
+  const ran = append(box, ["acme-1", TAGGED], "lane-acme-1", true, TAGGED_HOLE);
+
+  assert.equal(ran.status, 0, ran.stdout + ran.stderr);
+  assert.match(ran.stderr, /stored note differs from what was sent/);
+  assert.match(ran.stdout, /stored text differs/);
+  assert.equal(
+    stampLines(readFileSync(box.notesFile, "utf8")).length,
+    1,
+    "a note damaged into short fragments was retried, which is how duplicate notes get made",
+  );
+});
+
+test("a short note damaged in its opening is reported once, not appended three times", () => {
+  const box = harness("");
+  const ran = append(box, ["acme-1", SHORT_TAGGED], "lane-acme-1", true, SHORT_TAGGED_HOLE);
+
+  assert.equal(ran.status, 0, ran.stdout + ran.stderr);
+  assert.match(ran.stderr, /stored note differs from what was sent/);
+  assert.match(ran.stdout, /stored text differs/);
+  assert.equal(
+    stampLines(readFileSync(box.notesFile, "utf8")).length,
+    1,
+    "a note shorter than the old token window was retried, which is how duplicate notes get made",
+  );
+});
+
+test("a transformed note is reported once even when the read before the write fails", () => {
+  const box = harness("", undefined, true);
+  const ran = append(box, ["acme-1", HOLED], "lane-acme-1", true, HOLE);
+
+  assert.equal(ran.status, 0, ran.stdout + ran.stderr);
+  assert.match(ran.stderr, /stored note differs from what was sent/);
+  assert.equal(
+    stampLines(readFileSync(box.notesFile, "utf8")).length,
+    1,
+    "a failed read before the write turned a transformed note into three appends",
+  );
 });

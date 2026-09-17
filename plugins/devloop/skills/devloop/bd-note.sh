@@ -101,20 +101,18 @@ whole = ''.join(want[i] for i in keep)
 if not whole:
     sys.exit(1)
 pre = io.open(pre_path, encoding='utf-8', errors='replace').read() if pre_read else None
-if pre is None or not stored.startswith(pre):
-    sys.exit(0 if whole in stored else 1)
-added = stored[len(pre):]
-if whole in added:
+region = stored[len(pre):] if pre is not None and stored.startswith(pre) else stored
+if whole in region:
     sys.exit(0)
-if re.sub(r'[^A-Za-z0-9]', '', stamp) not in added:
+mark = re.sub(r'[^A-Za-z0-9]', '', stamp)
+at_mark = region.rfind(mark)
+if at_mark < 0:
     sys.exit(1)
-run = min(24, len(whole))
-if not any(whole[i:i + run] in added for i in range(len(whole) - run + 1)):
-    sys.exit(1)
+mine = region[at_mark + len(mark):]
 lo, hi = 0, len(whole)
 while lo < hi:
     mid = (lo + hi + 1) // 2
-    if whole[:mid] in added:
+    if whole[:mid] in mine:
         lo = mid
     else:
         hi = mid - 1
