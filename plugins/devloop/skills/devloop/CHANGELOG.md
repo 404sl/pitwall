@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.1.81
+
+A session now reads its own commit messages back before it pushes, with
+`lane-handoff.sh --repo-path <abs> --pre-push`, instead of meeting a compliance hit at the handoff
+when the only remedy left is a force-push it may not run. The brief asks for the handoff label to
+be named in prose rather than written as its literal token, and the handoff gate now says which
+half of a refusal is fixable in place and which half needs a person.
+
+Both remedies the pre-push refusal prints now carry the commit identity on the command, taken
+from the branch being built on. Without it git invents a name and address from the hostname
+rather than refusing, and the reset-then-commit form records that as the author. The refusal also
+asks for a re-run once the message is reworded, because nothing has graded the text just written.
+
+A rebase path has its own mode. `--pre-push --rebased` offers an amend of the commit the step just
+wrote and nothing else, because a rebase renews every sha and absence from a remote stops meaning
+a commit was never reviewed. `rework.js` runs the check between the commit and each force-push, so
+a message written during a resolve or a repair is graded while the amend is still free.
+
+The pre-push check now asks the remote whether the branch is published — `git ls-remote --heads
+origin refs/heads/<branch>` — instead of inferring it from which shas a remote ref happens to
+reach. A rebase renews every sha, so the old inference read a branch that had been pushed four
+times as never pushed and offered a squash whose push is then rejected as a non-fast-forward.
+There is a third answer as a result: exit 10 means every message is clear but the remote holds
+the branch at a head the session's HEAD does not contain, so no plain push exists and only a
+person can publish it. Report it and return blocked; there is nothing to try. A remote that
+cannot be reached is exit 7 and never read as a branch that does not exist. The rebase mode is
+unchanged and asks no remote anything, because that caller republishes by design.
+
+Refs pitwall-kymz
+
 ## 0.1.80
 
 The message `bd-note.sh` prints when a note cannot be recorded now states three attempts, which is what its retry loop makes. A session reading that warning can compare it against the appends in the notes field directly; previously the message named one more attempt than happened, which read as an append having been lost.
