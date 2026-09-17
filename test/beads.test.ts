@@ -10,7 +10,8 @@ import {
   issueActor,
   noteAppender,
   noteLockPath,
-  noteToken,
+  noteVerdict,
+  storedNotes,
   readIssue,
   readIssues,
   showArgs,
@@ -654,10 +655,43 @@ test("the writer is the session, else the user, else unknown, and always one wor
   assert.equal(writerOf({ PITWALL_SESSION: " \t " }), "unknown");
 });
 
-test("the token a write is verified by survives wrapping and punctuation", () => {
-  assert.equal(noteToken("Kept both sides of the merge."), "Keptbothsidesofthemerge");
-  assert.equal(noteToken("a".repeat(40)), "a".repeat(24));
-  assert.equal(noteToken("!!! ??? ... --- *** ###"), "!!! ??? ... ");
+test("a write is verified by the whole note after its own stamp, not by a fixed-length token", () => {
+  const stamp = "2026-09-10T14:22:31Z lane-acme-1";
+  const shown = (notes: string) => [{ id: "mw-1", notes }];
+  const sent = "Kept both sides of the merge.";
+
+  assert.deepEqual(noteVerdict(shown(`\n${stamp}\n${sent}`), sent, stamp), { verdict: "landed" });
+  assert.deepEqual(
+    noteVerdict(shown(`\n${stamp}\n  Kept both\n  sides of the\tmerge.`), sent, stamp),
+    { verdict: "landed" },
+    "wrapping or re-indentation was read as a transformed note",
+  );
+  assert.deepEqual(noteVerdict(shown("An unrelated earlier note."), sent, stamp), {
+    verdict: "absent",
+  });
+  assert.deepEqual(
+    noteVerdict(shown(`\n${stamp}\n`), sent, stamp),
+    { verdict: "diverged", at: 0 },
+    "this write's own stamp with nothing after it was read as a total loss and retried",
+  );
+  assert.deepEqual(
+    noteVerdict(shown(`\n${stamp}\n${HOLED.replace(HOLE, "")}`), HOLED, stamp),
+    { verdict: "diverged", at: HOLED.indexOf("quiet = argv") },
+    "a note that kept its first 24 characters and lost its middle was read as landed",
+  );
+  assert.deepEqual(
+    noteVerdict(shown(`\n${stamp}\n${HOLED_EARLY.replace(HOLE_EARLY, "")}`), HOLED_EARLY, stamp),
+    { verdict: "diverged", at: HOLED_EARLY.indexOf("221 is the argv") },
+  );
+  assert.deepEqual(
+    noteVerdict(shown(`An earlier note. ${sent}`), sent, stamp, storedNotes(shown(`An earlier note. ${sent}`))),
+    { verdict: "absent" },
+    "an earlier note carrying the same words was read as this write landing",
+  );
+  assert.deepEqual(noteVerdict(shown(`\n${stamp}\n!!! ???`), "!!! ???", stamp), {
+    verdict: "absent",
+  });
+  assert.equal(storedNotes(undefined), "");
 });
 
 test("a tracker that refuses the note says what it ran, and is not asked again", async () => {
@@ -685,22 +719,63 @@ test("a write the tracker accepts and loses is retried, then reported with its t
 
 test("a lost first write that lands on a retry is landed, and says so", async () => {
   const box = noting();
-  let dropped = 0;
-  const append = noteAppender(TRACKER, {
-    ...box.options(),
-    env: {
-      ...env("ok"),
-      BD_NOTES_LOG: box.log,
-      BD_CALL_LOG: box.calls,
-      get BD_NOTES_DROP() {
-        return dropped++ === 0 ? "1" : "0";
-      },
-    },
-  });
+  const dropOnce = join(dirname(box.log), "drop.once");
+  writeFileSync(dropOnce, "");
+  const append = noteAppender(TRACKER, box.options({ BD_NOTES_DROP_ONCE: dropOnce }));
   await append("mw-1", "could not be delivered to c1796a");
   assert.equal(updates(box.calls).length, 2);
   assert.deepEqual(box.warned, ["note on mw-1 landed on attempt 2"]);
   assert.equal(readFileSync(box.log, "utf8").split("\n").filter((line) => STAMP_LINE.test(line)).length, 1);
+});
+
+const HOLED =
+  "The retry loop is satisfied by the first 24 characters. " +
+  "Line 221 is `quiet = argv[1]` and the block unpacks quiet=argv[1] from the same slot.";
+const HOLE = "`quiet = argv[1]`";
+const HOLED_EARLY = "Line 221 is the argv slot and the block unpacks it twice.";
+const HOLE_EARLY = "221 is the argv";
+
+function stampsIn(log: string): number {
+  return readFileSync(log, "utf8")
+    .split("\n")
+    .filter((line) => STAMP_LINE.test(line)).length;
+}
+
+test("a note stored with its middle missing is reported as diverged, not as landed", async () => {
+  const box = noting();
+  const append = noteAppender(
+    TRACKER,
+    box.options({ BD_NOTES_HOLE: HOLE, PITWALL_SESSION: "pitwall-devloop" }),
+  );
+  await append("mw-1", HOLED);
+
+  assert.equal(updates(box.calls).length, 1, "a divergence was retried, which is how duplicates get made");
+  assert.match(
+    box.warned[0] ?? "",
+    /^note on mw-1 differs from what was sent - diverges at character \d+ of \d+, not retrying$/,
+  );
+  assert.ok(
+    (box.warned[1] ?? "").includes("quiet = argv[1]"),
+    `the warning does not quote what is missing: ${box.warned[1] ?? ""}`,
+  );
+  assert.equal(stampsIn(box.log), 1);
+});
+
+test("a note transformed in its opening is warned about once, not appended three times", async () => {
+  const box = noting();
+  const append = noteAppender(
+    TRACKER,
+    box.options({ BD_NOTES_HOLE: HOLE_EARLY, PITWALL_SESSION: "pitwall-devloop" }),
+  );
+  await append("mw-1", HOLED_EARLY);
+
+  assert.equal(updates(box.calls).length, 1, "a divergence inside the opening characters was retried");
+  assert.match(box.warned[0] ?? "", /differs from what was sent - diverges at character \d+ of \d+/);
+  assert.ok(
+    box.warned.some((line) => line.includes(HOLED_EARLY)),
+    "a divergence was reported without echoing the note, so it is unrecoverable",
+  );
+  assert.equal(stampsIn(box.log), 1);
 });
 
 test("a note that cannot be read back is not written again, and the doubt is said", async () => {
