@@ -916,13 +916,20 @@ if [ -n "$ISSUE" ] && [ -n "$NOTE_FILE" ]; then
   # trains plus the supervisor write notes, so overlap is the normal case, not the rare one.
   # bd-note.sh takes a lock, then verifies and retries. Through it the same eight-way race loses
   # none. The read-back below stays regardless - it is what caught this in the first place.
+  bd_out_file=$(mktemp "${TMPDIR:-/tmp}/lane-handoff-note.XXXXXX")
   bd_err=$( (cd "$ROOT_DIR" && BEADS_DIR="${BEADS_DIR:-$ROOT_DIR/.beads}" \
     PITWALL_SESSION="${PITWALL_SESSION:-lane-${BRANCH}}" \
-    bash "$SKILL_DIR/bd-note.sh" "$ISSUE" --note-file "$NOTE_FILE" >/dev/null) 2>&1 )
+    bash "$SKILL_DIR/bd-note.sh" "$ISSUE" --note-file "$NOTE_FILE" >"$bd_out_file") 2>&1 )
   bd_code=$?
+  bd_out=$(cat "$bd_out_file" 2>/dev/null)
+  rm -f "$bd_out_file"
   if [ "$bd_code" != "0" ]; then
     echo "bd update exited ${bd_code} for ${ISSUE}: ${bd_err:-no message}"
   fi
+  note_transformed=""
+  case "$bd_out" in
+    *"stored text differs from what was sent"*) note_transformed=yes ;;
+  esac
   # PROVE IT LANDED. On 2026-08-28 this step reported success while the note was absent - the
   # lane read the issue back itself, found nothing, and appended by hand. A length nobody
   # compares against anything is not evidence. Check the text is actually in the field.
@@ -938,7 +945,17 @@ ok = bool(probe) and probe in flat(notes)
 print('%s|%d|%s' % (d.get('status'), len(notes), 'APPENDED' if ok else 'MISSING'))" "$NOTE_FILE" 2>/dev/null)
   case "$got" in
     *APPENDED*) echo "tracker: ${ISSUE} ${got}" ;;
-    *MISSING*)  NOTE_VERDICT=MISSING ;;
+    *MISSING*)
+      if [ -n "$note_transformed" ]; then
+        diverged_at=$(printf '%s\n' "$bd_err" | grep -m1 'diverges at character')
+        echo "handed off WITH A WARNING: ${ISSUE} holds the note in transformed form - bd altered"
+        echo "  the text on the way in, so the whole of it is not in the field (${got})."
+        echo "  ${diverged_at:-bd-note.sh reported the divergence without naming an offset}"
+        echo "  It was recorded once and warned about once. Do NOT append it again."
+      else
+        NOTE_VERDICT=MISSING
+      fi
+      ;;
     *)          NOTE_VERDICT=UNREADABLE ;;
   esac
 fi

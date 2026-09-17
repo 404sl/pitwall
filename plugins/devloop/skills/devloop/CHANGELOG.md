@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.82
+
+A handoff whose tracker note the tracker altered on the way in is now reported as recorded, not
+as missing. Where a run previously saw "the note is NOT in it" with a command to append it
+again - and, following it, wrote the note twice - it now sees one warning naming the character
+the stored text diverged at, and the handoff completes. Do not append the note again on seeing
+that warning; it is already recorded. A note that genuinely never landed is unchanged: exit 5,
+and the append instruction still stands.
+
+Refs pitwall-lf4j
+
 ## 0.1.81
 
 A session now reads its own commit messages back before it pushes, with

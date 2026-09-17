@@ -237,7 +237,13 @@ function harness(
       "#!/bin/sh",
       'case "$1" in',
       "  update)",
-      '    [ "${BD_RECORD:-0}" = "1" ] && printf \'%s\\n\' "$4" >> "$BD_NOTES"',
+      '    if [ "${BD_RECORD:-0}" = "1" ]; then',
+      '      if [ "${BD_TRANSFORM:-0}" = "1" ]; then',
+      "        printf '%s\\n' \"$4\" | sed 's/<[^>]*>//g' >> \"$BD_NOTES\"",
+      "      else",
+      '        printf \'%s\\n\' "$4" >> "$BD_NOTES"',
+      "      fi",
+      "    fi",
       '    echo "Updated issue: $2"',
       "    ;;",
       "  show)",
@@ -346,6 +352,7 @@ test("a note the tracker never took exits non-zero instead of reporting a handof
 
   assert.equal(ran.status, 5, ran.stdout + ran.stderr);
   assert.match(ran.stdout, /note-unconfirmed/);
+  assert.match(ran.stdout, /bd-note\.sh acme-1 --note-file/);
   assert.doesNotMatch(ran.stdout, /^handed off: /m);
 });
 
@@ -359,6 +366,42 @@ test("an earlier note carrying the same link does not pass a lost note off as pr
 
   assert.equal(ran.status, 5, ran.stdout + ran.stderr);
   assert.match(ran.stdout, /note-unconfirmed/);
+});
+
+test("a note the tracker altered on the way in is landed, not one to append a second time", () => {
+  const box = harness("");
+  writeFileSync(box.notePath, `${LINK}\nRebased onto <sha> and kept both sides.\n`);
+  const ran = handoff(
+    box,
+    [...required(box), "--issue", "acme-1", "--note-file", box.notePath],
+    true,
+    { BD_TRANSFORM: "1" },
+  );
+
+  assert.equal(ran.status, 0, ran.stdout + ran.stderr);
+  assert.match(ran.stdout, /handed off WITH A WARNING: acme-1 holds the note in transformed form/);
+  assert.match(ran.stdout, /diverges at character \d+ of \d+/);
+  assert.match(ran.stdout, /^handed off: acme\/thing#14/m);
+  assert.doesNotMatch(ran.stdout, /note-unconfirmed/);
+  assert.doesNotMatch(ran.stdout, /bd-note\.sh acme-1 --note-file/);
+
+  const stored = readFileSync(box.notesFile, "utf8");
+  assert.equal(stored.split("Rebased onto").length - 1, 1, stored);
+  assert.doesNotMatch(stored, /<sha>/);
+});
+
+test("a notes field that cannot be read at all is unreadable, not a note to append again", () => {
+  const box = harness("");
+  const ran = handoff(
+    box,
+    [...required(box), "--issue", "acme-1", "--note-file", box.notePath],
+    false,
+    { BD_NOTES: join(box.root, "gone.txt") },
+  );
+
+  assert.equal(ran.status, 5, ran.stdout + ran.stderr);
+  assert.match(ran.stdout, /could not be read back at all/);
+  assert.doesNotMatch(ran.stdout, /bd-note\.sh acme-1 --note-file/);
 });
 
 const READY = '[{"name":"ci","conclusion":"SUCCESS"}]';
