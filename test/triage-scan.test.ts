@@ -21,6 +21,7 @@ interface Shape {
   liveTranscript: string;
   notes?: Readonly<Record<string, string>>;
   pullRequests?: PullRequests;
+  repos?: Readonly<Record<string, { path: string; slug: string }>>;
 }
 
 interface Space {
@@ -55,6 +56,7 @@ function workspace(shape: Shape): Space {
       `  idPrefix) ${idPrefix} ;;`,
       `  lockPrefix) echo ${pfx} ;;`,
       `  "") printf '%s\\n' '${JSON.stringify({ root, repos: {} })}' ;;`,
+      `  --land) printf '%s\\n' '${JSON.stringify({ root, repos: shape.repos ?? {} })}' ;;`,
       "  *) exit 1 ;;",
       "esac",
       "",
@@ -171,18 +173,56 @@ test("triage-scan.sh refuses to scan when idPrefix cannot be resolved", () => {
   assert.equal(out.stdout, "");
 });
 
-test("an in_progress issue whose notes quote an open labelled pull request number is not a stale claim", () => {
+const REPOS = {
+  site: { path: "cli", slug: "404sl/pitwall" },
+  integration: { path: "schema", slug: "404sl/pitwall-schema" },
+};
+
+test("an in_progress issue whose notes quote its own repository's open labelled pull request is not a stale claim", () => {
   const space = workspace({
     idPrefix: "pitwall",
-    inProgress: ["pitwall-queued", "pitwall-dead"],
+    inProgress: ["pitwall-word", "pitwall-url", "pitwall-dead"],
     liveTranscript: TRANSCRIPT,
-    notes: { "pitwall-queued": "handed off as #77, waiting for the lander" },
-    pullRequests: { openLabelledNumbers: [77], openLabelledRefs: ["product-hunt-badge"] },
+    notes: {
+      "pitwall-word": "handed off as cli #77, waiting for the lander",
+      "pitwall-url": "green at https://github.com/404sl/pitwall/pull/78 awaiting the lander",
+    },
+    pullRequests: { openLabelledNumbers: [77, 78], openLabelledRefs: ["product-hunt-badge"] },
+    repos: REPOS,
   });
   const out = scan(space);
   assert.equal(out.status, 1, out.stderr);
   assert.match(out.stdout, /^\[E stale claim\] pitwall-dead P2/m);
-  assert.doesNotMatch(out.stdout, /pitwall-queued/);
+  assert.doesNotMatch(out.stdout, /pitwall-word/);
+  assert.doesNotMatch(out.stdout, /pitwall-url/);
+});
+
+test("a queued pull request number appearing only inside a longer number is not a hand-off", () => {
+  const space = workspace({
+    idPrefix: "pitwall",
+    inProgress: ["pitwall-queued"],
+    liveTranscript: TRANSCRIPT,
+    notes: { "pitwall-queued": "see cli #1627 for context" },
+    pullRequests: { openLabelledNumbers: [16], openLabelledRefs: ["product-hunt-badge"] },
+    repos: REPOS,
+  });
+  const out = scan(space);
+  assert.equal(out.status, 1, out.stderr);
+  assert.match(out.stdout, /^\[E stale claim\] pitwall-queued P2/m);
+});
+
+test("a queued pull request number a note attributes to another repository is not a hand-off", () => {
+  const space = workspace({
+    idPrefix: "pitwall",
+    inProgress: ["pitwall-queued"],
+    liveTranscript: TRANSCRIPT,
+    notes: { "pitwall-queued": "blocked on schema #77, nothing of ours is open" },
+    pullRequests: { openLabelledNumbers: [77], openLabelledRefs: ["product-hunt-badge"] },
+    repos: REPOS,
+  });
+  const out = scan(space);
+  assert.equal(out.status, 1, out.stderr);
+  assert.match(out.stdout, /^\[E stale claim\] pitwall-queued P2/m);
 });
 
 test("an in_progress issue whose merged pull request sits on an autofix/ branch is not a stale claim", () => {
