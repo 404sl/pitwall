@@ -63,10 +63,8 @@ LOCK=/tmp/${PFX}-bd-write.lock
 # means writing the same note again on every retry. A verifier that manufactures duplicates is
 # worse than the silent loss it was meant to catch.
 #
-# The token is punctuation-stripped and short so that wrapping, indentation and bd's own escaping
-# cannot break the match.
-token=$(printf '%s' "$note" | tr -cd 'A-Za-z0-9' | cut -c1-24)
-[ -n "$token" ] || token=$(printf '%s' "$note" | cut -c1-12)
+# Both sides are punctuation-stripped before anything is compared, so that wrapping, indentation
+# and bd's own escaping cannot break the match.
 
 writer=$(printf '%s' "${PITWALL_SESSION:-${USER:-unknown}}" | tr -s '[:space:]' '-')
 writer=${writer#-}; writer=${writer%-}
@@ -83,13 +81,16 @@ except Exception:
 d = d[0] if isinstance(d, list) else d
 alnum = lambda c: re.match(r'[A-Za-z0-9]', c) is not None
 stored = re.sub(r'[^A-Za-z0-9]', '', d.get('notes') or '')
-token, want = sys.argv[1], sys.argv[2]
-if token not in stored:
-    sys.exit(1)
+want = sys.argv[1]
 keep = [i for i, c in enumerate(want) if alnum(c)]
 whole = ''.join(want[i] for i in keep)
-if not whole or whole in stored:
+if not whole:
+    sys.exit(1)
+if whole in stored:
     sys.exit(0)
+run = min(24, len(whole))
+if not any(whole[i:i + run] in stored for i in range(len(whole) - run + 1)):
+    sys.exit(1)
 lo, hi = 0, len(whole)
 while lo < hi:
     mid = (lo + hi + 1) // 2
@@ -103,7 +104,7 @@ sys.stderr.write(
     % (at + 1, len(want)))
 sys.stderr.write('!   first divergent characters: %r\n' % want[at:at + 60])
 sys.exit(3)
-" "$token" "$note"
+" "$note"
 }
 
 took_lock=""

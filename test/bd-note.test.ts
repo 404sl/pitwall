@@ -22,6 +22,8 @@ const HOLED =
   "The retry loop is satisfied by the first 24 characters. " +
   "Line 221 is `quiet = argv[1]` and the block unpacks quiet=argv[1] from the same slot.";
 const HOLE = "`quiet = argv[1]`";
+const HOLED_EARLY = "Line 221 is the argv slot and the block unpacks it twice.";
+const HOLE_EARLY = "221 is the argv";
 const STAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z \S+$/;
 
 interface Harness {
@@ -183,6 +185,16 @@ test("a lost note is not passed off as landed by an earlier note carrying the sa
   assert.match(ran.stderr, /Kept both sides of the merge/);
 });
 
+test("a long note that never lands is retried and reported lost, not called a divergence", () => {
+  const frozen = "2026-09-10T14:22:31Z";
+  const box = harness(`${frozen} lane-acme-1\nAn earlier note from the same session.\n`, frozen);
+  const ran = append(box, ["acme-1", HOLED], "lane-acme-1", false);
+
+  assert.equal(ran.status, 1, ran.stdout + ran.stderr);
+  assert.match(ran.stderr, /did NOT land/);
+  assert.doesNotMatch(ran.stderr, /differs/, "a note with no trace in the field was read as transformed");
+});
+
 test("the script and the CLI's own writer stamp a note byte for byte the same", () => {
   const frozen = "2026-09-10T14:22:31Z";
   const session = " lane\tacme 1\n";
@@ -222,5 +234,20 @@ test("a note stored with its middle missing is reported, with the hole quoted", 
     stampLines(readFileSync(box.notesFile, "utf8")).length,
     1,
     "a divergence was retried, which is how duplicate notes get made",
+  );
+});
+
+test("a note stored with its opening transformed is reported once, not appended three times", () => {
+  const box = harness("");
+  const ran = append(box, ["acme-1", HOLED_EARLY], "lane-acme-1", true, HOLE_EARLY);
+
+  assert.equal(ran.status, 0, ran.stdout + ran.stderr);
+  assert.match(ran.stderr, /stored note differs from what was sent/);
+  assert.match(ran.stderr, /diverges at character \d+ of \d+/);
+  assert.match(ran.stdout, /stored text differs/);
+  assert.equal(
+    stampLines(readFileSync(box.notesFile, "utf8")).length,
+    1,
+    "a divergence inside the opening characters was retried, which is how duplicate notes get made",
   );
 });
