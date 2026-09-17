@@ -9,10 +9,18 @@ import { GIT_ENV } from "./support/git.js";
 
 const SKILL = join(import.meta.dirname, "..", "plugins", "devloop", "skills", "devloop");
 
+interface PullRequests {
+  openLabelledNumbers?: readonly number[];
+  openLabelledRefs?: readonly string[];
+  mergedRefs?: readonly string[];
+}
+
 interface Shape {
   idPrefix?: string;
   inProgress: readonly string[];
   liveTranscript: string;
+  notes?: Readonly<Record<string, string>>;
+  pullRequests?: PullRequests;
 }
 
 interface Space {
@@ -22,6 +30,11 @@ interface Space {
 }
 
 let serial = 0;
+
+function emit(values: readonly (string | number)[] | undefined): string {
+  if (values === undefined || values.length === 0) return "true";
+  return `printf '%s\\n' ${values.map((v) => JSON.stringify(String(v))).join(" ")}`;
+}
 
 function workspace(shape: Shape): Space {
   const root = mkdtempSync(join(tmpdir(), "pitwall-triage-scan-"));
@@ -52,7 +65,7 @@ function workspace(shape: Shape): Space {
       id,
       title: `work on ${id}`,
       description: "",
-      notes: "",
+      notes: shape.notes?.[id] ?? "",
       priority: 2,
       status: "in_progress",
       issue_type: "task",
@@ -74,6 +87,22 @@ function workspace(shape: Shape): Space {
     ].join("\n"),
   );
   chmodSync(join(bin, "bd"), 0o755);
+  if (shape.pullRequests) {
+    mkdirSync(join(root, "site"));
+    writeFileSync(
+      join(bin, "gh"),
+      [
+        "#!/bin/bash",
+        'case " $* " in',
+        `  *" number "*) ${emit(shape.pullRequests.openLabelledNumbers)} ;;`,
+        `  *" merged "*) ${emit(shape.pullRequests.mergedRefs)} ;;`,
+        `  *) ${emit(shape.pullRequests.openLabelledRefs)} ;;`,
+        "esac",
+        "",
+      ].join("\n"),
+    );
+    chmodSync(join(bin, "gh"), 0o755);
+  }
   const wf = join(root, ".claude", "projects", root.replace(/\//g, "-"), "run-1");
   mkdirSync(wf, { recursive: true });
   writeFileSync(join(wf, "transcript.jsonl"), `${shape.liveTranscript}\n`);
@@ -140,6 +169,39 @@ test("triage-scan.sh refuses to scan when idPrefix cannot be resolved", () => {
   assert.equal(out.status, 3);
   assert.match(out.stderr, /idPrefix/);
   assert.equal(out.stdout, "");
+});
+
+test("an in_progress issue whose notes quote an open labelled pull request number is not a stale claim", () => {
+  const space = workspace({
+    idPrefix: "pitwall",
+    inProgress: ["pitwall-queued", "pitwall-dead"],
+    liveTranscript: TRANSCRIPT,
+    notes: { "pitwall-queued": "handed off as #77, waiting for the lander" },
+    pullRequests: { openLabelledNumbers: [77], openLabelledRefs: ["product-hunt-badge"] },
+  });
+  const out = scan(space);
+  assert.equal(out.status, 1, out.stderr);
+  assert.match(out.stdout, /^\[E stale claim\] pitwall-dead P2/m);
+  assert.doesNotMatch(out.stdout, /pitwall-queued/);
+});
+
+test("an in_progress issue whose merged pull request sits on an autofix/ branch is not a stale claim", () => {
+  const space = workspace({
+    idPrefix: "pitwall",
+    inProgress: ["pitwall-old", "pitwall-dead"],
+    liveTranscript: TRANSCRIPT,
+    pullRequests: { mergedRefs: ["autofix/pitwall-old"] },
+  });
+  const out = scan(space);
+  assert.equal(out.status, 1, out.stderr);
+  assert.match(out.stdout, /^\[E stale claim\] pitwall-dead P2/m);
+  assert.doesNotMatch(out.stdout, /pitwall-old/);
+});
+
+test("no branch prefix is matched or stripped by a hardcoded literal", () => {
+  const src = readFileSync(join(SKILL, "triage-scan.sh"), "utf8");
+  assert.doesNotMatch(src, /startswith\("devloop\/"\)/);
+  assert.doesNotMatch(src, /len\("devloop\/"\)/);
 });
 
 test("no id prefix literal remains in _live_ids", () => {

@@ -165,6 +165,7 @@ try:
 except Exception:
     sys.exit(0)
 PARK = {"needs-decision", "needs-access", "roadmap", "blocked-tooling", "watch", "umbrella"}
+BRANCH_PREFIXES = ("devloop/", "autofix/")
 
 def parked(issue_id):
     """A PR whose issue is parked is being held on purpose, not stranded.
@@ -189,11 +190,12 @@ def parked(issue_id):
 
 for p in prs:
     ref = p.get("headRefName") or ""
-    if not ref.startswith("devloop/"):
+    _pfx = next((q for q in BRANCH_PREFIXES if ref.startswith(q)), None)
+    if _pfx is None:
         continue
     if any(l.get("name") == "lane-verified" for l in (p.get("labels") or [])):
         continue
-    issue_id = ref[len("devloop/"):]
+    issue_id = ref[len(_pfx):]
     if issue_id in held:
         continue
     if parked(issue_id):
@@ -511,6 +513,7 @@ def _live_ids():
 # person called it - so the id-from-branch mapping misses those entirely and category E then
 # reports a finished hand-off as a dead lane.
 queued_prs = set()
+BRANCH_PREFIXES = ("devloop/", "autofix/")
 
 def _handed_off_ids():
     ids = set()
@@ -542,7 +545,7 @@ def _handed_off_ids():
                 cwd=path, capture_output=True, text=True, timeout=30).stdout
             for n in nums.split():
                 if n.isdigit():
-                    queued_prs.add((name, int(n)))
+                    queued_prs.add((repo, int(n)))
         except Exception:
             pass
 
@@ -556,9 +559,10 @@ def _handed_off_ids():
                 continue   # cannot ask: fall through and let E flag it, a false finding beats a miss
             for line in out.splitlines():
                 branch = line.strip()
-                if not branch.startswith("devloop/"):
+                _pfx = next((q for q in BRANCH_PREFIXES if branch.startswith(q)), None)
+                if _pfx is None:
                     continue
-                bid = branch[len("devloop/"):]
+                bid = branch[len(_pfx):]
                 ids.add(bid)
                 # Branches are not always exactly devloop/<id>: a lane that reworks its own
                 # branch appends a word, as devloop/app-1jxg.9.3.1-parse did. Matching only the
