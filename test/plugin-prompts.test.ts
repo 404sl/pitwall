@@ -183,7 +183,7 @@ test("the handoff brief says a compliance refusal is terminal, not a judgement a
 
 function complianceRefusal(): string {
   const source = readFileSync(join(SKILL, "lane-handoff.sh"), "utf8");
-  const start = source.indexOf('echo "Fix the PR body or the commit message');
+  const start = source.indexOf('echo "non-compliant: ${_slug}#${_pr} was NOT labelled."');
   const end = source.indexOf("return 2", start);
   assert.ok(start > 0 && end > start, "the compliance refusal block moved; this guard no longer reads it");
   return [...source.slice(start, end).matchAll(/^\s*echo "(.*)"$/gm)]
@@ -323,5 +323,112 @@ test("the handoff brief says a refusal is never answered by labelling by hand", 
     brief.includes("file a ticket quoting the exact command and exit code"),
     "the brief does not say what to do with a suspected defect in the script, so the lane is left " +
       "choosing between believing a refusal it thinks is wrong and bypassing it",
+  );
+});
+
+test("the fix brief puts the commit-message check before the push, not after it", () => {
+  const fix = promptTemplate(readFileSync(join(SKILL, "task.js"), "utf8"), "fixPrompt");
+  const check = fix.indexOf("--pre-push");
+  const open = fix.indexOf("gh pr create");
+
+  assert.ok(
+    check > 0,
+    "the brief never tells a lane to read its own commit messages back while the branch is still " +
+      "local. A hit found after the push needs a force-push to clear, which a run may not do, so " +
+      "the pull request is green, correct and waiting on a person - three were at once.",
+  );
+  assert.ok(
+    check < open,
+    "the brief asks for the commit-message check after the pull request is opened, which is the " +
+      "one moment it cannot be acted on. A check that runs after the push is a check nobody can use.",
+  );
+});
+
+test("the compliance refusal says which half of a hit a run cannot fix", () => {
+  const refusal = complianceRefusal();
+
+  assert.ok(
+    refusal.includes("NEEDS A PERSON"),
+    `the refusal names a commit-message hit and a body hit in one breath, so a run reads both as ` +
+      `fixable and retries the half that never clears. Offered: ${refusal}`,
+  );
+  assert.ok(
+    refusal.includes("--pre-push"),
+    `the refusal does not say where the hit was catchable, so the next branch arrives here the same ` +
+      `way. Offered: ${refusal}`,
+  );
+});
+
+test("the rules never call a commit-message hit unfixable without saying it is pushed", () => {
+  const rules = bodyOfRulesTemplate(readFileSync(join(SKILL, "task.js"), "utf8"));
+  const verdicts = rules.split("\n").filter((line) => line.includes("NO FIX AVAILABLE TO YOU"));
+
+  assert.ok(
+    verdicts.length > 0,
+    "the brief no longer says that a pushed commit message cannot be reworded by a run, which is " +
+      "the fact that makes the pre-push check worth running at all",
+  );
+  for (const line of verdicts) {
+    assert.match(
+      line,
+      /PUSHED/,
+      "the unfixable verdict leads unqualified, so a run that skims the rule returns 'blocked' on " +
+        "a hit found while the branch is still local and an amend is free - the exact outcome the " +
+        `pre-push check exists to prevent: ${line}`,
+    );
+  }
+});
+
+test("the rework briefs read the commit messages back before every force-push", () => {
+  const source = readFileSync(join(SKILL, "rework.js"), "utf8");
+  const pushes = [...source.matchAll(/--force-with-lease/g)].map((m) => m.index ?? -1);
+
+  assert.ok(
+    pushes.length >= 2,
+    "rework.js no longer pushes where this test expects it to - update the test rather than " +
+      "deleting it",
+  );
+
+  let from = 0;
+  for (const at of pushes) {
+    const segment = source.slice(from, at);
+    assert.ok(
+      segment.includes("--pre-push"),
+      "a force-push in rework.js is reached with nothing having read the commit messages first. " +
+        "A rebase path force-pushes anyway, so the check is free there, and the commit the step " +
+        "writes on top is the one nothing has graded - a hit found after that push is a pull " +
+        "request that is green, correct and waiting on a person.",
+    );
+    assert.ok(
+      segment.includes("--pre-push --rebased"),
+      "the check before a force-push in rework.js is not told the range was rebased. A rebase " +
+        "gives every commit a new sha, so the plain mode reads the replayed commits as never " +
+        "pushed and offers to squash reviewed history away.",
+    );
+    from = at;
+  }
+});
+
+test("the briefs name the answer the pre-push check gives a branch it cannot fast-forward", () => {
+  const source = readFileSync(join(SKILL, "task.js"), "utf8");
+  const briefs = [promptTemplate(source, "fixPrompt"), bodyOfRulesTemplate(source)];
+
+  for (const brief of briefs) {
+    assert.ok(
+      /Exit 10/.test(brief),
+      "the brief reads the pre-push check as answering only clean or hit. Its third answer is a " +
+        "branch the remote holds at a head the lane's HEAD does not contain - what a rebase " +
+        "leaves - where no plain push exists at all. A lane told only about 0 and 2 reads that " +
+        "refusal as a defect in the script and pushes anyway.",
+    );
+  }
+
+  const fix = promptTemplate(source, "fixPrompt");
+  const third = fix.slice(fix.indexOf("Exit 10"), fix.indexOf("Exit 10") + 500);
+  assert.match(
+    third,
+    /'blocked'/,
+    `the brief names the exit and not the outcome, so a lane that meets it has nothing to return. ` +
+      `There is no remedy for it to try: the push itself is what cannot be made. Offered: ${third}`,
   );
 });

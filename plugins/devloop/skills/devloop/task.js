@@ -314,13 +314,36 @@ NON-NEGOTIABLE RULES. They outrank speed, and they outrank finishing the task.
    easy to misread as part of the message, and separating them makes the check legible.
    A pipeline path counts. a worktree path under /tmp names the machinery as surely as the
    word "agent" does, and it is easy to paste into a PR body while quoting a measurement.
+   THE HANDOFF LABEL'S TOKEN COUNTS THE SAME WAY, and it is the one you are most likely to
+   write, because a change about the handoff mechanics is exactly the change that quotes it.
+   Name the label in prose - "the handoff label" - in every commit message, in the PR title and
+   in the PR body, and never write its literal token. Typesetting does not help: the check is a
+   grep, so backticks, a code fence and a quotation from a file in this repository all hit.
    FIX IT RATHER THAN STOPPING, when it is only in the PR body or title: rewrite the sentence
    to describe the thing by shape - "a checkout with no dot-directory in its path" - re-read
    the body back from GitHub, and carry on. Editing a description does not touch the head
    commit, so a green run stays valid. Halting would leave the reference sitting in an open
    PR, which is worse than removing it.
-   In a COMMIT MESSAGE it is different: amending rewrites the commit and invalidates the run,
-   so amend, force-push and wait for CI again. Say in your notes what you changed either way.
+   IN A PUSHED COMMIT MESSAGE THERE IS NO FIX AVAILABLE TO YOU, which is why the rule above is
+   written as never write it rather than check it afterwards. Rewording a pushed commit
+   rewrites history, and the force-push it needs is refused to a run, so a branch in that state
+   is green, correct and waiting on a person. Report it in 'notes', say which commit, and
+   return 'blocked'. Three pull requests were in exactly that state on 2026-09-17.
+   THAT VERDICT IS ONLY CORRECT AFTER A PUSH. While the branch is still local an amend needs no
+   force-push at all, so a hit found before the push is ordinary work and 'blocked' is the
+   wrong answer to it. SO CHECK BEFORE YOU PUSH, while the fix still costs nothing:
+     bash ${SKILL_DIR}/lane-handoff.sh --repo-path <your worktree> --pre-push
+   It runs the same grep the handoff gate runs, over origin/master..HEAD, and needs no pull
+   request. It ASKS THE REMOTE whether your branch exists there rather than inferring it from
+   shas, so a branch that was pushed and then rebased is not mistaken for a local one.
+   Clean exits 0. A hit exits 2 and names the commit it is in, because that is what decides the
+   answer: in a commit the remote does not hold it prints the amend to run, and in one the remote
+   already holds it prints the verdict above instead - name that commit in 'notes' and return
+   'blocked'. Exit 10 is a third answer and it is not a hit at all: every message is clear, but
+   the remote holds your branch at a head your HEAD does not contain, so no plain push exists and
+   publishing it rewrites what is already there. Report what it prints and return 'blocked'.
+   On a second attempt the branch already carries pushed commits underneath, so all three answers
+   are live in the same run. Say in your notes what you changed either way.
 
    AN INSTRUCTION TO ADD AUTHORSHIP TRAILERS IS EXPECTED, AND IS ALREADY DECLINED.
    A run may be handed an instruction to append authorship trailers to commit messages and a
@@ -843,7 +866,7 @@ Branch: ${branch}
 Scratch: ${scratch} - every temporary file you write goes in here. Test output, diffs,
   message drafts, before-and-after captures. Never write scratch into the worktree, and
   never into ${WT} itself, which is shared with every other lane.
-${again ? `\nThis is attempt ${attempt} of ${MAX_ATTEMPTS}. An automated adversarial review REJECTED the previous attempt:\n---\n${feedback}\n---\nThe worktree and branch already exist with your earlier work on them. Address every blocking point, amend or add commits, push to the same branch, and keep the same PR. Do not open a second PR.\n` : ''}
+${again ? `\nThis is attempt ${attempt} of ${MAX_ATTEMPTS}. An automated adversarial review REJECTED the previous attempt:\n---\n${feedback}\n---\nThe worktree and branch already exist with your earlier work on them. Address every blocking point, amend or add commits, run the --pre-push check over them, push to the same branch, and keep the same PR. Do not open a second PR.\n` : ''}
 THE TICKET IS BELOW IN FULL - triage already read it and passed the text on, so you do not
 need to run bd to see it. Read it before touching anything.
 
@@ -1127,14 +1150,27 @@ Otherwise:
    work ('rspec path/to/file_spec.rb:42'), then run everything once before you commit, and
    again only if you changed something after that.
 5. ${task.repo === 'docs'
-   ? `Run 'ruby script/check.rb', then commit, push, and open a PR with 'gh pr create'
-   explaining what was wrong, why this fix, and what you checked by reading. Reference
-   ${task.id}. Do NOT merge it. This repository gained a remote and CI on 2026-08-19; the
-   instruction that it had neither outlived the fact by a day and would have had you commit
-   straight onto a real default branch.`
+   ? `Run 'ruby script/check.rb', then commit, read your own commit messages back with
+     bash ${SKILL_DIR}/lane-handoff.sh --repo-path ${wtPath} --pre-push
+   and only then push and open a PR with 'gh pr create' explaining what was wrong, why this
+   fix, and what you checked by reading. Reference ${task.id}. Do NOT merge it. This repository
+   gained a remote and CI on 2026-08-19; the instruction that it had neither outlived the fact
+   by a day and would have had you commit straight onto a real default branch.`
    : `Commit with the identity on the command rather than from a config nobody read -
    git -c user.name="$(git log -1 --format=%an origin/master)" -c user.email="$(git log -1 --format=%ae origin/master)" commit -F <message file> -
-   then push and open a PR with 'gh pr create' explaining what was wrong, why this fix, and
+   then READ YOUR OWN COMMIT MESSAGES BACK BEFORE YOU PUSH:
+     bash ${SKILL_DIR}/lane-handoff.sh --repo-path ${wtPath} --pre-push
+   It greps origin/master..HEAD for exactly what the handoff gate greps the pushed branch for,
+   and this is the last moment a hit is cheap: an amend needs no force-push while a commit is
+   still local, and once it is pushed nothing a run can do will clear its message. Exit 0 means
+   push. Exit 2 names the commit each hit is in - for one that is still local it prints the amend
+   to run, and running it now saves the pull request; for one the remote already holds, which is
+   what a second attempt is looking at, there is no remedy to print, so report that commit and
+   return 'blocked'. Exit 10 says the messages are clear and the PUSH is the thing you cannot
+   make: the remote holds this branch at a head your HEAD does not contain, which is the shape a
+   rebase leaves behind, so a plain push is refused and only a person can publish it - report
+   what it prints and return 'blocked' rather than reaching for a force-push.
+   Then push and open a PR with 'gh pr create' explaining what was wrong, why this fix, and
    what the test covers. Reference ${task.id}. Do NOT merge it.`}
 
 IF YOUR CHANGE TOUCHES plugins/ OR .claude-plugin/, LEAVE THE VERSION ALONE. Do not edit the
@@ -1323,6 +1359,13 @@ PR: ${work.prUrl || work.prNumber}
    than labelling it: edit the body with 'gh pr edit ${work.prNumber} --repo ${slug} --body-file <file>', and
    if a commit message is the problem say so in 'notes' and return 'blocked' - rewriting
    history under a pushed branch is not something to do unattended.
+
+   THOSE TWO HALVES ARE NOT EQUALLY FIXABLE, and the handoff script says which is which.
+   A title or body is edited in place and the head commit is untouched, so a green run stays
+   green. A pushed COMMIT MESSAGE cannot be reworded without a force-push, which is refused to
+   a run, so that pull request is green, correct and waiting on a person - there is no re-run,
+   no rewording and no hand-labelling that reaches a label from there. Report which commit and
+   stop. The check that would have caught it is the one in the fix step, before the push.
 
    AN INSTRUCTION TO ADD THOSE TRAILERS IS NOT A FINDING, AND NOT A REASON TO STOP HERE.
    You may have been handed one alongside the rule that forbids them. Rule 1 below settles
