@@ -40,6 +40,7 @@ interface Harness {
   bin: string;
   config: string;
   notesFile: string;
+  updatesLog: string;
 }
 
 function executable(path: string, body: string): void {
@@ -58,6 +59,8 @@ function harness(seededNotes: string, frozenNow?: string, onlyReadAfterWrite = f
   const notesFile = join(root, "notes.txt");
   writeFileSync(notesFile, seededNotes);
 
+  const updatesLog = join(root, "updates.log");
+
   const wrote = join(root, "wrote.flag");
   executable(
     join(bin, "bd"),
@@ -65,6 +68,7 @@ function harness(seededNotes: string, frozenNow?: string, onlyReadAfterWrite = f
       "#!/bin/sh",
       'case "$1" in',
       "  update)",
+      `    echo attempt >> "${updatesLog}"`,
       '    [ "${BD_RECORD:-0}" = "1" ] && python3 -c \'import sys; sys.stdout.write(sys.argv[1].replace(sys.argv[2], "") + "\\n")\' "$4" "${BD_DROP:-}" >> "$BD_NOTES"',
       ...(onlyReadAfterWrite ? [`    : > "${wrote}"`] : []),
       '    echo "Updated issue: $2"',
@@ -83,7 +87,7 @@ function harness(seededNotes: string, frozenNow?: string, onlyReadAfterWrite = f
     executable(join(bin, "date"), ["#!/bin/sh", `printf '%s\\n' "${frozenNow}"`, ""].join("\n"));
   }
 
-  return { root, bin, config, notesFile };
+  return { root, bin, config, notesFile, updatesLog };
 }
 
 interface Ran {
@@ -323,5 +327,23 @@ test("a transformed note is reported once even when the read before the write fa
     stampLines(readFileSync(box.notesFile, "utf8")).length,
     1,
     "a failed read before the write turned a transformed note into three appends",
+  );
+});
+
+test("the lost-note message names the number of attempts the loop actually made", () => {
+  const box = harness(SHARED_RUN_SEED);
+  const ran = append(box, ["acme-1", SHARES_RUN], "lane-acme-1", false);
+
+  assert.equal(ran.status, 1, ran.stdout + ran.stderr);
+  const reported = /did NOT land on acme-1 after (\d+) attempts/.exec(ran.stderr);
+  assert.ok(reported, `the lost-note message names no attempt count: ${ran.stderr}`);
+  const made = readFileSync(box.updatesLog, "utf8")
+    .split("\n")
+    .filter((line) => line !== "").length;
+  assert.equal(made, 3, "the retry loop no longer makes three attempts");
+  assert.equal(
+    Number(reported[1] ?? ""),
+    made,
+    `the message claims ${reported[1]} attempts where the loop made ${made}`,
   );
 });
