@@ -19,16 +19,22 @@
 #                   --issue <app-xxxx> --note-file <path> [--worktree <abs>] [--lane-lock <abs>]
 #                   [--label lane-verified] [--check-only]
 #
-#   lane-handoff.sh --repo-path <abs> --pre-push
+#   lane-handoff.sh --repo-path <abs> --pre-push [--rebased]
 #
 #   Other open pull requests on --branch, across the repositories the workspace config names, are
 #   derived and handled in the same invocation.
 #
 # Exit codes:
 #   0  handed off    every pull request on the branch compliant and labelled, cleaned up, note
-#                    recorded and read back
+#                    recorded and read back. Under --pre-push: the commit range is clear.
 #   2  non-compliant NOTHING was labelled anywhere. The offending lines are printed against the
 #                    pull request they came from. Fix, then re-run.
+#                    Under --pre-push there is no pull request and the range is graded per commit:
+#                    a hit in a commit no remote ref reaches prints the amend or squash to run,
+#                    and one in a commit a remote ref already reaches prints no remedy at all,
+#                    because every route out of that state rewrites pushed history. Report which
+#                    commit and stop. --rebased narrows that to the top commit, since a rebase
+#                    renews every sha and absence from a remote stops meaning anything.
 #   3  conflicted    a pull request on the branch conflicts with master, so GitHub scheduled no
 #                    checks for it at all and none are coming. Nothing was labelled anywhere.
 #                    The remedy is a merge from master and a push, not another wait.
@@ -58,7 +64,7 @@ SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 LABEL=lane-verified
 REPO_PATH=""; SLUG=""; PR=""; BRANCH=""; ISSUE=""; NOTE_FILE=""; WT=""; LOCK=""; CHECK_ONLY=0
-PRE_PUSH=0
+PRE_PUSH=0; REBASED=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -91,12 +97,14 @@ while [ $# -gt 0 ]; do
       LABEL="${2:-}"; shift 2 ;;
     --check-only) CHECK_ONLY=1;      shift 1 ;;
     --pre-push)  PRE_PUSH=1;         shift 1 ;;
+    --rebased)   REBASED=1;         shift 1 ;;
     *) echo "unknown argument: $1" >&2; exit 6 ;;
   esac
 done
 if [ "$PRE_PUSH" = "1" ]; then
   [ -n "$REPO_PATH" ] || { echo "missing --repo-path" >&2; exit 6; }
 else
+  [ "$REBASED" = "0" ] || { echo "--rebased only means anything with --pre-push" >&2; exit 6; }
   for req in REPO_PATH SLUG PR BRANCH; do
     eval "v=\$$req"; [ -n "$v" ] || { echo "missing --$(echo "$req" | tr 'A-Z_' 'a-z-')" >&2; exit 6; }
   done
@@ -218,35 +226,125 @@ if [ "$PRE_PUSH" = "1" ]; then
     echo "lane-handoff.sh: no origin/master in ${REPO_PATH}, so there is no range to check." >&2
     exit 6; }
 
-  if [ -z "$(git rev-list origin/master..HEAD 2>/dev/null)" ]; then
+  range=$(git rev-list origin/master..HEAD 2>/dev/null)
+  if [ -z "$range" ]; then
     echo "lane-handoff.sh: HEAD is not ahead of origin/master in ${REPO_PATH} - nothing was read," >&2
     echo "                 so nothing was checked. Commit first, then run this again." >&2
     exit 6
   fi
 
-  pre_msgs=$(git log origin/master..HEAD --format='%h%n%B' 2>/dev/null)
-  pre_trailers=$(git log origin/master..HEAD --format='%h %an <%ae>%n%(trailers)' 2>/dev/null)
-  pre_hits=$(printf '%s\n%s\n' "$pre_msgs" "$pre_trailers" \
-    | sed "$neutral" \
-    | grep -inE "$authorship|$leakage" \
-    | head -20)
+  # WHICH COMMITS ARE ALREADY ON A REMOTE IS ESTABLISHED BEFORE ANYTHING IS SAID ABOUT THEM.
+  #
+  # This block used to open with "nothing has been pushed" without having looked, which is true
+  # of a first attempt and false of every later one: a rejected attempt comes back to a branch
+  # whose earlier commits are on the remote. A hit in a new commit then drew the deeper remedy,
+  # `reset --soft origin/master`, which collapses the pushed commits too - and the push after it
+  # is refused as a non-fast-forward, leaving a locally squashed history diverging from the
+  # remote and only a force-push out. That is the dead end this whole check exists to remove.
+  #
+  # `--not --remotes` names the commits no remote ref reaches. It reads refs rather than a branch
+  # name, so it is correct on the detached HEAD a rebased worktree sits on.
+  tip=$(git rev-parse HEAD)
+  if [ "$REBASED" = "1" ]; then
+    # A REBASE MAKES EVERY SHA NEW, so absence from a remote stops meaning "nobody has seen it".
+    # The reviewed commits are replayed under new ids and would all read as unpushed. In this
+    # mode the tip - the commit this step wrote - is the only one an amend may touch.
+    unpushed="$range"
+    pushed_tip=""
+  else
+    unpushed=$(git rev-list origin/master..HEAD --not --remotes 2>/dev/null)
+    pushed_tip=""
+    for sha in $range; do
+      printf '%s\n' "$unpushed" | grep -qx "$sha" || { pushed_tip="$sha"; break; }
+    done
+  fi
 
-  if [ -n "$pre_hits" ]; then
-    echo "non-compliant commits: nothing has been pushed. Offending lines:"
-    printf '%s\n' "$pre_hits"
+  local_hits=""; remote_hits=""; deep_hits=""
+  for sha in $range; do
+    hit=$(git log -1 --format='%B%n%an <%ae>%n%(trailers)' "$sha" 2>/dev/null \
+      | sed "$neutral" \
+      | grep -inE "$authorship|$leakage" \
+      | head -5)
+    [ -n "$hit" ] || continue
+    entry="  $(git log -1 --format='%h %s' "$sha")
+$(printf '%s\n' "$hit" | sed 's/^/    /')
+"
+    if [ "$REBASED" = "1" ] && [ "$sha" != "$tip" ]; then
+      deep_hits="${deep_hits}${entry}"
+    elif printf '%s\n' "$unpushed" | grep -qx "$sha"; then
+      local_hits="${local_hits}${entry}"
+    else
+      remote_hits="${remote_hits}${entry}"
+    fi
+  done
+
+  if [ -n "$remote_hits" ] || [ -n "$deep_hits" ]; then
+    echo "non-compliant commits: A HIT IN ONE OF THESE NEEDS A PERSON."
+    if [ -n "$remote_hits" ]; then
+      echo "Already reachable from a remote ref, so rewording it rewrites history somebody else's"
+      echo "ref points at:"
+      printf '%s' "$remote_hits"
+    fi
+    if [ -n "$deep_hits" ]; then
+      echo "Underneath the commit this step wrote. The branch was rebased, so these carry new shas"
+      echo "and read as unpushed, but their messages were reviewed and are not yours to rewrite:"
+      printf '%s' "$deep_hits"
+    fi
+    if [ -n "$local_hits" ]; then
+      echo "And these, in the commit this step wrote:"
+      printf '%s' "$local_hits"
+    fi
     echo ""
-    echo "Fix them NOW, while the branch is local - this is the only moment a commit message is"
-    echo "cheap to change. Once pushed it takes a force-push, which a lane may not run, and the"
-    echo "pull request is then green and unlandable until a person rewrites the history."
+    echo "REPORT WHICH COMMIT AND STOP. No amend and no squash is offered here, deliberately:"
+    echo "every route to a clean message from this state rewrites a commit something already"
+    echo "relies on, and a squash that reaches one of them is worse than the message it clears."
+    echo "Name the commit in your notes and return blocked."
+    if [ -n "$remote_hits" ]; then
+      echo "The moment it was fixable was before that commit was pushed, which is what running this"
+      echo "check first buys you."
+    fi
+    if [ -n "$deep_hits" ]; then
+      echo "A message underneath came from the branch as it was reviewed, so no step here owns it."
+    fi
+    exit 2
+  fi
+
+  if [ -n "$local_hits" ]; then
+    if [ "$REBASED" = "1" ]; then
+      echo "non-compliant commits: the hit is in the commit this step wrote, which is not pushed yet."
+      echo "Offending lines:"
+    elif [ -n "$pushed_tip" ]; then
+      echo "non-compliant commits: the hits are all in commits no remote ref reaches. Offending lines:"
+    else
+      echo "non-compliant commits: nothing has been pushed. Offending lines:"
+    fi
+    printf '%s' "$local_hits"
+    echo ""
+    echo "Fix them NOW, while these commits are still local - this is the only moment a commit"
+    echo "message is cheap to change. Once pushed it takes a force-push, which a lane may not run,"
+    echo "and the pull request is then green and unlandable until a person rewrites the history."
     echo "CARRY THE IDENTITY ON THE COMMAND, exactly as the commit you are replacing did. A lane"
     echo "resolves no git identity of its own, and the failure is not reliably loud: git either"
     echo "refuses outright or stamps a hostname-derived name and address, which then lands on"
     echo "master and which no grep here reads. Take it from the branch you are building on:"
     echo "  the tip commit only:"
     echo '    git -c user.name="$(git log -1 --format=%an origin/master)" -c user.email="$(git log -1 --format=%ae origin/master)" commit --amend -F <a file holding the new message>'
-    echo "  anything deeper:"
-    echo '    git reset --soft origin/master && git -c user.name="$(git log -1 --format=%an origin/master)" -c user.email="$(git log -1 --format=%ae origin/master)" commit -F <a file>'
-    echo "Squashing costs nothing here: the train squashes the branch when it lands anyway."
+    if [ "$REBASED" = "1" ]; then
+      echo "THAT AMEND IS THE ONLY REMEDY IN THIS MODE, and it is for the commit you just wrote."
+      echo "There is deliberately no squash: the commits underneath were reviewed as they stand,"
+      echo "and a rebase having renewed their shas does not make them yours."
+    elif [ -n "$pushed_tip" ]; then
+      echo "  anything deeper:"
+      echo "    git reset --soft $(git rev-parse --short "$pushed_tip") && git -c user.name=\"\$(git log -1 --format=%an origin/master)\" -c user.email=\"\$(git log -1 --format=%ae origin/master)\" commit -F <a file>"
+      echo "THAT BASE IS THE HEAD ALREADY ON THE REMOTE, not origin/master. Resetting past it would"
+      echo "collapse the commits the remote branch is built on, and the push after it is refused as"
+      echo "a non-fast-forward - which leaves only a force-push, which you may not run."
+    else
+      echo "  anything deeper:"
+      echo '    git reset --soft origin/master && git -c user.name="$(git log -1 --format=%an origin/master)" -c user.email="$(git log -1 --format=%ae origin/master)" commit -F <a file>'
+      echo "Squashing costs nothing here: no commit on this branch has been pushed, and the train"
+      echo "squashes the branch when it lands anyway."
+    fi
     echo "Judge each hit. A vendor or product name that is the SUBJECT of the change is fine;"
     echo "the label the lander reads is not, so name it in prose instead of quoting its token."
     echo "THEN RUN THIS AGAIN, before you push. The message you have just written is the one"

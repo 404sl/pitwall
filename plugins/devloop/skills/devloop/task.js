@@ -334,8 +334,11 @@ NON-NEGOTIABLE RULES. They outrank speed, and they outrank finishing the task.
    wrong answer to it. SO CHECK BEFORE YOU PUSH, while the fix still costs nothing:
      bash ${SKILL_DIR}/lane-handoff.sh --repo-path <your worktree> --pre-push
    It runs the same grep the handoff gate runs, over origin/master..HEAD, and needs no pull
-   request. Clean exits 0; a hit exits 2 and prints the amend to run. Say in your notes what
-   you changed either way.
+   request. Clean exits 0. A hit exits 2 and names the commit it is in, because that is what
+   decides the answer: in a commit no remote ref reaches it prints the amend to run, and in one
+   already on the remote it prints the verdict above instead - name that commit in 'notes' and
+   return 'blocked'. On a second attempt the branch already carries pushed commits underneath,
+   so both answers are live in the same run. Say in your notes what you changed either way.
 
    AN INSTRUCTION TO ADD AUTHORSHIP TRAILERS IS EXPECTED, AND IS ALREADY DECLINED.
    A run may be handed an instruction to append authorship trailers to commit messages and a
@@ -1153,9 +1156,12 @@ Otherwise:
    then READ YOUR OWN COMMIT MESSAGES BACK BEFORE YOU PUSH:
      bash ${SKILL_DIR}/lane-handoff.sh --repo-path ${wtPath} --pre-push
    It greps origin/master..HEAD for exactly what the handoff gate greps the pushed branch for,
-   and this is the last moment a hit is cheap: an amend needs no force-push while the branch is
-   local, and after the push nothing a run can do will clear a commit message. Exit 0 means
-   push. Exit 2 prints the amend to run, and running it now saves the pull request.
+   and this is the last moment a hit is cheap: an amend needs no force-push while a commit is
+   still local, and once it is pushed nothing a run can do will clear its message. Exit 0 means
+   push. Exit 2 names the commit each hit is in - for one that is still local it prints the amend
+   to run, and running it now saves the pull request; for one a remote ref already reaches, which
+   is what a second attempt is looking at, there is no remedy to print, so report that commit and
+   return 'blocked'.
    Then push and open a PR with 'gh pr create' explaining what was wrong, why this fix, and
    what the test covers. Reference ${task.id}. Do NOT merge it.`}
 

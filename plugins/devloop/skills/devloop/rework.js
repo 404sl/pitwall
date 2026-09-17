@@ -363,6 +363,19 @@ run that spec. If it is a script with its own check, run that check. Say which y
 ${repo.test ? `  tests:  ${repo.test}` : ''}
 ${repo.lint ? `  lint:   ${repo.lint}` : ''}
 
+BEFORE YOU PUSH, READ BACK THE MESSAGES THE REBASE REPLAYED. There is no message for you to
+write here, but a resolution that amended one, or a message graded only against an older
+compliance pattern, reaches master otherwise:
+
+  bash ${SKILL_DIR}/lane-handoff.sh --repo-path ${WT_PATH} --pre-push --rebased
+
+Exit 0 means push. Exit 2 prints the offending lines and names the commit each one is in.
+--rebased is not optional here and it is what makes the answer usable: a rebase gives every
+commit a new sha, so without it the check reads the replayed commits as never pushed and offers
+to squash the reviewed history away. With it, the only remedy offered is an amend of the top
+commit, and a hit underneath is status "blocked" with the commit named. Skip this step only when
+the rebase replayed nothing and you are reporting "already_clean", because then there is no push.
+
 PUSH to the same branch. A rebase rewrites the commits, so a plain push is refused and the push
 has to be forced - force it WITH A LEASE, against the head you recorded before you started:
 
@@ -622,14 +635,26 @@ name the commits. The same for a failure whose fix would weaken an assertion or 
 Keep the change inside the files the failures name plus whatever they directly import. Write no
 comments in the code. Match the surrounding style.
 
-WHEN IT IS GREEN LOCALLY, commit and push:
+WHEN IT IS GREEN LOCALLY, commit, read the message you just wrote back, and push:
 
   cd ${WT_PATH} && git add <the files you changed>
   cd ${WT_PATH} && git -c user.name="$(git log -1 --format=%an origin/master)" -c user.email="$(git log -1 --format=%ae origin/master)" commit -F <a message file>
+  bash ${SKILL_DIR}/lane-handoff.sh --repo-path ${WT_PATH} --pre-push --rebased
   cd ${WT_PATH} && git push --force-with-lease=refs/heads/<the branch>:<the head you recorded> origin HEAD:refs/heads/<the branch>
 
+THE CHECK SITS BETWEEN THE COMMIT AND THE PUSH BECAUSE THAT IS THE ONLY PLACE IT HELPS. It greps
+the commit messages for the authorship and tooling language the handoff gate refuses a pull
+request for, and the message you have just written is the one nothing has graded. Exit 0 means
+push. Exit 2 prints the offending lines, and the one remedy it offers is an amend of the commit
+you just wrote - not pushed, read by nobody, free to change. A hit in a commit UNDERNEATH yours
+is status "blocked" with that commit named, never a squash, and --rebased is what makes the check
+refuse to offer one: without it every replayed commit reads as never pushed and collapsing them
+looks free.
+
 ONE COMMIT ON TOP, not an amend: the commits underneath were reviewed and their messages are
-theirs. BOTH ENDS OF THE PUSH ARE NAMED IN FULL because the worktree is detached - a bare 'origin
+theirs. That is about where the repair goes, not about the check above - rewording the commit you
+wrote a moment ago is an amend of your own commit and is the intended answer to an exit 2.
+BOTH ENDS OF THE PUSH ARE NAMED IN FULL because the worktree is detached - a bare 'origin
 HEAD' has no branch to resolve its destination from and git refuses it. The lease is the safety
 of the push - it refuses if the branch moved after you read it, which is exactly the case where
 pushing would destroy somebody else's work. If it is refused, STOP and report "blocked" with what

@@ -908,7 +908,7 @@ test("a flag that takes a value is refused when given none, not looped on foreve
   }
 });
 
-function localBranch(message: string | null): string {
+function localBranch(message: string | null, opts: { pushed?: boolean } = {}): string {
   const root = mkdtempSync(join(tmpdir(), "pitwall-prepush-"));
   const repo = join(root, "repo");
   mkdirSync(repo);
@@ -924,14 +924,28 @@ function localBranch(message: string | null): string {
     git(repo, "add", "a.txt");
     git(repo, "commit", "--quiet", "-m", message);
   }
+  if (opts.pushed) {
+    git(repo, "update-ref", "refs/remotes/origin/lane/probe", git(repo, "rev-parse", "HEAD"));
+  }
   return repo;
 }
 
-function prePush(repo: string): { status: number; stdout: string; stderr: string; calls: string } {
+function commitOn(repo: string, message: string, opts: { pushed?: boolean } = {}): string {
+  writeFileSync(join(repo, "a.txt"), `${message}\n`);
+  git(repo, "add", "a.txt");
+  git(repo, "commit", "--quiet", "-m", message);
+  const head = git(repo, "rev-parse", "HEAD");
+  if (opts.pushed) {
+    git(repo, "update-ref", "refs/remotes/origin/lane/probe", head);
+  }
+  return head;
+}
+
+function prePush(repo: string, ...extra: string[]): { status: number; stdout: string; stderr: string; calls: string } {
   const bin = mkdtempSync(join(tmpdir(), "pitwall-prepush-bin-"));
   const ghLog = join(bin, "gh.log");
   executable(join(bin, "gh"), ["#!/bin/sh", `printf '%s\\n' "$*" >> "${ghLog}"`, "exit 1", ""].join("\n"));
-  const ran = spawnSync("bash", [SCRIPT, "--repo-path", repo, "--pre-push"], {
+  const ran = spawnSync("bash", [SCRIPT, "--repo-path", repo, "--pre-push", ...extra], {
     encoding: "utf8",
     env: { ...process.env, ...GIT_ENV, PATH: `${bin}:${process.env["PATH"] ?? ""}` },
   });
@@ -1033,4 +1047,108 @@ test("a HEAD that is not ahead of origin/master is refused rather than reported 
   assert.notEqual(ran.status, 0, ran.stdout + ran.stderr);
   assert.match(ran.stderr, /not ahead of origin\/master/);
   assert.doesNotMatch(ran.stdout, /compliant commits/);
+});
+
+test("a hit in a commit a remote ref already reaches is never called local, and never squashed", () => {
+  const ran = prePush(
+    localBranch("Refuse a branch quoting lane-verified in its message", { pushed: true }),
+  );
+
+  assert.equal(ran.status, 2, ran.stdout + ran.stderr);
+  assert.doesNotMatch(
+    ran.stdout,
+    /nothing has been pushed/,
+    `the check asserted the branch is local without ever reading a remote ref. Every attempt ` +
+      `after the first arrives on a branch whose commits are already pushed, which is the only ` +
+      `state this refusal matters in. Offered: ${ran.stdout}`,
+  );
+  assert.ok(
+    !ran.stdout.includes("reset --soft origin/master"),
+    `the check offered to collapse the range to origin/master with a pushed commit at or below ` +
+      `the hit. Following that squashes the pushed commits too, the push is then refused as a ` +
+      `non-fast-forward, and the only way on is the force-push a run may not make - the exact ` +
+      `dead end this check exists to remove. Offered: ${ran.stdout}`,
+  );
+  assert.ok(
+    ran.stdout.includes("NEEDS A PERSON"),
+    `a hit in a pushed commit got no verdict, so a run reads it as fixable and rewrites history ` +
+      `that a remote ref points at. Offered: ${ran.stdout}`,
+  );
+  assert.match(
+    ran.stdout,
+    /Refuse a branch quoting/,
+    `the refusal does not say which commit the hit is in, so a person cannot act on the report ` +
+      `it asks for. Offered: ${ran.stdout}`,
+  );
+});
+
+test("a hit in an unpushed commit above a pushed one is squashed no further than the pushed head", () => {
+  const repo = localBranch("A first commit nothing objects to", { pushed: true });
+  const pushedHead = git(repo, "rev-parse", "--short", "HEAD");
+  commitOn(repo, "A later commit naming lane-verified outright");
+  const ran = prePush(repo);
+
+  assert.equal(ran.status, 2, ran.stdout + ran.stderr);
+  assert.ok(
+    !ran.stdout.includes("reset --soft origin/master"),
+    `the deeper remedy reaches past the commit already on the remote. Offered: ${ran.stdout}`,
+  );
+  assert.ok(
+    ran.stdout.includes(`reset --soft ${pushedHead}`),
+    `the deeper remedy does not name the pushed head as its base, so a hit below the tip has no ` +
+      `remedy a run can follow at all. Offered: ${ran.stdout}`,
+  );
+  assert.doesNotMatch(ran.stdout, /nothing has been pushed/, ran.stdout);
+});
+
+test("after a rebase the only remedy offered is an amend of the commit the step just wrote", () => {
+  const repo = localBranch("A reviewed commit nothing objects to");
+  commitOn(repo, "A repair commit naming lane-verified outright");
+  const ran = prePush(repo, "--rebased");
+
+  assert.equal(ran.status, 2, ran.stdout + ran.stderr);
+  assert.ok(
+    ran.stdout.includes("commit --amend"),
+    `no remedy for the commit this step wrote, which is the one commit a rebase path may amend ` +
+      `for free. Offered: ${ran.stdout}`,
+  );
+  assert.ok(
+    !ran.stdout.includes("reset --soft"),
+    `a squash was offered on a rebased range. Every sha there is new, so absence from a remote ` +
+      `says nothing about what was reviewed, and the commits underneath were - collapsing them ` +
+      `throws away reviewed messages. Offered: ${ran.stdout}`,
+  );
+  assert.doesNotMatch(
+    ran.stdout,
+    /nothing has been pushed/,
+    `a rebased branch IS pushed - only its shas are new. Offered: ${ran.stdout}`,
+  );
+});
+
+test("after a rebase a hit underneath the new commit is a report rather than a squash", () => {
+  const repo = localBranch("A reviewed commit naming lane-verified outright");
+  commitOn(repo, "A repair commit nothing objects to");
+  const ran = prePush(repo, "--rebased");
+
+  assert.equal(ran.status, 2, ran.stdout + ran.stderr);
+  assert.ok(
+    ran.stdout.includes("NEEDS A PERSON"),
+    `a hit in a reviewed commit underneath got no verdict. Offered: ${ran.stdout}`,
+  );
+  assert.ok(
+    !ran.stdout.includes("reset --soft") && !ran.stdout.includes("commit --amend"),
+    `a remedy was offered for a commit this step did not write. Offered: ${ran.stdout}`,
+  );
+  assert.match(ran.stdout, /A reviewed commit naming/, ran.stdout);
+});
+
+test("--rebased is refused outside the pre-push modes rather than silently ignored", () => {
+  const ran = spawnSync(
+    "bash",
+    [SCRIPT, "--repo-path", localBranch("A commit"), "--slug", "owner/name", "--pr", "1", "--branch", "x", "--rebased"],
+    { encoding: "utf8", env: { ...process.env, ...GIT_ENV } },
+  );
+
+  assert.equal(ran.status, 6, (ran.stdout ?? "") + (ran.stderr ?? ""));
+  assert.match(ran.stderr ?? "", /--rebased/);
 });

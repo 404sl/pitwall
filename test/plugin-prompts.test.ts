@@ -378,3 +378,33 @@ test("the rules never call a commit-message hit unfixable without saying it is p
     );
   }
 });
+
+test("the rework briefs read the commit messages back before every force-push", () => {
+  const source = readFileSync(join(SKILL, "rework.js"), "utf8");
+  const pushes = [...source.matchAll(/--force-with-lease/g)].map((m) => m.index ?? -1);
+
+  assert.ok(
+    pushes.length >= 2,
+    "rework.js no longer pushes where this test expects it to - update the test rather than " +
+      "deleting it",
+  );
+
+  let from = 0;
+  for (const at of pushes) {
+    const segment = source.slice(from, at);
+    assert.ok(
+      segment.includes("--pre-push"),
+      "a force-push in rework.js is reached with nothing having read the commit messages first. " +
+        "A rebase path force-pushes anyway, so the check is free there, and the commit the step " +
+        "writes on top is the one nothing has graded - a hit found after that push is a pull " +
+        "request that is green, correct and waiting on a person.",
+    );
+    assert.ok(
+      segment.includes("--pre-push --rebased"),
+      "the check before a force-push in rework.js is not told the range was rebased. A rebase " +
+        "gives every commit a new sha, so the plain mode reads the replayed commits as never " +
+        "pushed and offers to squash reviewed history away.",
+    );
+    from = at;
+  }
+});
