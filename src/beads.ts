@@ -384,8 +384,6 @@ export const SESSION_VAR = "PITWALL_SESSION";
 export const DEFAULT_LOCK_PREFIX = "devloop";
 export const NOTE_LOCK = "bd-write.lock";
 export const NOTE_ATTEMPTS = 3;
-const TOKEN_LENGTH = 24;
-const RAW_TOKEN_LENGTH = 12;
 
 export interface NotePace {
   lockWaitMs: number;
@@ -415,28 +413,79 @@ export function writerOf(env: Record<string, string | undefined>): string {
   return word === "" ? "unknown" : word;
 }
 
-export function stampNote(text: string, writer: string, now: Date): string {
-  const at = now.toISOString().replace(/\.\d{3}Z$/, "Z");
-  const stamp = `${at} ${writer}`;
+export function noteStamp(writer: string, now: Date): string {
+  const stamp = `${now.toISOString().replace(/\.\d{3}Z$/, "Z")} ${writer}`;
   if (!NOTE_STAMP.test(stamp)) {
     throw new Error(`the stamp ${JSON.stringify(stamp)} is not one a reader recognises`);
   }
+  return stamp;
+}
+
+function stampedWith(stamp: string, text: string): string {
   return `\n${stamp}\n${text}`;
 }
 
-export function noteToken(text: string): string {
-  const flat = text.replace(/[^A-Za-z0-9]/g, "").slice(0, TOKEN_LENGTH);
-  return flat === "" ? text.slice(0, RAW_TOKEN_LENGTH) : flat;
+export function stampNote(text: string, writer: string, now: Date): string {
+  return stampedWith(noteStamp(writer, now), text);
 }
 
-export function noteLanded(shown: unknown, token: string): boolean {
+function alnum(text: string): string {
+  return text.replace(/[^A-Za-z0-9]/g, "");
+}
+
+export function storedNotes(shown: unknown): string {
   const row = Array.isArray(shown) ? shown[0] : shown;
   if (typeof row !== "object" || row === null) {
-    return false;
+    return "";
   }
   const notes = (row as Record<string, unknown>)["notes"];
-  const flat = typeof notes === "string" ? notes.replace(/[^A-Za-z0-9]/g, "") : "";
-  return flat.includes(token);
+  return typeof notes === "string" ? alnum(notes) : "";
+}
+
+export type NoteVerdict =
+  | { verdict: "landed" }
+  | { verdict: "absent" }
+  | { verdict: "diverged"; at: number };
+
+export function noteVerdict(
+  shown: unknown,
+  text: string,
+  stamp: string,
+  before?: string,
+): NoteVerdict {
+  const kept: number[] = [];
+  for (let index = 0; index < text.length; index++) {
+    if (alnum(text.slice(index, index + 1)) !== "") {
+      kept.push(index);
+    }
+  }
+  const whole = kept.map((index) => text.slice(index, index + 1)).join("");
+  if (whole === "") {
+    return { verdict: "absent" };
+  }
+  const stored = storedNotes(shown);
+  const region =
+    before !== undefined && stored.startsWith(before) ? stored.slice(before.length) : stored;
+  if (region.includes(whole)) {
+    return { verdict: "landed" };
+  }
+  const mark = alnum(stamp);
+  const marked = mark === "" ? -1 : region.lastIndexOf(mark);
+  if (marked < 0) {
+    return { verdict: "absent" };
+  }
+  const mine = region.slice(marked + mark.length);
+  let low = 0;
+  let high = whole.length;
+  while (low < high) {
+    const mid = Math.floor((low + high + 1) / 2);
+    if (mine.includes(whole.slice(0, mid))) {
+      low = mid;
+    } else {
+      high = mid - 1;
+    }
+  }
+  return { verdict: "diverged", at: kept[low] ?? text.length };
 }
 
 export function noteLockPath(lockPrefix: string, lockRoot: string = LOCK_ROOT): string {
@@ -509,34 +558,53 @@ async function bdWrite(writer: NoteWriter, args: readonly string[]): Promise<str
   return stdout;
 }
 
-type ReadBack = "landed" | "lost" | "unreadable";
+type ReadBack = NoteVerdict | { verdict: "unreadable" };
 
-async function readBack(writer: NoteWriter, id: string, token: string): Promise<ReadBack> {
+async function notesShown(writer: NoteWriter, id: string): Promise<unknown> {
+  return JSON.parse(await bdWrite(writer, showArgs(id)));
+}
+
+async function notesBefore(writer: NoteWriter, id: string): Promise<string | undefined> {
   try {
-    return noteLanded(JSON.parse(await bdWrite(writer, showArgs(id))), token) ? "landed" : "lost";
+    return storedNotes(await notesShown(writer, id));
   } catch {
-    return "unreadable";
+    return undefined;
+  }
+}
+
+async function readBack(
+  writer: NoteWriter,
+  id: string,
+  text: string,
+  stamp: string,
+  before: string | undefined,
+): Promise<ReadBack> {
+  try {
+    return noteVerdict(await notesShown(writer, id), text, stamp, before);
+  } catch {
+    return { verdict: "unreadable" };
   }
 }
 
 async function appendVerified(writer: NoteWriter, id: string, text: string): Promise<void> {
   const described = `bd update ${id} --append-notes`;
-  const stamped = stampNote(text, writerOf(writer.env), new Date());
-  const token = noteToken(text);
+  const stamp = noteStamp(writerOf(writer.env), new Date());
+  const stamped = stampedWith(stamp, text);
   const args = appendNotesArgs(id, stamped);
   for (let attempt = 1; attempt <= NOTE_ATTEMPTS; attempt++) {
+    const before = await notesBefore(writer, id);
     let refused: string | undefined;
     try {
       await bdWrite(writer, args);
     } catch (cause) {
       refused = failureOf(cause, writer.timeoutMs);
     }
-    let landed = await readBack(writer, id, token);
-    if (landed === "lost" && refused === undefined) {
+    let read = await readBack(writer, id, text, stamp, before);
+    if (read.verdict !== "landed" && read.verdict !== "unreadable" && refused === undefined) {
       await sleep(writer.pace.settleMs);
-      landed = await readBack(writer, id, token);
+      read = await readBack(writer, id, text, stamp, before);
     }
-    if (landed === "landed") {
+    if (read.verdict === "landed") {
       if (attempt > 1) {
         writer.warn(`note on ${id} landed on attempt ${attempt}`);
       }
@@ -545,7 +613,16 @@ async function appendVerified(writer: NoteWriter, id: string, text: string): Pro
     if (refused !== undefined) {
       throw new Error(`${described}: ${refused}`);
     }
-    if (landed === "unreadable") {
+    if (read.verdict === "diverged") {
+      writer.warn(
+        `note on ${id} differs from what was sent - diverges at character ${read.at + 1} of ${text.length}, not retrying`,
+      );
+      writer.warn(`first divergent characters: ${JSON.stringify(text.slice(read.at, read.at + 60))}`);
+      writer.warn("the note as sent follows, so it is not lost whatever landed:");
+      writer.warn(stamped);
+      return;
+    }
+    if (read.verdict === "unreadable") {
       writer.warn(`could not read ${id} back to verify the note - it may well have landed, not retrying`);
       return;
     }

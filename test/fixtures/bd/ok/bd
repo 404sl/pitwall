@@ -38,8 +38,17 @@ print(json.dumps(shown))
       echo "Error: nowhere to record notes" >&2
       exit 1
     fi
-    if [ "${BD_NOTES_DROP:-0}" != "1" ]; then
-      printf '%s\n' "$2 $4" >> "$BD_NOTES_LOG"
+    drop=${BD_NOTES_DROP:-0}
+    if [ -n "$BD_NOTES_DROP_ONCE" ] && [ -f "$BD_NOTES_DROP_ONCE" ]; then
+      drop=1
+      rm -f "$BD_NOTES_DROP_ONCE"
+    fi
+    if [ "$drop" != "1" ]; then
+      if [ -n "$BD_NOTES_HOLE" ]; then
+        python3 -c 'import sys; print(sys.argv[1].replace(sys.argv[2], ""))' "$2 $4" "$BD_NOTES_HOLE" >> "$BD_NOTES_LOG"
+      else
+        printf '%s\n' "$2 $4" >> "$BD_NOTES_LOG"
+      fi
     fi
     echo "✓ Updated issue: $2"
     ;;

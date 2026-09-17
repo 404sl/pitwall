@@ -5,7 +5,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { GIT_ENV } from "./support/git.js";
-import { stampNote, writerOf } from "../src/beads.ts";
+import { noteVerdict, stampNote, storedNotes, writerOf } from "../src/beads.ts";
 
 const SCRIPT = join(
   import.meta.dirname,
@@ -314,6 +314,52 @@ test("a short note damaged in its opening is reported once, not appended three t
     stampLines(readFileSync(box.notesFile, "utf8")).length,
     1,
     "a note shorter than the old token window was retried, which is how duplicate notes get made",
+  );
+});
+
+test("the script and the CLI's own writer reach the same verdict on the same case", () => {
+  const frozen = "2026-09-10T14:22:31Z";
+  const stamp = `${frozen} lane-acme-1`;
+  const shownOf = (notes: string) => [{ id: "acme-1", status: "open", notes }];
+  const divergedAt = (stderr: string) =>
+    Number(/diverges at character (\d+) of/.exec(stderr)?.[1] ?? NaN) - 1;
+
+  const whole = harness("", frozen);
+  const ranWhole = append(whole, ["acme-1", HOLED], "lane-acme-1");
+  assert.equal(ranWhole.status, 0, ranWhole.stdout + ranWhole.stderr);
+  assert.deepEqual(noteVerdict(shownOf(readFileSync(whole.notesFile, "utf8")), HOLED, stamp, ""), {
+    verdict: "landed",
+  });
+
+  const holed = harness("", frozen);
+  const ranHoled = append(holed, ["acme-1", HOLED], "lane-acme-1", true, HOLE);
+  assert.match(ranHoled.stderr, /diverges at character \d+ of \d+/);
+  assert.deepEqual(noteVerdict(shownOf(readFileSync(holed.notesFile, "utf8")), HOLED, stamp, ""), {
+    verdict: "diverged",
+    at: divergedAt(ranHoled.stderr),
+  });
+
+  const early = harness("", frozen);
+  const ranEarly = append(early, ["acme-1", HOLED_EARLY], "lane-acme-1", true, HOLE_EARLY);
+  assert.match(ranEarly.stderr, /diverges at character \d+ of \d+/);
+  assert.deepEqual(
+    noteVerdict(shownOf(readFileSync(early.notesFile, "utf8")), HOLED_EARLY, stamp, ""),
+    { verdict: "diverged", at: divergedAt(ranEarly.stderr) },
+    "the script and the CLI disagree about where a transformed opening diverges",
+  );
+
+  const shared = harness(SHARED_RUN_SEED, frozen);
+  const ranShared = append(shared, ["acme-1", SHARES_RUN], "lane-acme-1", false);
+  assert.equal(ranShared.status, 1, ranShared.stdout + ranShared.stderr);
+  assert.deepEqual(
+    noteVerdict(
+      shownOf(readFileSync(shared.notesFile, "utf8")),
+      SHARES_RUN,
+      stamp,
+      storedNotes(shownOf(SHARED_RUN_SEED)),
+    ),
+    { verdict: "absent" },
+    "an earlier note sharing a long run was read as this write landing, or as transformed",
   );
 });
 
