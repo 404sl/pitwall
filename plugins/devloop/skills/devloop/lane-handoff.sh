@@ -233,22 +233,8 @@ if [ "$PRE_PUSH" = "1" ]; then
     exit 6
   fi
 
-  # WHICH COMMITS ARE ALREADY ON A REMOTE IS ESTABLISHED BEFORE ANYTHING IS SAID ABOUT THEM.
-  #
-  # This block used to open with "nothing has been pushed" without having looked, which is true
-  # of a first attempt and false of every later one: a rejected attempt comes back to a branch
-  # whose earlier commits are on the remote. A hit in a new commit then drew the deeper remedy,
-  # `reset --soft origin/master`, which collapses the pushed commits too - and the push after it
-  # is refused as a non-fast-forward, leaving a locally squashed history diverging from the
-  # remote and only a force-push out. That is the dead end this whole check exists to remove.
-  #
-  # `--not --remotes` names the commits no remote ref reaches. It reads refs rather than a branch
-  # name, so it is correct on the detached HEAD a rebased worktree sits on.
   tip=$(git rev-parse HEAD)
   if [ "$REBASED" = "1" ]; then
-    # A REBASE MAKES EVERY SHA NEW, so absence from a remote stops meaning "nobody has seen it".
-    # The reviewed commits are replayed under new ids and would all read as unpushed. In this
-    # mode the tip - the commit this step wrote - is the only one an amend may touch.
     unpushed="$range"
     pushed_tip=""
   else
@@ -286,12 +272,12 @@ $(printf '%s\n' "$hit" | sed 's/^/    /')
       printf '%s' "$remote_hits"
     fi
     if [ -n "$deep_hits" ]; then
-      echo "Underneath the commit this step wrote. The branch was rebased, so these carry new shas"
-      echo "and read as unpushed, but their messages were reviewed and are not yours to rewrite:"
+      echo "Underneath the top commit. The branch was rebased, so these carry new shas and so"
+      echo "read as unpushed, but their messages were reviewed and are not yours to rewrite:"
       printf '%s' "$deep_hits"
     fi
     if [ -n "$local_hits" ]; then
-      echo "And these, in the commit this step wrote:"
+      echo "And these, in the top commit:"
       printf '%s' "$local_hits"
     fi
     echo ""
@@ -311,7 +297,7 @@ $(printf '%s\n' "$hit" | sed 's/^/    /')
 
   if [ -n "$local_hits" ]; then
     if [ "$REBASED" = "1" ]; then
-      echo "non-compliant commits: the hit is in the commit this step wrote, which is not pushed yet."
+      echo "non-compliant commits: the hit is in the top commit, which is not pushed yet."
       echo "Offending lines:"
     elif [ -n "$pushed_tip" ]; then
       echo "non-compliant commits: the hits are all in commits no remote ref reaches. Offending lines:"
@@ -330,7 +316,7 @@ $(printf '%s\n' "$hit" | sed 's/^/    /')
     echo "  the tip commit only:"
     echo '    git -c user.name="$(git log -1 --format=%an origin/master)" -c user.email="$(git log -1 --format=%ae origin/master)" commit --amend -F <a file holding the new message>'
     if [ "$REBASED" = "1" ]; then
-      echo "THAT AMEND IS THE ONLY REMEDY IN THIS MODE, and it is for the commit you just wrote."
+      echo "THAT AMEND IS THE ONLY REMEDY IN THIS MODE, and it is for the top commit alone."
       echo "There is deliberately no squash: the commits underneath were reviewed as they stand,"
       echo "and a rebase having renewed their shas does not make them yours."
     elif [ -n "$pushed_tip" ]; then
