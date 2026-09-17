@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.79
+
+`bd-note.sh` now tells a note that bd transformed on the way in from a note that was
+lost, and it decides which by locating **this write's own stamp** in the notes field and
+comparing the text after it against the note as sent. Any note whose stamp survives and
+whose text differs is warned about once and recorded once - which covers a note damaged
+inside its opening characters, and a note too short to carry the 24-character run the
+old check demanded. Both of those used to be retried and appended three times. The
+script now retries only when it can find no trace of this write's stamp in what the
+field gained during this write, so a genuine loss still fails loudly. Nothing to do
+differently when writing a note. If you
+see the divergence warning, the note is in the field in some altered form, the warning
+carries the full text as sent, and writing it again will only duplicate it.
+
+Refs pitwall-6r8h.
+
 ## 0.1.78
 
 `bd-note.sh` no longer reports a plain success over a note that arrived incomplete. Once its
