@@ -908,26 +908,38 @@ test("a flag that takes a value is refused when given none, not looped on foreve
   }
 });
 
+const LANE = "lane/probe";
+
 function localBranch(message: string | null, opts: { pushed?: boolean } = {}): string {
   const root = mkdtempSync(join(tmpdir(), "pitwall-prepush-"));
+  const remote = join(root, "origin.git");
   const repo = join(root, "repo");
+  git(root, "init", "--bare", "--quiet", remote);
   mkdirSync(repo);
   git(repo, "init", "--quiet");
   git(repo, "config", "user.email", "nobody@example.invalid");
   git(repo, "config", "user.name", "Nobody");
+  git(repo, "remote", "add", "origin", remote);
   writeFileSync(join(repo, "a.txt"), "one\n");
   git(repo, "add", "a.txt");
   git(repo, "commit", "--quiet", "-m", "base");
-  git(repo, "update-ref", "refs/remotes/origin/master", git(repo, "rev-parse", "HEAD"));
+  git(repo, "push", "--quiet", "origin", "HEAD:refs/heads/master");
+  git(repo, "fetch", "--quiet", "origin");
+  git(repo, "checkout", "--quiet", "-b", LANE);
   if (message !== null) {
     writeFileSync(join(repo, "a.txt"), "two\n");
     git(repo, "add", "a.txt");
     git(repo, "commit", "--quiet", "-m", message);
   }
   if (opts.pushed) {
-    git(repo, "update-ref", "refs/remotes/origin/lane/probe", git(repo, "rev-parse", "HEAD"));
+    publish(repo);
   }
   return repo;
+}
+
+function publish(repo: string): void {
+  git(repo, "push", "--quiet", "--force", "origin", `HEAD:refs/heads/${LANE}`);
+  git(repo, "fetch", "--quiet", "origin");
 }
 
 function commitOn(repo: string, message: string, opts: { pushed?: boolean } = {}): string {
@@ -936,9 +948,26 @@ function commitOn(repo: string, message: string, opts: { pushed?: boolean } = {}
   git(repo, "commit", "--quiet", "-m", message);
   const head = git(repo, "rev-parse", "HEAD");
   if (opts.pushed) {
-    git(repo, "update-ref", "refs/remotes/origin/lane/probe", head);
+    publish(repo);
   }
   return head;
+}
+
+function rebaseOntoMovedMaster(repo: string): void {
+  const lane = git(repo, "rev-parse", "HEAD");
+  git(repo, "checkout", "--quiet", "master");
+  writeFileSync(join(repo, "b.txt"), "master moved on\n");
+  git(repo, "add", "b.txt");
+  git(repo, "commit", "--quiet", "-m", "A commit master landed underneath");
+  git(repo, "push", "--quiet", "origin", "HEAD:refs/heads/master");
+  git(repo, "fetch", "--quiet", "origin");
+  git(repo, "checkout", "--quiet", LANE);
+  git(repo, "rebase", "--quiet", "origin/master");
+  assert.notEqual(
+    git(repo, "rev-parse", "HEAD"),
+    lane,
+    "the rebase replayed nothing, so the shape this test needs was never built",
+  );
 }
 
 function prePush(repo: string, ...extra: string[]): { status: number; stdout: string; stderr: string; calls: string } {
@@ -1151,4 +1180,127 @@ test("--rebased is refused outside the pre-push modes rather than silently ignor
 
   assert.equal(ran.status, 6, (ran.stdout ?? "") + (ran.stderr ?? ""));
   assert.match(ran.stderr ?? "", /--rebased/);
+});
+
+test("a rebased branch the remote already holds is never reported as never pushed", () => {
+  const repo = localBranch("A reviewed commit nothing objects to", { pushed: true });
+  rebaseOntoMovedMaster(repo);
+  const ran = prePush(repo);
+
+  assert.doesNotMatch(
+    ran.stdout + ran.stderr,
+    /nothing has been pushed/,
+    `a rebase renews every sha, so nothing on the branch is reachable from a remote ref and the ` +
+      `old reachability proxy read a four-times-pushed branch as local. The remote still holds ` +
+      `the branch, and it is the remote that knows. Offered: ${ran.stdout}${ran.stderr}`,
+  );
+  assert.notEqual(
+    ran.status,
+    0,
+    `the check cleared a push that cannot be made: HEAD does not contain the head the remote ` +
+      `holds, so a plain push is rejected as a non-fast-forward and only a force-push follows - ` +
+      `the dead end this check exists to remove, reached through the check itself. ` +
+      `Offered: ${ran.stdout}${ran.stderr}`,
+  );
+  assert.doesNotMatch(
+    ran.stdout,
+    /safe to push/,
+    `the check called the push safe on a branch it cannot fast-forward. Offered: ${ran.stdout}`,
+  );
+  assert.equal(ran.status, 10, ran.stdout + ran.stderr);
+  assert.match(ran.stdout, /published/, ran.stdout);
+  assert.match(ran.stdout, new RegExp(LANE), ran.stdout);
+  assert.ok(
+    !ran.stdout.includes("reset --soft") && !ran.stdout.includes("commit --amend"),
+    `a remedy was printed for a branch the remote holds at a head HEAD does not contain. Every ` +
+      `one of them ends in a force-push. Offered: ${ran.stdout}`,
+  );
+});
+
+test("a hit on a rebased branch the remote holds gets a verdict, not an amend", () => {
+  const repo = localBranch("A reviewed commit naming lane-verified outright", { pushed: true });
+  rebaseOntoMovedMaster(repo);
+  const ran = prePush(repo);
+
+  assert.equal(ran.status, 2, ran.stdout + ran.stderr);
+  assert.ok(
+    ran.stdout.includes("NEEDS A PERSON"),
+    `a hit on a published-then-rewritten branch got no verdict, so a run reads it as fixable and ` +
+      `amends its way into a push nothing will accept. Offered: ${ran.stdout}`,
+  );
+  assert.ok(
+    !ran.stdout.includes("reset --soft") && !ran.stdout.includes("commit --amend"),
+    `a remedy was offered where every route out rewrites what the remote already holds. ` +
+      `Offered: ${ran.stdout}`,
+  );
+  assert.match(ran.stdout, /A reviewed commit naming/, ran.stdout);
+  assert.doesNotMatch(ran.stdout, /nothing has been pushed/, ran.stdout);
+});
+
+test("a remote that cannot be asked whether the branch exists is refused, not read as local", () => {
+  const repo = localBranch("A commit naming lane-verified outright");
+  git(repo, "remote", "set-url", "origin", join(repo, "no-such-remote.git"));
+  const ran = prePush(repo);
+
+  assert.notEqual(
+    ran.status,
+    2,
+    `an unreachable remote was graded as a branch that does not exist on it. Silence is not ` +
+      `absence: taken as absence the check prints an amend and a squash a later push refuses, ` +
+      `which is the old proxy's failure in a new coat. Offered: ${ran.stdout}${ran.stderr}`,
+  );
+  assert.equal(ran.status, 7, ran.stdout + ran.stderr);
+  assert.match(ran.stderr, /ls-remote/, ran.stderr);
+  assert.doesNotMatch(ran.stdout, /compliant commits/, ran.stdout);
+  assert.doesNotMatch(ran.stdout, /nothing has been pushed/, ran.stdout);
+});
+
+test("a detached HEAD with no branch to ask the remote about is refused", () => {
+  const repo = localBranch("A commit nothing objects to");
+  git(repo, "checkout", "--quiet", "--detach", "HEAD");
+  const ran = prePush(repo);
+
+  assert.equal(ran.status, 6, ran.stdout + ran.stderr);
+  assert.match(ran.stderr, /--branch/, ran.stderr);
+  assert.doesNotMatch(ran.stdout, /compliant commits/, ran.stdout);
+});
+
+test("--branch is what the remote is asked about when HEAD carries no name", () => {
+  const repo = localBranch("A reviewed commit nothing objects to", { pushed: true });
+  rebaseOntoMovedMaster(repo);
+  git(repo, "checkout", "--quiet", "--detach", "HEAD");
+  const ran = prePush(repo, "--branch", LANE);
+
+  assert.equal(
+    ran.status,
+    10,
+    `a detached HEAD given the branch name still could not establish that the remote holds it, ` +
+      `so the one caller that cannot rely on symbolic-ref has no way to be told the truth. ` +
+      `Offered: ${ran.stdout}${ran.stderr}`,
+  );
+  assert.doesNotMatch(ran.stdout, /nothing has been pushed/, ran.stdout);
+});
+
+test("--rebased grades a detached HEAD without asking any remote anything", () => {
+  const repo = localBranch("A reviewed commit nothing objects to", { pushed: true });
+  rebaseOntoMovedMaster(repo);
+  commitOn(repo, "A repair commit naming lane-verified outright");
+  git(repo, "checkout", "--quiet", "--detach", "HEAD");
+  git(repo, "remote", "set-url", "origin", join(repo, "no-such-remote.git"));
+  const ran = prePush(repo, "--rebased");
+
+  assert.equal(
+    ran.status,
+    2,
+    `the rebase path could not grade its own commit. It runs on a detached HEAD and it ` +
+      `force-pushes by design, so it has no branch name to offer and no need of one - ` +
+      `demanding a remote answer there breaks the one caller that legitimately republishes. ` +
+      `Offered: ${ran.stdout}${ran.stderr}`,
+  );
+  assert.ok(
+    ran.stdout.includes("commit --amend"),
+    `no remedy for the commit this step wrote. Offered: ${ran.stdout}`,
+  );
+  assert.doesNotMatch(ran.stderr, /ls-remote/, ran.stderr);
+  assert.doesNotMatch(ran.stderr, /--branch/, ran.stderr);
 });

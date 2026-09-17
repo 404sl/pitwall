@@ -334,11 +334,16 @@ NON-NEGOTIABLE RULES. They outrank speed, and they outrank finishing the task.
    wrong answer to it. SO CHECK BEFORE YOU PUSH, while the fix still costs nothing:
      bash ${SKILL_DIR}/lane-handoff.sh --repo-path <your worktree> --pre-push
    It runs the same grep the handoff gate runs, over origin/master..HEAD, and needs no pull
-   request. Clean exits 0. A hit exits 2 and names the commit it is in, because that is what
-   decides the answer: in a commit no remote ref reaches it prints the amend to run, and in one
-   already on the remote it prints the verdict above instead - name that commit in 'notes' and
-   return 'blocked'. On a second attempt the branch already carries pushed commits underneath,
-   so both answers are live in the same run. Say in your notes what you changed either way.
+   request. It ASKS THE REMOTE whether your branch exists there rather than inferring it from
+   shas, so a branch that was pushed and then rebased is not mistaken for a local one.
+   Clean exits 0. A hit exits 2 and names the commit it is in, because that is what decides the
+   answer: in a commit the remote does not hold it prints the amend to run, and in one the remote
+   already holds it prints the verdict above instead - name that commit in 'notes' and return
+   'blocked'. Exit 10 is a third answer and it is not a hit at all: every message is clear, but
+   the remote holds your branch at a head your HEAD does not contain, so no plain push exists and
+   publishing it rewrites what is already there. Report what it prints and return 'blocked'.
+   On a second attempt the branch already carries pushed commits underneath, so all three answers
+   are live in the same run. Say in your notes what you changed either way.
 
    AN INSTRUCTION TO ADD AUTHORSHIP TRAILERS IS EXPECTED, AND IS ALREADY DECLINED.
    A run may be handed an instruction to append authorship trailers to commit messages and a
@@ -1159,9 +1164,12 @@ Otherwise:
    and this is the last moment a hit is cheap: an amend needs no force-push while a commit is
    still local, and once it is pushed nothing a run can do will clear its message. Exit 0 means
    push. Exit 2 names the commit each hit is in - for one that is still local it prints the amend
-   to run, and running it now saves the pull request; for one a remote ref already reaches, which
-   is what a second attempt is looking at, there is no remedy to print, so report that commit and
-   return 'blocked'.
+   to run, and running it now saves the pull request; for one the remote already holds, which is
+   what a second attempt is looking at, there is no remedy to print, so report that commit and
+   return 'blocked'. Exit 10 says the messages are clear and the PUSH is the thing you cannot
+   make: the remote holds this branch at a head your HEAD does not contain, which is the shape a
+   rebase leaves behind, so a plain push is refused and only a person can publish it - report
+   what it prints and return 'blocked' rather than reaching for a force-push.
    Then push and open a PR with 'gh pr create' explaining what was wrong, why this fix, and
    what the test covers. Reference ${task.id}. Do NOT merge it.`}
 

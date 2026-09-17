@@ -408,3 +408,27 @@ test("the rework briefs read the commit messages back before every force-push", 
     from = at;
   }
 });
+
+test("the briefs name the answer the pre-push check gives a branch it cannot fast-forward", () => {
+  const source = readFileSync(join(SKILL, "task.js"), "utf8");
+  const briefs = [promptTemplate(source, "fixPrompt"), bodyOfRulesTemplate(source)];
+
+  for (const brief of briefs) {
+    assert.ok(
+      /Exit 10/.test(brief),
+      "the brief reads the pre-push check as answering only clean or hit. Its third answer is a " +
+        "branch the remote holds at a head the lane's HEAD does not contain - what a rebase " +
+        "leaves - where no plain push exists at all. A lane told only about 0 and 2 reads that " +
+        "refusal as a defect in the script and pushes anyway.",
+    );
+  }
+
+  const fix = promptTemplate(source, "fixPrompt");
+  const third = fix.slice(fix.indexOf("Exit 10"), fix.indexOf("Exit 10") + 500);
+  assert.match(
+    third,
+    /'blocked'/,
+    `the brief names the exit and not the outcome, so a lane that meets it has nothing to return. ` +
+      `There is no remedy for it to try: the push itself is what cannot be made. Offered: ${third}`,
+  );
+});

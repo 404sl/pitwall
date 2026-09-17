@@ -19,7 +19,7 @@
 #                   --issue <app-xxxx> --note-file <path> [--worktree <abs>] [--lane-lock <abs>]
 #                   [--label lane-verified] [--check-only]
 #
-#   lane-handoff.sh --repo-path <abs> --pre-push [--rebased]
+#   lane-handoff.sh --repo-path <abs> --pre-push [--rebased] [--branch <name>]
 #
 #   Other open pull requests on --branch, across the repositories the workspace config names, are
 #   derived and handled in the same invocation.
@@ -30,11 +30,11 @@
 #   2  non-compliant NOTHING was labelled anywhere. The offending lines are printed against the
 #                    pull request they came from. Fix, then re-run.
 #                    Under --pre-push there is no pull request and the range is graded per commit:
-#                    a hit in a commit no remote ref reaches prints the amend or squash to run,
-#                    and one in a commit a remote ref already reaches prints no remedy at all,
-#                    because every route out of that state rewrites pushed history. Report which
-#                    commit and stop. --rebased narrows that to the top commit, since a rebase
-#                    renews every sha and absence from a remote stops meaning anything.
+#                    a hit in a commit the remote does not hold prints the amend or squash to run,
+#                    and one in a commit it does hold prints no remedy at all, because every route
+#                    out of that state rewrites published history. Report which commit and stop.
+#                    --rebased narrows that to the top commit, since a rebase renews every sha and
+#                    the commits underneath it were reviewed as they stand.
 #   3  conflicted    a pull request on the branch conflicts with master, so GitHub scheduled no
 #                    checks for it at all and none are coming. Nothing was labelled anywhere.
 #                    The remedy is a merge from master and a push, not another wait.
@@ -47,6 +47,9 @@
 #                    label could not be prepared in one of the repositories holding them, or
 #                    one of their texts could not be read, or GitHub would not say what sha the
 #                    branch is at. Nothing was labelled anywhere.
+#                    Under --pre-push: the remote would not say whether the branch exists at all,
+#                    which is not the same as it not existing - reading silence as absence is how
+#                    an amend gets printed for a branch a plain push cannot reach.
 #                    Fix what it names, then re-run.
 #   8  half-labelled labelling began and could not be finished. It prints which pull requests
 #                    carry the label and which do not. Adding a label is idempotent and this
@@ -57,6 +60,10 @@
 #                    about its checks, which is not the same as knowing they failed, so this is
 #                    never reported as 4. Nothing was labelled anywhere. It names the exact
 #                    'gh pr view' it attempted and what gh or the reader said. Retry the read.
+#  10  published-rewritten  --pre-push without --rebased. The branch exists on the remote and HEAD
+#                    does not contain the head it holds, so it was published and then rewritten and
+#                    no plain push will be accepted. Every commit message graded clear - there is
+#                    simply no plain push here to clear, and publishing this HEAD needs a person.
 
 set -u
 
@@ -234,18 +241,60 @@ if [ "$PRE_PUSH" = "1" ]; then
   fi
 
   tip=$(git rev-parse HEAD)
+
+  PRE_BRANCH=""; rewritten=0; head_absent=0; pushed_tip=""; short_remote=""
+
   if [ "$REBASED" = "1" ]; then
     unpushed="$range"
-    pushed_tip=""
   else
-    unpushed=$(git rev-list origin/master..HEAD --not --remotes 2>/dev/null)
-    pushed_tip=""
-    for sha in $range; do
-      printf '%s\n' "$unpushed" | grep -qx "$sha" || { pushed_tip="$sha"; break; }
-    done
+    PRE_BRANCH="$BRANCH"
+    if [ -z "$PRE_BRANCH" ]; then
+      PRE_BRANCH=$(git symbolic-ref -q --short HEAD 2>/dev/null) || PRE_BRANCH=""
+    fi
+    if [ -z "$PRE_BRANCH" ]; then
+      echo "lane-handoff.sh: HEAD is detached and no --branch was given, so the remote cannot be" >&2
+      echo "                 asked whether this branch is published - and that is what decides" >&2
+      echo "                 whether an amend here is free or needs a force-push nobody may run." >&2
+      echo "                 Nothing was graded. Pass --branch <name>, or run this on the branch." >&2
+      exit 6
+    fi
+
+    if remote_refs=$(git ls-remote --heads origin "refs/heads/${PRE_BRANCH}" 2>/dev/null); then
+      :
+    else
+      echo "lane-handoff.sh: 'git ls-remote --heads origin refs/heads/${PRE_BRANCH}' failed in" >&2
+      echo "                 ${REPO_PATH}, so whether the branch is published is unknown. Unknown is" >&2
+      echo "                 not local: taken as local it prints an amend and a squash the push then" >&2
+      echo "                 refuses. Nothing was graded. Restore access to the remote and re-run." >&2
+      exit 7
+    fi
+    remote_head=$(printf '%s\n' "$remote_refs" | awk 'NF {print $1; exit}')
+
+    if [ -n "$remote_head" ]; then
+      short_remote=$(git rev-parse --short "$remote_head" 2>/dev/null)
+      [ -n "$short_remote" ] || short_remote="$remote_head"
+      if git cat-file -e "${remote_head}^{commit}" 2>/dev/null; then
+        if git merge-base --is-ancestor "$remote_head" HEAD 2>/dev/null; then
+          pushed_tip="$remote_head"
+        else
+          rewritten=1
+        fi
+      else
+        rewritten=1
+        head_absent=1
+      fi
+    fi
+
+    if [ "$rewritten" = "1" ]; then
+      unpushed=""
+    elif [ -n "$pushed_tip" ]; then
+      unpushed=$(git rev-list "${pushed_tip}..HEAD" 2>/dev/null)
+    else
+      unpushed="$range"
+    fi
   fi
 
-  local_hits=""; remote_hits=""; deep_hits=""
+  local_hits=""; remote_hits=""; deep_hits=""; rewritten_hits=""
   for sha in $range; do
     hit=$(git log -1 --format='%B%n%an <%ae>%n%(trailers)' "$sha" 2>/dev/null \
       | sed "$neutral" \
@@ -257,6 +306,8 @@ $(printf '%s\n' "$hit" | sed 's/^/    /')
 "
     if [ "$REBASED" = "1" ] && [ "$sha" != "$tip" ]; then
       deep_hits="${deep_hits}${entry}"
+    elif [ "$rewritten" = "1" ]; then
+      rewritten_hits="${rewritten_hits}${entry}"
     elif printf '%s\n' "$unpushed" | grep -qx "$sha"; then
       local_hits="${local_hits}${entry}"
     else
@@ -264,8 +315,18 @@ $(printf '%s\n' "$hit" | sed 's/^/    /')
     fi
   done
 
-  if [ -n "$remote_hits" ] || [ -n "$deep_hits" ]; then
+  if [ -n "$remote_hits" ] || [ -n "$deep_hits" ] || [ -n "$rewritten_hits" ]; then
     echo "non-compliant commits: A HIT IN ONE OF THESE NEEDS A PERSON."
+    if [ -n "$rewritten_hits" ]; then
+      echo "The remote holds ${PRE_BRANCH} at ${short_remote} and HEAD does not contain it, so the"
+      echo "branch was published and then rewritten. No plain push is accepted from here and no"
+      echo "amend made here reaches what is already published:"
+      printf '%s' "$rewritten_hits"
+      if [ "$head_absent" = "1" ]; then
+        echo "That published head is not in this checkout, so what it carries could not be read here"
+        echo "either - which is one more reason this is not a state to push out of."
+      fi
+    fi
     if [ -n "$remote_hits" ]; then
       echo "Already reachable from a remote ref, so rewording it rewrites history somebody else's"
       echo "ref points at:"
@@ -285,7 +346,7 @@ $(printf '%s\n' "$hit" | sed 's/^/    /')
     echo "every route to a clean message from this state rewrites a commit something already"
     echo "relies on, and a squash that reaches one of them is worse than the message it clears."
     echo "Name the commit in your notes and return blocked."
-    if [ -n "$remote_hits" ]; then
+    if [ -n "$remote_hits" ] || [ -n "$rewritten_hits" ]; then
       echo "The moment it was fixable was before that commit was pushed, which is what running this"
       echo "check first buys you."
     fi
@@ -300,9 +361,11 @@ $(printf '%s\n' "$hit" | sed 's/^/    /')
       echo "non-compliant commits: the hit is in the top commit, which is not pushed yet."
       echo "Offending lines:"
     elif [ -n "$pushed_tip" ]; then
-      echo "non-compliant commits: the hits are all in commits no remote ref reaches. Offending lines:"
+      echo "non-compliant commits: the remote holds ${PRE_BRANCH} at ${short_remote} and every hit is"
+      echo "above it. Offending lines:"
     else
-      echo "non-compliant commits: nothing has been pushed. Offending lines:"
+      echo "non-compliant commits: nothing has been pushed - the remote has no ${PRE_BRANCH} at all."
+      echo "Offending lines:"
     fi
     printf '%s' "$local_hits"
     echo ""
@@ -321,15 +384,15 @@ $(printf '%s\n' "$hit" | sed 's/^/    /')
       echo "and a rebase having renewed their shas does not make them yours."
     elif [ -n "$pushed_tip" ]; then
       echo "  anything deeper:"
-      echo "    git reset --soft $(git rev-parse --short "$pushed_tip") && git -c user.name=\"\$(git log -1 --format=%an origin/master)\" -c user.email=\"\$(git log -1 --format=%ae origin/master)\" commit -F <a file>"
-      echo "THAT BASE IS THE HEAD ALREADY ON THE REMOTE, not origin/master. Resetting past it would"
-      echo "collapse the commits the remote branch is built on, and the push after it is refused as"
-      echo "a non-fast-forward - which leaves only a force-push, which you may not run."
+      echo "    git reset --soft ${short_remote} && git -c user.name=\"\$(git log -1 --format=%an origin/master)\" -c user.email=\"\$(git log -1 --format=%ae origin/master)\" commit -F <a file>"
+      echo "THAT BASE IS THE HEAD THE REMOTE HOLDS FOR ${PRE_BRANCH}, not origin/master. Resetting"
+      echo "past it would collapse the commits the remote branch is built on, and the push after it"
+      echo "is refused as a non-fast-forward - which leaves only a force-push, which you may not run."
     else
       echo "  anything deeper:"
       echo '    git reset --soft origin/master && git -c user.name="$(git log -1 --format=%an origin/master)" -c user.email="$(git log -1 --format=%ae origin/master)" commit -F <a file>'
-      echo "Squashing costs nothing here: no commit on this branch has been pushed, and the train"
-      echo "squashes the branch when it lands anyway."
+      echo "Squashing costs nothing here: the remote has no such branch, so no commit on it has been"
+      echo "published, and the train squashes the branch when it lands anyway."
     fi
     echo "Judge each hit. A vendor or product name that is the SUBJECT of the change is fine;"
     echo "the label the lander reads is not, so name it in prose instead of quoting its token."
@@ -337,6 +400,21 @@ $(printf '%s\n' "$hit" | sed 's/^/    /')
     echo "nobody has re-read, and a reword that only moved the hit looks identical to a fix"
     echo "until this exits 0."
     exit 2
+  fi
+
+  if [ "$rewritten" = "1" ]; then
+    echo "published-rewritten: every commit message in origin/master..HEAD is clear, and this is"
+    echo "still not a push you can make. The remote holds ${PRE_BRANCH} at ${short_remote}, which"
+    echo "HEAD does not contain, so the branch was published and then rewritten: a plain push is"
+    echo "refused as a non-fast-forward and the only way on rewrites what the remote already holds."
+    if [ "$head_absent" = "1" ]; then
+      echo "That published head is not in this checkout either, so nothing here can say what it"
+      echo "carries."
+    fi
+    echo "THIS IS THE CASE A PERSON APPROVES, and it is not a clean check: the messages are clear,"
+    echo "the push is not. Say in your notes that ${PRE_BRANCH} is published at ${short_remote} and"
+    echo "that HEAD rewrites it, and return blocked. Do not reach for a force-push."
+    exit 10
   fi
 
   echo "compliant commits: origin/master..HEAD in ${REPO_PATH} is clear - safe to push"
