@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.80
+
+The message `bd-note.sh` prints when a note cannot be recorded now states three attempts, which is what its retry loop makes. A session reading that warning can compare it against the appends in the notes field directly; previously the message named one more attempt than happened, which read as an append having been lost.
+
+Refs pitwall-sa4t
+
 ## 0.1.79
 
 `bd-note.sh` now tells a note that bd transformed on the way in from a note that was

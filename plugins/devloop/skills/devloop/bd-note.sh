@@ -165,7 +165,7 @@ done
 [ -n "$took_lock" ] && rmdir "$LOCK" 2>/dev/null
 
 if [ "$status" -ne 0 ]; then
-  echo "! bd-note: note did NOT land on $id after 4 attempts - the text follows so it is not lost:" >&2
+  echo "! bd-note: note did NOT land on $id after 3 attempts - the text follows so it is not lost:" >&2
   printf '%s\n' "$stamped" >&2
   exit 1
 fi
