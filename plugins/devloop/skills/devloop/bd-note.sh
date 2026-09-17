@@ -69,11 +69,25 @@ LOCK=/tmp/${PFX}-bd-write.lock
 writer=$(printf '%s' "${PITWALL_SESSION:-${USER:-unknown}}" | tr -s '[:space:]' '-')
 writer=${writer#-}; writer=${writer%-}
 [ -n "$writer" ] || writer=unknown
-stamped=$(printf '\n%s %s\n%s' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$writer" "$note")
+now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+stamped=$(printf '\n%s %s\n%s' "$now" "$writer" "$note")
+stamp_line=$(printf '%s %s' "$now" "$writer")
+
+notes_field() {
+  bd show "$id" --json 2>/dev/null | python3 -c "
+import json,re,sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(2)
+d = d[0] if isinstance(d, list) else d
+sys.stdout.write(re.sub(r'[^A-Za-z0-9]', '', d.get('notes') or ''))
+"
+}
 
 note_landed() {
   bd show "$id" --json 2>/dev/null | python3 -c "
-import json,sys,re
+import io,json,re,sys
 try:
     d = json.load(sys.stdin)
 except Exception:
@@ -81,20 +95,26 @@ except Exception:
 d = d[0] if isinstance(d, list) else d
 alnum = lambda c: re.match(r'[A-Za-z0-9]', c) is not None
 stored = re.sub(r'[^A-Za-z0-9]', '', d.get('notes') or '')
-want = sys.argv[1]
+want, stamp, pre_path, pre_read = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 keep = [i for i, c in enumerate(want) if alnum(c)]
 whole = ''.join(want[i] for i in keep)
 if not whole:
     sys.exit(1)
-if whole in stored:
+pre = io.open(pre_path, encoding='utf-8', errors='replace').read() if pre_read else None
+if pre is None or not stored.startswith(pre):
+    sys.exit(0 if whole in stored else 1)
+added = stored[len(pre):]
+if whole in added:
     sys.exit(0)
+if re.sub(r'[^A-Za-z0-9]', '', stamp) not in added:
+    sys.exit(1)
 run = min(24, len(whole))
-if not any(whole[i:i + run] in stored for i in range(len(whole) - run + 1)):
+if not any(whole[i:i + run] in added for i in range(len(whole) - run + 1)):
     sys.exit(1)
 lo, hi = 0, len(whole)
 while lo < hi:
     mid = (lo + hi + 1) // 2
-    if whole[:mid] in stored:
+    if whole[:mid] in added:
         lo = mid
     else:
         hi = mid - 1
@@ -104,8 +124,11 @@ sys.stderr.write(
     % (at + 1, len(want)))
 sys.stderr.write('!   first divergent characters: %r\n' % want[at:at + 60])
 sys.exit(3)
-" "$note"
+" "$note" "$stamp_line" "$pre_file" "$pre_read"
 }
+
+pre_file=$(mktemp "${TMPDIR:-/tmp}/bd-note-pre.XXXXXX")
+trap 'rm -f "$pre_file"' EXIT
 
 took_lock=""
 # Wait for the lock rather than failing on it: the caller wants the note recorded, and a lane that
@@ -121,6 +144,7 @@ done
 status=1
 diverged=""
 for attempt in 1 2 3; do
+  if notes_field > "$pre_file"; then pre_read=yes; else pre_read=""; : > "$pre_file"; fi
   bd update "$id" --append-notes "$stamped" >/dev/null 2>&1
   sleep 0.3                          # the write is not always readable the instant it returns
   note_landed; rc=$?
@@ -148,6 +172,8 @@ if [ "$status" -ne 0 ]; then
   exit 1
 fi
 if [ -n "$diverged" ]; then
+  echo "! bd-note: the note as sent follows, so it is not lost whatever landed:" >&2
+  printf '%s\n' "$stamped" >&2
   echo "bd-note: appended to $id - stored text differs from what was sent, see warning"
 else
   echo "bd-note: appended to $id"

@@ -24,6 +24,11 @@ const HOLED =
 const HOLE = "`quiet = argv[1]`";
 const HOLED_EARLY = "Line 221 is the argv slot and the block unpacks it twice.";
 const HOLE_EARLY = "221 is the argv";
+const SHARED_RUN_SEED =
+  "\n2026-09-16T09:00:00Z lane-acme-9\n" +
+  "PARKED pending review - see https://github.com/404sl/pitwall/pull/195 for the earlier attempt.\n";
+const SHARES_RUN =
+  "FIXED - pull request https://github.com/404sl/pitwall/pull/196, CI green on Node 20 and 22.";
 const STAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z \S+$/;
 
 interface Harness {
@@ -245,9 +250,30 @@ test("a note stored with its opening transformed is reported once, not appended 
   assert.match(ran.stderr, /stored note differs from what was sent/);
   assert.match(ran.stderr, /diverges at character \d+ of \d+/);
   assert.match(ran.stdout, /stored text differs/);
+  assert.ok(
+    ran.stderr.includes(HOLED_EARLY),
+    `a divergence was reported without echoing the note, so it is unrecoverable: ${ran.stderr}`,
+  );
   assert.equal(
     stampLines(readFileSync(box.notesFile, "utf8")).length,
     1,
     "a divergence inside the opening characters was retried, which is how duplicate notes get made",
   );
+});
+
+test("a note that never lands is reported lost even when an earlier note shares a long run with it", () => {
+  const box = harness(SHARED_RUN_SEED);
+  const ran = append(box, ["acme-1", SHARES_RUN], "lane-acme-1", false);
+
+  assert.equal(ran.status, 1, ran.stdout + ran.stderr);
+  assert.match(ran.stderr, /did NOT land/);
+  assert.doesNotMatch(
+    ran.stderr,
+    /differs/,
+    "an earlier note sharing a long run was read as a transformed copy of this one",
+  );
+  assert.doesNotMatch(ran.stdout, /appended/);
+  const notes = readFileSync(box.notesFile, "utf8");
+  assert.equal(notes, SHARED_RUN_SEED, "a note that recorded nothing left the field changed");
+  assert.equal(stampLines(notes).length, 1, "a lost note was counted into the field");
 });
