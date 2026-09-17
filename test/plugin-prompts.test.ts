@@ -358,3 +358,23 @@ test("the compliance refusal says which half of a hit a run cannot fix", () => {
       `way. Offered: ${refusal}`,
   );
 });
+
+test("the rules never call a commit-message hit unfixable without saying it is pushed", () => {
+  const rules = bodyOfRulesTemplate(readFileSync(join(SKILL, "task.js"), "utf8"));
+  const verdicts = rules.split("\n").filter((line) => line.includes("NO FIX AVAILABLE TO YOU"));
+
+  assert.ok(
+    verdicts.length > 0,
+    "the brief no longer says that a pushed commit message cannot be reworded by a run, which is " +
+      "the fact that makes the pre-push check worth running at all",
+  );
+  for (const line of verdicts) {
+    assert.match(
+      line,
+      /PUSHED/,
+      "the unfixable verdict leads unqualified, so a run that skims the rule returns 'blocked' on " +
+        "a hit found while the branch is still local and an amend is free - the exact outcome the " +
+        `pre-push check exists to prevent: ${line}`,
+    );
+  }
+});

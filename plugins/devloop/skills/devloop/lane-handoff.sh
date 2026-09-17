@@ -238,11 +238,20 @@ if [ "$PRE_PUSH" = "1" ]; then
     echo "Fix them NOW, while the branch is local - this is the only moment a commit message is"
     echo "cheap to change. Once pushed it takes a force-push, which a lane may not run, and the"
     echo "pull request is then green and unlandable until a person rewrites the history."
-    echo "  the tip commit only:  git commit --amend -F <a file holding the new message>"
-    echo "  anything deeper:      git reset --soft origin/master && git commit -F <a file>"
+    echo "CARRY THE IDENTITY ON THE COMMAND, exactly as the commit you are replacing did. A lane"
+    echo "resolves no git identity of its own, and the failure is not reliably loud: git either"
+    echo "refuses outright or stamps a hostname-derived name and address, which then lands on"
+    echo "master and which no grep here reads. Take it from the branch you are building on:"
+    echo "  the tip commit only:"
+    echo '    git -c user.name="$(git log -1 --format=%an origin/master)" -c user.email="$(git log -1 --format=%ae origin/master)" commit --amend -F <a file holding the new message>'
+    echo "  anything deeper:"
+    echo '    git reset --soft origin/master && git -c user.name="$(git log -1 --format=%an origin/master)" -c user.email="$(git log -1 --format=%ae origin/master)" commit -F <a file>'
     echo "Squashing costs nothing here: the train squashes the branch when it lands anyway."
     echo "Judge each hit. A vendor or product name that is the SUBJECT of the change is fine;"
     echo "the label the lander reads is not, so name it in prose instead of quoting its token."
+    echo "THEN RUN THIS AGAIN, before you push. The message you have just written is the one"
+    echo "nobody has re-read, and a reword that only moved the hit looks identical to a fix"
+    echo "until this exits 0."
     exit 2
   fi
 

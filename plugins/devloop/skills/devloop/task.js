@@ -324,12 +324,14 @@ NON-NEGOTIABLE RULES. They outrank speed, and they outrank finishing the task.
    the body back from GitHub, and carry on. Editing a description does not touch the head
    commit, so a green run stays valid. Halting would leave the reference sitting in an open
    PR, which is worse than removing it.
-   IN A COMMIT MESSAGE THERE IS NO FIX AVAILABLE TO YOU, which is why the rule above is written
-   as never write it rather than check it afterwards. Rewording a pushed commit rewrites
-   history, and the force-push it needs is refused to a run, so a branch in that state is
-   green, correct and waiting on a person. Report it in 'notes', say which commit, and return
-   'blocked'. Three pull requests were in exactly that state on 2026-09-17.
-   SO CHECK BEFORE YOU PUSH, while the branch is local and an amend costs nothing:
+   IN A PUSHED COMMIT MESSAGE THERE IS NO FIX AVAILABLE TO YOU, which is why the rule above is
+   written as never write it rather than check it afterwards. Rewording a pushed commit
+   rewrites history, and the force-push it needs is refused to a run, so a branch in that state
+   is green, correct and waiting on a person. Report it in 'notes', say which commit, and
+   return 'blocked'. Three pull requests were in exactly that state on 2026-09-17.
+   THAT VERDICT IS ONLY CORRECT AFTER A PUSH. While the branch is still local an amend needs no
+   force-push at all, so a hit found before the push is ordinary work and 'blocked' is the
+   wrong answer to it. SO CHECK BEFORE YOU PUSH, while the fix still costs nothing:
      bash ${SKILL_DIR}/lane-handoff.sh --repo-path <your worktree> --pre-push
    It runs the same grep the handoff gate runs, over origin/master..HEAD, and needs no pull
    request. Clean exits 0; a hit exits 2 and prints the amend to run. Say in your notes what

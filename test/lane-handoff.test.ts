@@ -957,8 +957,51 @@ test("a local commit message quoting the handoff label token is caught before an
   assert.equal(ran.status, 2, ran.stdout + ran.stderr);
   assert.match(ran.stdout, /non-compliant commits: nothing has been pushed/);
   assert.match(ran.stdout, /lane-verified/);
-  assert.match(ran.stdout, /git commit --amend/);
+  assert.match(ran.stdout, /commit --amend/);
   assert.equal(ran.calls, "", "the pre-push check reached for a pull request that cannot exist yet");
+});
+
+test("every remedy the pre-push refusal prints carries the identity to commit with", () => {
+  const ran = prePush(localBranch("Read the token back\n\nThe gate greps for lane-verified itself."));
+  const commands = ran.stdout.split("\n").filter((line) => /\bgit\b.*\bcommit\b/.test(line));
+
+  assert.ok(
+    commands.length >= 2,
+    `the refusal printed fewer than the two remedies it describes. Offered: ${ran.stdout}`,
+  );
+  for (const line of commands) {
+    assert.match(
+      line,
+      /user\.name=/,
+      `a remedy commits with no name to commit under. A lane resolves no git identity of its own, ` +
+        `so git stamps a hostname-derived one and that author reaches master: ${line}`,
+    );
+    assert.match(
+      line,
+      /user\.email=/,
+      `a remedy commits with no address to commit under, so the author git invents from the ` +
+        `hostname is the one GitHub displays on master: ${line}`,
+    );
+  }
+  assert.ok(
+    commands.some((line) => line.includes("--amend")),
+    `no remedy for a hit in the tip commit. Offered: ${ran.stdout}`,
+  );
+  assert.ok(
+    commands.some((line) => line.includes("reset --soft origin/master")),
+    `no remedy for a hit below the tip commit. Offered: ${ran.stdout}`,
+  );
+});
+
+test("the pre-push refusal says to run it again once the message is reworded", () => {
+  const ran = prePush(localBranch("Quote the label\n\nA commit body naming lane-verified outright."));
+
+  assert.match(
+    ran.stdout,
+    /RUN THIS AGAIN/i,
+    `the refusal ends without asking for a re-read, so a run can amend and push without anything ` +
+      `having graded the message it just wrote. Offered: ${ran.stdout}`,
+  );
 });
 
 test("a local commit claiming a machine author is caught before any push", () => {
