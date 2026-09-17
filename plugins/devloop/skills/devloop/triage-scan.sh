@@ -150,6 +150,13 @@ for key, r in (cfg.get('repos') or {}).items():
     for t in sorted(toks):
         if t: print('%s %s' % (key, t))
 " 2>/dev/null)"
+_REPO_PATHS="$(printf '%s' "$_LAND_CFG" | python3 -c "
+import json,sys
+try: cfg = json.load(sys.stdin)
+except Exception: raise SystemExit
+for key, r in (cfg.get('repos') or {}).items():
+    print('%s\t%s' % (key, (r or {}).get('path') or key))
+" 2>/dev/null)"
 if [ -n "$_SLUGS" ] && command -v gh >/dev/null 2>&1; then
   for _slug in $_SLUGS; do
     _repo="${_slug#*/}"
@@ -232,7 +239,7 @@ if [ -n "$ORPHANS" ]; then
 fi
 
 TRACKER_RC=0
-python3 - "$QUIET" "$ROOT" "$PFX" "$ID_PFX" "$_REPO_TOKENS" <<'PY' || TRACKER_RC=$?
+python3 - "$QUIET" "$ROOT" "$PFX" "$ID_PFX" "$_REPO_TOKENS" "$_REPO_PATHS" <<'PY' || TRACKER_RC=$?
 import json, os, re, subprocess, sys
 
 quiet = sys.argv[1] == "1"
@@ -247,6 +254,11 @@ for _line in (sys.argv[5] if len(sys.argv) > 5 else "").splitlines():
     if len(_bits) == 2:
         REPO_TOKENS.append((_bits[1].strip().lower(), _bits[0]))
 REPO_TOKENS.sort(key=lambda t: (-len(t[0]), t[0]))
+REPO_PATHS = []
+for _line in (sys.argv[6] if len(sys.argv) > 6 else "").splitlines():
+    _bits = _line.split("\t", 1)
+    if len(_bits) == 2 and _bits[1]:
+        REPO_PATHS.append((_bits[0], _bits[1]))
 PARK = {"needs-decision", "needs-access", "blocked-tooling", "watch", "umbrella", "roadmap"}
 
 def load(p):
@@ -526,7 +538,7 @@ def _live_ids():
 #
 # The label is the difference, and it is authoritative: nothing writes lane-verified except a
 # lane that finished. If a PR carries it, the work is waiting for the lander, not lost.
-# Open pull requests that carry the label, as (repo, number). Filled by _handed_off_ids below.
+# Open pull requests that carry the label, as (repo key, number). Filled by _handed_off_ids below.
 # A branch name is not always devloop/<id> - a pull request opened by hand carries whatever the
 # person called it - so the id-from-branch mapping misses those entirely and category E then
 # reports a finished hand-off as a dead lane.
@@ -559,8 +571,8 @@ def _quotes_queued_pr(notes):
 
 def _handed_off_ids():
     ids = set()
-    for repo in ("site", "extension", "integration", "docs"):
-        path = os.path.join(ROOT, repo)
+    for key, rel in REPO_PATHS:
+        path = os.path.join(ROOT, rel)
         if not os.path.isdir(path):
             continue
         # TWO STATES, NOT ONE. A labelled open PR is waiting for the lander; a MERGED one has
@@ -587,7 +599,7 @@ def _handed_off_ids():
                 cwd=path, capture_output=True, text=True, timeout=30).stdout
             for n in nums.split():
                 if n.isdigit():
-                    queued_prs.add((repo, int(n)))
+                    queued_prs.add((key, int(n)))
         except Exception:
             pass
 
