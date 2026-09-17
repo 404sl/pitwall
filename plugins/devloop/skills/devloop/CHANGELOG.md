@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.1.78
+
+`bd-note.sh` no longer reports a plain success over a note that arrived incomplete. Once its
+token is found, the read-back compares the WHOLE note against the stored field rather than just
+the first 24 characters: when the stored text diverges it prints the 1-based character position
+and quotes the first divergent characters, and says so on stdout too. It still exits 0 and still
+does not write the note again - `bd` transforms what it stores, so a mismatch is not proof of
+damage and an extra append would manufacture a duplicate. Read the issue and judge; append by
+hand only if text is genuinely gone.
+
+This catches loss between the script and `bd`. It cannot catch a note the CALLER already
+destroyed, which is the common case: pass a note containing backticks or `$(...)` through
+`--note-file` or a heredoc quoted as `<<'EOF'`, never as a double-quoted shell string, and
+re-read the issue with `bd show <id> --json` afterwards. The script's own usage block now says
+this, with a worked example.
+
+Refs pitwall-e0zb. Follow-up: pitwall-6r8h.
+
 ## 0.1.77
 
 A branch that is red after a clean rebase now has somewhere to go. `rework.js` repairs a semantic break once - CI red on the rebased head, diff unchanged - by running the repository's tests in the worktree and making the branch follow what master changed, then waits for CI again. Red a second time goes to a person with the diagnosis on the issue. A branch the lander retired arrives already on master: the resolve step answers `already_clean` with an unmoved head and the run carries on to the repair rather than stopping. Dispatch a `red_after_rebase` retirement with `config.sh --rework <id> <pr> <repo>`, exactly like a dropped pull request - and only the retirement. A rework that ended `red` is not dispatched to rework again; a person picks it up from the diagnosis on the issue.
