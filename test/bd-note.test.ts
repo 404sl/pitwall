@@ -18,6 +18,10 @@ const SCRIPT = join(
 );
 
 const NOTE = "Kept both sides of the merge.";
+const HOLED =
+  "The retry loop is satisfied by the first 24 characters. " +
+  "Line 221 is `quiet = argv[1]` and the block unpacks quiet=argv[1] from the same slot.";
+const HOLE = "`quiet = argv[1]`";
 const STAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z \S+$/;
 
 interface Harness {
@@ -49,7 +53,7 @@ function harness(seededNotes: string, frozenNow?: string): Harness {
       "#!/bin/sh",
       'case "$1" in',
       "  update)",
-      '    [ "${BD_RECORD:-0}" = "1" ] && printf \'%s\\n\' "$4" >> "$BD_NOTES"',
+      '    [ "${BD_RECORD:-0}" = "1" ] && python3 -c \'import sys; sys.stdout.write(sys.argv[1].replace(sys.argv[2], "") + "\\n")\' "$4" "${BD_DROP:-}" >> "$BD_NOTES"',
       '    echo "Updated issue: $2"',
       "    ;;",
       "  show)",
@@ -79,6 +83,7 @@ function append(
   args: string[],
   writer: string | undefined,
   record = true,
+  drop = "",
 ): Ran {
   const env: Record<string, string | undefined> = {
     ...process.env,
@@ -88,6 +93,7 @@ function append(
     BEADS_DIR: "",
     BD_NOTES: box.notesFile,
     BD_RECORD: record ? "1" : "0",
+    BD_DROP: drop,
   };
   if (writer === undefined) {
     delete env["PITWALL_SESSION"];
@@ -188,4 +194,33 @@ test("the script and the CLI's own writer stamp a note byte for byte the same", 
   const byCli = stampNote(NOTE, writerOf({ PITWALL_SESSION: session }), new Date(frozen));
   assert.equal(byScript, `${byCli}\n`);
   assert.equal(writerOf({}), "unknown");
+});
+
+test("a note that lands whole is appended without a word about it", () => {
+  const box = harness("");
+  const ran = append(box, ["acme-1", HOLED], "lane-acme-1");
+
+  assert.equal(ran.status, 0, ran.stdout + ran.stderr);
+  assert.equal(ran.stdout.trim(), "bd-note: appended to acme-1");
+  assert.doesNotMatch(ran.stderr, /differs/, "a clean append reported a divergence it does not have");
+  assert.ok(readFileSync(box.notesFile, "utf8").includes(HOLED), "the note did not round-trip");
+});
+
+test("a note stored with its middle missing is reported, with the hole quoted", () => {
+  const box = harness("");
+  const ran = append(box, ["acme-1", HOLED], "lane-acme-1", true, HOLE);
+
+  assert.equal(ran.status, 0, ran.stdout + ran.stderr);
+  assert.match(ran.stderr, /stored note differs from what was sent/);
+  assert.match(ran.stderr, /diverges at character \d+ of \d+/);
+  assert.ok(
+    ran.stderr.includes("quiet = argv[1]"),
+    `the warning does not quote what is missing: ${ran.stderr}`,
+  );
+  assert.match(ran.stdout, /stored text differs/);
+  assert.equal(
+    stampLines(readFileSync(box.notesFile, "utf8")).length,
+    1,
+    "a divergence was retried, which is how duplicate notes get made",
+  );
 });

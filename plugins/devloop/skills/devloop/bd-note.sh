@@ -22,6 +22,24 @@
 # usage: bd-note.sh <issue-id> <note text>
 #        bd-note.sh <issue-id> --note-file <path>
 #        PITWALL_SESSION=<name>  names the writer in the stamp; else $USER, else unknown
+#
+# WHAT THE READ-BACK COVERS, AND WHAT IT CANNOT. It compares the WHOLE note against the stored
+# field, so it catches loss or transformation BETWEEN this script and bd - truncation, escaping,
+# and bd's own input handling. It cannot catch text the CALLER already destroyed before calling.
+# Measured on pitwall-3tkj (2026-09-17): the note was built as a double-quoted shell string
+# containing backticks, the shell ran them as command substitution, and bd stored faithfully what
+# it was handed - two code lines short. No read-back inside this script could have seen that.
+#
+# So pass a code-carrying note through --note-file, or through a heredoc quoted as <<'EOF' so that
+# nothing expands before this script is reached:
+#
+#   cat > note.txt <<'NOTE'
+#   Line 221 is `quiet = argv[1]` and the block unpacks quiet=argv[1] from the same slot.
+#   NOTE
+#   bash bd-note.sh <issue-id> --note-file note.txt
+#
+# Then re-read the issue afterwards - bd show <issue-id> --json, never the human output - and
+# check that the text you meant is there.
 set -u
 
 id=${1:-}; shift || true
@@ -63,9 +81,29 @@ try:
 except Exception:
     sys.exit(2)                      # unreadable is NOT proof of absence - do not retry on it
 d = d[0] if isinstance(d, list) else d
-flat = re.sub(r'[^A-Za-z0-9]', '', d.get('notes') or '')
-sys.exit(0 if sys.argv[1] in flat else 1)
-" "$token"
+alnum = lambda c: re.match(r'[A-Za-z0-9]', c) is not None
+stored = re.sub(r'[^A-Za-z0-9]', '', d.get('notes') or '')
+token, want = sys.argv[1], sys.argv[2]
+if token not in stored:
+    sys.exit(1)
+keep = [i for i, c in enumerate(want) if alnum(c)]
+whole = ''.join(want[i] for i in keep)
+if not whole or whole in stored:
+    sys.exit(0)
+lo, hi = 0, len(whole)
+while lo < hi:
+    mid = (lo + hi + 1) // 2
+    if whole[:mid] in stored:
+        lo = mid
+    else:
+        hi = mid - 1
+at = keep[lo] if lo < len(keep) else len(want)
+sys.stderr.write(
+    '! bd-note: stored note differs from what was sent - diverges at character %d of %d, NOT retrying\n'
+    % (at + 1, len(want)))
+sys.stderr.write('!   first divergent characters: %r\n' % want[at:at + 60])
+sys.exit(3)
+" "$token" "$note"
 }
 
 took_lock=""
@@ -80,12 +118,14 @@ done
 [ -n "$took_lock" ] || echo "! bd-note: lock busy after 60s, writing unserialised (read-back still applies)" >&2
 
 status=1
+diverged=""
 for attempt in 1 2 3; do
   bd update "$id" --append-notes "$stamped" >/dev/null 2>&1
   sleep 0.3                          # the write is not always readable the instant it returns
   note_landed; rc=$?
-  if [ "$rc" -eq 0 ]; then
+  if [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ]; then
     status=0
+    [ "$rc" -eq 3 ] && diverged=yes
     [ "$attempt" -gt 1 ] && echo "bd-note: landed on attempt $attempt" >&2
     break
   fi
@@ -106,4 +146,8 @@ if [ "$status" -ne 0 ]; then
   printf '%s\n' "$stamped" >&2
   exit 1
 fi
-echo "bd-note: appended to $id"
+if [ -n "$diverged" ]; then
+  echo "bd-note: appended to $id - stored text differs from what was sent, see warning"
+else
+  echo "bd-note: appended to $id"
+fi
