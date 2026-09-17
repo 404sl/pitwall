@@ -907,3 +907,87 @@ test("a flag that takes a value is refused when given none, not looped on foreve
     assert.equal(ran.labelled, false, `${flag}: the pull request was labelled despite the refusal`);
   }
 });
+
+function localBranch(message: string | null): string {
+  const root = mkdtempSync(join(tmpdir(), "pitwall-prepush-"));
+  const repo = join(root, "repo");
+  mkdirSync(repo);
+  git(repo, "init", "--quiet");
+  git(repo, "config", "user.email", "nobody@example.invalid");
+  git(repo, "config", "user.name", "Nobody");
+  writeFileSync(join(repo, "a.txt"), "one\n");
+  git(repo, "add", "a.txt");
+  git(repo, "commit", "--quiet", "-m", "base");
+  git(repo, "update-ref", "refs/remotes/origin/master", git(repo, "rev-parse", "HEAD"));
+  if (message !== null) {
+    writeFileSync(join(repo, "a.txt"), "two\n");
+    git(repo, "add", "a.txt");
+    git(repo, "commit", "--quiet", "-m", message);
+  }
+  return repo;
+}
+
+function prePush(repo: string): { status: number; stdout: string; stderr: string; calls: string } {
+  const bin = mkdtempSync(join(tmpdir(), "pitwall-prepush-bin-"));
+  const ghLog = join(bin, "gh.log");
+  executable(join(bin, "gh"), ["#!/bin/sh", `printf '%s\\n' "$*" >> "${ghLog}"`, "exit 1", ""].join("\n"));
+  const ran = spawnSync("bash", [SCRIPT, "--repo-path", repo, "--pre-push"], {
+    encoding: "utf8",
+    env: { ...process.env, ...GIT_ENV, PATH: `${bin}:${process.env["PATH"] ?? ""}` },
+  });
+  let calls = "";
+  try {
+    calls = readFileSync(ghLog, "utf8");
+  } catch {
+    calls = "";
+  }
+  return { status: ran.status ?? -1, stdout: ran.stdout ?? "", stderr: ran.stderr ?? "", calls };
+}
+
+test("a local commit message quoting the handoff label token is caught before any push", () => {
+  const repo = localBranch(
+    [
+      "Refuse to label a branch whose commit message quotes it",
+      "",
+      "The check greps for the literal lane-verified token, so typesetting changes nothing.",
+    ].join("\n"),
+  );
+  const ran = prePush(repo);
+
+  assert.equal(ran.status, 2, ran.stdout + ran.stderr);
+  assert.match(ran.stdout, /non-compliant commits: nothing has been pushed/);
+  assert.match(ran.stdout, /lane-verified/);
+  assert.match(ran.stdout, /git commit --amend/);
+  assert.equal(ran.calls, "", "the pre-push check reached for a pull request that cannot exist yet");
+});
+
+test("a local commit claiming a machine author is caught before any push", () => {
+  const ran = prePush(localBranch("Regenerate the artwork\n\nGenerated with an assistant."));
+
+  assert.equal(ran.status, 2, ran.stdout + ran.stderr);
+  assert.match(ran.stdout, /non-compliant commits/);
+});
+
+test("a clean local commit passes the pre-push check with no pull request to read", () => {
+  const repo = localBranch(
+    [
+      "Grade the pull request body and the commit messages apart",
+      "",
+      "One half is fixable in place and the other is not, so the refusal now says which.",
+    ].join("\n"),
+  );
+  const ran = prePush(repo);
+
+  assert.equal(ran.status, 0, ran.stdout + ran.stderr);
+  assert.match(ran.stdout, /compliant commits: origin\/master\.\.HEAD/);
+  assert.doesNotMatch(ran.stdout, /non-compliant/);
+  assert.equal(ran.calls, "", "the pre-push check reached for a pull request that cannot exist yet");
+});
+
+test("a HEAD that is not ahead of origin/master is refused rather than reported clean", () => {
+  const ran = prePush(localBranch(null));
+
+  assert.notEqual(ran.status, 0, ran.stdout + ran.stderr);
+  assert.match(ran.stderr, /not ahead of origin\/master/);
+  assert.doesNotMatch(ran.stdout, /compliant commits/);
+});

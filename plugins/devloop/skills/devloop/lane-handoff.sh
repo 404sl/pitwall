@@ -19,6 +19,8 @@
 #                   --issue <app-xxxx> --note-file <path> [--worktree <abs>] [--lane-lock <abs>]
 #                   [--label lane-verified] [--check-only]
 #
+#   lane-handoff.sh --repo-path <abs> --pre-push
+#
 #   Other open pull requests on --branch, across the repositories the workspace config names, are
 #   derived and handled in the same invocation.
 #
@@ -56,6 +58,7 @@ SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 LABEL=lane-verified
 REPO_PATH=""; SLUG=""; PR=""; BRANCH=""; ISSUE=""; NOTE_FILE=""; WT=""; LOCK=""; CHECK_ONLY=0
+PRE_PUSH=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -87,13 +90,18 @@ while [ $# -gt 0 ]; do
       [ $# -ge 2 ] || { echo "--label needs a value" >&2; exit 6; }
       LABEL="${2:-}"; shift 2 ;;
     --check-only) CHECK_ONLY=1;      shift 1 ;;
+    --pre-push)  PRE_PUSH=1;         shift 1 ;;
     *) echo "unknown argument: $1" >&2; exit 6 ;;
   esac
 done
-for req in REPO_PATH SLUG PR BRANCH; do
-  eval "v=\$$req"; [ -n "$v" ] || { echo "missing --$(echo "$req" | tr 'A-Z_' 'a-z-')" >&2; exit 6; }
-done
-case "$PR" in ''|*[!0-9]*) echo "--pr must be a number, got: $PR" >&2; exit 6 ;; esac
+if [ "$PRE_PUSH" = "1" ]; then
+  [ -n "$REPO_PATH" ] || { echo "missing --repo-path" >&2; exit 6; }
+else
+  for req in REPO_PATH SLUG PR BRANCH; do
+    eval "v=\$$req"; [ -n "$v" ] || { echo "missing --$(echo "$req" | tr 'A-Z_' 'a-z-')" >&2; exit 6; }
+  done
+  case "$PR" in ''|*[!0-9]*) echo "--pr must be a number, got: $PR" >&2; exit 6 ;; esac
+fi
 
 if [ -n "$NOTE_FILE" ]; then
   [ -n "$ISSUE" ] || {
@@ -125,6 +133,7 @@ git fetch origin --quiet 2>/dev/null
 # have run.
 #
 # The repository knows its own slug. Ask it, and only fall back to what was passed.
+if [ "$PRE_PUSH" != "1" ]; then
 derived=$(git -C "$REPO_PATH" remote get-url origin 2>/dev/null \
           | sed -e 's#\.git$##' -e 's#^git@github\.com:##' -e 's#^https://github\.com/##')
 case "$derived" in */*) SLUG="$derived" ;; esac
@@ -137,6 +146,7 @@ case "$SLUG" in ''|undefined|null)
   echo "                 An empty read is not a clean read." >&2
   exit 6 ;;
 esac
+fi
 
 
 # FIND THE TRACKER, DO NOT ASSUME ITS DEPTH. This used to be a flat `cd "$REPO_PATH/.."`,
@@ -203,11 +213,48 @@ leakage='(devloop|lane-verified|/tmp/|/private/tmp)'
 # \bclaude\b on 2026-08-29. Neutralised before the test rather than excused after it.
 neutral='s#[A-Za-z/._-]*CLAUDE\.md#REPO-DOC#g; s#[A-Za-z/._-]*AGENTS\.md#REPO-DOC#g; s#\.claude-plugin#DOT-PLUGIN-DIR#g; s#plugins/devloop#PLUGIN-DIR#g; s#skills/devloop#SKILL-DIR#g'
 
+if [ "$PRE_PUSH" = "1" ]; then
+  git rev-parse --verify --quiet origin/master >/dev/null || {
+    echo "lane-handoff.sh: no origin/master in ${REPO_PATH}, so there is no range to check." >&2
+    exit 6; }
+
+  if [ -z "$(git rev-list origin/master..HEAD 2>/dev/null)" ]; then
+    echo "lane-handoff.sh: HEAD is not ahead of origin/master in ${REPO_PATH} - nothing was read," >&2
+    echo "                 so nothing was checked. Commit first, then run this again." >&2
+    exit 6
+  fi
+
+  pre_msgs=$(git log origin/master..HEAD --format='%h%n%B' 2>/dev/null)
+  pre_trailers=$(git log origin/master..HEAD --format='%h %an <%ae>%n%(trailers)' 2>/dev/null)
+  pre_hits=$(printf '%s\n%s\n' "$pre_msgs" "$pre_trailers" \
+    | sed "$neutral" \
+    | grep -inE "$authorship|$leakage" \
+    | head -20)
+
+  if [ -n "$pre_hits" ]; then
+    echo "non-compliant commits: nothing has been pushed. Offending lines:"
+    printf '%s\n' "$pre_hits"
+    echo ""
+    echo "Fix them NOW, while the branch is local - this is the only moment a commit message is"
+    echo "cheap to change. Once pushed it takes a force-push, which a lane may not run, and the"
+    echo "pull request is then green and unlandable until a person rewrites the history."
+    echo "  the tip commit only:  git commit --amend -F <a file holding the new message>"
+    echo "  anything deeper:      git reset --soft origin/master && git commit -F <a file>"
+    echo "Squashing costs nothing here: the train squashes the branch when it lands anyway."
+    echo "Judge each hit. A vendor or product name that is the SUBJECT of the change is fine;"
+    echo "the label the lander reads is not, so name it in prose instead of quoting its token."
+    exit 2
+  fi
+
+  echo "compliant commits: origin/master..HEAD in ${REPO_PATH} is clear - safe to push"
+  exit 0
+fi
+
 # 1. COMPLIANCE, read back from where the text is actually stored rather than from what anybody
 #    meant to write. GitHub and git both add and rewrite text.
 check_one() {
   local _path="$1" _slug="$2" _pr="$3"
-  local body msgs hits head_sha state verdict rollup_head msgs_rc
+  local body msgs body_hits msg_hits head_sha state verdict rollup_head msgs_rc
   local attempt rollup_json rollup_err gh_rc read_rc said began
 
   body=$(gh pr view "$_pr" --repo "$_slug" --json title,body 2>/dev/null \
@@ -246,16 +293,40 @@ for c in cs:
     return 7
   fi
 
-  hits=$(printf '%s\n%s\n' "$body" "$msgs" \
+  body_hits=$(printf '%s\n' "$body" \
+    | sed "$neutral" \
+    | grep -inE "$authorship|$leakage" \
+    | head -20)
+  msg_hits=$(printf '%s\n' "$msgs" \
     | sed "$neutral" \
     | grep -inE "$authorship|$leakage" \
     | head -20)
 
-  if [ -n "$hits" ]; then
-    echo "non-compliant: ${_slug}#${_pr} was NOT labelled. Offending lines:"
-    printf '%s\n' "$hits"
+  if [ -n "$body_hits" ] || [ -n "$msg_hits" ]; then
+    echo "non-compliant: ${_slug}#${_pr} was NOT labelled."
+    if [ -n "$body_hits" ]; then
+      echo "In the title or body, which a run fixes in place. Offending lines:"
+      printf '%s\n' "$body_hits"
+    fi
+    if [ -n "$msg_hits" ]; then
+      echo "In a commit message or trailer, which a run CANNOT fix. Offending lines:"
+      printf '%s\n' "$msg_hits"
+    fi
     echo ""
-    echo "Fix the PR body or the commit message, then run this again. THIS REFUSAL IS TERMINAL:"
+    if [ -n "$msg_hits" ]; then
+      echo "A COMMIT-MESSAGE HIT MEANS THIS PULL REQUEST NOW NEEDS A PERSON. Rewording one"
+      echo "rewrites history and the force-push it needs is refused to a lane, so there is no"
+      echo "route from here to a label: report it, say which commit, and stop. Do not label it by"
+      echo "hand, and do not re-run this expecting a different answer. The moment it was fixable"
+      echo "was before the push, where an amend costs nothing:"
+      echo "  lane-handoff.sh --repo-path <abs> --pre-push"
+      echo "Run that before every push and this half stops happening."
+      echo ""
+    fi
+    if [ -n "$body_hits" ]; then
+      echo "Fix the PR body, then run this again."
+    fi
+    echo "THIS REFUSAL IS TERMINAL:"
     echo "your judgement decides HOW TO REWORD a hit, never whether to proceed past it. Nothing"
     echo "here is labelled by hand instead, and a hit you believe is a false positive is still a"
     echo "rewrite - the only way to a label is a re-run of this script that exits 0."

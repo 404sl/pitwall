@@ -183,7 +183,7 @@ test("the handoff brief says a compliance refusal is terminal, not a judgement a
 
 function complianceRefusal(): string {
   const source = readFileSync(join(SKILL, "lane-handoff.sh"), "utf8");
-  const start = source.indexOf('echo "Fix the PR body or the commit message');
+  const start = source.indexOf('echo "non-compliant: ${_slug}#${_pr} was NOT labelled."');
   const end = source.indexOf("return 2", start);
   assert.ok(start > 0 && end > start, "the compliance refusal block moved; this guard no longer reads it");
   return [...source.slice(start, end).matchAll(/^\s*echo "(.*)"$/gm)]
@@ -323,5 +323,38 @@ test("the handoff brief says a refusal is never answered by labelling by hand", 
     brief.includes("file a ticket quoting the exact command and exit code"),
     "the brief does not say what to do with a suspected defect in the script, so the lane is left " +
       "choosing between believing a refusal it thinks is wrong and bypassing it",
+  );
+});
+
+test("the fix brief puts the commit-message check before the push, not after it", () => {
+  const fix = promptTemplate(readFileSync(join(SKILL, "task.js"), "utf8"), "fixPrompt");
+  const check = fix.indexOf("--pre-push");
+  const open = fix.indexOf("gh pr create");
+
+  assert.ok(
+    check > 0,
+    "the brief never tells a lane to read its own commit messages back while the branch is still " +
+      "local. A hit found after the push needs a force-push to clear, which a run may not do, so " +
+      "the pull request is green, correct and waiting on a person - three were at once.",
+  );
+  assert.ok(
+    check < open,
+    "the brief asks for the commit-message check after the pull request is opened, which is the " +
+      "one moment it cannot be acted on. A check that runs after the push is a check nobody can use.",
+  );
+});
+
+test("the compliance refusal says which half of a hit a run cannot fix", () => {
+  const refusal = complianceRefusal();
+
+  assert.ok(
+    refusal.includes("NEEDS A PERSON"),
+    `the refusal names a commit-message hit and a body hit in one breath, so a run reads both as ` +
+      `fixable and retries the half that never clears. Offered: ${refusal}`,
+  );
+  assert.ok(
+    refusal.includes("--pre-push"),
+    `the refusal does not say where the hit was catchable, so the next branch arrives here the same ` +
+      `way. Offered: ${refusal}`,
   );
 });
