@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.83
+
+Tracker notes are no longer written with `bd update --append-notes`. Write the note to a file, then record it with `bash <skillDir>/bd-note.sh <id> --note-file <path>`, passing `PITWALL_SESSION` so the stamp names your session. The script takes the write lock, stamps the note with the date and the writer, and reads the write back; a bare append loses one of two overlapping notes silently and lands undated. The text goes in a file, never in a double-quoted argument, so a backtick or a `$(` in it cannot be evaluated by the shell before bd sees it. A non-zero exit means the note did not land after the script's own retries and the text is on stderr - report that rather than reporting the note recorded. Where a note accompanies a status change, write the note first, then change the status. `bd update --notes` is still never used: it replaces the whole field and the field has no history.
+
 ## 0.1.82
 
 A handoff whose tracker note the tracker altered on the way in is now reported as recorded, not
