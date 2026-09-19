@@ -1798,10 +1798,10 @@ async function giveBack(prompt, label, schema) {
   }
 }
 
-function settle(path, answer, refused, byHand) {
+function settle(path, answer, refused, record, byHand) {
   if (GIVEN_BACK.has(answer)) return answer
   if (answer === 'not_mine') return `not_mine - ${path} does not record ${ID}, so nothing was removed and nothing should be`
-  if (answer === 'refused' || (refused && !answer)) return `REFUSED - no release step was permitted to give ${path} back, so it is leaked if it still records ${ID}. Release it on reading this with the command below: it reads ${path} on its own, removes it only if it names this run, and says ALREADY_GONE when there is nothing left to do: ${byHand}`
+  if (answer === 'refused' || (refused && !answer)) return `REFUSED - no release step was permitted to give ${path} back, so it is leaked if ${record} still names ${ID}. Release it on reading this with the command below: it reads ${record} on its own, removes ${path} only if that names this run, and says ALREADY_GONE when there is nothing left to do: ${byHand}`
   return `LEAKED - ${path} was not given back, or the release step answered nothing. Read it before removing anything: clear it if it records this run, and leave it alone if it records another.`
 }
 
@@ -2330,8 +2330,8 @@ if (!result && reworks >= MAX_REWORKS) {
     back = await giveBack(plainReleasePrompt(), `release-retry:${ID}`, LANE_PLAIN)
   }
   const refused = unanswered(back)
-  laneLock = settle(LANE_LOCK, back && back.lane, refused, PLAIN_LANE)
-  slotClaim = settle(SLOT_FILE, back && back.slot, refused, PLAIN_SLOT)
+  laneLock = settle(LANE_LOCK, back && back.lane, refused, OWNER_FILE, PLAIN_LANE)
+  slotClaim = settle(SLOT_FILE, back && back.slot, refused, SLOT_FILE, PLAIN_SLOT)
   worktreeState = settleWorktree(first && first.worktree)
   if (!GIVEN_BACK.has(back && back.lane) || !GIVEN_BACK.has(back && back.slot)) {
     const notes = (back && back.notes) || (first && first.notes)

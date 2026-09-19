@@ -141,6 +141,8 @@ test("a release refused twice is recorded as REFUSED in both fields, each naming
   }
   assert.ok(String(result["lane"]).includes(`rmdir ${LANE_LOCK}`), `the lane field does not remove the lock on its own: ${result["lane"]}`);
   assert.ok(String(result["lane"]).includes(`awk 'NR == 1 { print $1 }' ${OWNER_FILE}`), `the lane field does not read the owner file: ${result["lane"]}`);
+  assert.ok(String(result["lane"]).includes(`it reads ${OWNER_FILE} on its own, removes ${LANE_LOCK} only if`), `the lane field's prose does not say which file its command reads: ${result["lane"]}`);
+  assert.ok(String(result["slot"]).includes(`it reads ${SLOT_FILE} on its own, removes ${SLOT_FILE} only if`), `the slot field's prose does not say which file its command reads: ${result["slot"]}`);
   assert.ok(String(result["slot"]).includes(`rm -f ${SLOT_FILE}`), `the slot field does not remove the slot file: ${result["slot"]}`);
   assert.match(String(result["worktree"]), /^UNKNOWN - /);
 
