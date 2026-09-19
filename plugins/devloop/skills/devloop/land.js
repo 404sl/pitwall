@@ -55,6 +55,7 @@ if (UNSLUGGED.length) {
 // /tmp is shared across projects on this machine; two landing runs with the same prefix would
 // contend for one merge lock and one worktree directory.
 const LOCK_PREFIX = input.lockPrefix || 'devloop'
+const SLUGS = [...new Set(Object.values(CONFIGURED).map((r) => r.slug))]
 const MERGE_LOCK = `/tmp/${LOCK_PREFIX}-merge.lock`
 const TOKEN_SHAPE = /^[A-Za-z0-9._-]+$/
 const trimmed = (v) => String(v || '').trim()
@@ -130,16 +131,27 @@ if (!SKILL_DIR) {
 // "nothing to land". Every one of them is normalised to the SLUG, which is what the survey
 // reports and what the sets below are keyed on - a configured key is accepted as a way of
 // naming a repository, never as the identity of one.
+const UNRESOLVED_PREFLIGHT = []
 const PREFLIGHTED = Array.isArray(input.preflighted)
   ? new Set(input.preflighted.map(preflightKey))
   : null
+if (UNRESOLVED_PREFLIGHT.length) {
+  log(`pre-flighted entries naming no configured repository: ${UNRESOLVED_PREFLIGHT.map((u) => u.raw).join(' ')} - none of these can match a surveyed pull request. Name the repository as owner/name.`)
+}
 function preflightKey(p) {
   const raw = typeof p === 'string' ? p.trim() : `${(p || {}).slug || (p || {}).repo}#${(p || {}).number}`
   const cut = raw.lastIndexOf('#')
   const where = cut < 0 ? raw : raw.slice(0, cut)
   const number = cut < 0 ? '' : raw.slice(cut + 1)
-  const cfg = CONFIGURED[where] || {}
-  return `${cfg.slug || where}#${number}`
+  const slug = (CONFIGURED[where] || {}).slug || slugWithin(where)
+  if (!slug) UNRESOLVED_PREFLIGHT.push({ raw, where, number })
+  return `${slug || where}#${number}`
+}
+
+function slugWithin(text) {
+  const tokens = String(text || '').split(/[^A-Za-z0-9._/-]+/)
+  const found = SLUGS.filter((s) => tokens.includes(s))
+  return found.length === 1 ? found[0] : ''
 }
 
 function keyOf(pr) {
@@ -148,8 +160,17 @@ function keyOf(pr) {
 
 function resolveRepo(p) {
   const reported = typeof (p || {}).slug === 'string' ? p.slug.trim() : ''
-  const name = Object.keys(CONFIGURED).find((n) => (CONFIGURED[n] || {}).slug === reported)
-  return { ...p, slug: reported, repo: name }
+  const slug = slugWithin(reported)
+  const name = Object.keys(CONFIGURED).find((n) => (CONFIGURED[n] || {}).slug === slug)
+  return { ...p, slug: slug || reported, repo: name }
+}
+
+function unmatchedPreflight(p) {
+  const named = UNRESOLVED_PREFLIGHT.filter((u) => String(u.number) === String(p.number))
+  if (named.length) {
+    return `pre-flighted as ${named.map((u) => `'${u.raw}'`).join(' and ')}, which names no configured repository - could not match it to ${keyOf(p)}. Name the repository as owner/name and relaunch.`
+  }
+  return `not in the pre-flighted list - ${keyOf(p)} was not among the pull requests this run was handed, so it lands next run`
 }
 // Was 10. Dropped to 3 on 2026-08-23, when lanes finishing faster than the ~8-minute land
 // cycle left production five merges and an hour behind master with everything green. Ten
@@ -222,7 +243,10 @@ const SURVEY = {
           // this workspace chose - 'site' is the CLI checkout here and is also how a model
           // describes the website repo - and pull request numbers repeat across repositories, so
           // a key and a number together still name two different pull requests.
-          slug: { type: 'string', description: "the repository's owner/name, exactly as gh reports it" },
+          slug: {
+            ...(SLUGS.length ? { enum: SLUGS } : { type: 'string' }),
+            description: "the repository's owner/name, exactly as the brief lists it"
+          },
           number: { type: 'number' },
           title: { type: 'string' },
           branch: { type: 'string' },
@@ -1524,8 +1548,9 @@ try {
       for (const p of known) {
         if (PREFLIGHTED.has(keyOf(p))) { matchedPreflight.add(keyOf(p)); continue }
         seen.add(keyOf(p))
-        skipped.push({ ...p, why: 'not pre-flighted - labelled after the supervisor surveyed the queue' })
-        log(`SKIPPED ${keyOf(p)} - not pre-flighted, lands next run`)
+        const why = unmatchedPreflight(p)
+        skipped.push({ ...p, why })
+        log(`SKIPPED ${keyOf(p)} - ${why}`)
       }
     }
 

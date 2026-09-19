@@ -196,7 +196,7 @@ queue changed while you were deciding.
 
 **`preflighted` is that list, written down.** Give it every PR you just ran `gh pr view` on,
 as `owner/name#number`. The lander intersects its own survey against it and reports anything
-else as `SKIPPED <pr> - not pre-flighted, lands next run`, without spending a worktree, a
+else as `SKIPPED <pr> - not in the pre-flighted list`, without spending a worktree, a
 rebase and a full CI wait to arrive at a refusal it could predict. It only ever merges FEWER PRs than
 before, never more, so it cannot turn an unchecked PR into a merged one - and a PR it skips
 keeps its label and lands on the next run, whose pre-flight will have seen it.
@@ -208,10 +208,10 @@ Two ways to get it wrong, both quiet:
   what the lander keys on, and it is the only form that cannot mean two repositories: a key is
   this workspace's label, and `site` is the CLI checkout here while also being the obvious word
   for the website repo. Pull request numbers repeat across repositories, so the wrong pairing
-  does not fail - it names a real, different pull request. A repository matching nothing filters
-  that PR out as though it were never labelled; the lander says `pre-flighted but never
-  surveyed: ...` at the end of a run for exactly this, and that line is the only warning you
-  get.
+  does not fail - it names a real, different pull request. A repository matching nothing cannot
+  match any surveyed PR: the lander says so at the start of the run, skips that PR as
+  `pre-flighted as '<what you passed>', which names no configured repository`, and repeats
+  `pre-flighted but never surveyed: ...` at the end.
 - **Omitting the field means no filtering at all**, which is the old behaviour and is safe;
   passing `[]` means land nothing. An empty list is not the way to say "I did not check".
 
