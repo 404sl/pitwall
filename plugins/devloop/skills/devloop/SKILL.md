@@ -298,6 +298,10 @@ the run continues from whatever it answers this time. It is off by default, and 
 a step that answers `blocked` again stands. Never build a resume from a fresh `config.sh --args`:
 that mints a new dispatch token, the token sits in every fix brief, and a brief that differs by one
 character misses the cache, so the resume would start the whole run again rather than continue it.
+The resume runs whatever is at that `scriptPath`, which is the staged copy under
+`<root>/.autofix-run/`, and a copy staged before the flag existed ignores it without a word and
+stops in the same 9 milliseconds. If the plugin was upgraded since the launch, re-stage first -
+`run-script.sh task.js`, or any `config.sh --args` dispatch, rewrites the copy - and then resume.
 
 **It also says when a root checkout is behind origin.** `--args` and `--rework` fetch each
 configured repository's default branch and compare the checkout's local branch with
