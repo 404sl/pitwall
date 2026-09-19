@@ -15,7 +15,7 @@
 #
 # Usage:
 #   land-one.sh --repo-path <abs> --slug <owner/name> --pr <n> --branch <name> [--prefix devloop]
-#               [--register-wait 180] [--register-interval 15]
+#               [--base master] [--register-wait 180] [--register-interval 15]
 #
 # Exit codes, which are the interface - stdout is for a human, the code is for the caller:
 #   0  ready      rebased if needed, pushed, CI green on the pushed head. Merge it.
@@ -35,7 +35,8 @@
 #                 Retry it in a later round like 7; never report it as red or as a red master.
 #   5  master_red master's latest run was READ and was not green before starting. Nothing was
 #                 touched.
-#   6  usage      bad arguments, or the repository/branch does not exist.
+#   6  usage      bad arguments, or the repository/branch does not exist, or the base branch
+#                 this was handed is not the default branch GitHub reports for the repository.
 
 set -u
 
@@ -46,7 +47,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PREFIX="$(bash "$HERE/config.sh" lockPrefix 2>/dev/null || echo devloop)"
 GUARD="$HERE/git-guard.sh"
 LABEL=lane-verified
-REPO_PATH=""; SLUG=""; PR=""; BRANCH=""
+REPO_PATH=""; SLUG=""; PR=""; BRANCH=""; BASE=master
 REGISTER_WAIT=180; REGISTER_INTERVAL=15
 
 while [ $# -gt 0 ]; do
@@ -66,6 +67,9 @@ while [ $# -gt 0 ]; do
     --prefix)
       [ $# -ge 2 ] || { echo "--prefix needs a value" >&2; exit 6; }
       PREFIX="${2:-}"; shift 2 ;;
+    --base)
+      [ $# -ge 2 ] || { echo "--base needs a value" >&2; exit 6; }
+      BASE="${2:-}"; shift 2 ;;
     --label)
       [ $# -ge 2 ] || { echo "--label needs a value" >&2; exit 6; }
       LABEL="${2:-}"; shift 2 ;;
@@ -87,7 +91,8 @@ done
 case "$PR" in ''|*[!0-9]*) echo "--pr must be a number, got: $PR" >&2; exit 6 ;; esac
 case "$REGISTER_WAIT" in ''|*[!0-9]*) echo "--register-wait must be a number of seconds, got: $REGISTER_WAIT" >&2; exit 6 ;; esac
 case "$REGISTER_INTERVAL" in ''|*[!0-9]*) echo "--register-interval must be a number of seconds, got: $REGISTER_INTERVAL" >&2; exit 6 ;; esac
-case "$BRANCH" in master|main) echo "usage: ${BRANCH} is a default branch and is never landed onto itself" >&2; exit 6 ;; esac
+[ -n "$BASE" ] || { echo "usage: --base must name a branch" >&2; exit 6; }
+case "$BRANCH" in master|main|"$BASE") echo "usage: ${BRANCH} is a default branch and is never landed onto itself" >&2; exit 6 ;; esac
 
 WT="/tmp/${PREFIX}-worktrees/land-${PR}"
 say() { printf '%s\n' "$*"; }
@@ -119,8 +124,19 @@ cleanup() {
 cd "$REPO_PATH" || exit 6
 git fetch origin --quiet 2>/dev/null
 
-ident_name=$(git log -1 --format=%an origin/master 2>/dev/null)
-ident_email=$(git log -1 --format=%ae origin/master 2>/dev/null)
+github_default=$(gh repo view "$SLUG" --json defaultBranchRef 2>/dev/null \
+  | python3 -c "import json,sys; print((json.load(sys.stdin).get('defaultBranchRef') or {}).get('name') or '')" 2>/dev/null)
+if [ -z "$github_default" ]; then
+  echo "usage: could not read the default branch of ${SLUG} from 'gh repo view ${SLUG} --json defaultBranchRef', so nothing is known about whether ${BASE} is its default - nothing touched"
+  exit 6
+fi
+if [ "$github_default" != "$BASE" ]; then
+  echo "usage: this run was handed base branch '${BASE}' for ${SLUG} but GitHub says its default branch is '${github_default}' - refusing before any worktree is cut or rebase runs, because git and GitHub would disagree about what ${BRANCH} lands on. Set repos.<key>.defaultBranch to '${github_default}' in the workspace config"
+  exit 6
+fi
+
+ident_name=$(git log -1 --format=%an "origin/${BASE}" 2>/dev/null)
+ident_email=$(git log -1 --format=%ae "origin/${BASE}" 2>/dev/null)
 git_with_identity() {
   if [ -n "$ident_name" ] && [ -n "$ident_email" ]; then
     git -c "user.name=$ident_name" -c "user.email=$ident_email" "$@"
@@ -139,12 +155,12 @@ else
   gh_err=/dev/null; py_err=/dev/null
 fi
 
-MASTER_ATTEMPT="gh run list --branch master --limit 1 --json status,conclusion"
-runs_json=$(gh run list --branch master --limit 1 --json status,conclusion 2>"$gh_err")
+MASTER_ATTEMPT="gh run list --branch ${BASE} --limit 1 --json status,conclusion"
+runs_json=$(gh run list --branch "$BASE" --limit 1 --json status,conclusion 2>"$gh_err")
 gh_code=$?
 if [ "$gh_code" -ne 0 ] || [ -z "$runs_json" ]; then
   said=$(head -n 1 "$gh_err" 2>/dev/null)
-  say "unreadable: could not read master's latest run for ${SLUG} - nothing is known about master"
+  say "unreadable: could not read ${BASE}'s latest run for ${SLUG} - nothing is known about ${BASE}"
   say "attempted: ${MASTER_ATTEMPT}"
   say "gh exited ${gh_code} and said: ${said:-nothing on stderr}"
   say "This is NOT a red master and nothing was touched. Retry it in a later round."
@@ -160,7 +176,7 @@ py_code=$?
 if [ "$py_code" -ne 0 ] || [ -z "$master_state" ]; then
   said=$(tail -n 1 "$py_err" 2>/dev/null)
   began=$(printf '%s' "$runs_json" | head -c 120 | tr '\n\t' '  ')
-  say "unreadable: master's latest run for ${SLUG} did not parse - nothing is known about master"
+  say "unreadable: ${BASE}'s latest run for ${SLUG} did not parse - nothing is known about ${BASE}"
   say "attempted: ${MASTER_ATTEMPT}"
   say "the reader exited ${py_code} and said: ${said:-nothing on stderr}"
   say "gh returned ${#runs_json} bytes beginning: ${began}"
@@ -170,31 +186,31 @@ fi
 
 case "$master_state" in
   completed/success) ;;
-  *) say "master_red: master is $master_state - nothing touched"; exit 5 ;;
+  *) say "master_red: ${BASE} is $master_state - nothing touched"; exit 5 ;;
 esac
 
 # 2. Is there anything to do to the branch before it merges? Two things can be: a rebase when
 #    master has moved under it, and the plugin version when the branch changes a file the
 #    marketplace serves. A branch needing neither is not pushed, and re-pushing an unchanged
 #    head would start a second CI run for no reason.
-behind=$(git rev-list --count "origin/${BRANCH}..origin/master" 2>/dev/null || echo unknown)
+behind=$(git rev-list --count "origin/${BRANCH}..origin/${BASE}" 2>/dev/null || echo unknown)
 case "$behind" in ''|*[!0-9]*) say "usage: no such branch origin/${BRANCH}"; exit 6 ;; esac
 
 if [ "$behind" != "0" ]; then
-  merges=$(git rev-list --merges --count "origin/master..origin/${BRANCH}" 2>/dev/null || echo unknown)
+  merges=$(git rev-list --merges --count "origin/${BASE}..origin/${BRANCH}" 2>/dev/null || echo unknown)
   case "$merges" in ''|*[!0-9]*) say "usage: could not count merge commits on origin/${BRANCH}"; exit 6 ;; esac
   if [ "$merges" != "0" ]; then
-    say "merge_shaped: ${BRANCH} carries ${merges} merge commit(s) of its own and is ${behind} behind master - a rebase would keep none of them and drop whatever exists only in the resolution, so nothing was touched. Rework it onto master."
+    say "merge_shaped: ${BRANCH} carries ${merges} merge commit(s) of its own and is ${behind} behind ${BASE} - a rebase would keep none of them and drop whatever exists only in the resolution, so nothing was touched. Rework it onto ${BASE}."
     exit 8
   fi
 fi
 
-plugin_paths=$(git diff --name-only "origin/master...origin/${BRANCH}" 2>/dev/null \
+plugin_paths=$(git diff --name-only "origin/${BASE}...origin/${BRANCH}" 2>/dev/null \
   | grep -E '^(plugins/|\.claude-plugin/)' | head -3 | tr '\n' ' ')
 
 pushed_sha=""
 if [ "$behind" = "0" ] && [ -z "$plugin_paths" ]; then
-  say "current: ${BRANCH} is already on top of master and ships no plugin file, no rebase needed"
+  say "current: ${BRANCH} is already on top of ${BASE} and ships no plugin file, no rebase needed"
 else
   head_before=$(git rev-parse "origin/${BRANCH}" 2>/dev/null)
   holder=$(git worktree list --porcelain 2>/dev/null | awk -v ref="branch refs/heads/${BRANCH}" '
@@ -214,7 +230,7 @@ else
       *) break ;;
     esac
     git rev-parse --verify --quiet HEAD~1 >/dev/null 2>/dev/null || break
-    [ "$(git rev-list --count "origin/master..HEAD~1" 2>/dev/null || echo 0)" -ge 1 ] || break
+    [ "$(git rev-list --count "origin/${BASE}..HEAD~1" 2>/dev/null || echo 0)" -ge 1 ] || break
     changed=$(git diff --name-only HEAD~1 HEAD 2>/dev/null)
     [ -n "$changed" ] || break
     printf '%s\n' "$changed" \
@@ -223,22 +239,22 @@ else
     git reset --hard HEAD~1 >/dev/null 2>/dev/null || break
     dropped=$((dropped + 1))
   done
-  [ "$dropped" = "0" ] || say "dropped: ${dropped} version commit(s) an earlier round wrote onto ${BRANCH} - the number is counted again from master as it is now"
+  [ "$dropped" = "0" ] || say "dropped: ${dropped} version commit(s) an earlier round wrote onto ${BRANCH} - the number is counted again from ${BASE} as it is now"
 
-  if [ "$behind" != "0" ] && ! git_with_identity rebase origin/master >/dev/null 2>/dev/null; then
+  if [ "$behind" != "0" ] && ! git_with_identity rebase "origin/${BASE}" >/dev/null 2>/dev/null; then
     # A conflict is a decision, not a task. Report WHAT disagrees and hand it back; guessing
     # here is how a merge that is green on both sides breaks the product.
     files=$(git diff --name-only --diff-filter=U 2>/dev/null | tr '\n' ' ')
     git rebase --abort >/dev/null 2>/dev/null
     cd "$REPO_PATH" || true
     cleanup
-    say "conflict: ${BRANCH} conflicts with master in: ${files:-unknown}"
+    say "conflict: ${BRANCH} conflicts with ${BASE} in: ${files:-unknown}"
     exit 3
   fi
 
   version_note=""
   if [ -n "$plugin_paths" ]; then
-    version_out=$(bash "$HERE/assign-plugin-version.sh" --worktree "$WT" --slug "$SLUG" --pr "$PR" 2>/dev/null)
+    version_out=$(bash "$HERE/assign-plugin-version.sh" --worktree "$WT" --base "origin/${BASE}" --slug "$SLUG" --pr "$PR" 2>/dev/null)
     version_code=$?
     case "$version_code" in
       0) version_note=$(printf '%s\n' "$version_out" | head -1) ;;
@@ -275,7 +291,7 @@ else
     cd "$REPO_PATH" || true
     cleanup
     pushed_sha="$head_after"
-    say "pushed: ${BRANCH} was ${behind} behind master, rebased where it had to be, and pushed"
+    say "pushed: ${BRANCH} was ${behind} behind ${BASE}, rebased where it had to be, and pushed"
     [ -n "$version_note" ] && say "version: ${version_note}"
   fi
 fi

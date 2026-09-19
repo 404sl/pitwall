@@ -162,7 +162,7 @@ const DEPLOY_EVERY = input.deployEvery || 3
 const MAX_ROUNDS = 4
 const WT = `/tmp/${LOCK_PREFIX}-worktrees`
 
-const SHELL_FIRST = `EVERY COMMAND THAT RUNS git OR bundle STARTS WITH THESE TWO EXPORTS, and so does every
+const SHELL_FIRST = (base) => `EVERY COMMAND THAT RUNS git OR bundle STARTS WITH THESE TWO EXPORTS, and so does every
 command that runs a script which does:
 
   export GIT_CONFIG_GLOBAL=/dev/null BUNDLE_USER_CONFIG=/dev/null && <your command>
@@ -186,7 +186,7 @@ COMMIT IDENTITY IS THE ONE THING THAT DOES NOT SURVIVE THEM, and every command t
 commit needs it - commit, rebase, merge, cherry-pick. Pass it on the command, taken from the
 branch being built on:
 
-  git -c user.name="$(git log -1 --format=%an origin/master)" -c user.email="$(git log -1 --format=%ae origin/master)" commit -F <message file>
+  git -c user.name="$(git log -1 --format=%an origin/${base})" -c user.email="$(git log -1 --format=%ae origin/${base})" commit -F <message file>
 
 Without it git either refuses outright, 'unable to auto-detect email address', or writes the
 wrong author - and nothing downstream notices the second. On this machine the credential helper
@@ -195,7 +195,8 @@ machine, not a rule: a workspace set up by 'gh auth setup-git' has the helper in
 config, and these exports drop it. If a push asks for a password, say so rather than putting the
 home config back.`
 
-const LAW = `
+const SHARED_BASE = [...new Set(Object.values(CONFIGURED).map((r) => (r || {}).defaultBranch || 'master'))]
+const LAW = (base = SHARED_BASE.length === 1 ? SHARED_BASE[0] : '<default branch>') => `
 Never use 2>&1 - it makes some commands fail outright.
 Use absolute paths, never relative ones.
 Nothing you write anywhere may mention AI, assistants, automated authorship or tooling:
@@ -204,7 +205,7 @@ wrote from the thing that stored it - GitHub and git both add and rewrite text -
 it rather than trusting what you meant to write.
 Never force-push a default branch, and never commit to one directly.
 
-${SHELL_FIRST}`
+${SHELL_FIRST(base)}`
 
 const SURVEY = {
   type: 'object',
@@ -259,7 +260,7 @@ const VERSION = {
     fetched: { type: 'boolean', description: "the FETCH, and nothing else: true only when the git fetch printed FETCHED. False when it did not, whatever the commands after it printed - every ref this step and the merge after it read is then whatever the checkout already held." },
     status: { enum: ['read', 'no_manifest', 'unreadable'], description: "the MANIFEST read, and nothing else: 'read' only when both git show calls printed a manifest you could copy a version string out of. What gh printed does not touch this field." },
     prStatus: { enum: ['read', 'unreadable'], description: "the PULL REQUEST read: 'read' when gh pr view printed an answer, 'unreadable' when it failed for any reason - a rate limit, a network error, no authentication. Say which in notes." },
-    masterVersion: { type: 'string', description: `the "version" string in origin/master's ${PLUGIN_MANIFEST}, verbatim. An empty string when you could not read one.` },
+    masterVersion: { type: 'string', description: `the "version" string in the default branch's ${PLUGIN_MANIFEST} - the origin/<branch> the prompt names - verbatim. An empty string when you could not read one.` },
     branchVersion: { type: 'string', description: `the "version" string in the branch's ${PLUGIN_MANIFEST}, verbatim. An empty string when you could not read one.` },
     touchesPlugin: { type: 'boolean', description: 'true when the branch changes any file under plugins/ or .claude-plugin/ - that is what the marketplace serves. True when the diff could not be read at all, because an unknown answer here must not read as out of scope.' },
     labelled: { type: 'boolean', description: `true when gh pr view printed ${LABEL} among the pull request's labels just now. Meaningless unless prStatus is 'read' - report false when gh printed nothing.` },
@@ -408,7 +409,7 @@ Return 'taken' once mkdir succeeded and you have written the holder file, and re
 printed as 'holder' whether or not it matches the token. You are not asked to judge ownership:
 the run compares the holder file against the token it was launched with, stands down on a
 mismatch, and the file is the fact while the value you report is a claim about it.
-${LAW}`
+${LAW()}`
 }
 
 function releasePrompt(token) {
@@ -451,7 +452,7 @@ NOT_MINE IS A CORRECT OUTCOME, not a failure to clean up. It says the holder fil
 this run's token, so nothing was removed and nothing should be - whoever holds it gives it back
 themselves. ALREADY_GONE likewise: there is nothing to release. Report what it printed and stop.
 Change nothing else.
-${LAW}`
+${LAW()}`
 }
 
 function surveyPrompt() {
@@ -494,7 +495,7 @@ went red, and the lander then refused - correctly - to merge into a red master, 
 unable to land the fix for the red master. A person had to break the deadlock by hand.
 
 Change nothing. Do not merge, do not rebase, do not label, do not deploy.
-${LAW}`
+${LAW()}`
 }
 
 // The `owner/name` that `--repo` wants. IT MUST BE CONFIGURED. There is no fallback, and the
@@ -531,6 +532,8 @@ function slug(repo) {
   )
 }
 
+function baseOf(repo) { return (CONFIGURED[repo] || {}).defaultBranch || 'master' }
+
 // UNUSED - see the note on the VERIFY schema above.
 function verifyPrompt(pr) {
   const path = REPOS[pr.repo]
@@ -555,14 +558,14 @@ Report the conclusions you actually saw in 'checks', and the head sha in 'headRe
 run's log says what was true rather than only whether it liked it.`
 }
 
-function versionVerdict(read) {
+function versionVerdict(read, base) {
   if (!read) {
     return { why: 'version_unreadable', detail: 'the version step answered nothing, and a number nobody read is not a number the next one can be counted from' }
   }
   if (read.fetched !== true) {
     return {
       why: 'fetch_failed',
-      detail: `the version step did not fetch origin - ${trimmed(read.notes) || 'FETCHED did not print'}. Every ref read after that is whatever the checkout already held, so origin/master may be behind what has already merged: the manifest read, the diff that decides whether the version guard applies, and the rebase land-one.sh does not do when it reads the branch as not behind. Nothing was merged and the label was left on, so the next run takes it when the fetch works.`
+      detail: `the version step did not fetch origin - ${trimmed(read.notes) || 'FETCHED did not print'}. Every ref read after that is whatever the checkout already held, so origin/${base} may be behind what has already merged: the manifest read, the diff that decides whether the version guard applies, and the rebase land-one.sh does not do when it reads the branch as not behind. Nothing was merged and the label was left on, so the next run takes it when the fetch works.`
     }
   }
   if (read.status === 'no_manifest') return null
@@ -577,7 +580,7 @@ function versionVerdict(read) {
   if (!SEMVER.test(master)) {
     return {
       why: 'version_unreadable',
-      detail: `origin/master declares devloop plugin version '${master}' in ${PLUGIN_MANIFEST}, which is not three numbers, and the number this merge lands is counted up from it - so nothing can be incremented and ${MARKETPLACE_MANIFEST} cannot be made to agree with it. The branch's own number is not used.`
+      detail: `origin/${base} declares devloop plugin version '${master}' in ${PLUGIN_MANIFEST}, which is not three numbers, and the number this merge lands is counted up from it - so nothing can be incremented and ${MARKETPLACE_MANIFEST} cannot be made to agree with it. The branch's own number is not used.`
     }
   }
   return null
@@ -606,6 +609,7 @@ function refusalVerdict(detail) {
 
 function versionPrompt(pr) {
   const path = REPOS[pr.repo]
+  const base = baseOf(pr.repo)
   return `Read two version numbers and report them. Nothing merges here, nothing is edited, and
 the working tree of ${path} is not yours to move - a person works in that checkout and may be
 mid-edit on their own branch.
@@ -613,15 +617,15 @@ mid-edit on their own branch.
 Repo: ${pr.repo} - ${path}
 Branch: ${pr.branch}
 
-FETCH FIRST, EVERY TIME. What matters is the number origin/master holds RIGHT NOW, not the one it
+FETCH FIRST, EVERY TIME. What matters is the number origin/${base} holds RIGHT NOW, not the one it
 held when this branch was pushed. Master moves between pull requests inside this very run, so a
 number read once at the top of the run is stale by the second merge.
 
   cd ${path} && git fetch origin --quiet && echo FETCHED
-  cd ${path} && git ls-tree --name-only origin/master ${PLUGIN_MANIFEST}
-  cd ${path} && git show origin/master:${PLUGIN_MANIFEST}
+  cd ${path} && git ls-tree --name-only origin/${base} ${PLUGIN_MANIFEST}
+  cd ${path} && git show origin/${base}:${PLUGIN_MANIFEST}
   cd ${path} && git show origin/${pr.branch}:${PLUGIN_MANIFEST}
-  cd ${path} && git diff --name-only origin/master...origin/${pr.branch}
+  cd ${path} && git diff --name-only origin/${base}...origin/${pr.branch}
   gh pr view ${pr.number} --repo ${pr.slug} --json labels,state,isDraft
 
 git show prints a file as it is at a ref and touches nothing. Do not check anything out, do not
@@ -644,7 +648,7 @@ THE FETCH HAS ITS OWN FIELD TOO. Report fetched true when the first command prin
 false when it did not, and say in notes what it printed instead. A failed fetch does not move
 status: the commands after it still run, and status reports what THEY printed. It is reported
 separately because it is the one failure that makes every other answer here quietly stale - the
-refs are whatever this checkout already held, so origin/master can be behind work that has already
+refs are whatever this checkout already held, so origin/${base} can be behind work that has already
 merged, and a branch that looks up to date against it has never been tested against master at all.
 
 status IS ABOUT THE MANIFEST AND NOTHING ELSE. gh has its own field, prStatus, and what gh printed
@@ -678,11 +682,12 @@ say in notes what gh printed instead, because a refusal decided here takes a pul
 the queue and reopens somebody's tracker issue, and neither is safe to do to a pull request that
 is no longer in the queue to refuse.
 
-${LAW}`
+${LAW(base)}`
 }
 
 function landPrompt(pr, position, total) {
   const path = REPOS[pr.repo]
+  const base = baseOf(pr.repo)
   return `Land one pull request. You are ${position} of ${total}, and you are the only thing
 merging anywhere right now - no other process will move master while you work. That is what
 makes this worth doing carefully: you can rebase, wait for CI, and merge knowing the ground
@@ -723,7 +728,7 @@ a report to the supervisor, not a problem for you to solve.
 
 0. STEPS 1 TO 5 ARE ONE COMMAND NOW. RUN IT FIRST.
 
-     bash ${SKILL_DIR}/land-one.sh --repo-path ${path} --slug ${slug(pr.repo)} --pr ${pr.number} --branch ${pr.branch}
+     bash ${SKILL_DIR}/land-one.sh --repo-path ${path} --slug ${slug(pr.repo)} --pr ${pr.number} --branch ${pr.branch} --base ${base}
 
    Pass timeout: 600000 on the tool call. The Bash tool's default is two minutes, and after a
    rebase push this script now blocks for check registration plus the full CI run.
@@ -779,7 +784,7 @@ a report to the supervisor, not a problem for you to solve.
 
 1. MASTER MUST BE GREEN BEFORE YOU START. You cannot merge into a red master whatever else is
    true, and landing on top of a break makes it harder to untangle, not easier:
-     cd ${path} && gh run list --branch master --limit 1 --json headSha,status,conclusion
+     cd ${path} && gh run list --branch ${base} --limit 1 --json headSha,status,conclusion
    If it is red, stop and return status 'master_red', NAMING THE FAILING SPEC so the next
    reader does not have to open the run to find out.
 
@@ -817,7 +822,7 @@ a report to the supervisor, not a problem for you to solve.
 
 3. IS THE BRANCH ALREADY CURRENT? Do not rebase for the sake of it:
      cd ${path} && git fetch origin --quiet
-     cd ${path} && git merge-base --is-ancestor origin/master origin/${pr.branch} && echo current
+     cd ${path} && git merge-base --is-ancestor origin/${base} origin/${pr.branch} && echo current
    If that prints 'current', skip to step 5 - the checks that ran are the checks that count.
 
 4. REBASE ONTO MASTER. Work in a worktree; never check master out in these repositories,
@@ -827,7 +832,7 @@ a report to the supervisor, not a problem for you to solve.
    than making another - a lane may have left one holding exactly this branch, which is a
    favour and not a mess. 'git worktree list' says where it is.
 
-     cd <worktree> && git -c user.name="$(git log -1 --format=%an origin/master)" -c user.email="$(git log -1 --format=%ae origin/master)" rebase origin/master
+     cd <worktree> && git -c user.name="$(git log -1 --format=%an origin/${base})" -c user.email="$(git log -1 --format=%ae origin/${base})" rebase origin/${base}
 
    TEXTUAL CONFLICTS IN THE SAME REGION are yours to resolve when the intent of both sides is
    plain - two additions to one list, an import added on both sides, a spec file gaining
@@ -841,7 +846,7 @@ a report to the supervisor, not a problem for you to solve.
    reword that commit, so git falls back to $EDITOR and a run with no terminal hangs or dies on
    it. Both halves, every time the rebase stops:
      cd <worktree> && git add <the files you resolved>
-     cd <worktree> && git -c user.name="$(git log -1 --format=%an origin/master)" -c user.email="$(git log -1 --format=%ae origin/master)" -c core.editor=true rebase --continue
+     cd <worktree> && git -c user.name="$(git log -1 --format=%an origin/${base})" -c user.email="$(git log -1 --format=%ae origin/${base})" -c core.editor=true rebase --continue
    A rebase can stop more than once. Repeat both until it reports it has finished. Do not take
    git's own hint to set a --global identity: that is the file the exports exist to ignore.
 
@@ -885,7 +890,7 @@ a report to the supervisor, not a problem for you to solve.
 6. CHECK COMPLIANCE, then merge. Read the body back from GitHub and the commits back from git -
    what is actually there, not what was meant:
      cd ${path} && gh pr view ${pr.number} --json body
-     cd ${path} && git log origin/master..origin/${pr.branch} --format=%B
+     cd ${path} && git log origin/${base}..origin/${pr.branch} --format=%B
    Anything saying or implying that an agent, assistant or tool wrote, reviewed or generated
    this change stops the merge - including a Co-Authored-By trailer. Return 'blocked' saying
    which line.
@@ -938,7 +943,7 @@ a report to the supervisor, not a problem for you to solve.
 7. CONFIRM YOU DID NOT BREAK MASTER. A green branch says nothing about the merge result - two
    changes can agree line by line and contradict in meaning, which is how master broke once
    already:
-     cd ${path} && gh run list --branch master --limit 1 --json headSha,status,conclusion
+     cd ${path} && gh run list --branch ${base} --limit 1 --json headSha,status,conclusion
    Wait for that run to finish. Report it in 'masterGreen'. If it went red, say so as the
    first thing in 'notes' and put the failing spec in 'failureDetail' - the deploy that would
    have followed is cancelled, and the next PR in the queue will stop on it.
@@ -947,7 +952,7 @@ a report to the supervisor, not a problem for you to solve.
    run has landed. Deploying between merges is what made a server change live in staging and
    not production, which as far as a tester is concerned is live in neither.
 
-${LAW}
+${LAW(base)}
 
 Return 'merged' only once state reads MERGED and you have looked at the master run that
 followed.`
@@ -1110,7 +1115,7 @@ The extension changed too. Rebuild it into the main checkout so it can be reload
 dist/ is gitignored so building writes no tracked file, but the branch the checkout sits on
 decides what gets built. If ${REPOS.extension} is on master and clean, pull and 'npm run
 build'. If it is on any other branch or has uncommitted work, do NOT switch and do NOT stash -
-build origin/master in a detached worktree and copy dist/ across. Do not package a release zip
+build origin/${baseOf('extension')} in a detached worktree and copy dist/ across. Do not package a release zip
 and do not submit anything to the store.` : ''}
 ${landed.some((l) => l.repo === 'integration') ? `
 The integration package changed. Rebuild and confirm dist/ is in step - CI fails if dist/ was
@@ -1118,11 +1123,11 @@ not rebuilt from src/. Do NOT publish to npm and do NOT push a tag: releasing is
 because the npm account has two-factor authentication and a one-time code cannot be given to
 a workflow.` : ''}
 ${landed.some((l) => l.repo === 'docs') ? `
-docs has no deploy target of its own. The change is on origin/master and visible to anyone who
+docs has no deploy target of its own. The change is on origin/${baseOf('docs')} and visible to anyone who
 pulls, but an ARTICLE is not live until publish.rb sends it, and a cover image is not live
 until the SITE is deployed. Say which of those still apply.` : ''}
 
-${LAW}`
+${LAW()}`
 }
 
 function livePrompt(landed) {
@@ -1155,7 +1160,7 @@ taken once already. Report what you read. Guess nothing, and fill nothing in.
 
 DO NOT DEPLOY, whatever you find. A deploy is somebody's decision once they know what is live,
 and this step is how they find out.
-${LAW}`
+${LAW()}`
 }
 
 // RETIRING A PULL REQUEST THE LANDER CANNOT LAND.
@@ -1251,7 +1256,7 @@ note that did not land is worse than one never attempted, because the label is g
 
 Return status 'retired' with the ids you un-queued, 'partial' if some failed, naming which and
 why, or 'nothing_to_do' if there were none.
-${LAW}`
+${LAW()}`
 }
 
 // Which repositories this workspace can actually deploy. Read from the config rather than
@@ -1418,7 +1423,7 @@ were. Anything in the list above that you do not name comes back as drift a pers
 on 2026-09-09 this step was killed mid-run and four merged-and-deployed issues sat in_progress
 for hours with nothing anywhere reporting it. An id you closed and did not name reads the same
 way, so name them - and do not name one you did not close.
-${LAW}`
+${LAW()}`
 }
 
 phase('Survey')
@@ -1564,7 +1569,7 @@ try {
       const declared = await agent(versionPrompt(pr), {
         label: `version:${keyOf(pr)}`, phase: 'Land', schema: VERSION, model: 'haiku', effort: 'low'
       })
-      const stale = versionVerdict(declared)
+      const stale = versionVerdict(declared, baseOf(pr.repo))
       if (stale) {
         stopped.push({ ...pr, why: stale.why, detail: stale.detail })
         log(`STOPPED ${keyOf(pr)} - ${stale.why}\n    ${stale.detail}`)
@@ -1579,13 +1584,13 @@ try {
       }
       if (declared && declared.status !== 'no_manifest' && !declared.touchesPlugin) {
         const unread = declared.status === 'read' ? '' : `, and the manifest read reported '${declared.status}'${trimmed(declared.notes) ? `: ${trimmed(declared.notes)}` : ''}`
-        log(`${keyOf(pr)} - declares devloop plugin version ${trimmed(declared.branchVersion) || '(none)'} against origin/master's ${trimmed(declared.masterVersion) || '(none)'}, and its diff lists no path under plugins/ or .claude-plugin/, so the versions are not compared${unread}`)
+        log(`${keyOf(pr)} - declares devloop plugin version ${trimmed(declared.branchVersion) || '(none)'} against origin/${baseOf(pr.repo)}'s ${trimmed(declared.masterVersion) || '(none)'}, and its diff lists no path under plugins/ or .claude-plugin/, so the versions are not compared${unread}`)
       }
       if (declared && declared.status === 'read' && declared.touchesPlugin) {
-        log(`${keyOf(pr)} - ships a plugin file and declares devloop plugin version ${trimmed(declared.branchVersion) || '(none)'}; that number is not used. land-one.sh assigns the one after origin/master's ${trimmed(declared.masterVersion)} when it pushes, so two plugin pull requests in one pass get consecutive versions instead of the same one`)
+        log(`${keyOf(pr)} - ships a plugin file and declares devloop plugin version ${trimmed(declared.branchVersion) || '(none)'}; that number is not used. land-one.sh assigns the one after origin/${baseOf(pr.repo)}'s ${trimmed(declared.masterVersion)} when it pushes, so two plugin pull requests in one pass get consecutive versions instead of the same one`)
       }
       if (declared.status === 'no_manifest') {
-        log(`${keyOf(pr)} - origin/master carries no ${PLUGIN_MANIFEST}, so this repository has no published plugin version to walk backwards`)
+        log(`${keyOf(pr)} - origin/${baseOf(pr.repo)} carries no ${PLUGIN_MANIFEST}, so this repository has no published plugin version to walk backwards`)
       }
 
       const r = await agent(landPrompt(pr, i + 1, queue.length), {

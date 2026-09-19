@@ -31,6 +31,7 @@ function stubs(root: string, bare: string, queue: string): string {
     "gh",
     `#!/bin/bash
 case "$1 $2" in
+  "repo view") echo '{"defaultBranchRef":{"name":"master"}}' ;;
   "run list")  echo '[{"status":"completed","conclusion":"success"}]' ;;
   "pr list")   cat ${JSON.stringify(join(root, "queue.json"))} ;;
   "pr create") echo "https://github.com/acme/site/pull/200" ;;

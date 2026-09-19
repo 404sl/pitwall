@@ -32,6 +32,7 @@ function stubs(root: string, bare: string): string {
     join(bin, "gh"),
     `#!/bin/bash
 case "$1 $2" in
+  "repo view") echo '{"defaultBranchRef":{"name":"master"}}' ;;
   "run list")  echo '[{"status":"completed","conclusion":"success"}]' ;;
   "pr checks") exit 0 ;;
   "api repos/"*) echo '{"total_count":1,"check_runs":[{"name":"CI"}]}' ;;

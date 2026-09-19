@@ -33,6 +33,7 @@ function stubs(root: string, view: string, checks: string, runList = MASTER_GREE
     "gh",
     `#!/bin/bash
 case "$1 $2" in
+  "repo view") echo '{"defaultBranchRef":{"name":"master"}}' ;;
   "run list")  ${runList} ;;
   "pr view")   ${view} ;;
   "pr checks") ${checks} ;;

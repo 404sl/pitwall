@@ -63,6 +63,7 @@ const REPOS = input.repos
   ? Object.fromEntries(Object.entries(input.repos).map(([name, r]) => [name, {
       path: (r || {}).path || name,
       slug: (r || {}).slug,
+      defaultBranch: trimmed((r || {}).defaultBranch) || 'master',
       deploy: (Array.isArray((r || {}).deploy) ? (r || {}).deploy : []).filter((c) => trimmed(c)),
       verify: (r || {}).verify,
       deploys: Array.isArray((r || {}).deploy) && (r || {}).deploy.length > 0
@@ -117,6 +118,7 @@ if (!LOCK_TOKEN || !TOKEN_SHAPE.test(LOCK_TOKEN)) {
 }
 const REPO_PATH = `${ROOT}/${REPO.path}`
 const SLUG = REPO.slug
+const BASE = REPO.defaultBranch || 'master'
 const MAX = (args && args.max) || 8
 const MAX_BISECT_DEPTH = 2
 
@@ -168,7 +170,7 @@ const VERSION = {
   additionalProperties: false,
   properties: {
     status: { type: 'string', enum: ['read', 'no_manifest', 'unreadable'], description: "'read' only when both git show calls printed a manifest you could copy a version string out of" },
-    masterVersion: { type: 'string', description: `the "version" string in origin/master's ${PLUGIN_MANIFEST}, verbatim. An empty string when you could not read one.` },
+    masterVersion: { type: 'string', description: `the "version" string in origin/${BASE}'s ${PLUGIN_MANIFEST}, verbatim. An empty string when you could not read one.` },
     branchVersion: { type: 'string', description: `the "version" string in the train branch's ${PLUGIN_MANIFEST}, verbatim. An empty string when you could not read one.` },
     touchesPlugin: { type: 'boolean', description: 'true when the train changes any file under plugins/ or .claude-plugin/ - that is what the marketplace serves' },
     notes: { type: 'string' },
@@ -278,7 +280,7 @@ function versionVerdict(read) {
   if (read.status !== 'read') {
     return {
       why: 'version_unreadable',
-      detail: `origin/master's ${PLUGIN_MANIFEST} could not be read - ${trimmed(read.notes) || `the step reported only '${read.status}'`}`,
+      detail: `origin/${BASE}'s ${PLUGIN_MANIFEST} could not be read - ${trimmed(read.notes) || `the step reported only '${read.status}'`}`,
     }
   }
   if (!read.touchesPlugin) return null
@@ -288,13 +290,13 @@ function versionVerdict(read) {
   if (ahead === null) {
     return {
       why: 'version_unreadable',
-      detail: `the declared devloop plugin version cannot be compared - the train reported '${branch}' and origin/master reported '${master}', and a version that is not three numbers cannot be ordered against anything`,
+      detail: `the declared devloop plugin version cannot be compared - the train reported '${branch}' and origin/${BASE} reported '${master}', and a version that is not three numbers cannot be ordered against anything`,
     }
   }
   if (!ahead) {
     return {
       why: 'version_not_ahead',
-      detail: `the train declares devloop plugin version ${branch} and origin/master holds ${master}, which is not strictly greater. land-train.sh assigns that number as it builds the train, from what master held then, so this is its own arithmetic to read rather than a branch's guess - the 'version:' line in the build output says what it wrote. No branch is asked to bump ${PLUGIN_MANIFEST} or ${MARKETPLACE_MANIFEST}.`,
+      detail: `the train declares devloop plugin version ${branch} and origin/${BASE} holds ${master}, which is not strictly greater. land-train.sh assigns that number as it builds the train, from what master held then, so this is its own arithmetic to read rather than a branch's guess - the 'version:' line in the build output says what it wrote. No branch is asked to bump ${PLUGIN_MANIFEST} or ${MARKETPLACE_MANIFEST}.`,
     }
   }
   return null
@@ -324,7 +326,7 @@ COMMIT IDENTITY IS THE ONE THING THAT DOES NOT SURVIVE THEM, and every command t
 commit needs it - commit, rebase, merge, cherry-pick. Pass it on the command, taken from the
 branch being built on:
 
-  git -c user.name="$(git log -1 --format=%an origin/master)" -c user.email="$(git log -1 --format=%ae origin/master)" commit -F <message file>
+  git -c user.name="$(git log -1 --format=%an origin/${BASE})" -c user.email="$(git log -1 --format=%ae origin/${BASE})" commit -F <message file>
 
 Without it git either refuses outright, 'unable to auto-detect email address', or writes the
 wrong author - and nothing downstream notices the second. On this machine the credential helper
@@ -337,16 +339,16 @@ function versionPrompt(trainBranch) {
   return `Read two version numbers and report them. Nothing merges here, nothing is edited, and
 the working tree of ${REPO_PATH} is not yours to move - a person works in that checkout.
 
-FETCH FIRST. What matters is the number origin/master holds RIGHT NOW, at the moment this train
+FETCH FIRST. What matters is the number origin/${BASE} holds RIGHT NOW, at the moment this train
 is about to merge, not the one it held when the train was built or when its checks started.
 
 ${SHELL_FIRST}
 
   cd ${REPO_PATH} && git fetch origin --quiet && echo FETCHED
-  cd ${REPO_PATH} && git ls-tree --name-only origin/master ${PLUGIN_MANIFEST}
-  cd ${REPO_PATH} && git show origin/master:${PLUGIN_MANIFEST}
+  cd ${REPO_PATH} && git ls-tree --name-only origin/${BASE} ${PLUGIN_MANIFEST}
+  cd ${REPO_PATH} && git show origin/${BASE}:${PLUGIN_MANIFEST}
   cd ${REPO_PATH} && git show origin/${trainBranch}:${PLUGIN_MANIFEST}
-  cd ${REPO_PATH} && git diff --name-only origin/master...origin/${trainBranch}
+  cd ${REPO_PATH} && git diff --name-only origin/${BASE}...origin/${trainBranch}
 
 git show prints a file as it is at a ref and touches nothing. Do not check anything out, do not
 switch, do not reset, and do not stash.
@@ -408,7 +410,7 @@ function buildPrompt(only, suffix) {
 
 ${SHELL_FIRST}
 
-  bash ${SKILL_DIR}/land-train.sh --repo-path ${REPO_PATH} --slug ${SLUG} --prefix ${LOCK_PREFIX} --max ${MAX}${onlyArg}${suffixArg}
+  bash ${SKILL_DIR}/land-train.sh --repo-path ${REPO_PATH} --slug ${SLUG} --prefix ${LOCK_PREFIX} --base ${BASE} --max ${MAX}${onlyArg}${suffixArg}
 
 Read its exit code and its stdout, and return them faithfully:
 
@@ -474,7 +476,7 @@ tree happened to be clean at that moment, which is luck, not a safeguard.
 TO READ A FILE AT A COMMIT, ASK GIT FOR ITS CONTENT INSTEAD OF MOVING THE TREE TO IT:
 
   git show <sha>:spec/system/whatever_spec.rb | sed -n '30,75p'
-  git show origin/master:config/importmap.rb | grep prism
+  git show origin/${BASE}:config/importmap.rb | grep prism
 
 That prints the file as it is at that commit and touches nothing. It is strictly better for this
 purpose anyway - no cleanup, no risk, and it works while another agent is using the checkout.`
@@ -498,8 +500,8 @@ unlanded.
 
 Then confirm master, and confirm the pull requests actually closed:
 
-  git fetch origin --quiet && git log -1 --format='%H' origin/master
-  gh run list --branch master --limit 1 --json status,conclusion
+  git fetch origin --quiet && git log -1 --format='%H' origin/${BASE}
+  gh run list --branch ${BASE} --limit 1 --json status,conclusion
   gh pr view <n> --repo ${SLUG} --json state    for each of ${included.join(', ')}
 
 Report mergeSha, masterGreen, and in notes: any of those pull requests that is NOT closed. Do
@@ -653,9 +655,9 @@ which carries ${included.length} change(s): ${included.join(', ')}.
 ${SHELL_FIRST}
 
   cd ${REPO_PATH}
-  git fetch origin --quiet && git log -1 --format='%H' origin/master
+  git fetch origin --quiet && git log -1 --format='%H' origin/${BASE}
 
-Confirm the sha above is what origin/master actually points at BEFORE deploying. If it is not,
+Confirm the sha above is what origin/${BASE} actually points at BEFORE deploying. If it is not,
 stop and report it rather than deploying something else.
 
 Then deploy each environment with these, IN THE ORDER LISTED - the first is the earliest
@@ -861,7 +863,7 @@ async function runTrain(only, suffix, depth) {
       return { stopped: stale.why, notes: stale.detail }
     }
     if (declared && declared.status === 'read' && !declared.touchesPlugin) {
-      log(`#${built.trainPr} declares devloop plugin version ${trimmed(declared.branchVersion) || '(none)'} against origin/master's ${trimmed(declared.masterVersion) || '(none)'}, and its diff lists no path under plugins/ or .claude-plugin/, so the versions are not compared`)
+      log(`#${built.trainPr} declares devloop plugin version ${trimmed(declared.branchVersion) || '(none)'} against origin/${BASE}'s ${trimmed(declared.masterVersion) || '(none)'}, and its diff lists no path under plugins/ or .claude-plugin/, so the versions are not compared`)
     }
 
     const merged = await agent(mergePrompt(built.trainPr, built.trainBranch, included), {
