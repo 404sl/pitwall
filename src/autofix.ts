@@ -67,7 +67,12 @@ interface WorkspaceRepo {
   defaultBranch?: string;
 }
 
-function reposOf(root: string, workspace: Record<string, unknown>): WorkspaceRepo[] {
+interface WorkspaceEntry {
+  repo: WorkspaceRepo;
+  checkout: boolean;
+}
+
+function reposOf(root: string, workspace: Record<string, unknown>): WorkspaceEntry[] {
   const repos = workspace["repos"];
   if (repos === undefined) {
     return [];
@@ -78,10 +83,13 @@ function reposOf(root: string, workspace: Record<string, unknown>): WorkspaceRep
       const repo = asRecord(value, `repo ${name}`);
       const path = repoPath(root, name, repo);
       return {
-        name,
-        path,
-        kind: repoKind(repo["deploy"]),
-        defaultBranch: defaultBranchIn(name, repo) ?? defaultBranchOf(path),
+        repo: {
+          name,
+          path,
+          kind: repoKind(repo["deploy"]),
+          defaultBranch: defaultBranchIn(name, repo) ?? defaultBranchOf(path),
+        },
+        checkout: repo["role"] !== "workspace",
       };
     });
 }
@@ -111,7 +119,8 @@ export function readWorkspace(root: string, options: WorkspaceOptions = {}): Pro
   try {
     const workspace = asRecord(JSON.parse(readFileSync(file, "utf8")), name);
     const lockPrefix = lockPrefixOf(workspace);
-    const repos = reposOf(dir, workspace);
+    const entries = reposOf(dir, workspace);
+    const repos = entries.map((entry) => entry.repo);
     const reading =
       lockPrefix === undefined
         ? { lanes: [], errors: [] }
@@ -119,7 +128,7 @@ export function readWorkspace(root: string, options: WorkspaceOptions = {}): Pro
             lockRoot: options.lockRoot,
             env: options.env,
             lanes: laneCountOf(workspace),
-            repos: repos.map((repo) => repo.path),
+            repos: entries.filter((entry) => entry.checkout).map((entry) => entry.repo.path),
           });
     return Project.parse({
       ...skeleton,

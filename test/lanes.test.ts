@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -315,6 +315,42 @@ test("a workspace passes its env down to the handoff read", () => {
   assert.equal(project.errors.length, 1);
   assert.equal(project.errors[0]?.source, checkout);
   assert.match(project.errors[0]?.message ?? "", /ENOENT/);
+});
+
+test("a workspace-root entry is not asked for pull requests, so a root with no remote adds no error", () => {
+  const root = lockRoot();
+  claim(root, 1, "pw-rooted");
+  const workspace = mkdtempSync(join(tmpdir(), "pitwall-workspace-"));
+  const checkout = repo(workspace);
+  writeFileSync(
+    join(workspace, WORKSPACE_FILE),
+    JSON.stringify({
+      idPrefix: "pw",
+      lockPrefix: PREFIX,
+      lanes: 1,
+      repos: { site: { path: "checkout" }, workspace: { path: ".", role: "workspace" } },
+    }),
+  );
+  const asked = join(workspace, "asked-from.txt");
+  const recording = [
+    "#!/bin/sh",
+    `pwd >> "${asked}"`,
+    `case "$PWD" in`,
+    `  */checkout) echo '[{"headRefName":"autofix/pw-rooted"}]' ;;`,
+    '  *) echo "gh: not a git repository" >&2; exit 1 ;;',
+    "esac",
+    "",
+  ].join("\n");
+
+  const project = withStub("gh", recording, () => readWorkspace(workspace, { lockRoot: root }));
+
+  assert.equal(project.repos.length, 2, "the root entry was dropped from the snapshot");
+  assert.equal(project.lanes[0]?.state, "handed-off");
+  assert.deepEqual(project.errors, []);
+  assert.deepEqual(
+    readFileSync(asked, "utf8").trim().split("\n").map((line) => line.replace(/^.*\//, "")),
+    ["checkout"],
+  );
 });
 
 test("handoff asks gh for open pull requests carrying lane-verified", () => {

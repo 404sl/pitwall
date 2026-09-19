@@ -748,7 +748,7 @@ repos = cfg.get("repos") or {}
 # the owner's own checkouts and may sit on a branch with uncommitted work.
 waiting, unreachable, checked = [], [], 0
 for name, r in repos.items():
-    if isinstance(r, dict) and r.get("noLander"):
+    if isinstance(r, dict) and (r.get("noLander") or r.get("role") == "workspace"):
         continue
     path = os.path.join(root, r.get("path", name)) if isinstance(r, dict) else os.path.join(root, name)
     if not os.path.isdir(os.path.join(path, ".git")):
@@ -789,6 +789,8 @@ if unreachable and len(unreachable) == checked:
 # spike, somebody's half-finished thought - so this says what it sees and lets a person judge.
 stale_unlabelled = []
 for name, r in repos.items():
+    if isinstance(r, dict) and r.get("role") == "workspace":
+        continue
     path = os.path.join(root, r.get("path", name)) if isinstance(r, dict) else os.path.join(root, name)
     if not os.path.isdir(os.path.join(path, ".git")):
         continue
@@ -864,6 +866,8 @@ except Exception:
 
 merged_since = False
 for name, r in repos.items():
+    if isinstance(r, dict) and r.get("role") == "workspace":
+        continue
     path = os.path.join(root, r.get("path", name)) if isinstance(r, dict) else os.path.join(root, name)
     if not os.path.isdir(os.path.join(path, ".git")):
         continue

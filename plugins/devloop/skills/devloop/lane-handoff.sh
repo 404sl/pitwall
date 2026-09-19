@@ -666,6 +666,7 @@ except Exception: raise SystemExit(1)
 if not isinstance(repos,dict): raise SystemExit(1)
 for name in sorted(repos):
     r=repos[name] or {}
+    if r.get('role') == 'workspace': continue
     print('%s|%s|%s' % (name, r.get('path') or name, r.get('slug') or ''))
 " 2>/dev/null)
 CFG_CODE=$?
