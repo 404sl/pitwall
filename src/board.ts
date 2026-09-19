@@ -58,6 +58,8 @@ export type ParkedReason = "tooling" | "watch" | "umbrella" | "roadmap";
 export interface NeedsYouRow {
   id: string;
   priority?: number;
+  owner?: string;
+  reporter?: string;
   kind: NeedsYouKind;
   title: string;
   verdict: StalenessVerdict;
@@ -70,6 +72,8 @@ export interface NeedsYouRow {
 export interface ParkedRow {
   id: string;
   priority?: number;
+  owner?: string;
+  reporter?: string;
   reason: ParkedReason;
   title: string;
   park: ParkAge;
@@ -93,6 +97,8 @@ export interface ReadyRow {
   projectId: string;
   id: string;
   priority?: number;
+  owner?: string;
+  reporter?: string;
   title: string;
 }
 
@@ -141,7 +147,7 @@ export interface ParkedCount {
 
 export const FILTER_NONE = "none";
 
-export const FILTER_KEYS = ["project", "type", "priority", "epic"] as const;
+export const FILTER_KEYS = ["project", "type", "priority", "epic", "owner"] as const;
 
 export type FilterKey = (typeof FILTER_KEYS)[number];
 
@@ -153,6 +159,16 @@ export interface FilterOption {
 }
 
 export type FilterOptions = Record<FilterKey, FilterOption[]>;
+
+export const SORT_PARAM = "sort";
+
+export const SORT_KEYS = ["owner", "reporter"] as const;
+
+export type SortKey = (typeof SORT_KEYS)[number];
+
+export function sortKeyOf(value: string | null | undefined): SortKey | undefined {
+  return SORT_KEYS.find((key) => key === value);
+}
 
 export interface BoardTotals {
   needsYou: number;
@@ -184,6 +200,7 @@ export interface Board {
   problems: ProblemRow[];
   filter: FilterState;
   filtered: boolean;
+  sort?: SortKey;
   options: FilterOptions;
   issueCount: number;
   today: TodayTotals;
@@ -279,6 +296,36 @@ function byOldestPark(a: { park: ParkAge }, b: { park: ParkAge }): number {
   return right - left;
 }
 
+type Sorter<Row> = (a: Row, b: Row) => number;
+
+function bySortKey<Row extends { owner?: string; reporter?: string }>(sort: SortKey | undefined): Sorter<Row> {
+  return (a, b) => {
+    if (sort === undefined) {
+      return 0;
+    }
+    const left = a[sort];
+    const right = b[sort];
+    if (left === right) {
+      return 0;
+    }
+    if (left === undefined) {
+      return 1;
+    }
+    if (right === undefined) {
+      return -1;
+    }
+    return left.localeCompare(right);
+  };
+}
+
+function sortedBy<Row extends { owner?: string; reporter?: string }>(
+  sort: SortKey | undefined,
+  then: Sorter<Row>,
+): Sorter<Row> {
+  const first = bySortKey<Row>(sort);
+  return (a, b) => first(a, b) || then(a, b);
+}
+
 function byParkThenPriority(a: NeedsYouRow, b: NeedsYouRow): number {
   return (
     byOldestPark(a, b) ||
@@ -330,6 +377,8 @@ function needsYouRow(issue: Issue, entry: ParkEntry | undefined, generatedAt: st
   return {
     id: issue.id,
     priority: issue.priority,
+    owner: issue.owner,
+    reporter: issue.reporter,
     kind,
     title: issue.title,
     verdict: verdictOf(issue),
@@ -340,7 +389,12 @@ function needsYouRow(issue: Issue, entry: ParkEntry | undefined, generatedAt: st
   };
 }
 
-function needsYouGroups(projects: Project[], generatedAt: string, parks: ParkStore): NeedsYouGroup[] {
+function needsYouGroups(
+  projects: Project[],
+  generatedAt: string,
+  parks: ParkStore,
+  sort?: SortKey,
+): NeedsYouGroup[] {
   return projects
     .map((project) => ({
       project: project.name,
@@ -348,7 +402,7 @@ function needsYouGroups(projects: Project[], generatedAt: string, parks: ParkSto
       rows: issuesOf(project)
         .filter((issue) => isYours(issue.classification))
         .map((issue) => needsYouRow(issue, parkOf(parks[project.id], issue), generatedAt))
-        .sort(byParkThenPriority),
+        .sort(sortedBy(sort, byParkThenPriority)),
     }))
     .filter((group) => group.rows.length > 0)
     .sort((a, b) => byCountThenName({ count: a.rows.length, name: a.project }, { count: b.rows.length, name: b.project }));
@@ -371,6 +425,8 @@ function parkedRowsOf(project: Project, generatedAt: string, parks: ParkStore): 
       {
         id: issue.id,
         priority: issue.priority,
+        owner: issue.owner,
+        reporter: issue.reporter,
         reason,
         title: issue.title,
         park: parkAgeOf(parkOf(parks[project.id], issue), generatedAt),
@@ -381,22 +437,26 @@ function parkedRowsOf(project: Project, generatedAt: string, parks: ParkStore): 
   });
 }
 
-function parkedGroupsOf(groups: ParkedGroup[], pick: (row: ParkedRow) => boolean): ParkedGroup[] {
+function parkedGroupsOf(
+  groups: ParkedGroup[],
+  pick: (row: ParkedRow) => boolean,
+  sort?: SortKey,
+): ParkedGroup[] {
   return groups
-    .map((group) => ({ ...group, rows: group.rows.filter(pick).sort(byParkThenPriorityParked) }))
+    .map((group) => ({ ...group, rows: group.rows.filter(pick).sort(sortedBy(sort, byParkThenPriorityParked)) }))
     .filter((group) => group.rows.length > 0)
     .sort((a, b) => byCountThenName({ count: a.rows.length, name: a.project }, { count: b.rows.length, name: b.project }));
 }
 
-function parkedGroups(projects: Project[], generatedAt: string, parks: ParkStore): ParkedRows {
+function parkedGroups(projects: Project[], generatedAt: string, parks: ParkStore, sort?: SortKey): ParkedRows {
   const rows = projects.map((project) => ({
     project: project.name,
     projectId: project.id,
     rows: parkedRowsOf(project, generatedAt, parks),
   }));
   return {
-    suspect: parkedGroupsOf(rows, (row) => row.park.suspect),
-    rest: parkedGroupsOf(rows, (row) => !row.park.suspect),
+    suspect: parkedGroupsOf(rows, (row) => row.park.suspect, sort),
+    rest: parkedGroupsOf(rows, (row) => !row.park.suspect, sort),
   };
 }
 
@@ -448,7 +508,7 @@ function runningTotals(rows: RunningRow[]): RunningTotal[] {
   })).filter((total) => total.count > 0);
 }
 
-function readyGroups(projects: Project[]): ReadyGroup[] {
+function readyGroups(projects: Project[], sort?: SortKey): ReadyGroup[] {
   return projects
     .map((project) => ({
       name: project.name,
@@ -459,9 +519,11 @@ function readyGroups(projects: Project[]): ReadyGroup[] {
           projectId: project.id,
           id: issue.id,
           priority: issue.priority,
+          owner: issue.owner,
+          reporter: issue.reporter,
           title: issue.title,
         }))
-        .sort(byPriorityThenId),
+        .sort(sortedBy<ReadyRow>(sort, byPriorityThenId)),
     }))
     .filter((group) => group.rows.length > 0)
     .map((group) => ({ ...group, count: group.rows.length }))
@@ -469,8 +531,8 @@ function readyGroups(projects: Project[]): ReadyGroup[] {
     .map((group) => ({ project: group.name, rows: group.rows, total: group.count }));
 }
 
-function readyRows(projects: Project[]): ReadyRow[] {
-  return readyGroups(projects).flatMap((group) => group.rows);
+function readyRows(projects: Project[], sort?: SortKey): ReadyRow[] {
+  return readyGroups(projects, sort).flatMap((group) => group.rows);
 }
 
 export function readyByProject(snapshot: Snapshot, limit: number): ReadyGroup[] {
@@ -569,6 +631,7 @@ interface Filterable {
   id: string;
   issueType?: string;
   priority?: number;
+  owner?: string;
 }
 
 function matchesValue(value: string | undefined, actual: string | undefined): boolean {
@@ -586,6 +649,9 @@ function issueMatches(projectId: string, issue: Filterable, filter: FilterState)
     return false;
   }
   if (!matchesValue(filter.priority, issue.priority === undefined ? undefined : String(issue.priority))) {
+    return false;
+  }
+  if (!matchesValue(filter.owner, issue.owner)) {
     return false;
   }
   if (filter.epic === undefined) {
@@ -624,11 +690,15 @@ function filterOptions(projects: Project[]): FilterOptions {
     ),
   ].sort();
   const epics = [...new Set(issues.map((issue) => epicOf(issue.id)).filter((id): id is string => id !== undefined))].sort();
+  const owners = [
+    ...new Set(issues.map((issue) => issue.owner).filter((owner): owner is string => owner !== undefined)),
+  ].sort((a, b) => a.localeCompare(b));
   return {
     project: projects.map((project) => ({ value: project.id, label: project.name })),
     type: [...ISSUE_TYPES, ...extraTypes].map((type) => ({ value: type, label: type })),
     priority: PRIORITIES.map((priority) => ({ value: String(priority), label: priorityLabel(priority) })),
     epic: epics.map((id) => ({ value: id, label: id })),
+    owner: owners.map((name) => ({ value: name, label: name })),
   };
 }
 
@@ -659,15 +729,20 @@ function boardTotals(projects: Project[], generatedAt: string, running: RunningR
   };
 }
 
-export function buildBoard(snapshot: Snapshot, filter: FilterState = {}, parks: ParkStore = {}): Board {
+export function buildBoard(
+  snapshot: Snapshot,
+  filter: FilterState = {},
+  parks: ParkStore = {},
+  sort?: SortKey,
+): Board {
   const projects = snapshot.projects ?? [];
   const generatedAt = snapshot.generatedAt;
   const shown = filteredProjects(projects, filter);
   const filtered = isFiltered(filter);
-  const needsYou = needsYouGroups(shown, generatedAt, parks);
+  const needsYou = needsYouGroups(shown, generatedAt, parks, sort);
   const everyRunning = runningRows(projects, generatedAt);
   const running = filtered ? withRunningTotals(runningRows(shown, generatedAt), everyRunning) : everyRunning;
-  const ready = readyRows(shown);
+  const ready = readyRows(shown, sort);
   const parked = parkedEntries(shown);
   return {
     generatedAt,
@@ -681,10 +756,11 @@ export function buildBoard(snapshot: Snapshot, filter: FilterState = {}, parks: 
     readyCount: ready.length,
     readyShown: Math.min(ready.length, READY_LIMIT),
     parked,
-    parkedRows: parkedGroups(shown, generatedAt, parks),
+    parkedRows: parkedGroups(shown, generatedAt, parks, sort),
     problems: shownProblems(problemRows(snapshot), generatedAt),
     filter,
     filtered,
+    sort,
     options: filterOptions(projects),
     issueCount: shown.reduce((sum, project) => sum + issuesOf(project).length, 0),
     today: todayTotals(projects),
@@ -706,6 +782,8 @@ export interface IssueBody {
   issueType?: string;
   priority?: number;
   labels: string[];
+  owner?: string;
+  reporter?: string;
   project: string;
   projectName: string;
   authority: Authority;
@@ -742,6 +820,8 @@ export interface IssuePreview {
   issueType?: string;
   priority?: number;
   labels: string[];
+  owner?: string;
+  reporter?: string;
   project: string;
   projectName: string;
   classification?: ClassificationValue;
@@ -813,6 +893,8 @@ export function previewIssue(
     issueType: issue.issueType,
     priority: issue.priority,
     labels: issue.labels,
+    owner: issue.owner,
+    reporter: issue.reporter,
     project: found.id,
     projectName: found.name,
     classification: issue.classification,

@@ -9,11 +9,12 @@ import {
   type ParkedEntry,
   type ParkedGroup,
   type ParkedRows as ParkedRowsValue,
+  type SortKey,
 } from "../model.js";
 import { fill, ofParts, priorityLabel } from "../format.js";
 import { issueHref } from "../routes.js";
 import { strings } from "../strings.js";
-import { Staleness } from "./NeedsYou.js";
+import { Staleness, WhoCells } from "./NeedsYou.js";
 import { ParkAge } from "./ParkAge.js";
 
 function Count({ part }: { part: ParkedCount }) {
@@ -68,10 +69,12 @@ function Summary({ entries, totals }: { entries: ParkedEntry[]; totals?: ParkedE
 export function ParkedRows({
   groups,
   filter,
+  sort,
   caption,
 }: {
   groups: ParkedGroup[];
   filter?: FilterState;
+  sort?: SortKey;
   caption: string;
 }) {
   return (
@@ -81,6 +84,8 @@ export function ParkedRows({
         <tr>
           <th scope="col">{strings.column.issue}</th>
           <th scope="col">{strings.column.priority}</th>
+          <th scope="col">{strings.column.owner}</th>
+          <th scope="col">{strings.column.reporter}</th>
           <th scope="col">{strings.column.kind}</th>
           <th scope="col">{strings.column.title}</th>
           <th scope="col">{strings.column.parked}</th>
@@ -90,7 +95,7 @@ export function ParkedRows({
       {groups.map((group) => (
         <tbody key={group.projectId}>
           <tr className="pw-group">
-            <th colSpan={6} scope="rowgroup">
+            <th colSpan={8} scope="rowgroup">
               {group.project}
             </th>
           </tr>
@@ -100,9 +105,10 @@ export function ParkedRows({
               <td className="pw-cell pw-cell--data" title={row.priority === undefined ? strings.stale.noPriority : undefined}>
                 {priorityLabel(row.priority)}
               </td>
+              <WhoCells row={row} />
               <td className="pw-cell pw-cell--kind">{strings.parkReason[row.reason]}</td>
               <td className="pw-cell pw-cell--title">
-                <a className="pw-link" href={issueHref(group.projectId, row.id, filter)}>
+                <a className="pw-link" href={issueHref(group.projectId, row.id, filter, sort)}>
                   {row.title}
                 </a>
               </td>
@@ -125,10 +131,11 @@ interface ParkedProps {
   totals?: ParkedEntry[];
   rows?: ParkedRowsValue;
   filter?: FilterState;
+  sort?: SortKey;
   filteredEmpty?: string;
 }
 
-export function Parked({ entries, totals, rows, filter, filteredEmpty }: ParkedProps) {
+export function Parked({ entries, totals, rows, filter, sort, filteredEmpty }: ParkedProps) {
   if (entries.length === 0) {
     return <p className="pw-empty">{filteredEmpty ?? strings.empty.parked}</p>;
   }
@@ -136,7 +143,7 @@ export function Parked({ entries, totals, rows, filter, filteredEmpty }: ParkedP
     <>
       <Summary entries={entries} totals={totals} />
       {rows === undefined || rows.suspect.length === 0 ? null : (
-        <ParkedRows groups={rows.suspect} filter={filter} caption={strings.caption.parkedSuspect} />
+        <ParkedRows groups={rows.suspect} filter={filter} sort={sort} caption={strings.caption.parkedSuspect} />
       )}
       {rows === undefined || rows.rest.length === 0 ? null : (
         <details className="pw-disclosure">
@@ -149,7 +156,7 @@ export function Parked({ entries, totals, rows, filter, filteredEmpty }: ParkedP
             </span>
             <span className="pw-disclosure__hint">{strings.park.restHint}</span>
           </summary>
-          <ParkedRows groups={rows.rest} filter={filter} caption={strings.caption.parkedRest} />
+          <ParkedRows groups={rows.rest} filter={filter} sort={sort} caption={strings.caption.parkedRest} />
         </details>
       )}
     </>

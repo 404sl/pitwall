@@ -119,6 +119,8 @@ export interface IssueDetail {
   labels: string[];
   createdAt: string | undefined;
   updatedAt: string | undefined;
+  owner: string | undefined;
+  reporter: string | undefined;
   description: string | undefined;
   notes: string | undefined;
   origin: Origin | undefined;
@@ -306,6 +308,8 @@ function toIssue(
     labels: labelsOf(row["labels"]),
     createdAt: textOf(row["created_at"]),
     updatedAt: textOf(row["updated_at"]),
+    owner: textOf(row["assignee"]),
+    reporter: textOf(row["created_by"]),
     blockedBy: edges.get(id) ?? [],
     origin: originOf(row["metadata"]),
     closedAt: textOf(row["closed_at"]),
@@ -929,6 +933,8 @@ export async function readIssue(
       labels: labelsOf(row["labels"]),
       createdAt: textOf(row["created_at"]),
       updatedAt: textOf(row["updated_at"]),
+      owner: textOf(row["assignee"]),
+      reporter: textOf(row["created_by"]),
       blockedBy: blockedBy.map((link) => link.id),
       origin: originOf(row["metadata"]),
     };
@@ -966,6 +972,8 @@ export async function readIssue(
         labels: listed.labels,
         createdAt: listed.createdAt,
         updatedAt: listed.updatedAt,
+        owner: listed.owner,
+        reporter: listed.reporter,
         description: textOf(row["description"]),
         notes: textOf(row["notes"]),
         origin: resolveOrigin(listed, new Map(options.issues.map((issue) => [issue.id, issue]))),

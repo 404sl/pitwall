@@ -1,9 +1,12 @@
 import {
   FILTER_KEYS,
   FILTER_NONE,
+  SORT_KEYS,
+  sortKeyOf,
   type FilterKey,
   type FilterOptions,
   type FilterState,
+  type SortKey,
 } from "../model.js";
 import { fill } from "../format.js";
 import { boardHref } from "../routes.js";
@@ -14,12 +17,14 @@ const FIELD_LABEL: Record<FilterKey, string> = {
   type: strings.filters.type,
   priority: strings.filters.priority,
   epic: strings.filters.epic,
+  owner: strings.filters.owner,
 };
 
 const NONE_LABEL: Partial<Record<FilterKey, string>> = {
   type: strings.filters.none.type,
   priority: strings.filters.none.priority,
   epic: strings.filters.none.epic,
+  owner: strings.filters.none.owner,
 };
 
 const PHRASE: Record<FilterKey, string> = {
@@ -27,6 +32,12 @@ const PHRASE: Record<FilterKey, string> = {
   type: strings.filters.phrase.type,
   priority: strings.filters.phrase.priority,
   epic: strings.filters.phrase.epic,
+  owner: strings.filters.phrase.owner,
+};
+
+const SORT_LABEL: Record<SortKey, string> = {
+  owner: strings.filters.sortOwner,
+  reporter: strings.filters.sortReporter,
 };
 
 export function activeKeys(filter: FilterState): FilterKey[] {
@@ -65,17 +76,27 @@ export function filterSentence(filter: FilterState, options: FilterOptions): str
   });
 }
 
-function apply(filter: FilterState, key: FilterKey, value: string): void {
+function apply(filter: FilterState, sort: SortKey | undefined, key: FilterKey, value: string): void {
   const next: FilterState = { ...filter };
   if (value === "") {
     delete next[key];
   } else {
     next[key] = value;
   }
-  window.location.hash = boardHref(next);
+  window.location.hash = boardHref(next, sort);
 }
 
-function Field({ filter, options, name }: { filter: FilterState; options: FilterOptions; name: FilterKey }) {
+function Field({
+  filter,
+  sort,
+  options,
+  name,
+}: {
+  filter: FilterState;
+  sort?: SortKey;
+  options: FilterOptions;
+  name: FilterKey;
+}) {
   const value = filter[name];
   const none = NONE_LABEL[name];
   const unknown = unknownOf(name, value, options);
@@ -88,7 +109,7 @@ function Field({ filter, options, name }: { filter: FilterState; options: Filter
         className="pw-select"
         id={`filter-${name}`}
         value={value ?? ""}
-        onChange={(event) => apply(filter, name, event.target.value)}
+        onChange={(event) => apply(filter, sort, name, event.target.value)}
       >
         <option value="">{strings.filters.all}</option>
         {options[name].map((option) => (
@@ -105,26 +126,53 @@ function Field({ filter, options, name }: { filter: FilterState; options: Filter
   );
 }
 
+function Sort({ filter, sort }: { filter: FilterState; sort?: SortKey }) {
+  return (
+    <div className="pw-filters__field">
+      <label className="pw-filters__label" htmlFor="board-sort">
+        {strings.filters.sort}
+      </label>
+      <select
+        className="pw-select"
+        id="board-sort"
+        value={sort ?? ""}
+        onChange={(event) => {
+          window.location.hash = boardHref(filter, sortKeyOf(event.target.value));
+        }}
+      >
+        <option value="">{strings.filters.sortDefault}</option>
+        {SORT_KEYS.map((key) => (
+          <option key={key} value={key}>
+            {SORT_LABEL[key]}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
 interface FiltersProps {
   filter: FilterState;
+  sort?: SortKey;
   options: FilterOptions;
   shown: number;
   total: number;
 }
 
-export function Filters({ filter, options, shown, total }: FiltersProps) {
+export function Filters({ filter, sort, options, shown, total }: FiltersProps) {
   const active = activeKeys(filter).length > 0;
   return (
     <section className="pw-filters" aria-label={strings.filters.region}>
       <div className="pw-filters__fields">
         {FILTER_KEYS.map((name) => (
-          <Field key={name} filter={filter} options={options} name={name} />
+          <Field key={name} filter={filter} sort={sort} options={options} name={name} />
         ))}
         {active ? (
-          <a className="pw-link pw-filters__clear" href={boardHref({})}>
+          <a className="pw-link pw-filters__clear" href={boardHref({}, sort)}>
             {strings.filters.clear}
           </a>
         ) : null}
+        <Sort filter={filter} sort={sort} />
       </div>
       {active ? (
         <p className="pw-notice pw-filters__state" role="status">
