@@ -262,13 +262,19 @@ the one asked for; `config.sh --args` and `--land` call it before they print any
 the result as `scriptPath`. So take the path out of the object and dispatch that - never a path
 under the install, and never one remembered from an earlier tick.
 
-It copies unconditionally, every time, without comparing or checking a version. That is the
-whole design: a copy that is rewritten at every dispatch cannot be stale, and there is nothing
-for anybody to notice or act on. Each copy is written under a temporary name and renamed into
-place, so a run that re-reads its script cannot see half a file.
+It copies every time, without checking a version, so a copy rewritten at every dispatch cannot
+be stale by neglect. Each copy is written under a temporary name and renamed into place, so a
+run that re-reads its script cannot see half a file. Beside the copies it writes `staged-from`:
+the install it copied from, that install's plugin version, when, and each copy's byte count
+and sha256. Before it copies anything it compares every staged copy with that record, and one
+that differs was replaced by something other than run-script.sh since it was staged - a lander
+once ran a copy three releases old that way, with every source of truth current. It then
+refuses with exit 3, naming the file and both versions, and the dispatch stops; the replaced
+copy is left where it is for you to read. Read it, then re-stage on purpose:
 
 ```
-bash ${CLAUDE_PLUGIN_ROOT}/skills/devloop/run-script.sh rework.js   # stages without dispatching
+bash ${CLAUDE_PLUGIN_ROOT}/skills/devloop/run-script.sh rework.js     # stages without dispatching
+bash ${CLAUDE_PLUGIN_ROOT}/skills/devloop/run-script.sh --restage     # after a refusal, once read
 ```
 
 Absolute path - the tool does not resolve `~`. `slot` is the lane `--args` or `--rework` reserved,

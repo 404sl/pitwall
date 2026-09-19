@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   chmodSync,
   mkdirSync,
@@ -19,6 +20,12 @@ const SKILL = join(import.meta.dirname, "..", "plugins", "devloop", "skills", "d
 const RUN_SCRIPT = join(SKILL, "run-script.sh");
 const CONFIG_SH = join(SKILL, "config.sh");
 const STAGED = ["task.js", "land.js", "rework.js", "land-train.js"];
+const RECORD = "staged-from";
+const PLUGIN_VERSION = (
+  JSON.parse(readFileSync(join(SKILL, "..", "..", ".claude-plugin", "plugin.json"), "utf8")) as {
+    version: string;
+  }
+).version;
 
 interface Harness {
   root: string;
@@ -100,6 +107,20 @@ function staged(box: Harness, name: string): string {
   return readFileSync(join(box.stage, name), "utf8");
 }
 
+function sha256(text: string): string {
+  return createHash("sha256").update(text).digest("hex");
+}
+
+function record(box: Harness): Map<string, string> {
+  const fields = new Map<string, string>();
+  for (const line of readFileSync(join(box.stage, RECORD), "utf8").split("\n")) {
+    if (line === "") continue;
+    const space = line.indexOf(" ");
+    fields.set(line.slice(0, space), line.slice(space + 1));
+  }
+  return fields;
+}
+
 test("staging replaces every workflow script with this install's copy", () => {
   const box = harness();
   try {
@@ -121,7 +142,120 @@ test("staging leaves no half-written file behind", () => {
   const box = harness();
   try {
     assert.equal(run(box, RUN_SCRIPT).status, 0);
-    assert.deepEqual(readdirSync(box.stage).sort(), [...STAGED].sort());
+    assert.deepEqual(readdirSync(box.stage).sort(), [...STAGED, RECORD].sort());
+  } finally {
+    clean(box);
+  }
+});
+
+test("staging records the install, its version and each copy's size and digest", () => {
+  const box = harness();
+  try {
+    assert.equal(run(box, RUN_SCRIPT).status, 0);
+    const fields = record(box);
+    assert.equal(fields.get("source"), SKILL);
+    assert.equal(fields.get("version"), PLUGIN_VERSION);
+    assert.match(fields.get("staged") ?? "", /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
+    for (const name of STAGED) {
+      const text = installed(name);
+      assert.equal(fields.get(name), `${Buffer.byteLength(text)} ${sha256(text)}`);
+    }
+  } finally {
+    clean(box);
+  }
+});
+
+test("a staged copy replaced behind the record's back is refused, and left as evidence", () => {
+  const box = harness();
+  try {
+    assert.equal(run(box, RUN_SCRIPT).status, 0);
+    const before = record(box);
+    stale(box, "land.js");
+
+    const ran = run(box, RUN_SCRIPT, "land.js");
+    assert.equal(ran.status, 3, ran.stderr);
+    assert.equal(ran.stdout, "");
+    const line = ran.stderr.trim().split("\n")[0] ?? "";
+    for (const expected of [
+      `${join(box.stage, "land.js")} is not the copy staged from ${PLUGIN_VERSION} at ${SKILL} `,
+      `this install is ${PLUGIN_VERSION} at ${SKILL} `,
+      "--restage",
+    ]) {
+      assert.ok(line.includes(expected), `refusal does not say ${JSON.stringify(expected)}: ${line}`);
+    }
+    assert.match(line, /\(\d+ bytes now, \d+ bytes when staged\)/);
+    assert.equal(
+      staged(box, "land.js"),
+      "throw new Error('a release ago')\n",
+      "the refusal covered the stale copy over, and with it the only evidence of what ran",
+    );
+    assert.deepEqual([...record(box)], [...before], "the refusal rewrote the record");
+  } finally {
+    clean(box);
+  }
+});
+
+test("a dispatch stops on a replaced copy rather than running it", () => {
+  const box = harness();
+  try {
+    assert.equal(run(box, RUN_SCRIPT).status, 0);
+    stale(box, "land.js");
+
+    const ran = run(box, CONFIG_SH, "--land", "404sl/pitwall#588");
+    assert.notEqual(ran.status, 0, `--land dispatched over a replaced land.js: ${ran.stdout}`);
+    assert.equal(ran.stdout, "");
+    assert.match(ran.stderr, /land\.js is not the copy staged from/);
+    assert.match(ran.stderr, /the lander does not start/);
+    assert.equal(staged(box, "land.js"), "throw new Error('a release ago')\n");
+  } finally {
+    clean(box);
+  }
+});
+
+test("--restage copies over a replaced copy and records the install it came from", () => {
+  const box = harness();
+  try {
+    assert.equal(run(box, RUN_SCRIPT).status, 0);
+    stale(box, "land.js");
+
+    const ran = run(box, RUN_SCRIPT, "--restage", "land.js");
+    assert.equal(ran.status, 0, ran.stderr);
+    assert.equal(ran.stdout.trim(), join(box.stage, "land.js"));
+    for (const name of STAGED) assert.equal(staged(box, name), installed(name));
+    assert.equal(record(box).get("land.js"), `${Buffer.byteLength(installed("land.js"))} ${sha256(installed("land.js"))}`);
+  } finally {
+    clean(box);
+  }
+});
+
+test("a stage another install wrote is not a replaced one", () => {
+  const box = harness();
+  try {
+    assert.equal(run(box, RUN_SCRIPT).status, 0);
+    const lines = ["source /somewhere/else/skills/devloop", "version 0.1.35", "staged 2026-09-12T10:32:00Z"];
+    for (const name of STAGED) lines.push(`${name} ${Buffer.byteLength(installed(name))} ${sha256(installed(name))}`);
+    writeFileSync(join(box.stage, RECORD), `${lines.join("\n")}\n`);
+
+    const ran = run(box, RUN_SCRIPT, "task.js");
+    assert.equal(ran.status, 0, ran.stderr);
+    assert.equal(record(box).get("source"), SKILL);
+    assert.equal(record(box).get("version"), PLUGIN_VERSION);
+  } finally {
+    clean(box);
+  }
+});
+
+test("a stage with no record is copied over without question", () => {
+  const box = harness();
+  try {
+    assert.equal(run(box, RUN_SCRIPT).status, 0);
+    stale(box, "land.js");
+    rmSync(join(box.stage, RECORD));
+
+    const ran = run(box, RUN_SCRIPT, "land.js");
+    assert.equal(ran.status, 0, ran.stderr);
+    assert.equal(staged(box, "land.js"), installed("land.js"));
+    assert.equal(record(box).get("version"), PLUGIN_VERSION);
   } finally {
     clean(box);
   }
