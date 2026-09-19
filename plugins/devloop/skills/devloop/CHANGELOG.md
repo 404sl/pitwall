@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.92
+
+Triage now verifies a path's existence and a commit's ancestry against `origin/master`, fetched first, and never against the HEAD of the root checkout: `git -C <checkout> ls-tree --name-only origin/master <path>` and `git -C <checkout> merge-base --is-ancestor <sha> origin/master`. A root checkout that nobody has fast-forwarded no longer makes triage report a landed file as missing or a merged commit as unlanded, and no longer bounces an issue over prerequisites that already shipped.
+
 ## 0.1.91
 
 The handoff gate's survey of sibling pull requests no longer uses GraphQL, so a
