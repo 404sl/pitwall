@@ -59,7 +59,7 @@ test("a checkout with no origin reports nothing rather than a branch it did not 
 
   describe(root, "site");
   const project = readWorkspace(root);
-  assert.equal(project.repos[0]?.defaultBranch, "main");
+  assert.equal(project.repos[0]?.defaultBranch, undefined);
   assert.deepEqual(project.errors, []);
 });
 
@@ -75,7 +75,7 @@ test("a repo with no checkout on disk does not throw and records no error", () =
   const root = workspace();
   describe(root, "site");
   const project = readWorkspace(root);
-  assert.equal(project.repos[0]?.defaultBranch, "main");
+  assert.equal(project.repos[0]?.defaultBranch, undefined);
   assert.deepEqual(project.errors, []);
 });
 
