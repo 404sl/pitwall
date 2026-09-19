@@ -921,6 +921,18 @@ agent cannot relay what it has not been shown.
   one per lane. Adding lanes beyond 5 is fine, but nothing else may run the suite meanwhile.
 - A fresh site worktree needs `.env`, `config/master.key`, `node_modules` and
   `app/assets/builds` symlinked in to boot. All gitignored; they must never reach a commit.
+- **A lane kills what it launched by the pid it recorded, never with `pkill -f` on a path
+  or flag substring.** `pkill -f` matches the full argument list of every process on the
+  machine, and the shell wrapping a backgrounded command carries that command in its own
+  argv, so a pattern aimed at one headless browser matches the wrapper running the cleanup -
+  and `/tmp` is shared with every other lane and workspace. On 2026-09-08 a lane did exactly
+  that against its browser's `user-data-dir`; from that moment every path under the owner's
+  home read `Operation not permitted` for the lane and its supervisor until the whole process
+  tree was relaunched. A correlation, not a proven cause, and unsafe either way. Without a
+  recorded pid: `pgrep -f` first, print every match, kill only pids whose command starts with
+  the intended binary, and if that cannot identify it, leave it running and say so. Rule 13 of
+  the brief carries this; a permission failure that appears right after a cleanup step is the
+  tell, and it presents as an environment fault.
 
 ## Check bd's exit code per command, not per call
 
