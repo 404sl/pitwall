@@ -558,3 +558,54 @@ test("the lander's lease-and-refspec push still runs with --default given and --
   );
   assert.equal(ran.ran, true, "the guard exited 0 without running the push it was given");
 });
+
+function refusedEveryBranch(ran: Ran, flag: string) {
+  refused(ran, `a push with ${flag}, which writes every local branch without naming one`);
+  assert.match(
+    ran.err,
+    new RegExp(`push ${flag}`),
+    `the refusal came from some other branch of the guard, so this test would pass with the ` +
+      `${flag} check deleted - the flag carries no refspec, so none of the destination checks ` +
+      `can see it, and it moves master all the same:\n${ran.err}`,
+  );
+}
+
+test("git push --all carries no refspec and moves master with the rest, so it is refused", () => {
+  const box = workspace();
+
+  const ran = push(box, [`--dir=${box.lane}`, "--branch=devloop/zz-aaa1"], ["--all", "origin"]);
+
+  refusedEveryBranch(ran, "--all");
+});
+
+test("git push --mirror carries no refspec and moves master with the rest, so it is refused", () => {
+  const box = workspace();
+
+  const ran = push(box, [`--dir=${box.lane}`, "--branch=devloop/zz-aaa1"], ["--mirror", "origin"]);
+
+  refusedEveryBranch(ran, "--mirror");
+});
+
+test("--all after the remote is refused like --all before it", () => {
+  const box = workspace();
+
+  const ran = push(box, [`--dir=${box.lane}`, "--branch=devloop/zz-aaa1"], ["origin", "--all"]);
+
+  refusedEveryBranch(ran, "--all");
+});
+
+test("--branches is the newer spelling of --all and is refused with it", () => {
+  const box = workspace();
+
+  const ran = push(box, [`--dir=${box.lane}`, "--branch=devloop/zz-aaa1"], ["--branches", "origin"]);
+
+  refusedEveryBranch(ran, "--branches");
+});
+
+test("--mirror with --dir alone is refused, which is how the lander calls the guard", () => {
+  const box = workspace();
+
+  const ran = push(box, [`--dir=${box.lane}`], ["--mirror", "origin"]);
+
+  refusedEveryBranch(ran, "--mirror");
+});
