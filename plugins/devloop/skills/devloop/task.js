@@ -72,6 +72,9 @@ if (!REPO_KEYS.length) {
            'build the args with `config.sh --args <id> <slot>`.'
   }
 }
+function baseOf(repo) { return (REPOS[repo] || {}).defaultBranch || 'master' }
+const SHARED_BASE = [...new Set(REPO_KEYS.map(baseOf))]
+const WORKSPACE_BASE = SHARED_BASE.length === 1 ? SHARED_BASE[0] : '<default branch>'
 // /tmp is shared across every project on this machine. Two projects dispatching with the same
 // lockPrefix collide on the lane locks - and the lane lock is what stops two lanes sharing a
 // test database.
@@ -268,7 +271,7 @@ const LANE = {
   }
 }
 
-const SHELL_FIRST = `EVERY COMMAND THAT RUNS git OR bundle STARTS WITH THESE TWO EXPORTS, and so does every
+const SHELL_FIRST = (base) => `EVERY COMMAND THAT RUNS git OR bundle STARTS WITH THESE TWO EXPORTS, and so does every
 command that runs a script which does:
 
   export GIT_CONFIG_GLOBAL=/dev/null BUNDLE_USER_CONFIG=/dev/null && <your command>
@@ -292,7 +295,7 @@ COMMIT IDENTITY IS THE ONE THING THAT DOES NOT SURVIVE THEM, and every command t
 commit needs it - commit, rebase, merge, cherry-pick. Pass it on the command, taken from the
 branch being built on:
 
-  git -c user.name="$(git log -1 --format=%an origin/master)" -c user.email="$(git log -1 --format=%ae origin/master)" commit -F <message file>
+  git -c user.name="$(git log -1 --format=%an origin/${base})" -c user.email="$(git log -1 --format=%ae origin/${base})" commit -F <message file>
 
 Without it git either refuses outright, 'unable to auto-detect email address', or writes the
 wrong author - and nothing downstream notices the second. On this machine the credential helper
@@ -301,7 +304,7 @@ machine, not a rule: a workspace set up by 'gh auth setup-git' has the helper in
 config, and these exports drop it. If a push asks for a password, say so rather than putting the
 home config back.`
 
-const LAW = `
+const LAW = (base = WORKSPACE_BASE) => `
 NON-NEGOTIABLE RULES. They outrank speed, and they outrank finishing the task.
 
 0. WRITE bd TEXT THROUGH A FILE OR A QUOTED HEREDOC, never as an inline double-quoted
@@ -330,11 +333,11 @@ NON-NEGOTIABLE RULES. They outrank speed, and they outrank finishing the task.
    succeeds, and notes come back null. Create first, then write the note with a separate
    run of bd-note.sh (rule 9), and read the field back.
 
-   BEFORE FILING THAT SOMETHING IS MISSING FROM MASTER, ASK MASTER - NOT YOUR WORKTREE. Your
-   checkout was cut from whatever master was when this lane started, and other lanes have been
-   landing work since. Fetch, then look at the ref:
-     git fetch origin --quiet && git ls-tree --name-only origin/master <path>
-     git show origin/master:<file> | head
+   BEFORE FILING THAT SOMETHING IS MISSING FROM ${base}, ASK origin/${base} - NOT YOUR WORKTREE.
+   Your checkout was cut from whatever origin/${base} was when this lane started, and other lanes
+   have been landing work since. Fetch, then look at the ref:
+     git fetch origin --quiet && git ls-tree --name-only origin/${base} <path>
+     git show origin/${base}:<file> | head
    And check whether a sibling already has it in flight, because an open pull request is not a
    gap in the product:
      gh pr list --state open --search "<the file or symbol>"
@@ -375,8 +378,8 @@ NON-NEGOTIABLE RULES. They outrank speed, and they outrank finishing the task.
    THAT VERDICT IS ONLY CORRECT AFTER A PUSH. While the branch is still local an amend needs no
    force-push at all, so a hit found before the push is ordinary work and 'blocked' is the
    wrong answer to it. SO CHECK BEFORE YOU PUSH, while the fix still costs nothing:
-     bash ${SKILL_DIR}/lane-handoff.sh --repo-path <your worktree> --pre-push
-   It runs the same grep the handoff gate runs, over origin/master..HEAD, and needs no pull
+     bash ${SKILL_DIR}/lane-handoff.sh --repo-path <your worktree> --pre-push --base ${base}
+   It runs the same grep the handoff gate runs, over origin/${base}..HEAD, and needs no pull
    request. It ASKS THE REMOTE whether your branch exists there rather than inferring it from
    shas, so a branch that was pushed and then rebased is not mistaken for a local one.
    Clean exits 0. A hit exits 2 and names the commit it is in, because that is what decides the
@@ -469,7 +472,7 @@ NON-NEGOTIABLE RULES. They outrank speed, and they outrank finishing the task.
    the checkout. If a command needs a number from another repository, name that repository
    explicitly too.
 
-${SHELL_FIRST}
+${SHELL_FIRST(base)}
 `
 
 // The config may place a repo anywhere under the workspace; falling back to the repo's own name
@@ -483,7 +486,7 @@ Return eligible:false saying so.`
   }
   const rows = REPO_KEYS.map((k) => {
     const slug = (REPOS[k] || {}).slug
-    return `  ${k}  ->  ${repoPath(k)}${slug ? `  (${slug})` : ''}`
+    return `  ${k}  ->  ${repoPath(k)}${slug ? `  (${slug})` : ''}  lands on origin/${baseOf(k)}`
   })
   return rows.join('\n')
 }
@@ -514,6 +517,7 @@ function roleOf(repo) {
 function checksFor(repo, wtPath, laneIndex) {
   const cfg = REPOS[repo] || {}
   const role = roleOf(repo)
+  const base = baseOf(repo)
 
   if (role === 'generic' || (!cfg.test && role !== 'rails' && role !== 'node' && role !== 'script')) {
     return `${repoCommands(repo)}
@@ -596,7 +600,7 @@ you fail, and in this order - the owner file first, so the directory is never le
   rmdir /tmp/${LOCK_PREFIX}-lane-${laneIndex + 2}.lock
 
 THEN MAKE THE WORKTREE BOOT. Four things this app needs to start are gitignored, so none of them
-can reach a checkout and a worktree cut from origin/master cannot boot Rails at all. Run these
+can reach a checkout and a worktree cut from origin/${base} cannot boot Rails at all. Run these
 before any other command, in this order:
 
   test -L ${wtPath}/config/master.key || ln -s ${repoPath(repo)}/config/master.key ${wtPath}/config/master.key
@@ -621,7 +625,7 @@ evaluates ERB for every environment whatever the test adapter needs. Without nod
 asset manifest link_trees into it and every view-rendering spec fails with 'link_tree argument
 must be a directory'. With app/assets/builds unbuilt, stylesheet_link_tag falls through to
 compiling sass and raises 'cannot load such file -- sassc', which reads as a missing gem rather
-than a missing build. Measured 2026-09-12 on pristine origin/master: 427 of 1471 examples fail
+than a missing build. Measured 2026-09-12 on a pristine origin/${base}: 427 of 1471 examples fail
 with none of these done, and 0 fail with all four. A lane that does not know this reads 427
 failures on a four-line change as a broken branch.
 
@@ -692,7 +696,7 @@ mergeable CONFLICTING, or mergeStateStatus DIRTY, means GitHub cannot build the 
 workflow runs on, so it scheduled NO RUN AT ALL - not queued, not skipped, absent. An empty rollup
 from a conflict is the same shape as one that is a minute old, which is why a lane sat on pitwall#120
 for two hours re-triggering a run that was never coming. Closing and reopening the PR does not
-resolve a conflict and will not produce one either. Merge origin/master into your branch, resolve,
+resolve a conflict and will not produce one either. Merge origin/${base} into your branch, resolve,
 push, and wait on the new head.
 
 mergeable UNKNOWN means GitHub has not computed it yet. Re-read it; conclude nothing from one read.
@@ -802,7 +806,7 @@ db/schema.rb to match.`
 
 ${repoCommands(repo)}
 
-A warning that is already on master is not yours to fix as a drive-by - check whether it is
+A warning that is already on ${base} is not yours to fix as a drive-by - check whether it is
 pre-existing before touching it, and leave it if it is.`
   }
   if (role === 'script') {
@@ -824,12 +828,12 @@ modified topics-from-search.md and five untracked drafts. Branching there puts y
 of their work, and one 'git add -A' commits their drafts into your pull request.
 
   cd ${repoPath('docs')} && git fetch origin --quiet
-  git worktree add --force ${wtPath} -b devloop/${task.id} origin/master
+  git worktree add --force ${wtPath} -b devloop/${task.id} origin/${base}
   cd ${wtPath}
 
 Everything after that happens in the worktree. Do not cd back, do not check anything out in the
-original, and remove the worktree when you hand off. Branch from origin/master rather than the
-local master, which may be behind or may not be what is checked out.`
+original, and remove the worktree when you hand off. Branch from origin/${base} rather than the
+local ${base}, which may be behind or may not be what is checked out.`
   }
 
   return `${repoCommands(repo)}
@@ -910,6 +914,7 @@ function fixPrompt(task, attempt, feedback, laneIndex, brief) {
   const scratch = `${SCRATCH}/${task.id}`
   const again = attempt > 1
   const slug = (REPOS[task.repo] || {}).slug
+  const base = baseOf(task.repo)
   return `${again ? 'REWORK' : 'Fix'} one tracker issue end to end and open a pull request.
 
 Issue: ${task.id} - ${task.title}
@@ -945,7 +950,7 @@ and closed the ticket two minutes into the run, and the lane wrote the entire ar
 before fetching and finding master had moved. Everything it produced was thrown away.
 
 The same check is worth repeating as a habit before any long stretch of writing - fetching
-origin/master and re-reading the ticket costs seconds and can save an hour of work that
+origin/${base} and re-reading the ticket costs seconds and can save an hour of work that
 lands nowhere.
 ${brief ? `\nA designer has already decided how this should look. Build exactly this; do not
 re-decide appearance, and if you think it is wrong, stop and ask rather than improvising:\n---\n${brief}\n---\n` : ''}
@@ -957,7 +962,7 @@ ${again ? '' : `Set up the worktree. THE BRANCH MAY ALREADY EXIST, so check befo
   if git ls-remote --exit-code --heads origin ${branch} >/dev/null; then
     git worktree add ${wtPath} -B ${branch} origin/${branch}
   else
-    git worktree add ${wtPath} -b ${branch} origin/master
+    git worktree add ${wtPath} -b ${branch} origin/${base}
   fi
   mkdir -p ${scratch}
 Mark it claimed, from ${ROOT}:
@@ -971,12 +976,12 @@ and read it:
 Never use 2>&1 to see it, here or anywhere: it breaks xcodebuild and other tools outright, and
 a setup probe piped into head or tail is exactly where runs keep reaching for it.
 
-BRANCH FROM origin/master, NEVER FROM ANOTHER LANE'S BRANCH, and open the pull request against
-master. If the work you need sits in a pull request that has not landed yet, that is a
+BRANCH FROM origin/${base}, NEVER FROM ANOTHER LANE'S BRANCH, and open the pull request against
+${base}. If the work you need sits in a pull request that has not landed yet, that is a
 dependency - say so and stop, or build the part that does not need it. Do not stack on it.
 
 A stacked pull request breaks this pipeline in two ways at once. The CI workflow only runs on
-pull_request when the base is master, so a stacked one has an EMPTY rollup forever and no amount
+pull_request when the base is ${base}, so a stacked one has an EMPTY rollup forever and no amount
 of waiting produces a check - and a workflow_dispatch run you trigger yourself is not the same
 thing and must never be read as one. Worse, the train squashes every labelled branch onto one
 release branch, and a branch stacked on another carries the other's commits too, so the same
@@ -989,13 +994,13 @@ IF THE BRANCH ALREADY EXISTED, you are CONTINUING somebody's work, not starting 
 happens whenever a branch outlives its worktree - a run that pushed and then died, or an issue
 whose first pass shipped part of the job and left the rest. Before you change one line:
 
-  git log origin/master..HEAD
-  git diff origin/master...HEAD --stat
+  git log origin/${base}..HEAD
+  git diff origin/${base}...HEAD --stat
 
 and read the issue's notes for what that work was and what remains. Then rebase onto
-origin/master before adding to it, because the branch is probably behind.
+origin/${base} before adding to it, because the branch is probably behind.
 
-DO NOT rebuild what is there from scratch, and do not reset the branch to master. That work is
+DO NOT rebuild what is there from scratch, and do not reset the branch to ${base}. That work is
 already reviewed, sometimes already pushed, and re-deriving it burns a full run to arrive back
 where the branch already was. This exact gap held app-5ek6.5 for two days: the branch carried
 the whole ad-creative factory at 77264c7 and every dispatch would have branched fresh from
@@ -1016,7 +1021,7 @@ scratch directory that only exists here.
 
 - site: write a THROWAWAY spec at ${WT}/${task.id}/spec/system/autofix_capture_spec.rb that
   drives the screen and calls page.save_screenshot("${WT}/shots/${task.id}-after.png").
-  Capture origin/master the same way first, as "...-before.png", where the screen exists.
+  Capture origin/${base} the same way first, as "...-before.png", where the screen exists.
   DELETE that spec file before you commit. If the fix also warrants a permanent system spec,
   that is a different file and it must contain no save_screenshot and no ${WT} path.
 - extension: render the panel headless into the same directory, from a script you delete.
@@ -1209,16 +1214,16 @@ Otherwise:
    again only if you changed something after that.
 5. ${task.repo === 'docs'
    ? `Run 'ruby script/check.rb', then commit, read your own commit messages back with
-     bash ${SKILL_DIR}/lane-handoff.sh --repo-path ${wtPath} --pre-push
-   and only then push and open a PR with 'gh pr create' explaining what was wrong, why this
+     bash ${SKILL_DIR}/lane-handoff.sh --repo-path ${wtPath} --pre-push --base ${base}
+   and only then push and open a PR with 'gh pr create --base ${base}' explaining what was wrong, why this
    fix, and what you checked by reading. Reference ${task.id}. Do NOT merge it. This repository
    gained a remote and CI on 2026-08-19; the instruction that it had neither outlived the fact
    by a day and would have had you commit straight onto a real default branch.`
    : `Commit with the identity on the command rather than from a config nobody read -
-   git -c user.name="$(git log -1 --format=%an origin/master)" -c user.email="$(git log -1 --format=%ae origin/master)" commit -F <message file> -
+   git -c user.name="$(git log -1 --format=%an origin/${base})" -c user.email="$(git log -1 --format=%ae origin/${base})" commit -F <message file> -
    then READ YOUR OWN COMMIT MESSAGES BACK BEFORE YOU PUSH:
-     bash ${SKILL_DIR}/lane-handoff.sh --repo-path ${wtPath} --pre-push
-   It greps origin/master..HEAD for exactly what the handoff gate greps the pushed branch for,
+     bash ${SKILL_DIR}/lane-handoff.sh --repo-path ${wtPath} --pre-push --base ${base}
+   It greps origin/${base}..HEAD for exactly what the handoff gate greps the pushed branch for,
    and this is the last moment a hit is cheap: an amend needs no force-push while a commit is
    still local, and once it is pushed nothing a run can do will clear its message. Exit 0 means
    push. Exit 2 names the commit each hit is in - for one that is still local it prints the amend
@@ -1228,21 +1233,23 @@ Otherwise:
    make: the remote holds this branch at a head your HEAD does not contain, which is the shape a
    rebase leaves behind, so a plain push is refused and only a person can publish it - report
    what it prints and return 'blocked' rather than reaching for a force-push.
-   Then push and open a PR with 'gh pr create' explaining what was wrong, why this fix, and
-   what the test covers. Reference ${task.id}. Do NOT merge it.`}
+   Then push and open a PR with 'gh pr create --base ${base}' explaining what was wrong, why this
+   fix, and what the test covers. Pass --base explicitly: without it gh opens the pull request
+   against whatever GitHub calls the default, and this workspace lands on ${base}. Reference
+   ${task.id}. Do NOT merge it.`}
 
 IF YOUR CHANGE TOUCHES plugins/ OR .claude-plugin/, LEAVE THE VERSION ALONE. Do not edit the
 version in .claude-plugin/marketplace.json, do not edit it in
 plugins/devloop/.claude-plugin/plugin.json, and do not add a version heading to
-plugins/devloop/skills/devloop/CHANGELOG.md. Leave all three files exactly as master has them.
+plugins/devloop/skills/devloop/CHANGELOG.md. Leave all three files exactly as ${base} has them.
 
-The number you would choose is already wrong. You read master when you started; by the time your
+The number you would choose is already wrong. You read ${base} when you started; by the time your
 pull request merges another lane has landed and moved it, and every lane in a pass reads the same
-master and picks the same number. On 2026-09-12 five plugin pull requests all declared 0.1.33:
+${base} and picks the same number. On 2026-09-12 five plugin pull requests all declared 0.1.33:
 the first to land moved master to 0.1.33 and the other four were then equal rather than greater,
 were refused, and were retired - four sets of finished, reviewed, green work, each needing a full
 re-dispatch to recover. The lander assigns the number when it merges, which is the only moment
-anything knows what master holds.
+anything knows what ${base} holds.
 
 THE WORDS ARE STILL YOURS, because nothing else knows what you changed. Put your changelog entry
 in the PULL REQUEST BODY, under a heading of its own, and the lander copies it under the version
@@ -1257,17 +1264,18 @@ becomes your pull request title, which is worse than a sentence you wrote.
 
 If your change genuinely needs to edit one of those three files in SOMETHING OTHER than the
 version - a new field in the plugin manifest, a second entry in the marketplace - the lander
-refuses the pull request and names the file rather than quietly restoring master's copy over your
+refuses the pull request and names the file rather than quietly restoring ${base}'s copy over your
 edit. Say so in your summary so a person can sequence it: a lane and the lander cannot both own
 that file in one pass.
 
-${LAW}
+${LAW(base)}
 
 Return the structured result, with the real final counts line from the test run in
 testOutput - the actual line, not a paraphrase.`
 }
 
 function reviewPrompt(task, work, attempt) {
+  const base = baseOf(task.repo)
   return `Review a pushed fix. Try to REFUTE it. You are the only thing between this change
 and an unattended merge, so a wrong approval ships.
 
@@ -1279,10 +1287,10 @@ Author's claim: ${work.summary}
 Test they added: ${work.testsAdded || 'none reported'}
 Round ${attempt} of ${MAX_ATTEMPTS}.
 
-${SHELL_FIRST}
+${SHELL_FIRST(base)}
 
 Read the issue with 'bd show ${task.id}' from ${ROOT}, then read the actual diff:
-  cd ${work.worktree || `${WT}/${task.id}`} && rtk git diff origin/master...HEAD
+  cd ${work.worktree || `${WT}/${task.id}`} && rtk git diff origin/${base}...HEAD
 
 rtk is a filter in front of git that drops diff context lines while keeping every changed line.
 Measured on this repository: 40079 bytes down to 24211, a 40% cut, with nothing removed that a
@@ -1308,7 +1316,7 @@ you did not actually view an image.
   worktree, run that test, restore it. Leave the worktree byte-clean and say you did.
 - Did unrelated changes ride along?
 - Did any scaffolding reach the commit? Run
-  'git diff origin/master...HEAD | grep -nE "${WT}|${SCRATCH}|save_screenshot"'. A scratch
+  'git diff origin/${base}...HEAD | grep -nE "${WT}|${SCRATCH}|save_screenshot"'. A scratch
   path or a capture call inside a committed file is an automatic rejection: it makes every
   future run of that suite write into a directory that exists on one machine.
 - What breaks that the suite cannot see? Other callers of the changed code, a state the new
@@ -1349,6 +1357,7 @@ function handoffPrompt(task, work) {
   // on sight. It was caught only because the two titles were absurdly different; two tickets
   // of the same kind would not have that tell, and this queue produces those constantly.
   const slug = (REPOS[task.repo] || {}).slug
+  const base = baseOf(task.repo)
   return `This change passed an automated adversarial review by another agent. NO HUMAN HAS
 REVIEWED IT. Do not describe it as human-approved to anyone or in anything you write.
 
@@ -1371,7 +1380,7 @@ PR: ${work.prUrl || work.prNumber}
    as "not started, keep waiting", never as a pass.
 
    READ THE MERGEABILITY IN THE SAME CALL, AND BEFORE YOU SETTLE IN TO WAIT. mergeable
-   CONFLICTING, or mergeStateStatus DIRTY, means the branch conflicts with master - and a
+   CONFLICTING, or mergeStateStatus DIRTY, means the branch conflicts with ${base} - and a
    pull_request workflow runs on refs/pull/<n>/merge, which GitHub cannot build while it
    conflicts, so it schedules NO RUN AT ALL. Not queued, not skipped, absent. The rollup stays
    empty for good and looks exactly like one that is a minute old, which is how a lane waited two
@@ -1379,9 +1388,9 @@ PR: ${work.prUrl || work.prNumber}
    conflict: that was tried there, one second apart, and changed nothing.
 
    A CONFLICT IS NOT YOURS TO RESOLVE HERE - you are not rebasing and not merging in this step.
-   Return status 'blocked' with 'conflicted with master' and the mergeStateStatus in 'notes'. The
+   Return status 'blocked' with 'conflicted with ${base}' and the mergeStateStatus in 'notes'. The
    run then ends NOT LABELLED with the conflict on the record, which is what whoever reads it needs
-   to send the branch for a merge from master. Nothing is lost by stopping: the wait could not have
+   to send the branch for a merge from ${base}. Nothing is lost by stopping: the wait could not have
    ended.
 
    mergeable UNKNOWN means GitHub has not computed it yet, which is neither a conflict nor a
@@ -1404,15 +1413,15 @@ PR: ${work.prUrl || work.prNumber}
    the failing examples and their messages in 'notes', in enough detail to act on without
    re-running anything. Do not label a red PR.
 
-   You do NOT need master to be green, and you do NOT need your branch to be current with
-   master. The lander checks both, rebases, and waits for CI again on the rebased head. That
-   is the whole point of it being serial - it is the only thing merging, so master cannot
+   You do NOT need ${base} to be green, and you do NOT need your branch to be current with
+   ${base}. The lander checks both, rebases, and waits for CI again on the rebased head. That
+   is the whole point of it being serial - it is the only thing merging, so ${base} cannot
    move underneath it.
 
 2. CHECK COMPLIANCE BEFORE YOU LABEL. Read the PR body back from GitHub and the commit
    messages back from git - not what you meant to write, what is actually there:
      cd ${repo} && gh pr view ${work.prNumber} --repo ${slug} --json body
-     cd ${repo} && git log origin/master..origin/devloop/${task.id} --format=%B
+     cd ${repo} && git log origin/${base}..origin/devloop/${task.id} --format=%B
    If anything mentions AI, assistants, automated authorship or tooling, FIX IT NOW rather
    than labelling it: edit the body with 'gh pr edit ${work.prNumber} --repo ${slug} --body-file <file>', and
    if a commit message is the problem say so in 'notes' and return 'blocked' - rewriting
@@ -1447,7 +1456,7 @@ PR: ${work.prUrl || work.prNumber}
    When it is genuinely ambiguous, keep the product name and say in 'notes' what you kept and
    why, so the next reader is not left re-deciding it.
 
-   YOUR SCOPE IS YOUR OWN DIFF. Text already on master is not yours to police, however it reads.
+   YOUR SCOPE IS YOUR OWN DIFF. Text already on ${base} is not yours to police, however it reads.
    Editing it invalidates the green run for a line your change never introduced, and the next
    lane will meet the same line and do it again.
 
@@ -1498,7 +1507,7 @@ PR: ${work.prUrl || work.prNumber}
 
    Exit codes: 0 handed off, 2 non-compliant (NOTHING was labelled anywhere - it prints the
    offending lines against the pull request they came from, you judge them, you fix, you re-run),
-   3 a pull request on the branch conflicts with master so no check will ever be scheduled for it,
+   3 a pull request on the branch conflicts with ${base} so no check will ever be scheduled for it,
    4 a pull request on the branch is not in a state to label (nothing was labelled anywhere),
    5 labelled and cleaned up but the tracker note could not be confirmed, 6 bad arguments,
    7 the set of pull requests on the branch could not be established - the config could not be
@@ -1518,10 +1527,10 @@ PR: ${work.prUrl || work.prNumber}
    minute and run the handoff again; if the same read keeps failing for a reason the output names
    as permanent, return 'blocked' quoting it.
 
-   EXIT 3 IS NOT A WAIT AND NOT A RE-RUN. The pull request conflicts with master, so GitHub builds
+   EXIT 3 IS NOT A WAIT AND NOT A RE-RUN. The pull request conflicts with ${base}, so GitHub builds
    no merge ref and schedules no checks for it - the rollup you are waiting on will never fill.
    Nothing you can do in this step changes that, and a second run reads the same conflict again:
-   return 'blocked' with what it printed. The remedy is a merge from master, and it is not yours
+   return 'blocked' with what it printed. The remedy is a merge from ${base}, and it is not yours
    here.
 
    EXIT 7 IS NOT 'BAD ARGUMENTS'. Your arguments were fine and nothing was labelled: something it
@@ -1555,7 +1564,7 @@ PR: ${work.prUrl || work.prNumber}
    help and appending blindly is how a note gets written twice.
 
    ITS REFUSAL TO LABEL IS THE POINT. A label is an assertion that the PR is ready. Labelling
-   first and fixing after is how the wrong text reaches master. If it reports hits, read them:
+   first and fixing after is how the wrong text reaches ${base}. If it reports hits, read them:
    a vendor or product name that is the SUBJECT of the change is fine, and the script cannot
    tell the difference - that judgement is yours, and 'sends automatically', 'the model' and
    'regenerated' have all been correctly kept before.
@@ -1635,7 +1644,7 @@ PR: ${work.prUrl || work.prNumber}
    lander closes it when it is. Never 'bd update --notes': it overwrites the whole field and
    has already destroyed a decision somebody recorded.
 
-${LAW}
+${LAW(base)}
 
 Return status 'verified' once the PR is green and the label reads back. Put the PR number in
 'prNumber' so the lander can be pointed straight at it.`
@@ -1750,19 +1759,19 @@ Return eligible:false, with a reason, if any of these holds:
   dispatch until X closes" records what was true the day it was written. Run 'bd show X' and
   look at the status. If the note names a pull request, check whether it merged. If it names a
   file, a locale key or a column that supposedly does not exist yet, or a commit that supposedly
-  has not landed, ask origin/master - fetched first, because a remote-tracking ref nobody has
+  has not landed, ask origin/${WORKSPACE_BASE} - fetched first, because a remote-tracking ref nobody has
   fetched is stale one level down:
     git -C <checkout> fetch origin --quiet
-    git -C <checkout> ls-tree --name-only origin/master <path>
-    git -C <checkout> show origin/master:<file> | head
-    git -C <checkout> merge-base --is-ancestor <sha> origin/master
+    git -C <checkout> ls-tree --name-only origin/${WORKSPACE_BASE} <path>
+    git -C <checkout> show origin/${WORKSPACE_BASE}:<file> | head
+    git -C <checkout> merge-base --is-ancestor <sha> origin/${WORKSPACE_BASE}
 
   NEVER AGAINST THE CHECKOUT'S OWN HEAD - not 'git show HEAD:<file>', not 'ls <checkout>/<path>',
-  not '--is-ancestor <sha> HEAD'. You run before any worktree exists, so origin/master is the
-  only current reference there is, and the root checkout's HEAD is whatever master was the day
-  somebody last pulled it: every lane branches from origin/master and lands from a worktree, so
+  not '--is-ancestor <sha> HEAD'. You run before any worktree exists, so origin/${WORKSPACE_BASE} is the
+  only current reference there is, and the root checkout's HEAD is whatever ${WORKSPACE_BASE} was the day
+  somebody last pulled it: every lane branches from origin/${WORKSPACE_BASE} and lands from a worktree, so
   nobody fast-forwards it. On 2026-09-12 it was 35 merges behind. A file that had been on
-  origin/master for days was reported as not existing anywhere, a merged commit as not an
+  origin/${WORKSPACE_BASE} for days was reported as not existing anywhere, a merged commit as not an
   ancestor, and the issue was bounced to a person over prerequisite branches that were already
   merged and deployed.
 
@@ -1909,7 +1918,8 @@ Rules for a split, because a bad one is worse than asking:
 Otherwise eligible:true.
 
 ROUTE IT FROM THE PATHS THE TICKET NAMES, AND CHECK THE ANSWER. These are the repositories this
-workspace has, with the checkout each key resolves to:
+workspace has, with the checkout each key resolves to and the branch each one lands on - that is
+the branch to ask, in place of origin/${WORKSPACE_BASE} below, wherever a checkout names a different one:
 
 ${reposTable()}
 
@@ -1919,9 +1929,9 @@ ${reposTable()}
    from a repository the work does not belong to. If the work belongs somewhere with no key here,
    return eligible:false and say which repository it needs.
 2. DERIVE THE KEY FROM THE SOURCE PATHS THE TICKET NAMES. For each path it names, find which
-   checkout's origin/master actually contains it:
+   checkout's origin/${WORKSPACE_BASE} actually contains it:
      git -C <checkout> fetch origin --quiet
-     git -C <checkout> ls-tree --name-only origin/master '<the path it names>' 2>/dev/null
+     git -C <checkout> ls-tree --name-only origin/${WORKSPACE_BASE} '<the path it names>' 2>/dev/null
    Not 'ls' and not 'ls-files': both read the checkout's HEAD, which is stale for the reason
    above, so a path another lane landed yesterday is invisible to them and the ticket naming it
    routes nowhere.
@@ -2062,7 +2072,7 @@ Keep the parent open. Do not close it - its children are not done.
 
 Report the child ids you created and which are ready to be worked.
 
-${LAW}
+${LAW()}
 
 Never use 2>&1. Change no code, open no PR, touch no repo.`,
     { label: `split:${ID}`, phase: 'Split', model: 'sonnet' })
@@ -2171,11 +2181,11 @@ for (let attempt = 1; attempt <= MAX_ATTEMPTS && !result && !rework; attempt++) 
     // failing silently.
     if (ship && ship.status === 'needs_rework' && reworks < MAX_REWORKS) {
       reworks += 1
-      rework = `Your branch was behind master. After rebasing onto current master the suite is red, and these failures are what has to be fixed before it can merge:
+      rework = `Your branch was behind ${baseOf(task.repo)}. After rebasing onto current ${baseOf(task.repo)} the suite is red, and these failures are what has to be fixed before it can merge:
 
 ${ship.reworkReason || ship.notes}
 
-This is not a rejection of your change - master moved underneath it. Read the failures
+This is not a rejection of your change - ${baseOf(task.repo)} moved underneath it. Read the failures
 before assuming they are yours: if they belong to something merged since, they may want
 fixing here or handing back, and the reviewer will judge which. The review budget has been
 reset; you have ${MAX_ATTEMPTS} rounds again.`
@@ -2208,11 +2218,11 @@ reset; you have ${MAX_ATTEMPTS} rounds again.`
 if (rework) { feedback = rework; continue }
 
 if (!result && reworks >= MAX_REWORKS) {
-  const ho2 = await agent(giveUpPrompt(task, `Rebased onto master ${MAX_REWORKS} times and it was red every time. Master is moving faster than this branch can follow, or the change genuinely disagrees with something that landed since. Last failure:\n\n${feedback}`), { label: `handover:${task.id}`, phase: 'Ship', schema: HANDOVER, model: 'sonnet' })
+  const ho2 = await agent(giveUpPrompt(task, `Rebased onto ${baseOf(task.repo)} ${MAX_REWORKS} times and it was red every time. ${baseOf(task.repo)} is moving faster than this branch can follow, or the change genuinely disagrees with something that landed since. Last failure:\n\n${feedback}`), { label: `handover:${task.id}`, phase: 'Ship', schema: HANDOVER, model: 'sonnet' })
   if (!parkedProperly(ho2 && ho2.verification)) {
     log(`PARK FAILED ${task.id} - NOT open + a parking label in the tracker. Park it by hand or it will be dispatched again.`)
   }
-  result = { outcome: 'needs_feedback', question: `rebased ${MAX_REWORKS} times and master was red each time`, reworks }
+  result = { outcome: 'needs_feedback', question: `rebased ${MAX_REWORKS} times and ${baseOf(task.repo)} was red each time`, reworks }
 }
 }
 
