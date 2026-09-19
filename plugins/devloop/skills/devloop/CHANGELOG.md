@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.103
+
+A run that ends short of a handoff - blocked, needs_feedback, a dead fix step - now says in a top-level `worktree` field whether its worktree is gone, clean, or still holding uncommitted or unpushed work, naming the path, and the console line for that outcome says the same. Read that field before `kill-lane.sh` removes the worktree; `UNCOMMITTED` means work no branch protects. `release-lane.sh --worktree <path>` is what reports it, and it only reads. A git read that fails inside the checkout is `UNREAD`, never `CLEAN`, and a release step that does not answer leaves the field `UNKNOWN`, never clean.
+
 ## 0.1.102
 
 The push guard now refuses the repository's configured default branch, not only master and main. Every brief and script that calls `git-guard.sh` passes `--default=<branch>`; a session writing its own guard command should pass the branch its repository lands on, and master and main stay refused either way.
