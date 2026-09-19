@@ -4,11 +4,13 @@ set -u
 lane=""
 slot=""
 owner=""
+worktree=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --lane)  lane=$2; shift 2 ;;
-    --slot)  slot=$2; shift 2 ;;
-    --owner) owner=$2; shift 2 ;;
+    --lane)     lane=$2; shift 2 ;;
+    --slot)     slot=$2; shift 2 ;;
+    --owner)    owner=$2; shift 2 ;;
+    --worktree) worktree=$2; shift 2 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -89,6 +91,35 @@ if [ -n "$slot" ]; then
     echo "slot: STILL_HELD"
     echo "  ${slot} named ${owner} and could not be removed. The lane stays reserved."
     status=1
+  fi
+fi
+
+if [ -n "$worktree" ]; then
+  export GIT_CONFIG_GLOBAL=/dev/null
+  if [ ! -e "$worktree" ]; then
+    echo "worktree: GONE"
+    echo "  ${worktree} does not exist. Nothing was left behind there."
+  elif ! git -C "$worktree" rev-parse --is-inside-work-tree >/dev/null 2>/dev/null; then
+    echo "worktree: UNREAD"
+    echo "  ${worktree} exists but git cannot read it as a checkout, so whether it holds work is unknown."
+    echo "  Look inside it before anything removes it."
+  else
+    changes="$(git -C "$worktree" status --porcelain 2>/dev/null | grep -c . || true)"
+    unpushed="$(git -C "$worktree" rev-list --count HEAD --not --remotes 2>/dev/null || echo 0)"
+    branch="$(git -C "$worktree" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)"
+    if [ "${changes:-0}" -gt 0 ]; then
+      echo "worktree: UNCOMMITTED"
+      echo "  ${worktree} holds ${changes} uncommitted change(s) and ${unpushed} unpushed commit(s) on ${branch}. No branch"
+      echo "  protects an uncommitted change: kill-lane.sh, slot.sh --gc and a re-dispatch each remove the"
+      echo "  worktree. Commit it or copy it out first."
+    elif [ "${unpushed:-0}" -gt 0 ]; then
+      echo "worktree: UNPUSHED"
+      echo "  ${worktree} is clean but ${branch} holds ${unpushed} commit(s) no remote has. The branch survives the"
+      echo "  worktree being removed; the commits are lost only if the branch is deleted. Push it first."
+    else
+      echo "worktree: CLEAN"
+      echo "  ${worktree} holds nothing a remote does not already have."
+    fi
   fi
 fi
 

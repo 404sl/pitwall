@@ -71,6 +71,15 @@ has built its result before the release step answers, so for those three the log
 it appears. Every `rework.js` ending but an exception carries both answers, because the endings that
 used to return early set a result instead.
 
+**The same release step reads the worktree, and `task.js` carries the answer as `worktree`.**
+`release-lane.sh --worktree <path>` reports one word - `GONE`, `CLEAN`, `UNPUSHED`, `UNCOMMITTED`
+or `UNREAD` - and changes nothing there. A run that got past triage returns `worktree` naming the
+path and, for anything but gone or clean, that it still holds work nothing protects, and its console
+line says the same whenever the run ended short of verified. A release step that never answers
+leaves the field `UNKNOWN`, never clean. It exists because a run that ended `blocked` once left a
+worktree full of finished, uncommitted work, and the supervisor found it only because that one
+summary happened to be thorough.
+
 A rework dispatched without a slot does not start. `rework.js` used to fall back to slot 1 for
 `TEST_ENV_NUMBER`, which is whichever run actually reserved it, and gave only the lane back because
 the reservation was not its to remove. It now refuses an args object whose slot is not a number,

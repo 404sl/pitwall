@@ -263,10 +263,11 @@ const SHIP = {
 
 const LANE = {
   type: 'object',
-  required: ['lane', 'slot'],
+  required: ['lane', 'slot', 'worktree'],
   properties: {
     lane: { enum: ['released', 'not_mine', 'already_gone', 'still_held'], description: 'the word release-lane.sh printed after lane:, lowercased - it reports its own outcome and you are not asked to judge it' },
     slot: { enum: ['released', 'not_mine', 'already_gone', 'still_held'], description: 'the word it printed after slot:, lowercased' },
+    worktree: { enum: ['gone', 'clean', 'uncommitted', 'unpushed', 'unread'], description: 'the word it printed after worktree:, lowercased' },
     notes: { type: 'string', description: 'everything it printed, verbatim' }
   }
 }
@@ -1701,20 +1702,23 @@ async function design(task) {
 const GIVEN_BACK = new Set(['released', 'already_gone'])
 
 function releaseLanePrompt() {
-  return `Give lane ${LANE_NUMBER} and slot ${SLOT} back. Run this command once, exactly as it stands, and
-report what it printed:
+  return `Give lane ${LANE_NUMBER} and slot ${SLOT} back, and say what is left in the worktree. Run this
+command once, exactly as it stands, and report what it printed:
 
-  bash ${SKILL_DIR}/release-lane.sh --lane ${LANE_LOCK} --slot ${SLOT_FILE} --owner '${ID}'
+  export GIT_CONFIG_GLOBAL=/dev/null BUNDLE_USER_CONFIG=/dev/null && bash ${SKILL_DIR}/release-lane.sh --lane ${LANE_LOCK} --slot ${SLOT_FILE} --owner '${ID}' --worktree ${WORKTREE}
 
 Every value is already in the command. There is nothing to look up, substitute or confirm first,
 and nothing for you to judge: the script proves ownership itself - the owner file beside the lock
 and the id in the slot file - and removes only what names this run. An earlier release step of
 this shape was told to supply a value it had already been given, went looking for it, found none
-and declined to touch the lock at all, which left every other lane waiting on it.
+and declined to touch the lock at all, which left every other lane waiting on it. The worktree is
+only read, never changed: the script reports whether it is gone, clean, or still holding
+uncommitted or unpushed work, and what it reports travels back in the run's result so that
+finished work is not thrown away on the strength of a terse summary.
 
-Report the word after 'lane:' as 'lane' and the word after 'slot:' as 'slot', lowercased, and
-everything it printed as 'notes'. Remove nothing by hand, run no other command, and never use
-2>&1.`
+Report the word after 'lane:' as 'lane', the word after 'slot:' as 'slot' and the word after
+'worktree:' as 'worktree', all lowercased, and everything it printed as 'notes'. Remove nothing by
+hand, run no other command, and never use 2>&1.`
 }
 
 function settle(path, answer) {
@@ -1723,8 +1727,21 @@ function settle(path, answer) {
   return `LEAKED - ${path} was not given back, or the release step answered nothing. Read it before removing anything: clear it if it records this run, and leave it alone if it records another.`
 }
 
+const WORKTREE = `${WT}/${ID}`
+const HOLDS_WORK = {
+  uncommitted: `UNCOMMITTED - ${WORKTREE} holds uncommitted work that no branch protects. Commit it or copy it out before kill-lane.sh, slot.sh --gc or a re-dispatch removes the worktree.`,
+  unpushed: `UNPUSHED - ${WORKTREE} holds commits no remote has. The branch survives the worktree being removed; push it or copy it out before the branch is deleted.`,
+  unread: `UNREAD - ${WORKTREE} exists but could not be read as a checkout. Look inside it before anything removes it.`
+}
+
+function settleWorktree(answer) {
+  if (answer === 'gone' || answer === 'clean') return `${answer} - ${WORKTREE}`
+  return HOLDS_WORK[answer] || `UNKNOWN - the release step did not say what ${WORKTREE} holds. Look inside it before anything removes it: whatever is there may be finished, uncommitted work.`
+}
+
 let laneLock = `LEAKED - the release step never reported. Read ${LANE_LOCK} before touching anything.`
 let slotClaim = `LEAKED - the release step never reported. Read ${SLOT_FILE} before touching anything.`
+let worktreeState = `UNKNOWN - the release step never reported. Look inside ${WORKTREE} before anything removes it.`
 let task = { id: ID, title: null, repo: null, priority: null }
 let result = null
 
@@ -2231,9 +2248,11 @@ if (!result && reworks >= MAX_REWORKS) {
   const back = await agent(releaseLanePrompt(), { label: `release:${ID}`, phase: 'Ship', schema: LANE, model: 'haiku', effort: 'low' })
   laneLock = settle(LANE_LOCK, back && back.lane)
   slotClaim = settle(SLOT_FILE, back && back.slot)
+  worktreeState = settleWorktree(back && back.worktree)
   if (!GIVEN_BACK.has(back && back.lane) || !GIVEN_BACK.has(back && back.slot)) {
     log(`lane ${LANE_NUMBER}: ${laneLock}\n    slot ${SLOT}: ${slotClaim}${back && back.notes ? `\n    ${back.notes}` : ''}`)
   }
+  if (!result && /^[A-Z]/.test(worktreeState)) log(`worktree: ${worktreeState}`)
 }
 
 const MARK = {
@@ -2246,6 +2265,7 @@ if (result.attempts > 1) bits.push(`${result.attempts} rounds`)
 if (result.pr && result.outcome === 'verified') bits.push('labelled lane-verified')
 if (result.question) bits.push(`asks: ${result.question}`)
 if (result.summary && !result.question) bits.push(result.summary)
+if (result.outcome !== 'verified' || /^[A-Z]/.test(worktreeState)) bits.push(`worktree: ${worktreeState}`)
 log(`${MARK[result.outcome] || result.outcome} ${task.id} P${task.priority} ${task.repo} - ${task.title}${bits.length ? `\n    ${bits.join('\n    ')}` : ''}`)
 
-return { id: task.id, title: task.title, repo: task.repo, priority: task.priority, ...result, lane: laneLock, slot: slotClaim }
+return { id: task.id, title: task.title, repo: task.repo, priority: task.priority, ...result, lane: laneLock, slot: slotClaim, worktree: worktreeState }
