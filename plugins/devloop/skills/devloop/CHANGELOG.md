@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.93
+
+A push whose refspec names master or main is refused by the guard even from a lane's own branch, with or without `--branch`. The refused destinations are `master`, `main`, `heads/master`, `heads/main`, `refs/heads/master` and `refs/heads/main`, so `git push origin HEAD:master`, `git push origin :master`, `git push --force origin +HEAD:main`, `git push origin master` and `git push origin HEAD:heads/master` all exit 2 and run nothing. A destination that is a pattern or empty is refused too, because it lands on the shared local master among the rest: `git push origin refs/heads/*:refs/heads/*`, `git push origin +refs/heads/*:refs/heads/*`, `git push origin :` and `git push origin +:` all exit 2 and run nothing, and so does a pattern over the lane's own namespace such as `refs/heads/devloop/*:refs/heads/devloop/*` - push one branch by name instead. A push to the lane's own branch, a bare `--force-with-lease`, and the lander's lease-and-refspec push are unaffected. `git push --all`, `git push --mirror` and a refspec that comes from configuration rather than the command line are not read and are recorded under pitwall-a809.
+
 ## 0.1.92
 
 Triage now verifies a path's existence and a commit's ancestry against `origin/master`, fetched first, and never against the HEAD of the root checkout: `git -C <checkout> ls-tree --name-only origin/master <path>` and `git -C <checkout> merge-base --is-ancestor <sha> origin/master`. A root checkout that nobody has fast-forwarded no longer makes triage report a landed file as missing or a merged commit as unlanded, and no longer bounces an issue over prerequisites that already shipped.
