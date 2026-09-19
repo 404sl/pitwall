@@ -255,6 +255,17 @@ number is still accepted for the sake of `queue.sh`, which reserves before it pr
 CHECKED against the reservation rather than used instead of it - one that disagrees is refused,
 naming both.
 
+**It also says when a root checkout is behind origin.** `--args` and `--rework` fetch each
+configured repository's default branch and compare the checkout's local branch with
+`origin/<defaultBranch>`. A checkout behind by more than `warnBehind` commits (default 0, set
+it in the workspace config) gets one line on stderr naming the repository, the count and both
+shas; a fetch that fails gets one line saying the checkout could not be compared, which is not
+the same as up to date. It is a warning: the dispatch proceeds and nothing is fast-forwarded,
+because the root checkout is a person's working copy. Triage reads origin rather than the
+checkout's HEAD since #208, so a stale checkout no longer misleads a lane - but a person
+reading `git log` there still sees a default branch that is days old, and this is the line
+that says so.
+
 **THE SCRIPT YOU DISPATCH IS A COPY, AND `--args` MAKES IT FRESH.** The Workflow tool refuses
 a `scriptPath` outside the working directory, so the workflow scripts cannot be dispatched from
 the install. `run-script.sh` copies all four into `<root>/.autofix-run/` and prints the path of

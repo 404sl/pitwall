@@ -185,6 +185,61 @@ print(json.dumps(out))
 PY
 }
 
+warn_stale_checkouts() {
+  python3 - "$CONFIG" "$1" <<'PY'
+import json, os, subprocess, sys
+cfg = json.load(open(sys.argv[1]))
+repos = json.loads(sys.argv[2])
+root = cfg.get("root") or os.path.dirname(os.path.abspath(sys.argv[1]))
+limit = cfg.get("warnBehind", 0)
+if not isinstance(limit, int) or isinstance(limit, bool) or limit < 0:
+    sys.stderr.write("config.sh: warnBehind is %s, which is not a count of commits - using 0.\n" % json.dumps(limit))
+    limit = 0
+fetch_timeout = float(os.environ.get("DEVLOOP_FETCH_TIMEOUT") or 20)
+
+def git(path, *args, timeout=None):
+    try:
+        ran = subprocess.run(["git", "-C", path, *args], capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return 124, "", "timed out after %gs" % timeout
+    except OSError as e:
+        return 127, "", str(e)
+    return ran.returncode, ran.stdout.strip(), ran.stderr.strip()
+
+for name, r in repos.items():
+    branch = r.get("defaultBranch") or "master"
+    rel = r.get("path", name)
+    path = os.path.join(root, rel)
+    label = "config.sh: %s (%s) %s" % (name, rel, branch)
+    code, out, err = git(path, "fetch", "--quiet", "origin", branch, timeout=fetch_timeout)
+    if code != 0:
+        said = (err or out).splitlines()
+        sys.stderr.write("%s could not be compared with origin/%s - fetch exited %d: %s\n"
+                         % (label, branch, code, said[0] if said else "no output"))
+        continue
+    code, local, err = git(path, "rev-parse", "--verify", "--quiet", "--short", "refs/heads/" + branch)
+    if code != 0:
+        sys.stderr.write("%s could not be compared with origin/%s - no local branch %s in %s\n"
+                         % (label, branch, branch, path))
+        continue
+    code, remote, err = git(path, "rev-parse", "--verify", "--quiet", "--short", "refs/remotes/origin/" + branch)
+    if code != 0:
+        sys.stderr.write("%s could not be compared with origin/%s - no such ref after the fetch\n"
+                         % (label, branch))
+        continue
+    code, count, err = git(path, "rev-list", "--count", "refs/heads/%s..refs/remotes/origin/%s" % (branch, branch))
+    if code != 0 or not count.isdigit():
+        sys.stderr.write("%s could not be compared with origin/%s - rev-list said: %s\n"
+                         % (label, branch, (err or count).splitlines()[0] if (err or count) else "nothing"))
+        continue
+    behind = int(count)
+    if behind > limit:
+        sys.stderr.write("%s is %d behind origin/%s: %s local, %s origin. The dispatch proceeds; "
+                         "fast-forward the checkout yourself, nothing here touches it.\n"
+                         % (label, behind, branch, local, remote))
+PY
+}
+
 case "${1:-}" in
   --check)
     BRANCH_ERR="$(mktemp "${TMPDIR:-/tmp}/config-check.XXXXXX")"
@@ -293,6 +348,7 @@ if isinstance(pr, int) and not isinstance(pr, bool) and pr > 0:
       echo "config.sh --args: the default branch of a repository could not be confirmed - dispatch stops." >&2
       exit 1
     }
+    warn_stale_checkouts "$REPOS_JSON"
     SCRIPT_PATH="$(PITWALL_CONFIG="$CONFIG" bash "$SKILL_DIR/run-script.sh" task.js)" || {
       echo "config.sh --args: run-script.sh could not stage task.js - dispatch stops." >&2
       exit 1
@@ -351,6 +407,7 @@ PY
       echo "config.sh --rework: the default branch of $4 could not be confirmed - dispatch stops." >&2
       exit 1
     }
+    warn_stale_checkouts "$REPOS_JSON"
     SCRIPT_PATH="$(PITWALL_CONFIG="$CONFIG" bash "$SKILL_DIR/run-script.sh" rework.js)" || {
       echo "config.sh --rework: run-script.sh could not stage rework.js - dispatch stops." >&2
       exit 1
