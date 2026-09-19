@@ -403,9 +403,10 @@ NON-NEGOTIABLE RULES. They outrank speed, and they outrank finishing the task.
    first time. It is pure loss now that the answer is written here.
 2. Never commit to, push to, or force-push a default branch. Work only on your own branch.
 3. Guard pushes:
-   bash ${SKILL_DIR}/git-guard.sh --dir=<absolute worktree path> --branch=<your branch> -- git <command>
-   It refuses master and main, a directory that is not the root of its own worktree, and a
-   checkout whose HEAD is not the branch you named, and it runs nothing when it refuses.
+   bash ${SKILL_DIR}/git-guard.sh --dir=<absolute worktree path> --branch=<your branch> --default=${base} -- git <command>
+   It refuses ${base} as well as master and main, whether named as --branch or as the destination of
+   the push, a directory that is not the root of its own worktree, and a checkout whose HEAD is not
+   the branch you named, and it runs nothing when it refuses.
 4. Never deploy production. Staging only, and only in the Ship step.
 5. Never run 'git init', never change a remote, never delete anybody's branch but your own.
 6. Work only inside your own worktree under ${WT}. Never edit a main checkout - one of them

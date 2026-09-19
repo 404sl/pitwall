@@ -465,6 +465,11 @@ test("land.js hands the configured base to land-one.sh and names it in every com
   assert.equal(land.prompt.includes("origin/master"), false, `the land brief still names origin/master:\n${land.prompt.split("\n").filter((l) => l.includes("origin/master")).join("\n")}`);
   assert.match(land.prompt, /gh run list --branch blueprint-pro-master/);
   assert.match(land.prompt, /rebase origin\/blueprint-pro-master/);
+  assert.match(
+    land.prompt,
+    /git-guard\.sh --dir=<worktree> --branch=devloop\/pitwall-maz --default=blueprint-pro-master -- git push/,
+    "the land brief's own push is guarded without the configured base, so the guard would let a push onto it through",
+  );
   const version = calls.find((c) => c.label.startsWith("version:"));
   assert.ok(version, "no version step ran");
   assert.equal(version.prompt.includes("origin/master"), false, "the version brief still names origin/master");

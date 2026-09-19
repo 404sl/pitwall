@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.102
+
+The push guard now refuses the repository's configured default branch, not only master and main. Every brief and script that calls `git-guard.sh` passes `--default=<branch>`; a session writing its own guard command should pass the branch its repository lands on, and master and main stay refused either way.
+
 ## 0.1.101
 
 The lander refuses a pull request that is open against a branch other than the one it was told to land on, before touching anything. The refusal names both branches and the `gh pr edit --base` that retargets the pull request; a base GitHub cannot report is refused the same way rather than assumed.

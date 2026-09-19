@@ -3,17 +3,45 @@ set -u
 
 dir=""
 branch=""
+defaults=",master,main,"
 have_cmd=0
+
+add_defaults() {
+  local rest=$1 name
+  while [ -n "$rest" ]; do
+    case "$rest" in
+      *,*) name=${rest%%,*}; rest=${rest#*,} ;;
+      *)   name=$rest; rest="" ;;
+    esac
+    [ -n "$name" ] || continue
+    defaults="${defaults}${name},"
+  done
+}
+
 while [ $# -gt 0 ]; do
   case "$1" in
-    --dir=*)    dir=${1#--dir=}; shift ;;
-    --branch=*) branch=${1#--branch=}; shift ;;
-    --dir)      [ $# -ge 2 ] || { echo "git-guard.sh: --dir takes a value" >&2; exit 2; }; dir=$2; shift 2 ;;
-    --branch)   [ $# -ge 2 ] || { echo "git-guard.sh: --branch takes a value" >&2; exit 2; }; branch=$2; shift 2 ;;
-    --)         shift; have_cmd=1; break ;;
+    --dir=*)     dir=${1#--dir=}; shift ;;
+    --branch=*)  branch=${1#--branch=}; shift ;;
+    --default=*) add_defaults "${1#--default=}"; shift ;;
+    --dir)       [ $# -ge 2 ] || { echo "git-guard.sh: --dir takes a value" >&2; exit 2; }; dir=$2; shift 2 ;;
+    --branch)    [ $# -ge 2 ] || { echo "git-guard.sh: --branch takes a value" >&2; exit 2; }; branch=$2; shift 2 ;;
+    --default)   [ $# -ge 2 ] || { echo "git-guard.sh: --default takes a value" >&2; exit 2; }; add_defaults "$2"; shift 2 ;;
+    --)          shift; have_cmd=1; break ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
+
+is_default() {
+  local name=$1
+  case "$name" in
+    refs/heads/*) name=${name#refs/heads/} ;;
+    heads/*)      name=${name#heads/} ;;
+  esac
+  case "$defaults" in
+    *",${name},"*) return 0 ;;
+  esac
+  return 1
+}
 
 if [ -z "$dir" ]; then
   echo "git-guard.sh: --dir is required. Refusing to guess which checkout the command runs in." >&2
@@ -25,14 +53,13 @@ if [ "$have_cmd" = 0 ] || [ $# -eq 0 ]; then
   exit 2
 fi
 
-case "$branch" in
-  master|main|refs/heads/master|refs/heads/main)
-    echo "REFUSED" >&2
-    echo "git-guard.sh: --branch is ${branch}, which is a default branch. Nothing was run." >&2
-    echo "              Committing or pushing there is the one action this guard exists to stop," >&2
-    echo "              and a caller that names it has already lost track of where it is." >&2
-    exit 2 ;;
-esac
+if [ -n "$branch" ] && is_default "$branch"; then
+  echo "REFUSED" >&2
+  echo "git-guard.sh: --branch is ${branch}, which is a default branch. Nothing was run." >&2
+  echo "              Committing or pushing there is the one action this guard exists to stop," >&2
+  echo "              and a caller that names it has already lost track of where it is." >&2
+  exit 2
+fi
 
 if [ ! -d "$dir" ]; then
   echo "REFUSED" >&2
@@ -125,13 +152,14 @@ case "$1" in
           echo "              An empty destination pushes every local branch the remote also has, and master" >&2
           echo "              is a local branch shared across every worktree of a checkout, so it goes too." >&2
           exit 2 ;;
-        master|main|heads/master|heads/main|refs/heads/master|refs/heads/main)
-          echo "REFUSED" >&2
-          echo "git-guard.sh: the push refspec ${arg} names ${dst}, which is a default branch. Nothing was run." >&2
-          echo "              The branch a worktree is on says nothing about where a push lands; the refspec" >&2
-          echo "              does, and this one lands on the branch this guard exists to keep pushes off." >&2
-          exit 2 ;;
       esac
+      if is_default "$dst"; then
+        echo "REFUSED" >&2
+        echo "git-guard.sh: the push refspec ${arg} names ${dst}, which is a default branch. Nothing was run." >&2
+        echo "              The branch a worktree is on says nothing about where a push lands; the refspec" >&2
+        echo "              does, and this one lands on the branch this guard exists to keep pushes off." >&2
+        exit 2
+      fi
     done ;;
 esac
 

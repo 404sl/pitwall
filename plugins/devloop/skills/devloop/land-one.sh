@@ -292,7 +292,7 @@ else
     # Never force-push a default branch; this is not one, and the guard proves the cd above went
     # where it was meant to.
     guard_err=$(mktemp "${TMPDIR:-/tmp}/guard-err.XXXXXX")
-    bash "$GUARD" --dir="$WT" -- git push --force-with-lease="refs/heads/${BRANCH}:${head_before}" origin "HEAD:refs/heads/${BRANCH}" >/dev/null 2>"$guard_err"
+    bash "$GUARD" --dir="$WT" --default="$BASE" -- git push --force-with-lease="refs/heads/${BRANCH}:${head_before}" origin "HEAD:refs/heads/${BRANCH}" >/dev/null 2>"$guard_err"
     guard_rc=$?
     if [ "$guard_rc" != 0 ]; then
       verdict=$(guard_verdict "$guard_rc" "$guard_err" "push --force-with-lease" "$BRANCH")
