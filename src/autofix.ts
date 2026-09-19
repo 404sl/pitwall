@@ -49,6 +49,17 @@ function repoPath(root: string, name: string, repo: Record<string, unknown>): st
   return resolve(root, path);
 }
 
+function defaultBranchIn(name: string, repo: Record<string, unknown>): string | undefined {
+  const branch = repo["defaultBranch"];
+  if (branch === undefined) {
+    return undefined;
+  }
+  if (typeof branch !== "string" || branch === "") {
+    throw new TypeError(`repo ${name} defaultBranch is not a branch name`);
+  }
+  return branch;
+}
+
 interface WorkspaceRepo {
   name: string;
   path: string;
@@ -70,7 +81,7 @@ function reposOf(root: string, workspace: Record<string, unknown>): WorkspaceRep
         name,
         path,
         kind: repoKind(repo["deploy"]),
-        defaultBranch: defaultBranchOf(path),
+        defaultBranch: defaultBranchIn(name, repo) ?? defaultBranchOf(path),
       };
     });
 }
