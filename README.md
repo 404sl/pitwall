@@ -116,13 +116,17 @@ together — a fortnight at ten-minute resolution needs a `minIntervalMinutes` o
 default is sized to be safe on an unattended laptop, not to reach the finest resolution.
 
 A park is aged from the first collection that saw its label, because the tracker records no
-label timestamp — adding or removing a label leaves `updated_at` untouched. That date is kept
-in `~/.local/state/pitwall/console.json` beside the snapshot, keyed by issue and by the label
-it was seen under, so a park that is relabelled starts again and one that is lifted leaves the
-store. The age the board shows is a floor: the park was already on at that instant. The first
-collection after an upgrade dates every existing park from that day. A park older than seven
-days is marked as not re-examined, and a decision whose text states no question is marked as
-misfiled; nothing here removes a park — a person does.
+label timestamp — adding or removing a label leaves `updated_at` untouched. That date travels
+in the snapshot itself as each issue's `stopped` field: `since` is the earliest the console can
+vouch for and `basis` says whether this collection carried it from the last snapshot or is the
+first to see it. A collection carries the date only while the issue is parked by the same label,
+so a park that is relabelled starts again and one that is lifted loses its date. The age the
+board shows is a floor: the park was already on at that instant. The first collection after an
+upgrade dates every existing park from that day. A park older than seven days is marked as not
+re-examined, and a decision whose text states no question is marked as misfiled; the question
+is the one thing the document does not carry, so it is kept in
+`~/.local/state/pitwall/console.json` beside the snapshot. Nothing here removes a park — a
+person does.
 
 `landedToday` needs one reading, not two: it counts the issues closed today whose closure
 names a merge, read from the tracker itself. Landed means merged, not deployed. Where the

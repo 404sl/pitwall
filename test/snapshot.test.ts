@@ -1244,29 +1244,33 @@ test("every park the collection sees is dated once and carried through later col
   const state = { env: place.env, home: place.home };
   const first = await emitSnapshot({ ...options(place, new Date("2026-09-08T09:00:00Z")), env, probe: async () => true });
   assert.equal(first.read, true);
-  const firstSeen = readConsoleState(state).state.parks["tracker"];
+  const stoppedOf = (snapshot: Snapshot) =>
+    Object.fromEntries(
+      (snapshot.projects.find((project) => project.id === "tracker")?.issues ?? [])
+        .filter((issue) => issue.stopped !== undefined)
+        .map((issue) => [issue.id, issue.stopped]),
+    );
+  const firstSeen = stoppedOf(first.snapshot);
   assert.deepEqual(firstSeen, {
-    "mw-20": { label: "blocked-tooling", parkedSince: "2026-09-08T09:00:00.000Z", basis: "first-seen" },
-    "mw-21": { label: "needs-access", parkedSince: "2026-09-08T09:00:00.000Z", basis: "first-seen" },
-    "mw-22": {
-      label: "needs-decision",
-      parkedSince: "2026-09-08T09:00:00.000Z",
-      basis: "first-seen",
-      question: "Honour the paid checkout?",
-    },
-    "mw-24": { label: "roadmap", parkedSince: "2026-09-08T09:00:00.000Z", basis: "first-seen" },
-    "mw-25": { label: "blocked-tooling", parkedSince: "2026-09-08T09:00:00.000Z", basis: "first-seen" },
+    "mw-20": { since: "2026-09-08T09:00:00.000Z", basis: "first-seen" },
+    "mw-21": { since: "2026-09-08T09:00:00.000Z", basis: "first-seen" },
+    "mw-22": { since: "2026-09-08T09:00:00.000Z", basis: "first-seen" },
+    "mw-24": { since: "2026-09-08T09:00:00.000Z", basis: "first-seen" },
+    "mw-25": { since: "2026-09-08T09:00:00.000Z", basis: "first-seen" },
   });
-  await emitSnapshot({ ...options(place, new Date("2026-09-09T09:00:00Z")), env, probe: async () => true });
-  const carried = readConsoleState(state).state.parks["tracker"];
-  assert.equal(carried?.["mw-22"]?.parkedSince, "2026-09-08T09:00:00.000Z", "the park is still dated from first sight");
-  assert.equal(carried?.["mw-22"]?.basis, "carried");
-  assert.equal(carried?.["mw-22"]?.question, "Honour the paid checkout?");
-  assert.deepEqual(Object.keys(carried ?? {}).sort(), Object.keys(firstSeen ?? {}).sort());
-  const board = buildBoard(readSnapshot(state).snapshot!, {}, readConsoleState(state).state.parks);
+  assert.deepEqual(stoppedOf(readSnapshot(state).snapshot!), firstSeen, "the written document carries the dates");
+  assert.deepEqual(readConsoleState(state).state, { questions: { tracker: { "mw-22": "Honour the paid checkout?" } } });
+  const second = await emitSnapshot({ ...options(place, new Date("2026-09-09T09:00:00Z")), env, probe: async () => true });
+  const carried = stoppedOf(second.snapshot);
+  assert.equal(carried["mw-22"]?.since, "2026-09-08T09:00:00.000Z", "the park is still dated from first sight");
+  assert.equal(carried["mw-22"]?.basis, "carried");
+  assert.deepEqual(Object.keys(carried).sort(), Object.keys(firstSeen).sort());
+  assert.equal(readConsoleState(state).state.questions["tracker"]?.["mw-22"], "Honour the paid checkout?");
+  const board = buildBoard(readSnapshot(state).snapshot!, {}, readConsoleState(state).state.questions);
   const row = board.needsYou.flatMap((group) => group.rows).find((entry) => entry.id === "mw-22");
   assert.equal(row?.park.ms, 24 * 60 * 60_000);
   assert.equal(row?.park.suspect, false);
+  assert.equal(row?.question, "Honour the paid checkout?");
   assert.equal(row?.misfiled, false);
 });
 
@@ -1276,20 +1280,32 @@ test("a project that could not be read keeps the park ages the last collection p
   const place = workspace([root, TRACKER]);
   const env = { ...place.env, BD_LIST_FIXTURE: "stale" };
   const state = { env: place.env, home: place.home };
+  const stoppedIn = (snapshot: Snapshot | undefined, project: string) =>
+    Object.fromEntries(
+      (snapshot?.projects.find((entry) => entry.id === project)?.issues ?? [])
+        .filter((issue) => issue.stopped !== undefined)
+        .map((issue) => [issue.id, issue.stopped]),
+    );
   await emitSnapshot({ ...options(place, new Date("2026-09-08T09:00:00Z")), env, probe: async () => true });
-  const before = readConsoleState(state).state.parks[id];
-  assert.equal(before?.["mw-22"]?.basis, "first-seen");
+  const before = stoppedIn(readSnapshot(state).snapshot, id);
+  assert.equal(before["mw-22"]?.basis, "first-seen");
+  const asked = readConsoleState(state).state.questions[id];
+  assert.deepEqual(asked, { "mw-22": "Honour the paid checkout?" });
 
   rmSync(join(root, "bd-output"), { recursive: true });
   await emitSnapshot({ ...options(place, new Date("2026-09-08T09:30:00Z")), env, probe: async () => true });
-  const after = readConsoleState(state).state.parks;
-  assert.deepEqual(after[id], before, "an unreadable project must not lose the ages it had");
-  assert.equal(after["tracker"]?.["mw-22"]?.basis, "carried", "the project that was read moves on");
   const stored = readSnapshot(state).snapshot;
   assert.ok(stored);
+  assert.deepEqual(stoppedIn(stored, id), before, "an unreadable project must not lose the ages it had");
+  const after = readConsoleState(state).state.questions;
+  assert.deepEqual(after[id], asked, "an unreadable project must not lose the questions it had");
+  assert.equal(stoppedIn(stored, "tracker")["mw-22"]?.basis, "carried", "the project that was read moves on");
   const board = buildBoard(stored, {}, after);
   const kept = board.needsYou.flatMap((group) => group.rows).find((row) => row.id === "mw-22");
   assert.equal(kept?.park.since, "2026-09-08T09:00:00.000Z", "the age a kept project shows does not flicker to unknown");
+
+  await emitSnapshot({ ...options(place, new Date("2026-09-08T10:00:00Z")), env, probe: async () => true });
+  assert.deepEqual(stoppedIn(readSnapshot(state).snapshot, id), before, "a second unreadable run keeps them too");
 });
 
 function lanedRoot(): string {

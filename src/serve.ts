@@ -4,7 +4,7 @@ import { extname, resolve, sep } from "node:path";
 import { pipeline } from "node:stream";
 import { fileURLToPath } from "node:url";
 import type { Classification, CollectionError, Issue, Project, Snapshot } from "@404sl/pitwall-schema";
-import { NOTICE_SOURCE, REFRESH_SOURCE, stalenessErrors, type ParkEntry } from "./board.js";
+import { NOTICE_SOURCE, REFRESH_SOURCE, stalenessErrors } from "./board.js";
 import {
   IssueActionFailure,
   OWNER_LABELS,
@@ -48,7 +48,7 @@ export const LOCAL_HOSTNAMES = ["127.0.0.1", "localhost", "[::1]"];
 export const UI_DIR = fileURLToPath(new URL("../dist/ui", import.meta.url));
 export const ISSUE_PREFIX = "/api/issue/";
 export const VERSION_ROUTE = "/api/version";
-export const PARKS_ROUTE = "/api/parks";
+export const QUESTIONS_ROUTE = "/api/questions";
 export const REFRESH_FLOOR_MS = 60_000;
 export const OUTAGE_AFTER_MS = 15 * 60_000;
 export const NOTHING_READ = "No project could be read. The board still shows the last snapshot collected.";
@@ -313,8 +313,8 @@ function serveSnapshot(res: ServerResponse, options: ServeOptions, refresher: Re
   });
 }
 
-function serveParks(res: ServerResponse, options: ServeOptions): void {
-  sendJson(res, 200, { parks: readConsoleState(options).state.parks });
+function serveQuestions(res: ServerResponse, options: ServeOptions): void {
+  sendJson(res, 200, { questions: readConsoleState(options).state.questions });
 }
 
 function serveVersion(res: ServerResponse, updates: UpdateCheck, builds: BuildCheck): void {
@@ -345,14 +345,12 @@ function snapshotIssue(project: Project | undefined, id: string): Issue | undefi
   return project?.issues.find((issue) => issue.id === id);
 }
 
-function parkOf(
-  options: ServeOptions,
-  project: string,
-  issue: { id: string; classification: Classification | undefined; labels: string[] },
-): ParkEntry | undefined {
+function parkedAlike(
+  issue: { classification: Classification | undefined; labels: string[] },
+  indexed: Issue | undefined,
+): indexed is Issue {
   const label = parkLabelOf(issue);
-  const entry = readConsoleState(options).state.parks[project]?.[issue.id];
-  return label !== undefined && entry !== undefined && entry.label === label ? entry : undefined;
+  return label !== undefined && indexed !== undefined && parkLabelOf(indexed) === label;
 }
 
 function projectIn(snapshot: Snapshot, id: string): Project | undefined {
@@ -414,7 +412,9 @@ async function serveIssue(
     return;
   }
   const snapshotStatus = snapshotIssue(indexed, route.id);
-  const park = parkOf(options, indexed.id, reading.issue);
+  const parked = parkedAlike(reading.issue, snapshotStatus);
+  const stopped = parked ? snapshotStatus.stopped : undefined;
+  const question = parked ? readConsoleState(options).state.questions[indexed.id]?.[route.id] : undefined;
   sendJson(res, 200, {
     issue: {
       ...reading.issue,
@@ -422,7 +422,8 @@ async function serveIssue(
       projectName: indexed.name,
       authority: indexed.authority,
       staleness: snapshotStatus?.staleness ?? { verdict: "unchecked", evidence: [] },
-      ...(park === undefined ? {} : { park }),
+      ...(stopped === undefined ? {} : { stopped }),
+      ...(question === undefined ? {} : { question }),
     },
     readAt: new Date().toISOString(),
     errors: stalenessErrors(indexed, route.id),
@@ -942,8 +943,8 @@ export function createConsoleServer(options: ServeOptions = {}): Server {
       serveVersion(res, updates, builds);
       return;
     }
-    if (pathname === PARKS_ROUTE) {
-      serveParks(res, options);
+    if (pathname === QUESTIONS_ROUTE) {
+      serveQuestions(res, options);
       return;
     }
     if (req.method === "POST" && pathname === INTAKE_ROUTE) {
