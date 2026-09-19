@@ -71,6 +71,16 @@ has built its result before the release step answers, so for those three the log
 it appears. Every `rework.js` ending but an exception carries both answers, because the endings that
 used to return early set a result instead.
 
+**A release that is not permitted to run is retried as plain commands, and a second refusal is
+`REFUSED`, never silent.** The release step runs `release-lane.sh`, and a command that is refused
+before it runs prints nothing. `task.js` then runs a second step whose two commands are plain shell:
+read the slot file and remove it if it names this run, then the same for the lane lock through its
+owner file. Nothing is removed that does not name the run. If that step is refused or answers nothing
+too, `lane` and `slot` read `REFUSED` and carry the command to run on reading them - `slot.sh
+--release <id>` from the workspace root, which removes only what names the id and says so when
+nothing does. A slot left behind shrinks the pool by one lane with nothing to refuse the next
+dispatch, which is why it goes first and why the answer has to arrive in the result.
+
 **The same release step reads the worktree, and `task.js` carries the answer as `worktree`.**
 `release-lane.sh --worktree <path>` reports one word - `GONE`, `CLEAN`, `UNPUSHED`, `UNCOMMITTED`
 or `UNREAD` - and changes nothing there. A run that got past triage returns `worktree` naming the
