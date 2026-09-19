@@ -25,17 +25,17 @@ interface Box {
   marker: string;
 }
 
-function workspace(): Box {
+function workspace(defaultBranch = "master"): Box {
   const root = mkdtempSync(join(tmpdir(), "git-guard-"));
   const repo = join(root, "repo");
 
-  git(root, "init", "--quiet", "--initial-branch=master", repo);
+  git(root, "init", "--quiet", `--initial-branch=${defaultBranch}`, repo);
   writeFileSync(join(repo, "README.md"), "first\n");
   git(repo, "add", "README.md");
   git(repo, "commit", "--quiet", "-m", "the first commit");
 
   const lane = join(root, "lane");
-  git(repo, "worktree", "add", "--quiet", "-b", "devloop/zz-aaa1", lane, "master");
+  git(repo, "worktree", "add", "--quiet", "-b", "devloop/zz-aaa1", lane, defaultBranch);
 
   return { root, repo, lane, marker: join(root, "it-ran") };
 }
@@ -403,5 +403,158 @@ test("a push option whose value happens to be master is not read as a refspec", 
   const ran = push(box, [`--dir=${box.lane}`, "--branch=devloop/zz-aaa1"], ["-o", "master", "origin", "devloop/zz-aaa1"]);
 
   assert.equal(ran.code, 0, `the guard read an option value as a refspec:\n${ran.out}\n${ran.err}`);
+  assert.equal(ran.ran, true, "the guard exited 0 without running the push it was given");
+});
+
+const CONFIGURED = "blueprint-basic-master";
+
+test("the branch named by --default is refused as --branch, from a checkout that really is on it", () => {
+  const box = workspace(CONFIGURED);
+
+  const ran = guard(box, [`--dir=${box.repo}`, `--branch=${CONFIGURED}`, `--default=${CONFIGURED}`]);
+
+  refused(ran, `the configured default ${CONFIGURED}`);
+  assert.match(
+    ran.err,
+    /which is a default branch/,
+    `the refusal came from some other branch of the guard, so this test would pass with the ` +
+      `default-branch check ignoring --default - HEAD and --branch agree here, so nothing else ` +
+      `should refuse:\n${ran.err}`,
+  );
+  assert.match(ran.err, new RegExp(CONFIGURED), `the refusal does not say what was refused:\n${ran.err}`);
+});
+
+test("without --default a branch that is not master or main is not refused, so the flag is what carries the name", () => {
+  const box = workspace(CONFIGURED);
+
+  const ran = guard(box, [`--dir=${box.repo}`, `--branch=${CONFIGURED}`]);
+
+  assert.equal(ran.code, 0, `the guard refused a branch nothing told it was a default:\n${ran.out}\n${ran.err}`);
+  assert.equal(ran.ran, true, "the guard exited 0 without running the command it was given");
+});
+
+test("a push whose refspec lands on the configured default is refused like one landing on master", () => {
+  const box = workspace(CONFIGURED);
+
+  const ran = push(box, [`--dir=${box.lane}`, "--branch=devloop/zz-aaa1", `--default=${CONFIGURED}`], ["origin", `HEAD:${CONFIGURED}`]);
+
+  refusedRefspec(ran, `HEAD:${CONFIGURED}`, CONFIGURED);
+});
+
+test("a forced push to the fully qualified configured default is refused", () => {
+  const box = workspace(CONFIGURED);
+
+  const ran = push(
+    box,
+    [`--dir=${box.lane}`, "--branch=devloop/zz-aaa1", `--default=${CONFIGURED}`],
+    ["--force", "origin", `+HEAD:refs/heads/${CONFIGURED}`],
+  );
+
+  refusedRefspec(ran, `+HEAD:refs/heads/${CONFIGURED}`, `refs/heads/${CONFIGURED}`);
+});
+
+test("the heads/ spelling of the configured default is refused as well", () => {
+  const box = workspace(CONFIGURED);
+
+  const ran = push(box, [`--dir=${box.lane}`, "--branch=devloop/zz-aaa1", `--default=${CONFIGURED}`], ["origin", `HEAD:heads/${CONFIGURED}`]);
+
+  refusedRefspec(ran, `HEAD:heads/${CONFIGURED}`, `heads/${CONFIGURED}`);
+});
+
+test("a bare refspec naming the configured default is refused", () => {
+  const box = workspace(CONFIGURED);
+
+  const ran = push(box, [`--dir=${box.lane}`, "--branch=devloop/zz-aaa1", `--default=${CONFIGURED}`], ["origin", CONFIGURED]);
+
+  refusedRefspec(ran, CONFIGURED, CONFIGURED);
+});
+
+test("a push with an empty source deletes the configured default, and is refused", () => {
+  const box = workspace(CONFIGURED);
+
+  const ran = push(box, [`--dir=${box.lane}`, "--branch=devloop/zz-aaa1", `--default=${CONFIGURED}`], ["origin", `:${CONFIGURED}`]);
+
+  refusedRefspec(ran, `:${CONFIGURED}`, CONFIGURED);
+});
+
+test("the lander's --dir-only call still refuses a refspec landing on the configured default", () => {
+  const box = workspace(CONFIGURED);
+
+  const ran = push(box, [`--dir=${box.lane}`, `--default=${CONFIGURED}`], ["origin", `HEAD:${CONFIGURED}`]);
+
+  refusedRefspec(ran, `HEAD:${CONFIGURED}`, CONFIGURED);
+});
+
+test("the space-separated spelling of --default is accepted like the sibling flags", () => {
+  const box = workspace(CONFIGURED);
+
+  const ran = push(box, ["--dir", box.lane, "--branch", "devloop/zz-aaa1", "--default", CONFIGURED], ["origin", `HEAD:${CONFIGURED}`]);
+
+  refusedRefspec(ran, `HEAD:${CONFIGURED}`, CONFIGURED);
+});
+
+test("master stays refused when the configured default is something else", () => {
+  const box = workspace(CONFIGURED);
+
+  const asBranch = guard(box, [`--dir=${box.lane}`, "--branch=master", `--default=${CONFIGURED}`]);
+  refused(asBranch, "master as --branch beside another configured default");
+  assert.match(asBranch.err, /--branch is master/, `the refusal does not say master was refused:\n${asBranch.err}`);
+
+  const asRefspec = push(box, [`--dir=${box.lane}`, "--branch=devloop/zz-aaa1", `--default=${CONFIGURED}`], ["origin", "HEAD:master"]);
+  refusedRefspec(asRefspec, "HEAD:master", "master");
+});
+
+test("main stays refused when the configured default is something else", () => {
+  const box = workspace(CONFIGURED);
+
+  const asBranch = guard(box, [`--dir=${box.lane}`, "--branch=main", `--default=${CONFIGURED}`]);
+  refused(asBranch, "main as --branch beside another configured default");
+  assert.match(asBranch.err, /--branch is main/, `the refusal does not say main was refused:\n${asBranch.err}`);
+
+  const asRefspec = push(box, [`--dir=${box.lane}`, "--branch=devloop/zz-aaa1", `--default=${CONFIGURED}`], ["origin", "+HEAD:refs/heads/main"]);
+  refusedRefspec(asRefspec, "+HEAD:refs/heads/main", "refs/heads/main");
+});
+
+test("a comma-separated --default refuses every name it carries", () => {
+  const box = workspace(CONFIGURED);
+
+  const ran = push(box, [`--dir=${box.lane}`, "--branch=devloop/zz-aaa1", `--default=trunk,${CONFIGURED}`], ["origin", `HEAD:${CONFIGURED}`]);
+
+  refusedRefspec(ran, `HEAD:${CONFIGURED}`, CONFIGURED);
+});
+
+test("a repeated --default refuses every name it was given", () => {
+  const box = workspace(CONFIGURED);
+
+  const ran = push(box, [`--dir=${box.lane}`, "--branch=devloop/zz-aaa1", "--default=trunk", `--default=${CONFIGURED}`], ["origin", "HEAD:trunk"]);
+
+  refusedRefspec(ran, "HEAD:trunk", "trunk");
+});
+
+test("a push to the lane's own branch still runs with --default given", () => {
+  const box = workspace(CONFIGURED);
+
+  const ran = push(box, [`--dir=${box.lane}`, "--branch=devloop/zz-aaa1", `--default=${CONFIGURED}`], ["-u", "origin", "devloop/zz-aaa1"]);
+
+  assert.equal(ran.code, 0, `the guard refused a push to the lane's own branch:\n${ran.out}\n${ran.err}`);
+  assert.equal(ran.ran, true, "the guard exited 0 without running the push it was given");
+});
+
+test("the lander's lease-and-refspec push still runs with --default given and --dir alone", () => {
+  const box = workspace(CONFIGURED);
+  const head = git(box.lane, "rev-parse", "HEAD");
+
+  const ran = push(
+    box,
+    [`--dir=${box.lane}`, `--default=${CONFIGURED}`],
+    [`--force-with-lease=refs/heads/devloop/zz-aaa1:${head}`, "origin", "HEAD:refs/heads/devloop/zz-aaa1"],
+  );
+
+  assert.equal(
+    ran.code,
+    0,
+    `the guard refused the exact push the lander makes once it passes the base it was handed, so no ` +
+      `rebased branch could be published in a workspace that lands elsewhere:\n${ran.out}\n${ran.err}`,
+  );
   assert.equal(ran.ran, true, "the guard exited 0 without running the push it was given");
 });

@@ -273,7 +273,7 @@ fi
 # 4. Push and open the pull request. Guard the push: this is not a default branch and the guard
 #    proves it rather than trusting that the cd above went where it was meant to.
 guard_err=$(mktemp "${TMPDIR:-/tmp}/guard-err.XXXXXX")
-bash "$GUARD" --dir="$WT" --branch="$TRAIN" -- git push -u origin "$TRAIN" >/dev/null 2>"$guard_err"
+bash "$GUARD" --dir="$WT" --branch="$TRAIN" --default="$BASE" -- git push -u origin "$TRAIN" >/dev/null 2>"$guard_err"
 guard_rc=$?
 if [ "$guard_rc" != 0 ]; then
   verdict=$(guard_verdict "$guard_rc" "$guard_err" "push -u origin ${TRAIN}" "$TRAIN")

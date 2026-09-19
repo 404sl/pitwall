@@ -663,6 +663,11 @@ test("every brief names the configured default branch and never origin/master wh
   assert.ok(fix.includes("--pre-push --base trunk"), "the commit-message check is not told which base the range starts at, so it defaults to master");
   assert.ok(fix.includes("gh pr create --base trunk"), "the pull request is opened with no --base, which is the case the report called dangerous");
   assert.ok(fix.includes("open the pull request against\ntrunk"), "the brief still tells the lane which branch to target in prose that names the wrong one");
+  assert.ok(
+    fix.includes("git-guard.sh --dir=<absolute worktree path> --branch=<your branch> --default=trunk -- git <command>"),
+    "rule 3 of the brief does not pass the configured default to the guard, so a lane whose repository " +
+      "lands on trunk is told to guard its pushes with a script that refuses only master and main",
+  );
 
   assert.ok(briefs.review.includes("rtk git diff origin/trunk...HEAD"), "the reviewer reads the diff against a branch the change was not cut from");
   assert.ok(briefs.handoff.includes("git log origin/trunk..origin/devloop/zz-aaa4 --format=%B"), "the handoff reads commit messages over the wrong range");
@@ -671,6 +676,15 @@ test("every brief names the configured default branch and never origin/master wh
   assert.ok(docs.fix.includes("-b devloop/zz-aaa4 origin/trunk"), "the script-role worktree is still cut from origin/master");
   assert.ok(docs.fix.includes("--pre-push --base trunk"), "the script-role commit check is not told its base");
   assert.ok(docs.fix.includes("gh pr create --base trunk"), "the script-role pull request is opened with no --base");
+  assert.ok(docs.fix.includes("--branch=<your branch> --default=trunk -- git <command>"), "the script-role guard command is not handed its base");
+});
+
+test("the guard command in a brief for a repository with no configured default names master", async () => {
+  const fix = (await briefsFor(HANDOFF_REPOS, "site")).fix;
+  assert.ok(
+    fix.includes("git-guard.sh --dir=<absolute worktree path> --branch=<your branch> --default=master -- git <command>"),
+    "absent a configured default the guard command has to name master, which is what absent means in the config",
+  );
 });
 
 test("the triage brief asks the configured branch, and names each checkout's own when they differ", async () => {
