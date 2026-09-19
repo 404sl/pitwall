@@ -126,14 +126,21 @@ case "$1" in
       if [ "$end_opts" = 0 ]; then
         case "$arg" in
           --) end_opts=1; continue ;;
-          --all|--mirror|--branches)
-            echo "REFUSED" >&2
-            echo "git-guard.sh: push ${arg} writes every local branch to the remote without naming one. Nothing was run." >&2
-            echo "              It carries no refspec for the destination check to read, and master is a local" >&2
-            echo "              branch shared across every worktree of a checkout, so from a lane it moves master too." >&2
-            exit 2 ;;
           -o|--push-option|--repo|--receive-pack|--exec) want_value=1; continue ;;
-          -*) continue ;;
+          -*)
+            if [ ${#arg} -ge 3 ]; then
+              for full in --all --mirror --branches; do
+                case "$full" in
+                  "$arg"*)
+                    echo "REFUSED" >&2
+                    echo "git-guard.sh: push ${arg} writes every local branch to the remote without naming one. Nothing was run." >&2
+                    echo "              It carries no refspec for the destination check to read, and master is a local" >&2
+                    echo "              branch shared across every worktree of a checkout, so from a lane it moves master too." >&2
+                    exit 2 ;;
+                esac
+              done
+            fi
+            continue ;;
         esac
       fi
       if [ "$remote_seen" = 0 ]; then

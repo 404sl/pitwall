@@ -609,3 +609,36 @@ test("--mirror with --dir alone is refused, which is how the lander calls the gu
 
   refusedEveryBranch(ran, "--mirror");
 });
+
+test("git accepts --mirr as --mirror, so the abbreviation is refused with the full spelling", () => {
+  const box = workspace();
+
+  const ran = push(box, [`--dir=${box.lane}`, "--branch=devloop/zz-aaa1"], ["--mirr", "origin"]);
+
+  refusedEveryBranch(ran, "--mirr");
+});
+
+test("git accepts --al as --all, so the abbreviation is refused with the full spelling", () => {
+  const box = workspace();
+
+  const ran = push(box, [`--dir=${box.lane}`, "--branch=devloop/zz-aaa1"], ["--al", "origin"]);
+
+  refusedEveryBranch(ran, "--al");
+});
+
+test("--m is the shortest spelling git accepts for --mirror and is refused", () => {
+  const box = workspace();
+
+  const ran = push(box, [`--dir=${box.lane}`, "--branch=devloop/zz-aaa1"], ["--m", "origin"]);
+
+  refusedEveryBranch(ran, "--m");
+});
+
+test("--atomic shares a prefix with --all and still runs, so the abbreviation check refuses only the three flags", () => {
+  const box = workspace();
+
+  const ran = push(box, [`--dir=${box.lane}`, "--branch=devloop/zz-aaa1"], ["--atomic", "origin", "devloop/zz-aaa1"]);
+
+  assert.equal(ran.code, 0, `the guard refused --atomic as an abbreviation of --all:\n${ran.out}\n${ran.err}`);
+  assert.equal(ran.ran, true, "the guard exited 0 without running the push it was given");
+});
