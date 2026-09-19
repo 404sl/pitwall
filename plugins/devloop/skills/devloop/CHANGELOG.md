@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.108
+
+`git push --all`, `git push --mirror` and `git push --branches`, and any abbreviation git accepts for them such as `--mirr` or `--al`, are refused by the guard from any worktree, with exit 2 and nothing run: none of them names a destination, and all three write the shared local master to the remote along with the rest. Push one branch by name instead. A push alias, a push wrapped in `sh -c` or `env`, and a refspec supplied by configuration are still not read by the guard.
+
+Refs pitwall-a809.
+
 ## 0.1.107
 
 A workspace may add one `repos` entry with `"path": "."` and `"role": "workspace"`, and a ticket whose work is tracker edits or root-level files is routed there instead of being bounced. A lane dispatched to it cuts no worktree, opens no pull request and runs no suite: it applies the edits, leaves root files uncommitted for the owner, closes the issue itself with a close reason read from a file, and reports `CLOSED` with the files it touched - `CLOSED` being read from the status token on the first line of `bd show`, never from the word elsewhere. It does not edit `.pitwall.json`, `.autofix.json` or anything under `.beads/`; a ticket needing one of those comes back as `NEEDS YOU`. `applied` is an outcome for that key only, and a checkout lane returning it is refused before review. The snapshot leaves the entry out of `repos[]`. The lander, the train, the handoff survey, the queue scan, `--rework` and the console all skip the entry, and `config.sh --check` refuses a slug on it or a path that is not the root.
