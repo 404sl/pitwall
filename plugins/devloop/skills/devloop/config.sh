@@ -104,10 +104,11 @@ PY
 
 resolve_repos() {
   python3 - "$CONFIG" "$@" <<'PY'
-import json, subprocess, sys
+import json, os, shlex, subprocess, sys
 cfg = json.load(open(sys.argv[1]))
 repos = cfg.get("repos") or {}
 only = sys.argv[2:]
+gh_timeout = float(os.environ.get("DEVLOOP_GH_TIMEOUT") or 30)
 out = {}
 for name, r in repos.items():
     r = dict(r or {})
@@ -120,6 +121,28 @@ for name, r in repos.items():
                          "           bare name GitHub reports, 'master' or 'main', never 'origin/...'.\n"
                          % (name, json.dumps(declared)))
         sys.exit(1)
+    for entry in (r.get("deploy") or []):
+        if not isinstance(entry, str) or "deploy-one.sh" not in entry:
+            continue
+        try:
+            words = shlex.split(entry)
+        except ValueError:
+            words = entry.split()
+        base = "master"
+        label = "?"
+        for i, w in enumerate(words):
+            if w == "--base" and i + 1 < len(words):
+                base = words[i + 1]
+            if w == "--label" and i + 1 < len(words):
+                label = words[i + 1]
+        if base != r["defaultBranch"]:
+            sys.stderr.write("config.sh: repos.%s.deploy entry '%s' would deploy origin/%s (%s), but the repository's\n"
+                             "           default branch is '%s'. Refusing: deploy-one.sh cuts its worktree from the\n"
+                             "           base it is handed and ships whatever that ref holds, so a stale origin/%s\n"
+                             "           would reach %s. Add --base %s to that deploy entry.\n"
+                             % (name, label, base, "--base " + base if "--base" in words else "no --base, so master",
+                                r["defaultBranch"], base, label, r["defaultBranch"]))
+            sys.exit(1)
     out[name] = r
 for name, r in out.items():
     if only and name not in only:
@@ -131,8 +154,10 @@ for name, r in out.items():
     how = "configured" if "defaultBranch" in (repos.get(name) or {}) else "assumed, no defaultBranch configured"
     cmd = ["gh", "repo", "view", slug, "--json", "defaultBranchRef"]
     try:
-        ran = subprocess.run(cmd, capture_output=True, text=True)
+        ran = subprocess.run(cmd, capture_output=True, text=True, timeout=gh_timeout)
         code, stdout, stderr = ran.returncode, ran.stdout, ran.stderr
+    except subprocess.TimeoutExpired:
+        code, stdout, stderr = 124, "", "timed out after %gs with no answer" % gh_timeout
     except OSError as e:
         code, stdout, stderr = 127, "", str(e)
     got = None

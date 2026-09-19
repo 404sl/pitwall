@@ -67,6 +67,10 @@ function clean(box: Box): void {
 }
 
 function config(box: Box, ...argv: string[]) {
+  return configWith(box, {}, ...argv);
+}
+
+function configWith(box: Box, extra: Record<string, string>, ...argv: string[]) {
   const ran = spawnSync("bash", [CONFIG_SH, ...argv], {
     encoding: "utf8",
     cwd: box.root,
@@ -76,6 +80,7 @@ function config(box: Box, ...argv: string[]) {
       PATH: `${box.bin}:${process.env["PATH"] ?? ""}`,
       PITWALL_CONFIG: box.config,
       BEADS_DIR: "",
+      ...extra,
     },
   });
   return { status: ran.status ?? -1, stdout: ran.stdout ?? "", stderr: ran.stderr ?? "" };
@@ -85,7 +90,7 @@ type Args = { repos: Record<string, { defaultBranch?: string }> };
 
 test("a repository with no defaultBranch is dispatched against master, exactly as before", () => {
   const box = workspace(
-    { site: { path: "repo", test: "npm test", slug: "acme/site" } },
+    { site: { path: "repo", test: "npm test", slug: "acme/site", deploy: ["bash deploy-one.sh --label production --repo-path repo"] } },
     { "acme/site": says("master") },
   );
   try {
@@ -167,6 +172,75 @@ test("a default branch GitHub cannot report is refused rather than assumed", () 
   }
 });
 
+test("a deploy-one.sh entry that would ship a branch other than the repository's default is refused", () => {
+  const entry = (base: string) => `bash deploy-one.sh --label production --repo-path repo${base ? ` --base ${base}` : ""} --deploy 'echo ship' --revision 'echo abc'`;
+  const unbased = workspace(
+    { site: { path: "repo", test: "npm test", slug: "acme/site", defaultBranch: "main", deploy: [entry("")] } },
+    { "acme/site": says("main") },
+  );
+  try {
+    for (const mode of [["--args", "zz-aaa1"], ["--land"], ["--train", "site"]]) {
+      const ran = config(unbased, ...mode);
+      assert.notEqual(ran.status, 0, `${mode.join(" ")} dispatched a deploy that would ship origin/master to a main repository:\n${ran.stdout}`);
+      assert.equal(ran.stdout, "", `${mode.join(" ")} printed an args object alongside its refusal`);
+      assert.match(ran.stderr, /repos\.site\.deploy entry 'production'/, `${mode.join(" ")} did not name the deploy entry:\n${ran.stderr}`);
+      assert.match(ran.stderr, /origin\/master/, `${mode.join(" ")} did not name the branch the deploy would ship:\n${ran.stderr}`);
+      assert.match(ran.stderr, /'main'/, `${mode.join(" ")} did not name the configured branch:\n${ran.stderr}`);
+      assert.match(ran.stderr, /--base main/, `${mode.join(" ")} did not say what to add:\n${ran.stderr}`);
+    }
+    assert.equal(existsSync(slotsPath(unbased.prefix)), false, "a refused dispatch left a lane reserved");
+    const check = config(unbased, "--check");
+    assert.notEqual(check.status, 0, "--check passed a deploy entry that ships the wrong branch");
+    assert.match(check.stdout, /deploy entry 'production'/);
+  } finally {
+    clean(unbased);
+  }
+
+  const based = workspace(
+    { site: { path: "repo", test: "npm test", slug: "acme/site", defaultBranch: "main", deploy: [entry("main")] } },
+    { "acme/site": says("main") },
+  );
+  try {
+    const ran = config(based, "--land");
+    assert.equal(ran.status, 0, `a deploy entry carrying --base main was refused for a main repository:\n${ran.stderr}`);
+  } finally {
+    clean(based);
+  }
+
+  const crossed = workspace(
+    { site: { path: "repo", test: "npm test", slug: "acme/site", deploy: [entry("main")] } },
+    { "acme/site": says("master") },
+  );
+  try {
+    const ran = config(crossed, "--land");
+    assert.notEqual(ran.status, 0, "a deploy entry shipping origin/main was accepted for a master repository");
+    assert.match(ran.stderr, /origin\/main/);
+    assert.match(ran.stderr, /'master'/);
+  } finally {
+    clean(crossed);
+  }
+});
+
+test("a gh that never answers is refused within the bound rather than waited on", () => {
+  const box = workspace(
+    { site: { path: "repo", test: "npm test", slug: "acme/site" } },
+    { "acme/site": "exec sleep 5" },
+  );
+  try {
+    const started = Date.now();
+    const ran = configWith(box, { DEVLOOP_GH_TIMEOUT: "1" }, "--args", "zz-aaa1");
+    const took = Date.now() - started;
+    assert.notEqual(ran.status, 0, "a dispatch proceeded on a default branch gh never reported");
+    assert.equal(ran.stdout, "", "an args object was printed alongside the refusal");
+    assert.match(ran.stderr, /could not read the default branch of acme\/site/);
+    assert.match(ran.stderr, /timed out after 1s/, `the refusal does not say gh timed out:\n${ran.stderr}`);
+    assert.ok(took < 4000, `config.sh waited ${took}ms on a gh bounded to 1s`);
+    assert.equal(existsSync(slotsPath(box.prefix)), false, "a refused dispatch left a lane reserved");
+  } finally {
+    clean(box);
+  }
+});
+
 test("a defaultBranch written as a ref rather than a branch name is refused", () => {
   const box = workspace(
     { site: { path: "repo", test: "npm test", slug: "acme/site", defaultBranch: "origin/main" } },
@@ -229,7 +303,7 @@ exec "$@"
   return { root, bare, repo, bin };
 }
 
-function script(root: string, bin: string, name: string, argv: string[]) {
+function script(root: string, bin: string, name: string, argv: string[], extra: Record<string, string> = {}) {
   const ran = spawnSync("bash", [join(SKILL, name), ...argv], {
     cwd: root,
     encoding: "utf8",
@@ -241,6 +315,7 @@ function script(root: string, bin: string, name: string, argv: string[]) {
       GIT_CONFIG_KEY_0: "user.useConfigOnly",
       GIT_CONFIG_VALUE_0: "true",
       HOME: root,
+      ...extra,
     },
   });
   return { code: ran.status, out: ran.stdout || "", err: ran.stderr || "" };
@@ -258,7 +333,7 @@ test("land-one.sh refuses a base GitHub does not report as the default, before c
     assert.match(ran.out, /'master'/, `the refusal does not name the base it was handed:\n${ran.out}`);
     assert.match(ran.out, /'main'/, `the refusal does not name the branch GitHub reports:\n${ran.out}`);
     assert.equal(existsSync(join("/tmp", `${prefix}-worktrees`, "land-7")), false, "a worktree was cut before the refusal");
-    assert.equal(git(box.bare, "rev-parse", "refs/heads/devloop/zz-aaa1"), git(box.repo, "rev-parse", "origin/devloop/zz-aaa1"), "the branch was pushed");
+    assert.equal(git(box.bare, "rev-parse", "refs/heads/devloop/zz-aaa1"), git(box.repo, "rev-parse", "origin/devloop/zz-aaa1"), "the branch head was moved");
   } finally {
     rmSync(join("/tmp", `${prefix}-worktrees`), { recursive: true, force: true });
     rmSync(box.root, { recursive: true, force: true });
@@ -312,6 +387,31 @@ esac
     const train = git(box.bare, "for-each-ref", "--format=%(refname:short)", "refs/heads/release/*");
     assert.notEqual(train, "", "no release branch reached the remote");
     assert.equal(git(box.bare, "merge-base", "--is-ancestor", "refs/heads/main", train), "", "the train does not sit on main");
+  } finally {
+    rmSync(join("/tmp", `${prefix}-worktrees`), { recursive: true, force: true });
+    rmSync(box.root, { recursive: true, force: true });
+  }
+});
+
+test("land-one.sh and land-train.sh give up on a gh that never answers, before cutting a worktree", () => {
+  const box = checkout("main");
+  const prefix = `pwbranchhang${process.pid}`;
+  try {
+    ghStub(box.bin, { "acme/site": "exec sleep 5" });
+    const runs = [
+      ["land-one.sh", ["--repo-path", box.repo, "--slug", "acme/site", "--pr", "7", "--branch", "devloop/zz-aaa1", "--prefix", prefix, "--base", "main"]],
+      ["land-train.sh", ["--repo-path", box.repo, "--slug", "acme/site", "--prefix", prefix, "--base", "main"]],
+    ] as const;
+    for (const [name, argv] of runs) {
+      const started = Date.now();
+      const ran = script(box.root, box.bin, name, [...argv], { DEVLOOP_GH_TIMEOUT: "1" });
+      const took = Date.now() - started;
+      assert.equal(ran.code, 6, `${name}: expected a usage refusal, got ${ran.code}:\n${ran.out}\n${ran.err}`);
+      assert.match(ran.out, /could not read the default branch of acme\/site/, `${name}:\n${ran.out}`);
+      assert.match(ran.out, /within 1s/, `${name} does not say how long it waited:\n${ran.out}`);
+      assert.ok(took < 4000, `${name} waited ${took}ms on a gh bounded to 1s`);
+    }
+    assert.equal(existsSync(join("/tmp", `${prefix}-worktrees`)), false, "a worktree was cut before the refusal");
   } finally {
     rmSync(join("/tmp", `${prefix}-worktrees`), { recursive: true, force: true });
     rmSync(box.root, { recursive: true, force: true });

@@ -124,10 +124,10 @@ cleanup() {
 cd "$REPO_PATH" || exit 6
 git fetch origin --quiet 2>/dev/null
 
-github_default=$(gh repo view "$SLUG" --json defaultBranchRef 2>/dev/null \
+github_default=$(timeout "${DEVLOOP_GH_TIMEOUT:-30}" gh repo view "$SLUG" --json defaultBranchRef 2>/dev/null \
   | python3 -c "import json,sys; print((json.load(sys.stdin).get('defaultBranchRef') or {}).get('name') or '')" 2>/dev/null)
 if [ -z "$github_default" ]; then
-  echo "usage: could not read the default branch of ${SLUG} from 'gh repo view ${SLUG} --json defaultBranchRef', so nothing is known about whether ${BASE} is its default - nothing touched"
+  echo "usage: could not read the default branch of ${SLUG} from 'gh repo view ${SLUG} --json defaultBranchRef' within ${DEVLOOP_GH_TIMEOUT:-30}s, so nothing is known about whether ${BASE} is its default - nothing touched"
   exit 6
 fi
 if [ "$github_default" != "$BASE" ]; then
