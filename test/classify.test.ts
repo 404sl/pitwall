@@ -304,7 +304,18 @@ test("a reason names the blocker it read rather than one it could not", () => {
   assert.deepEqual(classify(issue, context).reason, { rule: "blocked-open", ids: ["pitwall-b"] });
 });
 
-test("every classification in the contract is produced by a case", () => {
+const NOT_YET_PRODUCED: Classification[] = ["parked:call", "parked:unrefined", "unknown"];
+
+test("every classification in the contract is produced by a case, except the ones the classifier does not know yet", () => {
   const produced = [...new Set(cases.map((scenario) => scenario.expected))].sort();
-  assert.deepEqual(produced, [...Classification.options].sort());
+  const known = Classification.options.filter((option) => !NOT_YET_PRODUCED.includes(option));
+  assert.deepEqual(produced, [...known].sort());
+});
+
+test("a classification listed as not yet produced is genuinely not produced", () => {
+  const produced = new Set(cases.map((scenario) => scenario.expected));
+  for (const classification of NOT_YET_PRODUCED) {
+    assert.ok(Classification.options.includes(classification), `${classification} is not in the contract`);
+    assert.equal(produced.has(classification), false, `${classification} is produced now, so it comes off the list`);
+  }
 });

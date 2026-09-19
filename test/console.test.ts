@@ -139,7 +139,7 @@ test("a parked issue never reaches needs you", () => {
     .map((classification, index) => ({ classification, id: `sr-${index}` }))
     .filter((entry) => entry.classification.startsWith("parked:"))
     .map((entry) => entry.id);
-  assert.equal(parked.length, 4);
+  assert.equal(parked.length, 6);
   for (const id of parked) {
     assert.equal(shown.includes(id), false, `${id} must not be presented as somebody's queue`);
   }
