@@ -273,8 +273,10 @@ bash ${CLAUDE_PLUGIN_ROOT}/skills/devloop/run-script.sh rework.js   # stages wit
 
 Absolute path - the tool does not resolve `~`. `slot` is the lane `--args` or `--rework` reserved,
 and it only sets `TEST_ENV_NUMBER` so concurrent site runs do not share a test database; two live
-workflows must never carry the same one, which is what reserving it is for. Other args:
-`maxAttempts` (3), `root`, `worktrees`.
+workflows must never carry the same one, which is what reserving it is for. `dispatch` is a token
+`--args` mints fresh for every dispatch and the lane writes into its lock's owner file, so a retry of
+a step that died holding the lock can prove the lock is its own run's and reclaim it, while a second
+dispatch of the same issue is still refused. Other args: `maxAttempts` (3), `root`, `worktrees`.
 
 ## When a lane dies
 

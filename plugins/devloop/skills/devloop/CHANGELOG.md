@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.94
+
+A fix step that finds its lane already locked can now tell whether the holder is its own run. `config.sh --args` mints a `dispatch` token for every dispatch, the lane writes it into the lock's owner file, and the claim command prints `LANE_RECLAIMED` when the owner line is exactly what this run would write - the retry then carries on in its own worktree instead of refusing. Another issue, the same issue under another dispatch, a lock with no owner file or an owner line from before tokens existed are still `LANE_BUSY`, and the lane still stops on them. Owner files gain a trailing `dispatch <token>` field; every script that reads or removes them keeps working.
+
 ## 0.1.93
 
 A push whose refspec names master or main is refused by the guard even from a lane's own branch, with or without `--branch`. The refused destinations are `master`, `main`, `heads/master`, `heads/main`, `refs/heads/master` and `refs/heads/main`, so `git push origin HEAD:master`, `git push origin :master`, `git push --force origin +HEAD:main`, `git push origin master` and `git push origin HEAD:heads/master` all exit 2 and run nothing. A destination that is a pattern or empty is refused too, because it lands on the shared local master among the rest: `git push origin refs/heads/*:refs/heads/*`, `git push origin +refs/heads/*:refs/heads/*`, `git push origin :` and `git push origin +:` all exit 2 and run nothing, and so does a pattern over the lane's own namespace such as `refs/heads/devloop/*:refs/heads/devloop/*` - push one branch by name instead. A push to the lane's own branch, a bare `--force-with-lease`, and the lander's lease-and-refspec push are unaffected. `git push --all`, `git push --mirror` and a refspec that comes from configuration rather than the command line are not read and are recorded under pitwall-a809.
