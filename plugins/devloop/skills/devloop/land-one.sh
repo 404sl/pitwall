@@ -36,7 +36,8 @@
 #   5  master_red master's latest run was READ and was not green before starting. Nothing was
 #                 touched.
 #   6  usage      bad arguments, or the repository/branch does not exist, or the base branch
-#                 this was handed is not the default branch GitHub reports for the repository.
+#                 this was handed is not the default branch GitHub reports for the repository,
+#                 or not the branch the pull request is open against.
 
 set -u
 
@@ -132,6 +133,18 @@ if [ -z "$github_default" ]; then
 fi
 if [ "$github_default" != "$BASE" ]; then
   echo "usage: this run was handed base branch '${BASE}' for ${SLUG} but GitHub says its default branch is '${github_default}' - refusing before any worktree is cut or rebase runs, because git and GitHub would disagree about what ${BRANCH} lands on. Set repos.<key>.defaultBranch to '${github_default}' in the workspace config"
+  exit 6
+fi
+
+PR_BASE_ATTEMPT="gh pr view ${PR} --repo ${SLUG} --json baseRefName"
+pr_base=$(timeout "${DEVLOOP_GH_TIMEOUT:-30}" gh pr view "$PR" --repo "$SLUG" --json baseRefName 2>/dev/null \
+  | python3 -c "import json,sys; print(json.load(sys.stdin).get('baseRefName') or '')" 2>/dev/null)
+if [ -z "$pr_base" ]; then
+  echo "usage: could not read the base branch of ${SLUG}#${PR} from '${PR_BASE_ATTEMPT}' within ${DEVLOOP_GH_TIMEOUT:-30}s, so nothing is known about whether it is open against ${BASE} - nothing touched"
+  exit 6
+fi
+if [ "$pr_base" != "$BASE" ]; then
+  echo "usage: ${SLUG}#${PR} is open against '${pr_base}' but this run was handed base branch '${BASE}' - refusing before any worktree is cut or rebase runs, because the rebase would go onto ${BASE} and the merge would land on ${pr_base}. GitHub reports ${BASE} as the default branch of ${SLUG}, so retarget the pull request with 'gh pr edit ${PR} --repo ${SLUG} --base ${BASE}'"
   exit 6
 fi
 

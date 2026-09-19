@@ -15,16 +15,17 @@ const AUTHOR = { name: "Release Author", email: "release@example.invalid" };
 
 let sequence = 0;
 
-function ghStub(bin: string, answers: Record<string, string>): void {
+function ghStub(bin: string, answers: Record<string, string>, prBase?: string): void {
   const cases = Object.entries(answers)
     .map(([slug, body]) => `  "repo view ${slug}") ${body} ;;`)
     .join("\n");
+  const view = prBase ? `  "pr view "*) echo '{"baseRefName":"${prBase}"}' ;;\n` : "";
   writeFileSync(
     join(bin, "gh"),
     `#!/bin/bash
 case "$1 $2 $3" in
 ${cases}
-  "run list "*)  echo '[{"status":"completed","conclusion":"success"}]' ;;
+${view}  "run list "*)  echo '[{"status":"completed","conclusion":"success"}]' ;;
   *) exit 0 ;;
 esac
 `,
@@ -344,7 +345,7 @@ test("land-one.sh rebases onto the base it is handed when GitHub agrees with it"
   const box = checkout("main");
   const prefix = `pwbranchtwo${process.pid}`;
   try {
-    ghStub(box.bin, { "acme/site": says("main") });
+    ghStub(box.bin, { "acme/site": says("main") }, "main");
     const before = git(box.bare, "rev-parse", "refs/heads/devloop/zz-aaa1");
     const ran = script(box.root, box.bin, "land-one.sh", [
       "--repo-path", box.repo, "--slug", "acme/site", "--pr", "7", "--branch", "devloop/zz-aaa1", "--prefix", prefix,

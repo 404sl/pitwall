@@ -35,7 +35,7 @@ case "$1 $2" in
   "run list")  echo '[{"status":"completed","conclusion":"success"}]' ;;
   "pr list")   cat ${JSON.stringify(join(root, "queue.json"))} ;;
   "pr create") echo "https://github.com/acme/site/pull/200" ;;
-  "pr view")   echo '{"labels":[{"name":"lane-verified"}],"statusCheckRollup":[{"name":"CI","conclusion":"SUCCESS"}],"headRefOid":"'"$(git --git-dir=${JSON.stringify(bare)} rev-parse refs/heads/devloop/zz-aaa1 2>/dev/null)"'"}' ;;
+  "pr view")   echo '{"baseRefName":"master","labels":[{"name":"lane-verified"}],"statusCheckRollup":[{"name":"CI","conclusion":"SUCCESS"}],"headRefOid":"'"$(git --git-dir=${JSON.stringify(bare)} rev-parse refs/heads/devloop/zz-aaa1 2>/dev/null)"'"}' ;;
   "pr checks") exit 0 ;;
   "api repos/"*) echo '{"total_count":1,"check_runs":[{"name":"CI"}]}' ;;
   *)           exit 0 ;;

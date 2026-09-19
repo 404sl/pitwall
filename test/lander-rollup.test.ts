@@ -35,7 +35,11 @@ function stubs(root: string, view: string, checks: string, runList = MASTER_GREE
 case "$1 $2" in
   "repo view") echo '{"defaultBranchRef":{"name":"master"}}' ;;
   "run list")  ${runList} ;;
-  "pr view")   ${view} ;;
+  "pr view")
+    case "$*" in
+      *baseRefName*) echo '{"baseRefName":"master"}' ;;
+      *) ${view} ;;
+    esac ;;
   "pr checks") ${checks} ;;
   *)           exit 0 ;;
 esac
