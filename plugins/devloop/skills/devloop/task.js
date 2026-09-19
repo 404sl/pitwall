@@ -62,6 +62,16 @@ if (!input.root) {
 const ROOT = input.root
 const ID_PREFIX = input.idPrefix || 'sr'
 const REPOS = input.repos || {}
+const REPO_KEYS = Object.keys(REPOS)
+if (!REPO_KEYS.length) {
+  return {
+    id: input.id || null,
+    outcome: 'error',
+    notes: 'no repositories in args - refusing to run. The workspace config names no repositories, ' +
+           'so there is nothing a ticket can be routed to. Add a repos entry per checkout and ' +
+           'build the args with `config.sh --args <id> <slot>`.'
+  }
+}
 // /tmp is shared across every project on this machine. Two projects dispatching with the same
 // lockPrefix collide on the lane locks - and the lane lock is what stops two lanes sharing a
 // test database.
@@ -145,7 +155,7 @@ const TRIAGE = {
         properties: {
           title: { type: 'string' },
           repo: {
-            enum: ['site', 'extension', 'integration', 'docs'],
+            enum: REPO_KEYS,
             description: 'routed per child from the paths that child names, and a key this workspace has configured. A child does not inherit the parent routing.'
           },
           scope: { type: 'string', description: 'what this child covers, traceable to the parent text' },
@@ -155,8 +165,8 @@ const TRIAGE = {
       }
     },
     repo: {
-      enum: ['site', 'extension', 'integration', 'docs', 'unknown'],
-      description: 'must be a key this workspace has configured - the brief lists them with their checkouts. The list above is a wire format shared with other projects and holds keys this workspace does not have.'
+      enum: [...REPO_KEYS, 'unknown'],
+      description: 'must be a key this workspace has configured - the brief lists them with their checkouts. unknown is not a route: it means the ticket names no configured repository.'
     },
     title: { type: 'string' },
     priority: { type: 'integer' },
@@ -171,7 +181,7 @@ const WORK = {
   properties: {
     status: { enum: ['pushed', 'needs_feedback', 'needs_design', 'no_change_needed', 'blocked'] },
     summary: { type: 'string' },
-    repo: { enum: ['site', 'extension', 'integration', 'docs', 'unknown'] },
+    repo: { enum: [...REPO_KEYS, 'unknown'] },
     branch: { type: 'string' },
     prNumber: { type: 'integer' },
     prUrl: { type: 'string' },
@@ -431,7 +441,6 @@ ${SHELL_FIRST}
 // keeps a bare dispatch working for the common case where they match.
 function repoPath(repo) { return `${ROOT}/${(REPOS[repo] || {}).path || repo}` }
 
-const REPO_KEYS = Object.keys(REPOS)
 function reposTable() {
   if (!REPO_KEYS.length) {
     return `This workspace's configuration lists no repositories at all, so nothing can be routed.
@@ -1857,11 +1866,11 @@ workspace has, with the checkout each key resolves to:
 
 ${reposTable()}
 
-1. ONLY A KEY FROM THAT TABLE MAY BE RETURNED. The schema's list of words is a wire format shared
-   with other projects and contains keys this workspace does not have. A key that is in the list
-   and absent from the table is not a choice - it is a dispatch whose worktree is cut from a path
-   that does not exist. If the work belongs somewhere with no key here, return eligible:false and
-   say which repository it needs.
+1. ONLY A KEY FROM THAT TABLE MAY BE RETURNED. The schema's list of words is built from that
+   table, so any other name fails validation - but a key that resolves to a real checkout is
+   still the wrong one when the ticket's paths live elsewhere, and that dispatch cuts its worktree
+   from a repository the work does not belong to. If the work belongs somewhere with no key here,
+   return eligible:false and say which repository it needs.
 2. DERIVE THE KEY FROM THE SOURCE PATHS THE TICKET NAMES. For each path it names, find which
    checkout actually contains it:
      ls <checkout>/<the path it names> 2>/dev/null
