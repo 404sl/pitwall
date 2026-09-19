@@ -859,14 +859,14 @@ make by reading: every path and link you write must resolve, anything you claim 
 product must match what the code actually does, and a file you move must not orphan a
 reference elsewhere in the folder. Say in your result what you checked and how.
 
-WORK IN A WORKTREE. NEVER BRANCH INSIDE ${repoPath('docs')} ITSELF. An earlier version of this
+WORK IN A WORKTREE. NEVER BRANCH INSIDE ${repoPath(repo)} ITSELF. An earlier version of this
 said a worktree bought nothing here because the repository is small - which mistook cheapness for
 safety. That checkout routinely holds a person's unfinished articles: on 2026-08-29 it carried a
 modified topics-from-search.md and five untracked drafts. Branching there puts your commit on top
 of their work, and one 'git add -A' commits their drafts into your pull request.
 
-  cd ${repoPath('docs')} && git fetch origin --quiet
-  git worktree add --force ${wtPath} -b devloop/${task.id} origin/${base}
+  cd ${repoPath(repo)} && git fetch origin --quiet
+  git worktree add --force ${wtPath} -b devloop/${ID} origin/${base}
   cd ${wtPath}
 
 Everything after that happens in the worktree. Do not cd back, do not check anything out in the
@@ -952,6 +952,7 @@ function fixPrompt(task, attempt, feedback, laneIndex, brief) {
   const scratch = `${SCRATCH}/${task.id}`
   const again = attempt > 1
   const slug = (REPOS[task.repo] || {}).slug
+  const check = (REPOS[task.repo] || {}).test
   const base = baseOf(task.repo)
   return `${again ? 'REWORK' : 'Fix'} one tracker issue end to end and open a pull request.
 
@@ -1280,13 +1281,14 @@ Otherwise:
    the old one, so the folded commit would put your stale copy of every file they touched on
    top of their work and silently revert it. The fork point carries only your own change; the
    lander rebases it onto ${base} when it merges.
-5. ${task.repo === 'docs'
-   ? `Run 'ruby script/check.rb', then commit, read your own commit messages back with
+5. ${roleOf(task.repo) === 'script'
+   ? `Run ${check ? `'${check}'` : 'the check script'}, then commit, read your own commit messages back with
      bash ${SKILL_DIR}/lane-handoff.sh --repo-path ${wtPath} --pre-push --base ${base}
    and only then push and open a PR with 'gh pr create --base ${base}' explaining what was wrong, why this
-   fix, and what you checked by reading. Reference ${task.id}. Do NOT merge it. This repository
-   gained a remote and CI on 2026-08-19; the instruction that it had neither outlived the fact
-   by a day and would have had you commit straight onto a real default branch.`
+   fix, and what you checked by reading. Reference ${task.id}. Do NOT merge it. A check script
+   is not a reason to skip the branch: one such repository gained a remote and CI on 2026-08-19,
+   and the instruction that it had neither outlived the fact by a day and would have had a lane
+   commit straight onto a real default branch.`
    : `Commit with the identity on the command rather than from a config nobody read - the fold
    in step 4 is that commit, so when it has already run there is nothing left to commit here -
    git -c user.name="$(git log -1 --format=%an origin/${base})" -c user.email="$(git log -1 --format=%ae origin/${base})" commit -F <message file> -
