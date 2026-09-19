@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.97
+
+A lane now cuts its worktree from, reads its commit identity from, checks its commit range against and opens its pull request with --base set to the repository's configured default branch, and its reviewer diffs against that branch. Triage names each checkout's branch in the routing table and asks that branch rather than origin/master. A repository with no defaultBranch configured behaves exactly as before.
+
+Refs pitwall-7syh.2
+
 ## 0.1.96
 
 - A dispatch that stops with `run-script.sh` exiting 3 and naming a staged copy is not a broken install: something replaced that file in `<root>/.autofix-run` since it was staged. Read the named file, then run `run-script.sh --restage` once and dispatch again. Do not copy the script by hand and do not delete the stage to get past the refusal.

@@ -164,7 +164,7 @@ test("both steps that write commit and pull request text are handed the rules", 
   const source = readFileSync(join(SKILL, "task.js"), "utf8");
   for (const name of ["fixPrompt", "handoffPrompt"]) {
     assert.ok(
-      promptTemplate(source, name).includes("${LAW}"),
+      promptTemplate(source, name).includes("${LAW("),
       `${name} does not splice the rules, so the step that runs it never sees the settlement`,
     );
   }
@@ -180,7 +180,7 @@ test("the handoff step is told where it decides that the trailer instruction is 
     "the handoff step names 'blocked' as an exit from its compliance check and is not told that a conflict with the trailer instruction is not one of them",
   );
   assert.ok(
-    sentence < handoff.indexOf("${LAW}"),
+    sentence < handoff.indexOf("${LAW("),
     "the sentence has to sit at the compliance step, where 'blocked' is offered, not after the rules it restates",
   );
 });
@@ -602,4 +602,94 @@ test("the triage brief verifies files and ancestry against origin/master, never 
       "and a commit that were both on master, naming prerequisite branches already merged and " +
       `deployed:\n${stale.join("\n")}`,
   );
+});
+
+const TRUNK_REPOS = {
+  site: { path: "cli", slug: "acme/site", role: "node", test: "npm test", lint: "npm run lint", defaultBranch: "trunk" },
+  integration: { path: "schema", slug: "acme/schema", role: "node", test: "npm test", defaultBranch: "trunk" },
+  docs: { path: "site", slug: "acme/docs", role: "script", test: "ruby script/check.rb", defaultBranch: "trunk" },
+};
+
+type Briefs = { triage: string; fix: string; review: string; handoff: string };
+
+async function briefsFor(repos: unknown, repo: string): Promise<Briefs> {
+  const { calls, done } = runScript(
+    "task.js",
+    { id: "zz-aaa4", slot: 2, root: "/root", skillDir: "/skill", lockPrefix: "pw", repos },
+    (call, n) => {
+      if (n === 1) {
+        return { eligible: true, repo, title: "lands on another branch", priority: 1, ui: false, reason: "", ticket: "the ticket body" };
+      }
+      if (call.label.startsWith("fix:")) {
+        return { status: "pushed", summary: "fixed", prNumber: 48, prUrl: "https://example.test/pr/48" };
+      }
+      if (call.label.startsWith("review:")) return { approved: true, notes: "good" };
+      if (call.label.startsWith("handoff:")) return { status: "verified", verified: true, prNumber: 48, notes: "" };
+      return { lane: "released", slot: "released" };
+    },
+  );
+  await done;
+  const find = (step: string): string => {
+    const call = calls.find((c) => c.label.startsWith(`${step}:`));
+    assert.ok(call, `no ${step} step ran for ${repo}. Steps seen: ${calls.map((c) => c.label || "?").join(", ")}`);
+    return call.prompt;
+  };
+  return { triage: find("triage"), fix: find("fix"), review: find("review"), handoff: find("handoff") };
+}
+
+test("every brief names the configured default branch and never origin/master when the repo lands elsewhere", async () => {
+  const briefs = await briefsFor(TRUNK_REPOS, "site");
+  for (const step of ["triage", "fix", "review", "handoff"] as const) {
+    const brief = briefs[step];
+    const stale = brief.split("\n").filter((line) => line.includes("origin/master"));
+    assert.deepEqual(
+      stale,
+      [],
+      `the ${step} brief still says origin/master to a lane whose repository lands on trunk. A lane ` +
+        "does what its brief says whatever the workspace config says, so the interpolation has to " +
+        `reach the prompt text, not only the code:\n${stale.join("\n")}`,
+    );
+    assert.ok(brief.includes("origin/trunk"), `the ${step} brief never names origin/trunk, so the base was dropped rather than interpolated`);
+  }
+
+  const fix = briefs.fix;
+  assert.ok(fix.includes("git worktree add /tmp/pw-worktrees/zz-aaa4 -b devloop/zz-aaa4 origin/trunk"), "the worktree is not cut from the configured branch");
+  assert.ok(fix.includes("git log origin/trunk..HEAD"), "an inherited branch is not read against the configured base");
+  assert.ok(fix.includes("git diff origin/trunk...HEAD --stat"), "an inherited branch is not diffed against the configured base");
+  assert.ok(
+    fix.includes('git -c user.name="$(git log -1 --format=%an origin/trunk)" -c user.email="$(git log -1 --format=%ae origin/trunk)"'),
+    "the commit identity is read from a branch this repository does not land on",
+  );
+  assert.ok(fix.includes("--pre-push --base trunk"), "the commit-message check is not told which base the range starts at, so it defaults to master");
+  assert.ok(fix.includes("gh pr create --base trunk"), "the pull request is opened with no --base, which is the case the report called dangerous");
+  assert.ok(fix.includes("open the pull request against\ntrunk"), "the brief still tells the lane which branch to target in prose that names the wrong one");
+
+  assert.ok(briefs.review.includes("rtk git diff origin/trunk...HEAD"), "the reviewer reads the diff against a branch the change was not cut from");
+  assert.ok(briefs.handoff.includes("git log origin/trunk..origin/devloop/zz-aaa4 --format=%B"), "the handoff reads commit messages over the wrong range");
+
+  const docs = await briefsFor(TRUNK_REPOS, "docs");
+  assert.ok(docs.fix.includes("-b devloop/zz-aaa4 origin/trunk"), "the script-role worktree is still cut from origin/master");
+  assert.ok(docs.fix.includes("--pre-push --base trunk"), "the script-role commit check is not told its base");
+  assert.ok(docs.fix.includes("gh pr create --base trunk"), "the script-role pull request is opened with no --base");
+});
+
+test("the triage brief asks the configured branch, and names each checkout's own when they differ", async () => {
+  const shared = (await briefsFor(TRUNK_REPOS, "site")).triage;
+  const commands = shared.split("\n").filter((line) => CHECKS_A_CHECKOUT.test(line));
+  assert.ok(commands.some((line) => line.includes("ls-tree --name-only origin/trunk")), "triage is told to look for a path on a branch nothing lands on");
+  assert.ok(commands.some((line) => line.includes("merge-base --is-ancestor <sha> origin/trunk")), "triage is told to check ancestry against a branch nothing lands on");
+  assert.deepEqual(
+    commands.filter((line) => line.includes("origin/master")),
+    [],
+    "a command in the triage brief still asks origin/master in a workspace where every repository lands on trunk",
+  );
+
+  const mixed = (await briefsFor({ ...TRUNK_REPOS, docs: { ...TRUNK_REPOS.docs, defaultBranch: undefined } }, "site")).triage;
+  assert.ok(mixed.includes("site  ->  /root/cli  (acme/site)  lands on origin/trunk"), "the repo table does not say which branch site lands on");
+  assert.ok(mixed.includes("docs  ->  /root/site  (acme/docs)  lands on origin/master"), "a repository with no defaultBranch configured no longer reads as master in the table");
+  assert.ok(
+    mixed.includes("ls-tree --name-only origin/<default branch> '<the path it names>'"),
+    "with two default branches in one workspace the routing command names one of them as if it were both",
+  );
+  assert.ok(!mixed.includes("ls-tree --name-only origin/trunk '<the path it names>'"), "the routing command picked one repository's branch for every checkout");
 });
