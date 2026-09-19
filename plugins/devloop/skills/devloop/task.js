@@ -265,10 +265,20 @@ const LANE = {
   type: 'object',
   required: ['lane', 'slot', 'worktree'],
   properties: {
-    lane: { enum: ['released', 'not_mine', 'already_gone', 'still_held'], description: 'the word release-lane.sh printed after lane:, lowercased - it reports its own outcome and you are not asked to judge it' },
-    slot: { enum: ['released', 'not_mine', 'already_gone', 'still_held'], description: 'the word it printed after slot:, lowercased' },
-    worktree: { enum: ['gone', 'clean', 'uncommitted', 'unpushed', 'unread'], description: 'the word it printed after worktree:, lowercased' },
-    notes: { type: 'string', description: 'everything it printed, verbatim' }
+    lane: { enum: ['released', 'not_mine', 'already_gone', 'still_held', 'refused'], description: 'the word release-lane.sh printed after lane:, lowercased - it reports its own outcome and you are not asked to judge it. refused means the command was not permitted to run at all, so nothing was printed' },
+    slot: { enum: ['released', 'not_mine', 'already_gone', 'still_held', 'refused'], description: 'the word it printed after slot:, lowercased, or refused when the command was not permitted to run' },
+    worktree: { enum: ['gone', 'clean', 'uncommitted', 'unpushed', 'unread', 'refused'], description: 'the word it printed after worktree:, lowercased, or refused when the command was not permitted to run' },
+    notes: { type: 'string', description: 'everything it printed, verbatim - or what refused the command, in its own words' }
+  }
+}
+
+const LANE_PLAIN = {
+  type: 'object',
+  required: ['lane', 'slot'],
+  properties: {
+    lane: { enum: ['released', 'not_mine', 'already_gone', 'still_held', 'refused'], description: 'the word printed after lane:, lowercased, or refused when the command was not permitted to run' },
+    slot: { enum: ['released', 'not_mine', 'already_gone', 'still_held', 'refused'], description: 'the word printed after slot:, lowercased, or refused when the command was not permitted to run' },
+    notes: { type: 'string', description: 'everything printed, verbatim - or what refused a command, in its own words' }
   }
 }
 
@@ -1748,13 +1758,49 @@ uncommitted or unpushed work, and what it reports travels back in the run's resu
 finished work is not thrown away on the strength of a terse summary.
 
 Report the word after 'lane:' as 'lane', the word after 'slot:' as 'slot' and the word after
-'worktree:' as 'worktree', all lowercased, and everything it printed as 'notes'. Remove nothing by
-hand, run no other command, and never use 2>&1.`
+'worktree:' as 'worktree', all lowercased, and everything it printed as 'notes'. If the command is
+not permitted to run at all, report 'refused' for all three and say what refused it in 'notes' -
+that answer is acted on, and it is worth more than a guess at what the script would have printed.
+Remove nothing by hand, run no other command, and never use 2>&1.`
 }
 
-function settle(path, answer) {
+function plainReleasePrompt() {
+  return `The release step for lane ${LANE_NUMBER} and slot ${SLOT} did not answer, so give them back with plain
+commands instead. Each reads one file under /tmp that this run wrote and removes it only when it
+names this run. Run these two commands once each, exactly as they stand, in this order, and report
+what they printed:
+
+  if [ ! -e ${SLOT_FILE} ]; then echo "slot: ALREADY_GONE"; elif [ "$(head -n 1 ${SLOT_FILE})" = "${ID}" ]; then rm -f ${SLOT_FILE} && echo "slot: RELEASED" || echo "slot: STILL_HELD"; else echo "slot: NOT_MINE - $(head -n 1 ${SLOT_FILE})"; fi
+
+  if [ -e ${LANE_LOCK} ] && [ ! -d ${LANE_LOCK} ]; then echo "lane: STILL_HELD - a regular file, not a lock"; elif [ ! -d ${LANE_LOCK} ]; then echo "lane: ALREADY_GONE"; elif [ "$(awk 'NR == 1 { print $1 }' ${OWNER_FILE} 2>/dev/null)" = "${ID}" ]; then rm -f ${OWNER_FILE} && rmdir ${LANE_LOCK} && echo "lane: RELEASED" || echo "lane: STILL_HELD"; else echo "lane: NOT_MINE - $(head -n 1 ${OWNER_FILE} 2>/dev/null)"; fi
+
+The slot goes first because a slot left behind is the silent one: nothing refuses a dispatch over
+it, the pool is simply one lane smaller. A lane lock left behind refuses the next run out loud.
+
+Report the word after 'slot:' as 'slot' and the word after 'lane:' as 'lane', lowercased, and
+everything printed as 'notes'. If a command is not permitted to run, report 'refused' for it and say
+what refused it in 'notes'. Run no other command, remove nothing by hand, and never use 2>&1.`
+}
+
+const RELEASE_BY_HAND = `cd ${ROOT} && bash ${SKILL_DIR}/slot.sh --release ${ID}`
+
+function unanswered(answer) {
+  return !answer || answer.lane === 'refused' || answer.slot === 'refused'
+}
+
+async function giveBack(prompt, label, schema) {
+  try {
+    return await agent(prompt, { label, phase: 'Ship', schema, model: 'haiku', effort: 'low' })
+  } catch (e) {
+    log(`${label}: the release step died before answering - ${e && e.message ? e.message : String(e)}`)
+    return null
+  }
+}
+
+function settle(path, answer, refused) {
   if (GIVEN_BACK.has(answer)) return answer
   if (answer === 'not_mine') return `not_mine - ${path} does not record ${ID}, so nothing was removed and nothing should be`
+  if (answer === 'refused' || (refused && !answer)) return `REFUSED - neither release step was permitted to run or answered, so ${path} was never given back: it is leaked if it still records ${ID}. Release it on reading this, it removes only what names this run: ${RELEASE_BY_HAND}`
   return `LEAKED - ${path} was not given back, or the release step answered nothing. Read it before removing anything: clear it if it records this run, and leave it alone if it records another.`
 }
 
@@ -2276,10 +2322,12 @@ if (!result && reworks >= MAX_REWORKS) {
 }
 
 } finally {
-  const back = await agent(releaseLanePrompt(), { label: `release:${ID}`, phase: 'Ship', schema: LANE, model: 'haiku', effort: 'low' })
-  laneLock = settle(LANE_LOCK, back && back.lane)
-  slotClaim = settle(SLOT_FILE, back && back.slot)
-  worktreeState = settleWorktree(back && back.worktree)
+  const first = await giveBack(releaseLanePrompt(), `release:${ID}`, LANE)
+  const back = unanswered(first) ? await giveBack(plainReleasePrompt(), `release-retry:${ID}`, LANE_PLAIN) : first
+  const refused = unanswered(back)
+  laneLock = settle(LANE_LOCK, back && back.lane, refused)
+  slotClaim = settle(SLOT_FILE, back && back.slot, refused)
+  worktreeState = settleWorktree(first && first.worktree)
   if (!GIVEN_BACK.has(back && back.lane) || !GIVEN_BACK.has(back && back.slot)) {
     log(`lane ${LANE_NUMBER}: ${laneLock}\n    slot ${SLOT}: ${slotClaim}${back && back.notes ? `\n    ${back.notes}` : ''}`)
   }
