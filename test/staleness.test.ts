@@ -115,7 +115,8 @@ test("a note written after the parking label reads as an answer", async () => {
     aContext(),
   );
   assert.equal(staleness.verdict, "likely-stale");
-  assert.ok(matches(staleness.evidence, /after the needs-access label went on/));
+  assert.ok(matches(staleness.evidence, /after the earliest the console can place the needs-access park/));
+  assert.ok(!staleness.evidence.some((line) => line.includes("went on")), "no sentence claims to know when the label went on");
   assert.equal(staleness.checkedAt, CHECKED_AT.toISOString());
 });
 
@@ -131,7 +132,8 @@ test("a note written before the parking label leaves the blocker standing", asyn
     aContext(),
   );
   assert.equal(staleness.verdict, "still-blocking");
-  assert.ok(matches(staleness.evidence, /nothing has been recorded since the needs-access label/));
+  assert.ok(matches(staleness.evidence, /the earliest the console can place the needs-access park is 2026-09-05T14:00:00Z/));
+  assert.ok(!staleness.evidence.some((line) => line.includes("went on")), "no sentence claims to know when the label went on");
 });
 
 test("a later note that defers rather than answers is not an answer", async () => {

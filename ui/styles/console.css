@@ -330,6 +330,28 @@ body {
   text-decoration: line-through;
 }
 
+.pw-age {
+  font-family: var(--pw-font-data);
+  font-size: 12px;
+  line-height: 1.6;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.pw-age--suspect {
+  color: var(--pw-ink);
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+}
+
+.pw-age__flag {
+  margin-inline-start: 8px;
+  font-family: var(--pw-font-ui);
+  font-size: 15px;
+  color: var(--pw-ink);
+  white-space: nowrap;
+}
+
 .pw-chips {
   display: flex;
   flex-wrap: wrap;

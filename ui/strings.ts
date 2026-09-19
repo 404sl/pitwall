@@ -69,6 +69,7 @@ export const strings = {
     kind: "Kind",
     title: "Title",
     staleness: "Staleness",
+    parked: "Parked",
     project: "Project",
     state: "State",
     lanes: "Lanes",
@@ -82,10 +83,31 @@ export const strings = {
     running: "Lanes in flight, by project and state.",
     ready: "Issues ready to pick up, by project.",
     problems: "Failures a person can act on.",
+    parkedSuspect: "Parked issues past the threshold, oldest first, by project.",
+    parkedRest: "Parked issues under the threshold, oldest first, by project.",
   },
   kind: {
     decision: "decision",
     access: "access",
+    misfiled: "misfiled",
+  },
+  parkReason: {
+    tooling: "tooling",
+    watch: "watch",
+    umbrella: "umbrella",
+    roadmap: "roadmap",
+  },
+  park: {
+    suspect: "not re-examined",
+    suspectTitle: "Parked longer than {days} days and nothing has re-examined why.",
+    sinceTitle:
+      "Earliest the console can place this park: {at}. The tracker does not record when the label went on.",
+    sinceLine: " - earliest the console can place this park: {at}",
+    unknownTitle: "The console cannot yet place when this park went on. It will after its next collection.",
+    unknownLine: " - when this park went on is not yet known",
+    misfiledTitle: "Labelled needs-decision, but no line states the question.",
+    restLabel: "Also parked, under {days}d",
+    restHint: "not yet suspect; oldest first",
   },
   laneState: {
     working: "working",
@@ -177,11 +199,18 @@ export const strings = {
       decision: {
         standing: "Decide this — nothing else can, and nothing moves until you do.",
         stale: "Decide this, or say the decision is already made — the check below found the reason may have expired.",
+        misfiled:
+          "This is labelled a decision, but no question is stated - say in one line what must be decided, or say it is not yours.",
+        aged: "Decide this - it has waited {age}, and nothing has re-examined why.",
       },
       access: {
         standing: "Run this yourself — no lane has the access it needs.",
         stale: "Run this, or say it is already done — the check below found the reason may have expired.",
+        aged: "Run this - it has waited {age}, and nothing has re-examined why.",
       },
+      parkedAged:
+        "Read this - parked as {reason} for {age}, and nothing has re-examined why. If the reason has expired, remove the park in the tracker.",
+      question: "Question",
       inFlight: "Nothing for you — a lane is working it.",
       landing: "Nothing for you — it is waiting to be landed.",
       ready: "Nothing for you — it is waiting for a lane to pick it up.",

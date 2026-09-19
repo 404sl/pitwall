@@ -1,7 +1,20 @@
 import { Fragment } from "react";
-import { blockedSummary, parkedCounts, parkedSummary, type ParkedCount, type ParkedEntry } from "../model.js";
-import { ofParts } from "../format.js";
+import {
+  PARK_SUSPECT_DAYS,
+  blockedSummary,
+  parkedCounts,
+  parkedSummary,
+  type FilterState,
+  type ParkedCount,
+  type ParkedEntry,
+  type ParkedGroup,
+  type ParkedRows as ParkedRowsValue,
+} from "../model.js";
+import { fill, ofParts, priorityLabel } from "../format.js";
+import { issueHref } from "../routes.js";
 import { strings } from "../strings.js";
+import { Staleness } from "./NeedsYou.js";
+import { ParkAge } from "./ParkAge.js";
 
 function Count({ part }: { part: ParkedCount }) {
   const [lead, rest] = ofParts(part.count, part.total ?? part.count);
@@ -26,16 +39,7 @@ function Reasons({ parts }: { parts: ParkedCount[] }) {
   );
 }
 
-interface ParkedProps {
-  entries: ParkedEntry[];
-  totals?: ParkedEntry[];
-  filteredEmpty?: string;
-}
-
-export function Parked({ entries, totals, filteredEmpty }: ParkedProps) {
-  if (entries.length === 0) {
-    return <p className="pw-empty">{filteredEmpty ?? strings.empty.parked}</p>;
-  }
+function Summary({ entries, totals }: { entries: ParkedEntry[]; totals?: ParkedEntry[] }) {
   if (totals === undefined) {
     const reasons = parkedSummary(entries);
     const blocked = blockedSummary(entries);
@@ -56,6 +60,97 @@ export function Parked({ entries, totals, filteredEmpty }: ParkedProps) {
         <p className="pw-parked pw-parked--blocked">
           <Count part={blocked} />
         </p>
+      )}
+    </>
+  );
+}
+
+export function ParkedRows({
+  groups,
+  filter,
+  caption,
+}: {
+  groups: ParkedGroup[];
+  filter?: FilterState;
+  caption: string;
+}) {
+  return (
+    <table className="pw-table pw-table--parked">
+      <caption className="pw-sr">{caption}</caption>
+      <thead className="pw-sr">
+        <tr>
+          <th scope="col">{strings.column.issue}</th>
+          <th scope="col">{strings.column.priority}</th>
+          <th scope="col">{strings.column.kind}</th>
+          <th scope="col">{strings.column.title}</th>
+          <th scope="col">{strings.column.parked}</th>
+          <th scope="col">{strings.column.staleness}</th>
+        </tr>
+      </thead>
+      {groups.map((group) => (
+        <tbody key={group.projectId}>
+          <tr className="pw-group">
+            <th colSpan={6} scope="rowgroup">
+              {group.project}
+            </th>
+          </tr>
+          {group.rows.map((row) => (
+            <tr key={row.id} className="pw-row">
+              <td className="pw-cell pw-cell--id">{row.id}</td>
+              <td className="pw-cell pw-cell--data" title={row.priority === undefined ? strings.stale.noPriority : undefined}>
+                {priorityLabel(row.priority)}
+              </td>
+              <td className="pw-cell pw-cell--kind">{strings.parkReason[row.reason]}</td>
+              <td className="pw-cell pw-cell--title">
+                <a className="pw-link" href={issueHref(group.projectId, row.id, filter)}>
+                  {row.title}
+                </a>
+              </td>
+              <td className="pw-cell pw-cell--at">
+                <ParkAge park={row.park} />
+              </td>
+              <td className="pw-cell pw-cell--stale">
+                <Staleness row={row} />
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      ))}
+    </table>
+  );
+}
+
+interface ParkedProps {
+  entries: ParkedEntry[];
+  totals?: ParkedEntry[];
+  rows?: ParkedRowsValue;
+  filter?: FilterState;
+  filteredEmpty?: string;
+}
+
+export function Parked({ entries, totals, rows, filter, filteredEmpty }: ParkedProps) {
+  if (entries.length === 0) {
+    return <p className="pw-empty">{filteredEmpty ?? strings.empty.parked}</p>;
+  }
+  return (
+    <>
+      <Summary entries={entries} totals={totals} />
+      {rows === undefined || rows.suspect.length === 0 ? null : (
+        <ParkedRows groups={rows.suspect} filter={filter} caption={strings.caption.parkedSuspect} />
+      )}
+      {rows === undefined || rows.rest.length === 0 ? null : (
+        <details className="pw-disclosure">
+          <summary className="pw-disclosure__summary">
+            <span className="pw-disclosure__label">
+              {fill(strings.park.restLabel, { days: PARK_SUSPECT_DAYS })}
+            </span>
+            <span aria-hidden="true" className="pw-disclosure__separator">
+              {strings.issue.notes.separator}
+            </span>
+            <span className="pw-disclosure__hint">{strings.park.restHint}</span>
+          </summary>
+          <ParkedRows groups={rows.rest} filter={filter} caption={strings.caption.parkedRest} />
+        </details>
       )}
     </>
   );

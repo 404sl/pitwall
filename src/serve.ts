@@ -4,7 +4,7 @@ import { extname, resolve, sep } from "node:path";
 import { pipeline } from "node:stream";
 import { fileURLToPath } from "node:url";
 import type { Classification, CollectionError, Issue, Project, Snapshot } from "@404sl/pitwall-schema";
-import { NOTICE_SOURCE, REFRESH_SOURCE, stalenessErrors } from "./board.js";
+import { NOTICE_SOURCE, REFRESH_SOURCE, stalenessErrors, type ParkEntry } from "./board.js";
 import {
   IssueActionFailure,
   OWNER_LABELS,
@@ -14,6 +14,7 @@ import {
   type IssueReading,
 } from "./beads.js";
 import { createBuildCheck, type BuildCheck } from "./build.js";
+import { parkLabelOf } from "./classify.js";
 import { collectionError } from "./errors.js";
 import {
   collectionFailedNotice,
@@ -22,6 +23,7 @@ import {
   type Delivery,
 } from "./notify.js";
 import { createUpdateCheck, type UpdateCheck } from "./registry.js";
+import { readConsoleState } from "./parks.js";
 import { outboundPath, type OutboundOptions } from "./sender.js";
 import { emitSnapshot, type SnapshotOptions } from "./snapshot.js";
 import { readSnapshot, type StateOptions, type StoredSnapshot } from "./state.js";
@@ -33,6 +35,7 @@ export const LOCAL_HOSTNAMES = ["127.0.0.1", "localhost", "[::1]"];
 export const UI_DIR = fileURLToPath(new URL("../dist/ui", import.meta.url));
 export const ISSUE_PREFIX = "/api/issue/";
 export const VERSION_ROUTE = "/api/version";
+export const PARKS_ROUTE = "/api/parks";
 export const REFRESH_FLOOR_MS = 60_000;
 export const OUTAGE_AFTER_MS = 15 * 60_000;
 export const NOTHING_READ = "No project could be read. The board still shows the last snapshot collected.";
@@ -297,6 +300,10 @@ function serveSnapshot(res: ServerResponse, options: ServeOptions, refresher: Re
   });
 }
 
+function serveParks(res: ServerResponse, options: ServeOptions): void {
+  sendJson(res, 200, { parks: readConsoleState(options).state.parks });
+}
+
 function serveVersion(res: ServerResponse, updates: UpdateCheck, builds: BuildCheck): void {
   const update = updates.update();
   sendJson(res, 200, {
@@ -323,6 +330,16 @@ function issueRoute(pathname: string): { project: string; id: string } | undefin
 
 function snapshotIssue(project: Project | undefined, id: string): Issue | undefined {
   return project?.issues.find((issue) => issue.id === id);
+}
+
+function parkOf(
+  options: ServeOptions,
+  project: string,
+  issue: { id: string; classification: Classification | undefined; labels: string[] },
+): ParkEntry | undefined {
+  const label = parkLabelOf(issue);
+  const entry = readConsoleState(options).state.parks[project]?.[issue.id];
+  return label !== undefined && entry !== undefined && entry.label === label ? entry : undefined;
 }
 
 function projectIn(snapshot: Snapshot, id: string): Project | undefined {
@@ -384,6 +401,7 @@ async function serveIssue(
     return;
   }
   const snapshotStatus = snapshotIssue(indexed, route.id);
+  const park = parkOf(options, indexed.id, reading.issue);
   sendJson(res, 200, {
     issue: {
       ...reading.issue,
@@ -391,6 +409,7 @@ async function serveIssue(
       projectName: indexed.name,
       authority: indexed.authority,
       staleness: snapshotStatus?.staleness ?? { verdict: "unchecked", evidence: [] },
+      ...(park === undefined ? {} : { park }),
     },
     readAt: new Date().toISOString(),
     errors: stalenessErrors(indexed, route.id),
@@ -713,6 +732,10 @@ export function createConsoleServer(options: ServeOptions = {}): Server {
     }
     if (pathname === VERSION_ROUTE) {
       serveVersion(res, updates, builds);
+      return;
+    }
+    if (pathname === PARKS_ROUTE) {
+      serveParks(res, options);
       return;
     }
     if (req.method === "POST" && pathname.startsWith(ISSUE_PREFIX)) {

@@ -6,6 +6,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { Classification, SCHEMA_VERSION, isYours, parseSnapshot } from "@404sl/pitwall-schema";
 import type { CollectionError } from "@404sl/pitwall-schema";
 import {
+  PARK_SUSPECT_AFTER_MS,
   PARTIAL_SOURCE,
   REFRESH_SOURCE,
   SNAPSHOT_STALE_AFTER_MS,
@@ -19,7 +20,7 @@ import {
   problemKey,
   snapshotAge,
 } from "../ui/model.ts";
-import type { Board, BuildState, FilterState, IssuePayload, IssuePreview } from "../ui/model.ts";
+import type { Board, BuildState, FilterState, IssuePayload, IssuePreview, ParkStore } from "../ui/model.ts";
 import { strings } from "../ui/strings.ts";
 import { countLabel } from "../ui/format.ts";
 import { boardHref, filterOf, filterQuery, issueHref, routeOf } from "../ui/routes.ts";
@@ -162,6 +163,157 @@ test("every needs-you row carries a staleness verdict, unchecked by default", ()
   }
   assert.equal(rows[0]?.verdict, "likely-stale");
   assert.equal(rows[1]?.verdict, "unchecked");
+});
+
+const DAY = 24 * 60 * 60_000;
+
+function parkedAt(ms: number, label: string, question?: string) {
+  return {
+    label,
+    parkedSince: new Date(Date.parse(GENERATED_AT) - ms).toISOString(),
+    basis: "carried" as const,
+    ...(question === undefined ? {} : { question }),
+  };
+}
+
+const AGED_PARKS: ParkStore = {
+  pitwall: {
+    "pitwall-old": parkedAt(11 * DAY, "needs-decision", "Which one?"),
+    "pitwall-week": parkedAt(PARK_SUSPECT_AFTER_MS, "needs-access"),
+    "pitwall-almost": parkedAt(PARK_SUSPECT_AFTER_MS - 60_000, "needs-decision", "Keep it?"),
+    "pitwall-mute": parkedAt(3 * DAY, "needs-decision"),
+    "pitwall-p0": parkedAt(3 * DAY, "needs-decision", "Ship?"),
+    "pitwall-p2": parkedAt(3 * DAY, "needs-decision", "Ship?"),
+    "pitwall-t1": parkedAt(9 * DAY, "blocked-tooling"),
+    "pitwall-t2": parkedAt(2 * DAY, "watch"),
+    "pitwall-t3": parkedAt(8 * DAY, "roadmap"),
+    "pitwall-relabelled": parkedAt(20 * DAY, "needs-access"),
+  },
+};
+
+const AGED = snapshotOf([
+  project("pitwall", {
+    issues: [
+      issue("pitwall-p2", "yours:decision", { labels: ["needs-decision"], priority: 2 }),
+      issue("pitwall-p0", "yours:decision", { labels: ["needs-decision"], priority: 0 }),
+      issue("pitwall-mute", "yours:decision", { labels: ["needs-decision"], priority: 0 }),
+      issue("pitwall-almost", "yours:decision", { labels: ["needs-decision"] }),
+      issue("pitwall-week", "yours:access", { labels: ["needs-access"] }),
+      issue("pitwall-old", "yours:decision", { labels: ["needs-decision"] }),
+      issue("pitwall-new", "yours:access", { labels: ["needs-access"], priority: 0 }),
+      issue("pitwall-relabelled", "yours:decision", { labels: ["needs-decision"] }),
+      issue("pitwall-t2", "parked:watch", { labels: ["watch"] }),
+      issue("pitwall-t1", "parked:tooling", { labels: ["blocked-tooling"] }),
+      issue("pitwall-t3", "parked:roadmap", { labels: ["roadmap"] }),
+      issue("pitwall-t4", "parked:umbrella", { labels: ["umbrella"] }),
+      issue("pitwall-epic", "parked:umbrella", { issueType: "epic" }),
+      issue("pitwall-dep", "blocked"),
+    ],
+  }),
+]);
+
+test("the owner's queue is sorted oldest park first, unknown after known, misfiled last, then priority, then id", () => {
+  const board = buildBoard(AGED, {}, AGED_PARKS);
+  const rows = board.needsYou.flatMap((group) => group.rows);
+  assert.deepEqual(
+    rows.map((row) => row.id),
+    [
+      "pitwall-old",
+      "pitwall-week",
+      "pitwall-almost",
+      "pitwall-p0",
+      "pitwall-p2",
+      "pitwall-mute",
+      "pitwall-new",
+      "pitwall-relabelled",
+    ],
+  );
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  assert.equal(byId.get("pitwall-old")?.park.ms, 11 * DAY);
+  assert.equal(byId.get("pitwall-old")?.park.suspect, true);
+  assert.equal(byId.get("pitwall-old")?.question, "Which one?");
+  assert.equal(byId.get("pitwall-old")?.misfiled, false);
+  assert.equal(byId.get("pitwall-week")?.park.suspect, true, "a park at exactly the threshold is suspect");
+  assert.equal(byId.get("pitwall-almost")?.park.suspect, false, "a minute under the threshold is not");
+  assert.equal(byId.get("pitwall-mute")?.misfiled, true, "a decision with no stated question is misfiled");
+  assert.equal(byId.get("pitwall-mute")?.kind, "decision", "misfiled is rendering, not classification");
+  assert.deepEqual(byId.get("pitwall-new")?.park, { suspect: false }, "a park the store has not placed is unknown");
+  assert.equal(byId.get("pitwall-new")?.misfiled, false, "an unplaced park cannot be judged misfiled");
+  assert.deepEqual(
+    byId.get("pitwall-relabelled")?.park,
+    { suspect: false },
+    "an entry carried under another label does not date this park",
+  );
+  assert.equal(board.needsYouCount, rows.length, "a misfiled row still counts: the count is the classification's");
+  assert.equal(board.totals.needsYou, 8);
+});
+
+test("only a park a label put on is aged, and a structural one is neither aged nor listed", () => {
+  const board = buildBoard(AGED, {}, AGED_PARKS);
+  const listed = [...board.parkedRows.suspect, ...board.parkedRows.rest].flatMap((group) => group.rows);
+  assert.deepEqual(
+    listed.map((row) => row.id),
+    ["pitwall-t1", "pitwall-t3", "pitwall-t2", "pitwall-t4"],
+    "oldest first, and the unknown-age umbrella last",
+  );
+  assert.deepEqual(
+    board.parkedRows.suspect.flatMap((group) => group.rows.map((row) => [row.id, row.reason])),
+    [
+      ["pitwall-t1", "tooling"],
+      ["pitwall-t3", "roadmap"],
+    ],
+  );
+  assert.deepEqual(
+    board.parkedRows.rest.flatMap((group) => group.rows.map((row) => row.id)),
+    ["pitwall-t2", "pitwall-t4"],
+  );
+  assert.equal(listed.some((row) => row.id === "pitwall-epic" || row.id === "pitwall-dep"), false);
+  assert.deepEqual(board.parked, [
+    { reason: "tooling", count: 1 },
+    { reason: "watch", count: 1 },
+    { reason: "umbrella", count: 2 },
+    { reason: "roadmap", count: 1 },
+    { reason: "blocked", count: 1 },
+  ]);
+  assert.equal(
+    Object.entries(board).some(([key, value]) => key.toLowerCase().includes("parked") && typeof value === "number"),
+    false,
+  );
+  const blocked = buildBoard(
+    snapshotOf([project("maas", { issues: [issue("maas-b1", "blocked"), issue("maas-e", "parked:umbrella", { issueType: "epic" })] })]),
+    {},
+    { maas: { "maas-b1": parkedAt(30 * DAY, "blocked"), "maas-e": parkedAt(30 * DAY, "umbrella") } },
+  );
+  assert.deepEqual(blocked.parkedRows, { suspect: [], rest: [] });
+  assert.deepEqual(blocked.needsYou, []);
+  assert.deepEqual(blocked.ready, []);
+  assert.deepEqual(blocked.running, []);
+});
+
+test("the parked tables follow the shown projects like every band, and the summary keeps its counts", () => {
+  const two = snapshotOf([
+    project("pitwall", { issues: [issue("pitwall-t1", "parked:tooling", { labels: ["blocked-tooling"] })] }),
+    project("maas", { issues: [issue("maas-t1", "parked:tooling", { labels: ["blocked-tooling"] })] }),
+  ]);
+  const parks: ParkStore = {
+    pitwall: { "pitwall-t1": parkedAt(9 * DAY, "blocked-tooling") },
+    maas: { "maas-t1": parkedAt(9 * DAY, "blocked-tooling") },
+  };
+  const board = buildBoard(two, { project: "maas" }, parks);
+  assert.deepEqual(board.parkedRows.suspect.map((group) => group.projectId), ["maas"]);
+  assert.deepEqual(board.parked, [{ reason: "tooling", count: 1 }]);
+  assert.deepEqual(board.totals.parked, [{ reason: "tooling", count: 2 }]);
+});
+
+test("the issue preview carries the park age and the question the store recorded", () => {
+  const preview = previewIssue(AGED, "pitwall", "pitwall-old", AGED_PARKS);
+  assert.equal(preview?.park?.ms, 11 * DAY);
+  assert.equal(preview?.park?.suspect, true);
+  assert.equal(preview?.question, "Which one?");
+  const unplaced = previewIssue(AGED, "pitwall", "pitwall-new", AGED_PARKS);
+  assert.deepEqual(unplaced?.park, { suspect: false });
+  assert.equal(previewIssue(AGED, "pitwall", "pitwall-epic", AGED_PARKS)?.park, undefined, "no label, no age");
+  assert.equal(previewIssue(AGED, "pitwall", "pitwall-dep", AGED_PARKS)?.park, undefined);
 });
 
 test("parked is counted per reason and never summed", () => {
@@ -1029,6 +1181,147 @@ test("a call is a sentence about what to do, one per classification and verdict"
     assert.ok(call.text.length > 0, `${classification} has no call`);
     assert.equal(call.tone, isYours(classification) ? "yours" : "waiting", classification);
   }
+});
+
+const { ParkAge } = await import("../ui/components/ParkAge.tsx");
+const { Parked: ParkedBand } = await import("../ui/components/Parked.tsx");
+const { NeedsYou: NeedsYouBand } = await import("../ui/components/NeedsYou.tsx");
+
+function ageMarkup(park: { since?: string; ms?: number; suspect: boolean }): string {
+  return renderToStaticMarkup(createElement(ParkAge, { park }));
+}
+
+test("a park age leads with the number, flags a suspect one in words, and never invents an age it cannot place", () => {
+  const unknown = ageMarkup({ suspect: false });
+  assert.equal(unknown, `<span class="pw-age" title="${strings.park.unknownTitle}">—</span>`);
+  const since = "2026-08-28T14:11:00Z";
+  const known = ageMarkup({ since, ms: 3 * DAY + 2 * 60 * 60_000, suspect: false });
+  assert.match(known, /^<span class="pw-age" title="Earliest the console can place this park: [^"]+\. The tracker does not record when the label went on\.">3d2h<\/span>$/);
+  assert.doesNotMatch(known, /pw-age--suspect|not re-examined/);
+  const suspect = ageMarkup({ since, ms: 11 * DAY, suspect: true });
+  assert.match(suspect, /^<span class="pw-age pw-age--suspect" title="[^"]*Parked longer than 7 days and nothing has re-examined why\.">11d0h<\/span><span class="pw-age__flag">not re-examined<\/span>$/);
+  assert.doesNotMatch(suspect, /pw-signal|pw-alert|pw-hold|style=/, "age is grey ink, never a signal colour");
+});
+
+test("the needs-you band shows how long each park has waited between the title and the verdict", () => {
+  const board = buildBoard(AGED, {}, AGED_PARKS);
+  const markup = renderToStaticMarkup(createElement(NeedsYouBand, { groups: board.needsYou }));
+  assert.match(markup, /<th scope="col">Title<\/th><th scope="col">Parked<\/th><th scope="col">Staleness<\/th>/);
+  assert.match(markup, /<th colSpan="6" scope="rowgroup">pitwall<\/th>/);
+  const old = markup.indexOf("pitwall-old");
+  const mute = markup.indexOf("pitwall-mute");
+  assert.ok(old > -1 && old < mute, "the oldest park is read first");
+  assert.match(markup, /pitwall-old.*?<td class="pw-cell pw-cell--at"><span class="pw-age pw-age--suspect"[^>]*>11d0h<\/span><span class="pw-age__flag">not re-examined<\/span><\/td>/);
+  assert.match(markup, /pitwall-mute.*?<td class="pw-cell pw-cell--kind" title="Labelled needs-decision, but no line states the question\.">misfiled<\/td>/);
+  assert.match(markup, /pitwall-new.*?<td class="pw-cell pw-cell--at"><span class="pw-age" title="[^"]*next collection\.">—<\/span><\/td>/);
+  assert.equal(markup.match(/>misfiled</g)?.length, 1);
+  assert.doesNotMatch(markup, /pw-row--alert|pw-row--signal/, "the red rail is the band's, not a row's");
+});
+
+test("the parked band lists the suspect parks in the open and the rest behind a disclosure, never a summed count", () => {
+  const board = buildBoard(AGED, {}, AGED_PARKS);
+  const markup = renderToStaticMarkup(
+    createElement(ParkedBand, { entries: board.parked, rows: board.parkedRows }),
+  );
+  assert.match(markup, /^<p class="pw-parked">tooling 1 · watch 1 · umbrella 2 · roadmap 1<\/p><p class="pw-parked pw-parked--blocked">blocked 1<\/p>/);
+  const suspect = markup.indexOf('<table class="pw-table pw-table--parked"><caption class="pw-sr">Parked issues past the threshold');
+  const disclosure = markup.indexOf('<details class="pw-disclosure">');
+  assert.ok(suspect > -1 && disclosure > suspect, "the suspect table is in the open, above the rest");
+  assert.doesNotMatch(markup, /<details[^>]* open/);
+  assert.match(markup, /<span class="pw-disclosure__label">Also parked, under 7d<\/span><span aria-hidden="true" class="pw-disclosure__separator"> · <\/span><span class="pw-disclosure__hint">not yet suspect; oldest first<\/span>/);
+  assert.match(markup, /Parked issues under the threshold, oldest first, by project\./);
+  const t1 = markup.indexOf("pitwall-t1");
+  const t3 = markup.indexOf("pitwall-t3");
+  const t2 = markup.indexOf("pitwall-t2");
+  const t4 = markup.indexOf("pitwall-t4");
+  assert.ok(t1 > suspect && t3 > t1 && t3 < disclosure, "9d before 8d, both suspect");
+  assert.ok(t2 > disclosure && t4 > t2, "2d then the unknown, inside the disclosure");
+  assert.match(markup, /pitwall-t1.*?<td class="pw-cell pw-cell--kind">tooling<\/td><td class="pw-cell pw-cell--title"><a class="pw-link" href="#\/issue\/pitwall\/pitwall-t1">/);
+  assert.doesNotMatch(markup, /pitwall-epic|pitwall-dep/, "a structural park has nothing to re-examine");
+  assert.doesNotMatch(markup, /\b5\b/, "the five parked issues are never summed");
+
+  const quiet = renderToStaticMarkup(
+    createElement(ParkedBand, {
+      entries: [{ reason: "blocked", count: 2 }],
+      rows: { suspect: [], rest: [] },
+    }),
+  );
+  assert.equal(quiet, '<p class="pw-parked pw-parked--blocked">blocked 2</p>', "nothing beyond the summary when no label parks");
+});
+
+test("the call names the age once a park is suspect, and a decision with no question is told so first", () => {
+  const suspect = { since: "2026-08-28T14:11:00Z", ms: 11 * DAY, suspect: true };
+  const fresh = { since: "2026-09-05T14:11:00Z", ms: 3 * DAY, suspect: false };
+  assert.equal(
+    callFor("yours:decision", "still-blocking", false, { park: suspect }).text,
+    "Decide this - it has waited 11d0h, and nothing has re-examined why.",
+  );
+  assert.equal(callFor("yours:decision", "still-blocking", false, { park: fresh }).text, strings.issue.call.decision.standing);
+  assert.equal(
+    callFor("yours:decision", "still-blocking", false, { park: suspect, misfiled: true }).text,
+    strings.issue.call.decision.misfiled,
+    "misfiled outranks age",
+  );
+  assert.equal(
+    callFor("yours:decision", "likely-stale", false, { park: suspect, misfiled: true }).text,
+    strings.issue.call.decision.stale,
+    "an expired verdict outranks both",
+  );
+  assert.equal(
+    callFor("yours:access", "unchecked", false, { park: suspect }).text,
+    "Run this - it has waited 11d0h, and nothing has re-examined why.",
+  );
+  assert.deepEqual(callFor("parked:tooling", "unchecked", false, { park: suspect }), {
+    text: "Read this - parked as tooling for 11d0h, and nothing has re-examined why. If the reason has expired, remove the park in the tracker.",
+    tone: "yours",
+  });
+  assert.deepEqual(callFor("parked:tooling", "unchecked", false, { park: fresh }), {
+    text: "Nothing for you — it is parked: tooling.",
+    tone: "waiting",
+  });
+  assert.equal(callFor("blocked", "unchecked", false, { park: suspect }).text, strings.issue.call.blocked);
+  assert.equal(callFor("yours:decision", "unchecked", true, { park: suspect }).text, strings.issue.call.closed);
+});
+
+test("the ticket page places the park under the classification and states the question above the latest note", () => {
+  const aged = pageMarkup(
+    aPreview({ park: { since: "2026-08-28T14:11:00Z", ms: 11 * DAY, suspect: true }, question: "Honour paid checkout?" }),
+  );
+  assert.match(aged, /class="pw-call pw-call--yours">Decide this - it has waited 11d0h/);
+  assert.match(aged, /<p class="pw-call__ask"><span class="pw-call__ask-meta"><span class="pw-call__ask-label">Question<\/span><\/span><q class="pw-call__ask-text">Honour paid checkout\?<\/q><\/p>/);
+  const token = aged.indexOf('<span class="pw-reason__token">yours:decision</span>');
+  const age = aged.indexOf('<p class="pw-reason"><span class="pw-age pw-age--suspect"');
+  assert.ok(token > -1 && age > token, "the age line follows the reason paragraph");
+  assert.match(aged, /pw-age__flag">not re-examined<\/span><span class="pw-reason__because"> - earliest the console can place this park: [^<]+<\/span><\/p>/);
+
+  const misfiled = pageMarkup(aPreview({ park: { since: "2026-09-05T14:11:00Z", ms: 3 * DAY, suspect: false } }));
+  assert.match(misfiled, /pw-call--yours">This is labelled a decision, but no question is stated/);
+  assert.doesNotMatch(misfiled, /pw-call__ask/);
+
+  const unplaced = pageMarkup(aPreview({ park: { suspect: false } }));
+  assert.match(unplaced, /pw-call--yours">Decide this — nothing else can/);
+  assert.match(unplaced, /<p class="pw-reason"><span class="pw-age" title="[^"]+">—<\/span><span class="pw-reason__because"> - when this park went on is not yet known<\/span><\/p>/);
+
+  const structural = pageMarkup(
+    aPreview({ classification: "blocked", labels: [], staleness: { verdict: "unchecked", checked: false, evidence: [], unresolved: [] } }),
+  );
+  assert.doesNotMatch(structural, /pw-age/, "no label park, no age line");
+  assert.doesNotMatch(pageMarkup(aPreview()), /pw-age/, "a preview with no park says nothing about one");
+
+  const view = buildIssueView(
+    payload({
+      park: { label: "needs-decision", parkedSince: "2026-08-28T14:11:00Z", basis: "carried", question: "Honour paid checkout?" },
+      labels: ["needs-decision"],
+    }, { generatedAt: GENERATED_AT, status: "open" }),
+  );
+  assert.equal(view.park?.ms, 11 * DAY);
+  assert.equal(view.question, "Honour paid checkout?");
+  const loaded = renderToStaticMarkup(createElement(IssueDetail, { shown: shownOf(view), view }));
+  assert.match(loaded, /Decide this - it has waited 11d0h/);
+  const question = loaded.indexOf("pw-call__ask-label\">Question");
+  const latest = loaded.indexOf("pw-call__ask-label\">Latest note");
+  assert.ok(question > -1);
+  assert.equal(latest, -1, "the snapshot carries no notes to quote here");
 });
 
 test("a landing issue asks nothing of the reader, whatever verdict it carries", () => {

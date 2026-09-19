@@ -1,4 +1,5 @@
 import type { Classification, CollectionError, Staleness } from "@404sl/pitwall-schema";
+import { parkLabelOf } from "./classify.js";
 
 export interface Precondition {
   phrase: string;
@@ -107,7 +108,7 @@ export function isAssessable(classification: Classification): boolean {
 
 export const NOTE_STAMP = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z) \S+$/;
 
-function withoutStampLines(text: string): string {
+export function withoutStampLines(text: string): string {
   return text
     .split("\n")
     .filter((line) => !NOTE_STAMP.test(line.trim()))
@@ -120,7 +121,7 @@ function reasonOf(record: ParkedRecord): string {
 }
 
 function parkingLabel(record: ParkedRecord): string {
-  return record.labels[0] ?? record.classification;
+  return parkLabelOf(record) ?? record.labels[0] ?? record.classification;
 }
 
 function instantOf(at: string | undefined): number | undefined {
@@ -150,7 +151,7 @@ function newestBlock(notes: string): string {
   return paragraphs[paragraphs.length - 1] ?? notes.trim();
 }
 
-function lastNote(notes: string): string {
+export function lastNote(notes: string): string {
   return noteSaid(newestBlock(notes)).said;
 }
 
@@ -204,7 +205,7 @@ function noteAfterLabel(record: ParkedRecord): Check {
     return {
       ran: true,
       fired: false,
-      evidence: [`nothing has been recorded since the ${label} label went on at ${record.labelledAt}`],
+      evidence: [`the earliest the console can place the ${label} park is ${record.labelledAt}`],
     };
   }
   const note = lastNote(record.notes ?? "");
@@ -221,7 +222,7 @@ function noteAfterLabel(record: ParkedRecord): Check {
     ran: true,
     fired: true,
     evidence: [
-      `a note was recorded at ${record.notedAt}, after the ${label} label went on at ${record.labelledAt}: "${quote(note)}"`,
+      `a note was recorded at ${record.notedAt}, after the earliest the console can place the ${label} park (${record.labelledAt}): "${quote(note)}"`,
     ],
   };
 }

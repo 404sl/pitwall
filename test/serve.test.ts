@@ -14,6 +14,7 @@ import {
   DEFAULT_PORT,
   HOST,
   NOTHING_READ,
+  PARKS_ROUTE,
   createConsoleServer,
   listen,
   parseServeArgs,
@@ -24,6 +25,7 @@ import {
 import type { CollectionNotice, Delivery } from "../src/notify.ts";
 import { NOTICE_SOURCE, REFRESH_SOURCE } from "../src/board.ts";
 import type { BuildCheck, BuildReport } from "../src/build.ts";
+import { writeConsoleState } from "../src/parks.ts";
 import { snapshotPath, stateHome } from "../src/state.ts";
 import { VERSION } from "../src/version.ts";
 
@@ -400,8 +402,12 @@ function trackerServer(
   issues: Array<Record<string, unknown>>,
   errors: Array<Record<string, unknown>> = [],
   extra: Record<string, string> = {},
+  parks?: Parameters<typeof writeConsoleState>[0],
 ): Server {
   const { env } = stateWith(trackerSnapshot(issues, errors));
+  if (parks !== undefined) {
+    writeConsoleState(parks, { env });
+  }
   return createConsoleServer({
     env: { ...env, PATH: `${join(BD_FIXTURES, bin)}:/usr/bin:/bin`, ...extra },
     uiDir: builtConsole(),
@@ -475,6 +481,64 @@ test("an issue that is not there is a 404, told apart from one that could not be
   assert.match(unread.message, /mw-1 could not be read/);
   assert.ok(unread.tried.includes(shown));
   assert.ok(unread.tried.some((entry) => entry.endsWith(".beads")));
+});
+
+const PARKED_SINCE = "2026-08-28T10:00:00.000Z";
+
+test("the park the collection placed is served on its own route and again on the issue, from one store", async (t) => {
+  const entry = { label: "needs-decision", parkedSince: PARKED_SINCE, basis: "first-seen" as const, question: "Honour the paid checkout?" };
+  const server = trackerServer(
+    "ok",
+    [indexed("mw-3", "open", "yours:decision", { labels: ["needs-decision"] }), indexed("mw-1", "open", "parked:umbrella")],
+    [],
+    {},
+    { parks: { mw: { "mw-3": entry } } },
+  );
+  t.after(() => server.close());
+  const { origin } = await started(server);
+
+  const board = (await (await fetch(`${origin}/api/snapshot`)).json()) as Record<string, unknown>;
+  assert.equal("console" in board || "parks" in board, false, "the snapshot body is the document and nothing else");
+  assert.equal(
+    (board.projects as Array<{ issues: Array<Record<string, unknown>> }>)[0]?.issues.some(
+      (issue) => "park" in issue || "parkedSince" in issue,
+    ),
+    false,
+    "the document itself is unchanged",
+  );
+
+  const parks = await fetch(`${origin}${PARKS_ROUTE}`);
+  assert.equal(parks.status, 200);
+  assert.deepEqual(await parks.json(), { parks: { mw: { "mw-3": entry } } });
+
+  const issue = (await (await fetch(`${origin}/api/issue/mw/mw-3`)).json()) as { issue: { park?: unknown } };
+  assert.deepEqual(issue.issue.park, entry, "the page reads the same store as the board and recomputes nothing");
+
+  const umbrella = (await (await fetch(`${origin}/api/issue/mw/mw-1`)).json()) as { issue: { park?: unknown } };
+  assert.equal(umbrella.issue.park, undefined, "a structural park has no label and so no age");
+});
+
+test("the park route answers with an empty store before any collection has placed a park", async (t) => {
+  const server = trackerServer("ok", [indexed("mw-3", "open", "yours:decision", { labels: ["needs-decision"] })]);
+  t.after(() => server.close());
+  const { origin } = await started(server);
+  const response = await fetch(`${origin}${PARKS_ROUTE}`);
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { parks: {} });
+});
+
+test("a park the store holds under a label the issue no longer carries is not served against it", async (t) => {
+  const server = trackerServer(
+    "ok",
+    [indexed("mw-3", "open", "yours:decision", { labels: ["needs-decision"] })],
+    [],
+    {},
+    { parks: { mw: { "mw-3": { label: "needs-access", parkedSince: PARKED_SINCE, basis: "carried" as const } } } },
+  );
+  t.after(() => server.close());
+  const { origin } = await started(server);
+  const issue = (await (await fetch(`${origin}/api/issue/mw/mw-3`)).json()) as { issue: { park?: unknown } };
+  assert.equal(issue.issue.park, undefined);
 });
 
 test("an issue closed since the snapshot reports both the reading and the snapshot", async (t) => {
