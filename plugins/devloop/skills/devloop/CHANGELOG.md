@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.96
+
+- A dispatch that stops with `run-script.sh` exiting 3 and naming a staged copy is not a broken install: something replaced that file in `<root>/.autofix-run` since it was staged. Read the named file, then run `run-script.sh --restage` once and dispatch again. Do not copy the script by hand and do not delete the stage to get past the refusal.
+- `<root>/.autofix-run/staged-from` records which install and plugin version the staged scripts came from, when, and each file's byte count and sha256, so a stale copy is diagnosable in one read.
+
 ## 0.1.95
 
 The lander's survey can no longer write a repository in its own words: its slug field is an enum of the configured slugs, and a decorated value that gets through anyway still resolves when exactly one configured owner/name appears in it. A pull request skipped by the pre-flight filter now says whether it was absent from the list or pre-flighted under a name that matches no configured repository, quoting that name, instead of asserting it was labelled after the supervisor looked. The supervisor doc describes the two reasons.
