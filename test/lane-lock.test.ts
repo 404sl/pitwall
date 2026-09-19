@@ -282,7 +282,7 @@ test("a split whose release answers nothing still reports the leak in the log", 
   const result = await done;
   assert.equal(result["outcome"], "split");
   assert.ok(
-    logs.some((line) => line.includes("LEAKED") && line.includes(LANE_LOCK) && line.includes(SLOT_FILE)),
+    logs.some((line) => line.includes("REFUSED") && line.includes(LANE_LOCK) && line.includes(SLOT_FILE)),
     "a split is the outcome the lane lock leaked from most often, and it is the one outcome whose " +
       `result cannot carry the answer, so the log has to: ${logs.join(" | ")}`,
   );
@@ -314,7 +314,7 @@ test("a handoff that dropped the lock itself is not reported as a leak", async (
   assert.equal(result["slot"], "released");
 });
 
-test("a release step that answers nothing is reported as a leak naming what to read", async () => {
+test("a release step that answers nothing, twice, is reported as refused naming what to run", async () => {
   const { logs, done } = runScript("task.js", TASK_ARGS, (call, n) => {
     if (n === 1) return TRIAGE_OK;
     if (n === 2) return { status: "blocked", summary: "needs a device" };
@@ -322,12 +322,12 @@ test("a release step that answers nothing is reported as a leak naming what to r
   });
 
   const result = await done;
-  assert.match(String(result["lane"]), /^LEAKED/);
+  assert.match(String(result["lane"]), /^REFUSED/);
   assert.match(String(result["lane"]), new RegExp(LANE_LOCK.replace(/[/.]/g, "\\$&")));
-  assert.match(String(result["slot"]), /^LEAKED/);
+  assert.match(String(result["slot"]), /^REFUSED/);
   assert.ok(
-    logs.some((line) => line.includes("LEAKED") && line.includes(SLOT_FILE)),
-    `a leaked lane was not reported in the log: ${logs.join(" | ")}`,
+    logs.some((line) => line.includes("REFUSED") && line.includes(SLOT_FILE)),
+    `a refused release was not reported in the log: ${logs.join(" | ")}`,
   );
 });
 
