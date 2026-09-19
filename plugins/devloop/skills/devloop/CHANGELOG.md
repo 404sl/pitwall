@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.95
+
+The lander's survey can no longer write a repository in its own words: its slug field is an enum of the configured slugs, and a decorated value that gets through anyway still resolves when exactly one configured owner/name appears in it. A pull request skipped by the pre-flight filter now says whether it was absent from the list or pre-flighted under a name that matches no configured repository, quoting that name, instead of asserting it was labelled after the supervisor looked. The supervisor doc describes the two reasons.
+
 ## 0.1.94
 
 A fix step that finds its lane already locked can now tell whether the holder is its own run. `config.sh --args` mints a `dispatch` token for every dispatch, the lane writes it into the lock's owner file, and the claim command prints `LANE_RECLAIMED` when the owner line is exactly what this run would write - the retry then carries on in its own worktree instead of refusing. Another issue, the same issue under another dispatch, a lock with no owner file or an owner line from before tokens existed are still `LANE_BUSY`, and the lane still stops on them. Owner files gain a trailing `dispatch <token>` field; every script that reads or removes them keeps working.

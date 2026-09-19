@@ -6,7 +6,7 @@ import test from "node:test";
 const SKILL = join(import.meta.dirname, "..", "plugins", "devloop", "skills", "devloop");
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 
-type Call = { prompt: string; label: string };
+type Call = { prompt: string; label: string; schema?: any };
 type Reply = (call: Call, n: number) => unknown;
 type Result = {
   landed: { repo?: string; slug?: string; number?: number }[];
@@ -19,8 +19,8 @@ function runScript(file: string, args: unknown, reply: Reply) {
   const calls: Call[] = [];
   const logged: string[] = [];
   const body = new AsyncFunction("args", "agent", "phase", "log", "parallel", source);
-  const agent = async (prompt: string, opts: { label?: string } = {}) => {
-    const call = { prompt, label: opts.label || "" };
+  const agent = async (prompt: string, opts: { label?: string; schema?: unknown } = {}) => {
+    const call = { prompt, label: opts.label || "", schema: opts.schema };
     calls.push(call);
     return reply(call, calls.length);
   };
@@ -240,4 +240,103 @@ test("a surveyed PR in an unconfigured repository is skipped, not thrown over", 
     calls.some((c) => c.label === "release"),
     "the merge lock was never given back",
   );
+});
+
+test("a pre-flighted PR lands however the survey decorated the repository", async () => {
+  const decorated = [
+    { ...THE_PR, repo: "site (cli checkout)" },
+    { ...THE_PR, repo: "pitwall-site" },
+    { ...THE_PR, slug: "404sl/pitwall-site (docs checkout)" },
+    { ...THE_PR, slug: "docs: 404sl/pitwall-site" },
+  ];
+  for (const pr of decorated) {
+    const { calls, done } = lander(
+      (call) => {
+        if (call.label.startsWith("survey")) return { prs: [pr] };
+        if (call.label.startsWith("land:")) return { status: "merged", mergeSha: "c0ffee1", masterGreen: true };
+        return { status: "deployed" };
+      },
+      { preflighted: ["docs#23"] },
+    );
+    const result = await done;
+
+    assert.deepEqual(
+      result.landed.map((l) => `${l.slug}#${l.number}`),
+      ["404sl/pitwall-site#23"],
+      `surveyed as ${JSON.stringify(pr)} and not landed - the supervisor pre-flighted it, and how ` +
+        "the survey chose to write the repository's name is not a reason to drop it: " +
+        JSON.stringify(result.skipped),
+    );
+    assert.deepEqual(result.skipped, [], `surveyed as ${JSON.stringify(pr)} and skipped`);
+    assert.match(
+      landCalls(calls)[0]?.prompt || "",
+      /--slug 404sl\/pitwall-site /,
+      "the merge carried the survey's decorated name rather than the configured owner/name",
+    );
+  }
+});
+
+test("a slug the survey renders as two configured repositories at once resolves to neither", async () => {
+  const { calls, done } = lander((call) => {
+    if (call.label.startsWith("survey")) return { prs: [{ ...THE_PR, slug: "404sl/pitwall or 404sl/pitwall-site" }] };
+    if (call.label.startsWith("land:")) return { status: "merged", mergeSha: "c0ffee1", masterGreen: true };
+    return { status: "deployed" };
+  });
+  const result = await done;
+
+  assert.deepEqual(landCalls(calls), [], "a merge was delegated for a pull request the survey could not place in one repository");
+  assert.match(result.skipped[0]?.why || "", /no configured repository has the slug/);
+});
+
+test("the survey's slug field is an enum of the configured repositories, not free text", async () => {
+  const { calls, done } = lander((call) => {
+    if (call.label.startsWith("survey")) return { prs: [] };
+    return { status: "deployed" };
+  });
+  await done;
+
+  const survey = calls.find((c) => c.label === "survey");
+  assert.ok(survey && survey.schema, "the survey step was spawned with no schema");
+  assert.deepEqual(
+    survey.schema.properties.prs.items.properties.slug.enum,
+    ["404sl/pitwall", "404sl/pitwall-site"],
+    "the survey can still write the repository in its own words - the same repository was " +
+      "reported as 'site', 'cli' and 'site (cli checkout)' across four runs when the field was free text",
+  );
+  assert.equal(survey.prompt.includes("`"), false, "a backtick in the survey brief closes its template literal early");
+});
+
+test("a skipped PR says whether it was pre-flighted under a name that matched nothing", async () => {
+  const cases: [string[], RegExp][] = [
+    [["cli#23"], /pre-flighted as 'cli#23', which names no configured repository/],
+    [["site (cli checkout)#23"], /pre-flighted as 'site \(cli checkout\)#23', which names no configured repository/],
+    [["docs#99"], /not in the pre-flighted list/],
+  ];
+  for (const [preflighted, expected] of cases) {
+    const { calls, logged, done } = lander(
+      (call) => {
+        if (call.label.startsWith("survey")) return { prs: [THE_PR] };
+        if (call.label.startsWith("land:")) return { status: "merged", mergeSha: "c0ffee1", masterGreen: true };
+        return { status: "deployed" };
+      },
+      { preflighted },
+    );
+    const result = await done;
+
+    assert.deepEqual(landCalls(calls), [], `pre-flighted as ${JSON.stringify(preflighted)} and a merge was still delegated`);
+    const why = result.skipped[0]?.why || "";
+    assert.match(why, expected, `pre-flighted as ${JSON.stringify(preflighted)}: ${why}`);
+    assert.doesNotMatch(
+      why,
+      /labelled after/,
+      "the skip reason asserts the supervisor pre-flighted too early, which it cannot know and " +
+        "which sends a supervisor to redo a pre-flight it ran correctly",
+    );
+    if (preflighted[0] !== "docs#99") {
+      assert.ok(
+        logged.some((line) => /naming no configured repository: .*#23/.test(line)),
+        `nothing warned at the start that ${preflighted[0]} can match nothing:\n${logged.join("\n")}`,
+      );
+    }
+  }
 });
