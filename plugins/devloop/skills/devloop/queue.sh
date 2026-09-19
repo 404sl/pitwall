@@ -12,11 +12,12 @@
 # that IS the number in flight. It needs no task list and survives a session restart. A
 # workflow that dies leaves a stale claim - shown below with the command to release it.
 #
-# Six labels park an issue. Four say WHO or WHAT it waits on - needs-decision (a choice only
+# Seven labels park an issue. Five say WHO or WHAT it waits on - needs-decision (a choice only
 # the owner can make), needs-access (something only they can run: a deploy, a dashboard, a
-# device), blocked-tooling (a gap in this pipeline, not a question for anyone), watch (an
-# observation over time) - plus umbrella (a parent whose
-# work lives in its children) and roadmap (a feature build, not a defect).
+# device), needs-feedback (the older label for either of those, still written by people
+# following the skill text and still meaning "a person"), blocked-tooling (a gap in this
+# pipeline, not a question for anyone), watch (an observation over time) - plus umbrella (a
+# parent whose work lives in its children) and roadmap (a feature build, not a defect).
 #
 # A workspace that declares "actor" in its config also gets an assignee gate, matching
 # dispatchable.sh: "ready to start" and `--next` then count and claim only the issues assigned
@@ -56,7 +57,7 @@ ACTOR="$(bash "$CFG" actor 2>/dev/null)" || ACTOR=""
 
 cd "$ROOT" || exit 1
 
-PARKED="needs-decision needs-access blocked-tooling watch umbrella roadmap"
+PARKED="needs-decision needs-access needs-feedback blocked-tooling watch umbrella roadmap"
 
 # A PRIVATE scratch directory per run, not fixed paths under /tmp.
 #
@@ -82,7 +83,7 @@ import json, sys, os, datetime, subprocess
 
 PFX = sys.argv[2] if len(sys.argv) > 2 else "devloop"
 
-PARKED = {"needs-decision", "needs-access", "blocked-tooling", "watch", "umbrella", "roadmap"}
+PARKED = {"needs-decision", "needs-access", "needs-feedback", "blocked-tooling", "watch", "umbrella", "roadmap"}
 
 def load(p):
     try:
@@ -236,6 +237,7 @@ for i in waiting:
 LABELS = [
     ("needs-decision",  "a choice only you can make"),
     ("needs-access",    "an action only you can run - deploy, dashboard, device"),
+    ("needs-feedback",  "a person, unsplit - relabel needs-decision or needs-access"),
     ("blocked-tooling", "waiting on a tooling fix, not on you"),
     ("watch",           "waiting on observation over time"),
 ]

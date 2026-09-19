@@ -627,13 +627,14 @@ honest.
 
 1. **Triage** - reads the issue and decides the repo, whether it is user-facing, and whether
    it is safe unattended. Ineligible stops here: the reason is written onto the issue,
-   `needs-feedback` is added, and the workflow returns without touching code.
+   `needs-decision` (a choice only a person can make) or `needs-access` (something only
+   they can run) is added, and the workflow returns without touching code.
 2. **Split** - when the *only* thing wrong is shape - the issue spans repos, or bundles
    independent fixes, or is half-verifiable here - it becomes several issues instead of a
    question. Deciding an issue is two issues is scoping, not a product decision. Children
    are created under the parent, the parent becomes an epic so it stops being picked up, and
    the loop takes the children on its next tick. A child that still needs a person is
-   created too, labelled `needs-feedback`, rather than being dropped.
+   created too, labelled `needs-decision` or `needs-access`, rather than being dropped.
    Splitting may not invent scope, drop a requirement, or pick between fixes the parent
    proposed - if the parent leans towards both, both become children. Size alone is never a
    reason to split; independence is. If a child would still be ambiguous, it asks instead.
@@ -688,8 +689,9 @@ not the speed. Judge a long-running task by which round it is on, not by the clo
 
 ## Where it stops and asks
 
-Any of these puts `needs-feedback` on the issue, writes the question and the options into it,
-and leaves the branch and PR alone:
+Any of these puts `needs-decision` on the issue (or `needs-access`, when what is missing is
+a deploy, a dashboard or a device rather than an answer), writes the question and the options
+into it, and leaves the branch and PR alone:
 
 - the issue offers a choice that changes what ships, and splitting would not resolve it
 - billing, payments, Stripe, pricing - money is never moved unattended
@@ -781,7 +783,9 @@ agent cannot relay what it has not been shown.
 
 ## Before trusting a run
 
-- `bd list --status open --label needs-feedback` - the queue for a person
+- `bd list --status open --label-any needs-decision,needs-access` - the queue for a person.
+  `needs-feedback` is the older, undivided form of the same two labels; the queue still parks
+  on it, and the console still does not count it as yours, so relabel one when you meet it.
 - `git worktree list` in each repo - lanes clean up after themselves, leftovers mean a
   handover or a crash
 - issues left `in_progress` are claims from a lane that died; reset them to `open`
@@ -801,8 +805,9 @@ agent cannot relay what it has not been shown.
 - A workflow that dies leaves its issue `in_progress` forever. `queue.sh` flags a claim
   older than an hour as STALE with the command to release it. Nothing releases it
   automatically, because an issue genuinely being worked on looks identical.
-- Keep decision-bound issues out of the queue by labelling them `needs-feedback` up front.
-  Triage would catch them anyway, but that costs a workflow to learn what a label says.
+- Keep decision-bound issues out of the queue by labelling them `needs-decision` up front
+  (`needs-access` when they wait on something only a person can run). Triage would catch
+  them anyway, but that costs a workflow to learn what a label says.
 - Visual evidence is scaffolding and must never reach a commit. Captures are written by a
   throwaway spec that is deleted before committing, and both the implementer and the
   reviewer grep the staged diff for the worktree root, the scratch root and `save_screenshot`. A scratch

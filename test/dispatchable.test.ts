@@ -151,6 +151,23 @@ test("dispatchable.sh counts only work the assignee gate itself withheld", () =>
   );
 });
 
+test("dispatchable.sh parks on the same labels queue.sh does, needs-feedback included", () => {
+  const root = workspace({});
+  const labels = ["needs-decision", "needs-access", "needs-feedback", "blocked-tooling", "watch", "umbrella", "roadmap"];
+  const bd = stubBd([
+    { id: "fixture-free", title: "carries no label", assignee: null },
+    ...labels.map((label) => ({ id: `fixture-${label}`, title: `parked with ${label}`, assignee: null, labels: [label] })),
+  ]);
+
+  const { status, out, err } = runDispatchable(root, bd);
+
+  assert.equal(status, 0, `${out}${err}`);
+  assert.match(out, /fixture-free/);
+  for (const label of labels) {
+    assert.doesNotMatch(out, new RegExp(`fixture-${label}\\b`), `${label} was offered for dispatch`);
+  }
+});
+
 test("dispatchable.sh refuses rather than guessing whose workspace it is reading", () => {
   const root = mkdtempSync(join(tmpdir(), "pitwall-dispatchable-noconfig-"));
 

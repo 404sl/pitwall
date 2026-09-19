@@ -39,7 +39,7 @@ reasons=[]
 
 if d.get("status")=="closed": reasons.append("already closed")
 if (d.get("issue_type") or d.get("type"))=="epic": reasons.append("is an epic - epics are never dispatched")
-for l in ("needs-decision","needs-access","blocked-tooling","watch","umbrella","roadmap"):
+for l in ("needs-decision","needs-access","needs-feedback","blocked-tooling","watch","umbrella","roadmap"):
     if l in labels: reasons.append("labelled "+l)
 
 # an OPEN issue it depends on (the tracker is the only record - there is no park file)
@@ -94,7 +94,7 @@ if answered:
 # work they had just released. Absence of a label can be chosen, not only forgotten.
 if "left unlabelled" in text or "removing it again" in text or "removing again" in text:
     pass
-elif not (labels & {"needs-decision","needs-access","blocked-tooling","watch","umbrella","roadmap"}):
+elif not (labels & {"needs-decision","needs-access","needs-feedback","blocked-tooling","watch","umbrella","roadmap"}):
     for phrase in ("handed back for a person", "handed back",
                    "needs a product decision", "this needs a decision",
                    "a product call, not", "not an implementation"):

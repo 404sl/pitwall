@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.89
+
+`queue.sh --next`, `dispatchable.sh`, `precheck.sh` and `slot.sh` now treat `needs-feedback` as parked, alongside the six labels they already parked on. Write `needs-decision` (a choice only a person can make) or `needs-access` (something only a person can run) when you park an issue - those are the labels triage writes and the console counts as yours. The queue for a person is `bd list --status open --label-any needs-decision,needs-access`; an issue still carrying `needs-feedback` is parked but not counted, so relabel it when you meet one.
+
 ## 0.1.88
 
 A release train no longer loses a plugin pull request that an earlier lander round had
