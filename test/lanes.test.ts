@@ -344,7 +344,11 @@ test("a workspace-root entry is not asked for pull requests, so a root with no r
 
   const project = withStub("gh", recording, () => readWorkspace(workspace, { lockRoot: root }));
 
-  assert.equal(project.repos.length, 2, "the root entry was dropped from the snapshot");
+  assert.deepEqual(
+    project.repos.map((repo) => repo.name),
+    ["site"],
+    "the root is not a repository, and the snapshot must not present it as one",
+  );
   assert.equal(project.lanes[0]?.state, "handed-off");
   assert.deepEqual(project.errors, []);
   assert.deepEqual(

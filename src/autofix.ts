@@ -67,29 +67,22 @@ interface WorkspaceRepo {
   defaultBranch?: string;
 }
 
-interface WorkspaceEntry {
-  repo: WorkspaceRepo;
-  checkout: boolean;
-}
-
-function reposOf(root: string, workspace: Record<string, unknown>): WorkspaceEntry[] {
+function reposOf(root: string, workspace: Record<string, unknown>): WorkspaceRepo[] {
   const repos = workspace["repos"];
   if (repos === undefined) {
     return [];
   }
   return Object.entries(asRecord(repos, "repos"))
     .filter(([name]) => !name.startsWith("_"))
-    .map(([name, value]) => {
-      const repo = asRecord(value, `repo ${name}`);
+    .map(([name, value]): [string, Record<string, unknown>] => [name, asRecord(value, `repo ${name}`)])
+    .filter(([, repo]) => repo["role"] !== "workspace")
+    .map(([name, repo]) => {
       const path = repoPath(root, name, repo);
       return {
-        repo: {
-          name,
-          path,
-          kind: repoKind(repo["deploy"]),
-          defaultBranch: defaultBranchIn(name, repo) ?? defaultBranchOf(path),
-        },
-        checkout: repo["role"] !== "workspace",
+        name,
+        path,
+        kind: repoKind(repo["deploy"]),
+        defaultBranch: defaultBranchIn(name, repo) ?? defaultBranchOf(path),
       };
     });
 }
@@ -119,8 +112,7 @@ export function readWorkspace(root: string, options: WorkspaceOptions = {}): Pro
   try {
     const workspace = asRecord(JSON.parse(readFileSync(file, "utf8")), name);
     const lockPrefix = lockPrefixOf(workspace);
-    const entries = reposOf(dir, workspace);
-    const repos = entries.map((entry) => entry.repo);
+    const repos = reposOf(dir, workspace);
     const reading =
       lockPrefix === undefined
         ? { lanes: [], errors: [] }
@@ -128,7 +120,7 @@ export function readWorkspace(root: string, options: WorkspaceOptions = {}): Pro
             lockRoot: options.lockRoot,
             env: options.env,
             lanes: laneCountOf(workspace),
-            repos: entries.filter((entry) => entry.checkout).map((entry) => entry.repo.path),
+            repos: repos.map((repo) => repo.path),
           });
     return Project.parse({
       ...skeleton,

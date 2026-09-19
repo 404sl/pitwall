@@ -1378,9 +1378,8 @@ answered between triage reading it and you reaching this line.
 WHAT THIS KEY IS FOR. Two kinds of work, and nothing else:
 - tracker edits: labels, notes, assignees, dependencies, metadata, splitting a ticket into
   children, closing tickets whose work is already done. All of it through bd.
-- files in ${ROOT} that belong to no checkout: the workspace's own instructions and notes,
-  its configuration, anything else that sits at the root or under a root directory that is
-  not a repository of its own.
+- documentation that sits in ${ROOT} and belongs to no checkout: the workspace's own
+  instructions and notes, a paragraph in a root-level document.
 
 WHAT IT IS NOT FOR. These directories are repository checkouts with lanes of their own:
 
@@ -1391,6 +1390,16 @@ request and a review. If the ticket turns out to need one, do not make the chang
 return status needs_feedback saying which checkout and which paths, so it can be re-routed or
 split. Do not edit inside a checkout from this step, and do not edit inside any directory that
 has its own .git, whether or not it is in the table.
+
+OFF-LIMITS AT THE ROOT, whatever the ticket says. These are not documentation, and a step that
+runs unattended, uncommitted and unreviewed must not edit them in place:
+- ${ROOT}/.pitwall.json and ${ROOT}/.autofix.json - the dispatch configuration. Every other lane
+  re-reads it while it runs, so a live edit changes the ground under work already in flight.
+- everything under ${ROOT}/.beads/ - the tracker's own database and its export. It is written
+  through bd and through nothing else; a file edit there corrupts what bd reads back.
+A ticket that needs one of them returns status needs_feedback naming the file, so the owner
+makes the edit. A ticket whose only documentation change is a note on what the config should
+say puts that note on the ticket, not in the file.
 
 EDIT THE ROOT IN PLACE, AND COMMIT NOTHING. ${ROOT} is the owner's own checkout, not a worktree
 cut for this run: it may hold uncommitted work of theirs, it may have no remote at all, and its
@@ -1437,25 +1446,30 @@ then, in this order:
 and return status needs_feedback with the question. That is a good outcome, not a failure.
 
 IF THE TICKET'S PREMISE IS WRONG - the edit is already there, the issue it describes does not
-exist - that is a real result. Close it yourself with the evidence in the reason:
-  cd ${ROOT} && bd close ${task.id} --reason "<what you measured, and why no change was needed>"
+exist - that is a real result. Close it yourself with the evidence in the reason, written to a
+file first so that nothing in it is evaluated by the shell:
+  cd ${ROOT} && bd close ${task.id} --reason-file ${scratch}/close-reason.txt
 and return status no_change_needed. Never invent a change to justify a ticket.
 
 WHEN THE WORK IS DONE, CLOSE THE ISSUE YOURSELF. Nothing merges and nothing deploys from this
 key, so no lander will close it for you, and an issue left in_progress comes straight back to
 the front of the queue. Put what changed in the reason - the tickets edited, the files touched -
-so that whoever reads it does not have to re-derive it:
-  cd ${ROOT} && bd close ${task.id} --reason "<what changed>"
+so that whoever reads it does not have to re-derive it. Write it to ${scratch}/close-reason.txt
+and close from the file:
+  cd ${ROOT} && bd close ${task.id} --reason-file ${scratch}/close-reason.txt
 Then run 'bd show ${task.id}' once more and return its first six lines VERBATIM as
-'verification', so the close can be checked rather than believed. A step of this shape once
-reported an issue closed that was still in_progress, and the queue offered it straight back out.
+'verification', so the close can be checked rather than believed. The first line ends in the
+status inside square brackets, and CLOSED there is what is checked - not the word anywhere else,
+because a title can carry it. A step of this shape once reported an issue closed that was still
+in_progress, and the queue offered it straight back out.
 
 Return status 'applied' with 'summary' saying what changed, 'changed' listing every file edited,
 and 'verification' as above. Never use 2>&1. Always use absolute paths.`
 }
 
 function closedProperly(v) {
-  return /\bclosed\b/i.test(String(v || ''))
+  const header = String(v || '').split('\n')[0]
+  return /·\s*CLOSED\]\s*$/.test(header)
 }
 
 function reviewPrompt(task, work, attempt) {
@@ -2420,6 +2434,10 @@ for (let attempt = 1; attempt <= MAX_ATTEMPTS && !result && !rework; attempt++) 
   if (work.status === 'needs_feedback') { result = { outcome: 'needs_feedback', question: work.question, attempts: attempt }; break }
   if (work.status === 'no_change_needed') { result = { outcome: 'no_change_needed', summary: work.summary }; break }
   if (work.status === 'blocked') { result = { outcome: 'blocked', summary: work.summary, attempts: attempt }; break }
+  if (work.status === 'applied') {
+    result = { outcome: 'blocked', summary: `the fix step returned 'applied', which is only an outcome for the workspace key: a checkout lane pushes a branch and opens a pull request, and there is nothing here to review. ${work.summary || ''}`, attempts: attempt }
+    break
+  }
 
   phase('Review')
   const review = await agent(reviewPrompt(task, work, attempt), {

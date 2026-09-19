@@ -103,7 +103,15 @@ test("a ticket routed to the workspace key is applied in the root, with no workt
   assert.match(brief, /site {2}-> {2}\/root\/cli/, "the brief does not name the checkouts it must not edit");
   assert.match(brief, /integration {2}-> {2}\/root\/schema/);
   assert.doesNotMatch(brief, /workspace {2}-> {2}\/root/, "the root is listed among the checkouts to keep out of");
-  assert.match(brief, /bd close zz-aaa1 --reason/, "the brief does not tell the run to close the issue itself");
+  assert.match(brief, /bd close zz-aaa1 --reason-file/, "the brief does not tell the run to close the issue itself");
+  assert.doesNotMatch(brief, /--reason "/, "the close reason is handed out as an inline double-quoted argument, which the brief's own rules forbid");
+  const offLimits = brief.slice(brief.indexOf("OFF-LIMITS"));
+  assert.notEqual(offLimits.length, 0, "the brief names nothing at the root as off-limits");
+  for (const name of [".pitwall.json", ".autofix.json", ".beads/"]) {
+    assert.ok(offLimits.includes(name), `the brief does not put ${name} off-limits`);
+  }
+  assert.doesNotMatch(brief, /its configuration/, "the brief still invites edits to the dispatch config");
+  assert.doesNotMatch(brief, /anything else that sits at the root/, "the brief still hands out the whole root");
   assert.match(brief, /bash \/skill\/bd-note\.sh/, "notes are not routed through bd-note.sh");
   assert.match(brief, /Repo: none - this is tracker hygiene/, "the ticket text was not carried into the brief");
 
@@ -127,6 +135,64 @@ test("an applied result whose tracker read-back does not say closed is blocked, 
   assert.equal(result["outcome"], "blocked");
   assert.match(String(result["summary"]), /applied but not closed/);
   assert.ok(logs.some((l) => l.startsWith("CLOSE FAILED zz-aaa1")), `no warning was printed:\n${logs.join("\n")}`);
+});
+
+test("a read-back whose title says closed but whose status does not is not taken as closed", async () => {
+  const { logs, done } = runScript("task.js", TASK_ARGS, (call, n) => {
+    if (n === 1) return TRIAGE_WORKSPACE;
+    if (call.label.startsWith("apply:")) {
+      return {
+        status: "applied",
+        summary: "done",
+        changed: [],
+        verification: "○ zz-aaa1 · Decide what to do with a closed issue   [● P2 · IN_PROGRESS]",
+      };
+    }
+    return RELEASED;
+  });
+  const result = await done;
+
+  assert.equal(result["outcome"], "blocked");
+  assert.match(String(result["summary"]), /applied but not closed/);
+  assert.ok(logs.some((l) => l.startsWith("CLOSE FAILED zz-aaa1")), `no warning was printed:\n${logs.join("\n")}`);
+});
+
+test("a read-back in the shape bd prints for a closed issue is accepted", async () => {
+  const { done } = runScript("task.js", TASK_ARGS, (call, n) => {
+    if (n === 1) return TRIAGE_WORKSPACE;
+    if (call.label.startsWith("apply:")) {
+      return {
+        status: "applied",
+        summary: "done",
+        changed: [],
+        verification: [
+          "✓ zz-aaa1 [BUG] · Decide what to do with a closed issue   [● P2 · CLOSED]",
+          "Owner: pw-devloop · Assignee: pw-devloop · Type: bug",
+          "Created: 2026-09-12 · Started: 2026-09-19 · Updated: 2026-09-19",
+          "Close reason: split into two children",
+        ].join("\n"),
+      };
+    }
+    return RELEASED;
+  });
+  const result = await done;
+
+  assert.equal(result["outcome"], "closed");
+});
+
+test("a checkout lane that reports applied is refused before review, because only the workspace key applies in place", async () => {
+  const { calls, done } = runScript("task.js", TASK_ARGS, (call, n) => {
+    if (n === 1) {
+      return { eligible: true, repo: "site", title: "a fix in a checkout", priority: 2, ui: false, reason: "", ticket: "Repo: site" };
+    }
+    if (call.label.startsWith("fix:")) return { status: "applied", summary: "edited in place", changed: ["/root/cli/README.md"] };
+    return RELEASED;
+  });
+  const result = await done;
+
+  assert.equal(result["outcome"], "blocked");
+  assert.match(String(result["summary"]), /'applied', which is only an outcome for the workspace key/);
+  assert.deepEqual(labels(calls).filter((l) => /^(review|handoff):/.test(l)), [], `a review ran on nothing: ${labels(calls).join(", ")}`);
 });
 
 test("a workspace step that reports a push is refused rather than reviewed", async () => {
