@@ -185,7 +185,7 @@ const WT = `/tmp/${LOCK_PREFIX}-worktrees`
 
 const IDENTITY = (ref) => '  git -c user.name="$(git log -1 --format=%an ' + ref + ')" -c user.email="$(git log -1 --format=%ae ' + ref + ')" commit -F <message file>'
 const BASE_OF_EACH = () => Object.keys(CONFIGURED).map((name) => `  ${slug(name)}  origin/${baseOf(name)}`).join('\n')
-const IDENTITY_FROM = (base) => base ? IDENTITY(`origin/${base}`) : IDENTITY('<base>') + '\n\nwhere <base> is the default branch of the repository the commit is in. The repositories here do\nnot share one, so read it off this list rather than assuming:\n' + BASE_OF_EACH()
+const IDENTITY_FROM = (base) => base ? IDENTITY(`origin/${base}`) : IDENTITY('<base>') + '\n\nwhere <base> is the remote-tracking ref listed beside the repository the commit is in - the\nrepositories here do not share a default branch, so take it from this list rather than assuming:\n' + BASE_OF_EACH()
 
 const SHELL_FIRST = (base) => `EVERY COMMAND THAT RUNS git OR bundle STARTS WITH THESE TWO EXPORTS, and so does every
 command that runs a script which does:
