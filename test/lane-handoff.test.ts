@@ -730,8 +730,52 @@ test("the same message naming the plugin is still refused in a repository that d
   assert.equal(ran.labelled, false, "a pull request was labelled despite a bare pipeline noun");
 });
 
+const LABEL_NOUN = "Read the token back\n\nThe gate greps for lane-verified itself.";
+
+test("a commit message quoting the handoff label token is compliant in the repository that ships the plugin", () => {
+  const box = harness("", {
+    list: '[{"number":7}]',
+    rollup: READY,
+    body: CLEAN,
+    message: LABEL_NOUN,
+    pluginSource: true,
+  });
+  const ran = handoff(box, [...required(box), "--issue", "acme-1", "--note-file", box.notePath], true);
+
+  assert.equal(ran.status, 0, ran.stdout + ran.stderr);
+  assert.doesNotMatch(ran.stdout, /non-compliant/);
+  assert.match(ran.calls, /^api -X POST repos\/acme\/other\/issues\/7\/labels /m);
+});
+
+test("a pull request body quoting the handoff label token is compliant in the repository that ships the plugin", () => {
+  const box = harness("", {
+    list: '[{"number":7}]',
+    rollup: READY,
+    body: '{"title":"Read the token back","body":"The lander only reads pull requests labelled `lane-verified`."}',
+    pluginSource: true,
+  });
+  const ran = handoff(box, [...required(box), "--issue", "acme-1", "--note-file", box.notePath], true);
+
+  assert.equal(ran.status, 0, ran.stdout + ran.stderr);
+  assert.doesNotMatch(ran.stdout, /non-compliant/);
+  assert.match(ran.calls, /^api -X POST repos\/acme\/other\/issues\/7\/labels /m);
+});
+
+test("the same message quoting the handoff label token is still refused in a repository that does not ship the plugin", () => {
+  const box = harness("", {
+    list: '[{"number":7}]',
+    rollup: READY,
+    body: CLEAN,
+    message: LABEL_NOUN,
+  });
+  const ran = handoff(box, [...required(box), "--issue", "acme-1", "--note-file", box.notePath], true);
+
+  assert.equal(ran.status, 2, ran.stdout + ran.stderr);
+  assert.match(ran.stdout, /non-compliant: acme\/other#7/);
+  assert.equal(ran.labelled, false, "a pull request was labelled despite the handoff label token");
+});
+
 for (const [what, message] of [
-  ["the handoff label token", "Read the token back\n\nThe gate greps for lane-verified itself."],
   ["a scratch path", "Regenerate the artwork\n\nCaptured under /tmp/lanes/acme-14/repo while checking."],
   ["a private scratch path", "Regenerate the artwork\n\nCaptured under /private/tmp/lanes/acme-14/repo while checking."],
 ]) {
@@ -1331,11 +1375,20 @@ test("a local commit naming the plugin is caught before any push in a repository
   assert.match(ran.stdout, /DEVLOOP_ROOT/);
 });
 
-test("a local commit quoting the handoff label token is caught in the repository that ships the plugin", () => {
-  const ran = prePush(localBranch("Read the token back\n\nThe gate greps for lane-verified itself.", { pluginSource: true }));
+test("a local commit quoting the handoff label token passes the pre-push check in the repository that ships the plugin", () => {
+  const ran = prePush(localBranch(LABEL_NOUN, { pluginSource: true }));
+
+  assert.equal(ran.status, 0, ran.stdout + ran.stderr);
+  assert.match(ran.stdout, /compliant commits/);
+  assert.doesNotMatch(ran.stdout, /non-compliant/);
+});
+
+test("a local commit quoting the handoff label token is caught before any push in a repository that does not ship the plugin", () => {
+  const ran = prePush(localBranch(LABEL_NOUN));
 
   assert.equal(ran.status, 2, ran.stdout + ran.stderr);
   assert.match(ran.stdout, /non-compliant commits/);
+  assert.match(ran.stdout, /lane-verified/);
 });
 
 test("a local commit naming a scratch path is caught in the repository that ships the plugin", () => {
