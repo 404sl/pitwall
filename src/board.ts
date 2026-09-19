@@ -12,7 +12,7 @@ import {
   type Staleness,
   type StalenessVerdict,
 } from "@404sl/pitwall-schema";
-import { parentIdOf, type ClassificationReason } from "./classify.js";
+import { parentIdOf, parkLabelOf, type ClassificationReason } from "./classify.js";
 import { priorityLabel } from "./format.js";
 import { shownProblems, type ProblemRow } from "./problems.js";
 import {
@@ -33,6 +33,28 @@ export const NOTICE_SOURCE = "pitwall serve: outbound notice";
 export const PARTIAL_SOURCE = "pitwall snapshot: partial collection";
 export const KEPT_SOURCE = "pitwall snapshot: kept from the last readable collection";
 
+export type ParkBasis = "carried" | "first-seen";
+
+export interface ParkEntry {
+  label: string;
+  parkedSince: string;
+  basis: ParkBasis;
+  question?: string;
+}
+
+export type ProjectParks = Record<string, ParkEntry>;
+
+export type ParkStore = Record<string, ProjectParks>;
+
+export interface ParkAge {
+  since?: string;
+  ms?: number;
+  suspect: boolean;
+  basis?: ParkBasis;
+}
+
+export type ParkedReason = "tooling" | "watch" | "umbrella" | "roadmap";
+
 export interface NeedsYouRow {
   id: string;
   priority?: number;
@@ -40,6 +62,30 @@ export interface NeedsYouRow {
   title: string;
   verdict: StalenessVerdict;
   checkedAt?: string;
+  park: ParkAge;
+  question?: string;
+  misfiled: boolean;
+}
+
+export interface ParkedRow {
+  id: string;
+  priority?: number;
+  reason: ParkedReason;
+  title: string;
+  park: ParkAge;
+  verdict: StalenessVerdict;
+  checkedAt?: string;
+}
+
+export interface ParkedGroup {
+  project: string;
+  projectId: string;
+  rows: ParkedRow[];
+}
+
+export interface ParkedRows {
+  suspect: ParkedGroup[];
+  rest: ParkedGroup[];
 }
 
 export interface ReadyRow {
@@ -134,6 +180,7 @@ export interface Board {
   readyCount: number;
   readyShown: number;
   parked: ParkedEntry[];
+  parkedRows: ParkedRows;
   problems: ProblemRow[];
   filter: FilterState;
   filtered: boolean;
@@ -146,6 +193,8 @@ export interface Board {
 
 export const READY_LIMIT = 8;
 export const LANE_CHIP_LIMIT = 3;
+export const PARK_SUSPECT_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
+export const PARK_SUSPECT_DAYS = String(PARK_SUSPECT_AFTER_MS / (24 * 60 * 60 * 1000));
 
 const RUNNING_ORDER: RunningState[] = ["working", "awaiting-lander", "stranded"];
 
@@ -196,6 +245,52 @@ function kindOf(issue: Issue): NeedsYouKind {
   return issue.classification === "yours:decision" ? "decision" : "access";
 }
 
+function parkOf(parks: ProjectParks | undefined, issue: Issue): ParkEntry | undefined {
+  const label = parkLabelOf(issue);
+  const entry = parks?.[issue.id];
+  return label !== undefined && entry !== undefined && entry.label === label ? entry : undefined;
+}
+
+export function parkAgeOf(entry: ParkEntry | undefined, generatedAt: string): ParkAge {
+  if (entry === undefined) {
+    return { suspect: false };
+  }
+  const ms = elapsedMs(generatedAt, entry.parkedSince);
+  return {
+    since: entry.parkedSince,
+    ms,
+    suspect: ms !== undefined && ms >= PARK_SUSPECT_AFTER_MS,
+    basis: entry.basis,
+  };
+}
+
+function byOldestPark(a: { park: ParkAge }, b: { park: ParkAge }): number {
+  const left = a.park.ms;
+  const right = b.park.ms;
+  if (left === right) {
+    return 0;
+  }
+  if (left === undefined) {
+    return 1;
+  }
+  if (right === undefined) {
+    return -1;
+  }
+  return right - left;
+}
+
+function byParkThenPriority(a: NeedsYouRow, b: NeedsYouRow): number {
+  return (
+    byOldestPark(a, b) ||
+    Number(a.misfiled) - Number(b.misfiled) ||
+    byPriorityThenId(a, b)
+  );
+}
+
+function byParkThenPriorityParked(a: ParkedRow, b: ParkedRow): number {
+  return byOldestPark(a, b) || byPriorityThenId(a, b);
+}
+
 function elapsedMs(generatedAt: string, lastActivityAt: string | undefined): number | undefined {
   if (lastActivityAt === undefined) {
     return undefined;
@@ -228,25 +323,81 @@ function chipsFor(project: Project, generatedAt: string, state: RunningState): L
     .sort(byElapsedDescending);
 }
 
-function needsYouGroups(projects: Project[]): NeedsYouGroup[] {
+function needsYouRow(issue: Issue, entry: ParkEntry | undefined, generatedAt: string): NeedsYouRow {
+  const kind = kindOf(issue);
+  const park = parkAgeOf(entry, generatedAt);
+  const question = entry?.question;
+  return {
+    id: issue.id,
+    priority: issue.priority,
+    kind,
+    title: issue.title,
+    verdict: verdictOf(issue),
+    checkedAt: issue.staleness?.checkedAt,
+    park,
+    question,
+    misfiled: kind === "decision" && park.since !== undefined && question === undefined,
+  };
+}
+
+function needsYouGroups(projects: Project[], generatedAt: string, parks: ParkStore): NeedsYouGroup[] {
   return projects
     .map((project) => ({
       project: project.name,
       projectId: project.id,
       rows: issuesOf(project)
         .filter((issue) => isYours(issue.classification))
-        .map((issue) => ({
-          id: issue.id,
-          priority: issue.priority,
-          kind: kindOf(issue),
-          title: issue.title,
-          verdict: verdictOf(issue),
-          checkedAt: issue.staleness?.checkedAt,
-        }))
-        .sort(byPriorityThenId),
+        .map((issue) => needsYouRow(issue, parkOf(parks[project.id], issue), generatedAt))
+        .sort(byParkThenPriority),
     }))
     .filter((group) => group.rows.length > 0)
     .sort((a, b) => byCountThenName({ count: a.rows.length, name: a.project }, { count: b.rows.length, name: b.project }));
+}
+
+function parkedReasonOf(issue: Issue): ParkedReason | undefined {
+  if (!issue.classification.startsWith("parked:") || parkLabelOf(issue) === undefined) {
+    return undefined;
+  }
+  return issue.classification.slice("parked:".length) as ParkedReason;
+}
+
+function parkedRowsOf(project: Project, generatedAt: string, parks: ParkStore): ParkedRow[] {
+  return issuesOf(project).flatMap((issue) => {
+    const reason = parkedReasonOf(issue);
+    if (reason === undefined) {
+      return [];
+    }
+    return [
+      {
+        id: issue.id,
+        priority: issue.priority,
+        reason,
+        title: issue.title,
+        park: parkAgeOf(parkOf(parks[project.id], issue), generatedAt),
+        verdict: verdictOf(issue),
+        checkedAt: issue.staleness?.checkedAt,
+      },
+    ];
+  });
+}
+
+function parkedGroupsOf(groups: ParkedGroup[], pick: (row: ParkedRow) => boolean): ParkedGroup[] {
+  return groups
+    .map((group) => ({ ...group, rows: group.rows.filter(pick).sort(byParkThenPriorityParked) }))
+    .filter((group) => group.rows.length > 0)
+    .sort((a, b) => byCountThenName({ count: a.rows.length, name: a.project }, { count: b.rows.length, name: b.project }));
+}
+
+function parkedGroups(projects: Project[], generatedAt: string, parks: ParkStore): ParkedRows {
+  const rows = projects.map((project) => ({
+    project: project.name,
+    projectId: project.id,
+    rows: parkedRowsOf(project, generatedAt, parks),
+  }));
+  return {
+    suspect: parkedGroupsOf(rows, (row) => row.park.suspect),
+    rest: parkedGroupsOf(rows, (row) => !row.park.suspect),
+  };
 }
 
 function claimedBy(project: Project): Set<string> {
@@ -496,7 +647,10 @@ function todayTotals(projects: Project[]): TodayTotals {
 
 function boardTotals(projects: Project[], generatedAt: string, running: RunningRow[]): BoardTotals {
   return {
-    needsYou: needsYouGroups(projects).reduce((sum, group) => sum + group.rows.length, 0),
+    needsYou: projects.reduce(
+      (sum, project) => sum + issuesOf(project).filter((issue) => isYours(issue.classification)).length,
+      0,
+    ),
     running: running.reduce((sum, row) => sum + row.count, 0),
     runningStates: runningTotals(running),
     ready: readyRows(projects).length,
@@ -505,12 +659,12 @@ function boardTotals(projects: Project[], generatedAt: string, running: RunningR
   };
 }
 
-export function buildBoard(snapshot: Snapshot, filter: FilterState = {}): Board {
+export function buildBoard(snapshot: Snapshot, filter: FilterState = {}, parks: ParkStore = {}): Board {
   const projects = snapshot.projects ?? [];
   const generatedAt = snapshot.generatedAt;
   const shown = filteredProjects(projects, filter);
   const filtered = isFiltered(filter);
-  const needsYou = needsYouGroups(shown);
+  const needsYou = needsYouGroups(shown, generatedAt, parks);
   const everyRunning = runningRows(projects, generatedAt);
   const running = filtered ? withRunningTotals(runningRows(shown, generatedAt), everyRunning) : everyRunning;
   const ready = readyRows(shown);
@@ -527,6 +681,7 @@ export function buildBoard(snapshot: Snapshot, filter: FilterState = {}): Board 
     readyCount: ready.length,
     readyShown: Math.min(ready.length, READY_LIMIT),
     parked,
+    parkedRows: parkedGroups(shown, generatedAt, parks),
     problems: shownProblems(problemRows(snapshot), generatedAt),
     filter,
     filtered,
@@ -562,6 +717,7 @@ export interface IssueBody {
   classification?: ClassificationValue;
   reason: ClassificationReason;
   staleness: Staleness;
+  park?: ParkEntry;
 }
 
 export interface IssuePayload {
@@ -591,6 +747,8 @@ export interface IssuePreview {
   classification?: ClassificationValue;
   closed: boolean;
   staleness: StalenessView;
+  park?: ParkAge;
+  question?: string;
 }
 
 export function stalenessErrors(source: { errors?: CollectionError[] }, id: string): CollectionError[] {
@@ -623,13 +781,32 @@ function stalenessView(staleness: Staleness | undefined, errors: readonly Collec
   };
 }
 
-export function previewIssue(snapshot: Snapshot, project: string, id: string): IssuePreview | undefined {
+function parkView(
+  issue: { classification?: ClassificationValue | undefined; labels: string[] },
+  entry: ParkEntry | undefined,
+  generatedAt: string,
+): { park?: ParkAge; question?: string } {
+  const label = parkLabelOf(issue);
+  if (label === undefined) {
+    return {};
+  }
+  const matched = entry !== undefined && entry.label === label ? entry : undefined;
+  return { park: parkAgeOf(matched, generatedAt), question: matched?.question };
+}
+
+export function previewIssue(
+  snapshot: Snapshot,
+  project: string,
+  id: string,
+  parks: ParkStore = {},
+): IssuePreview | undefined {
   const found = (snapshot.projects ?? []).find((entry) => entry.id === project);
   const issue = found === undefined ? undefined : issuesOf(found).find((entry) => entry.id === id);
   if (found === undefined || issue === undefined) {
     return undefined;
   }
   return {
+    ...parkView(issue, parks[found.id]?.[issue.id], snapshot.generatedAt),
     id: issue.id,
     title: issue.title,
     status: issue.status,
@@ -651,10 +828,13 @@ export interface IssueView {
   closed: boolean;
   closedSinceSnapshot: boolean;
   staleness: StalenessView;
+  park?: ParkAge;
+  question?: string;
 }
 
 export function buildIssueView(payload: IssuePayload): IssueView {
   return {
+    ...parkView(payload.issue, payload.issue.park, payload.snapshot?.generatedAt ?? payload.readAt),
     issue: payload.issue,
     readAt: payload.readAt,
     snapshot: payload.snapshot,

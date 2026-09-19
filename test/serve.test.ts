@@ -24,6 +24,7 @@ import {
 import type { CollectionNotice, Delivery } from "../src/notify.ts";
 import { NOTICE_SOURCE, REFRESH_SOURCE } from "../src/board.ts";
 import type { BuildCheck, BuildReport } from "../src/build.ts";
+import { writeConsoleState } from "../src/parks.ts";
 import { snapshotPath, stateHome } from "../src/state.ts";
 import { VERSION } from "../src/version.ts";
 
@@ -33,6 +34,12 @@ const SNAPSHOT = {
   agent: { version: VERSION, executor: "local" },
   projects: [],
 };
+
+function documentOf(body: unknown): unknown {
+  const { console: sidecar, ...document } = body as { console?: unknown };
+  assert.deepEqual(sidecar, { parks: {} }, "the console's own state rides beside the document, never inside it");
+  return document;
+}
 
 function stateWith(contents?: string): { env: Record<string, string | undefined>; path: string } {
   const home = mkdtempSync(join(tmpdir(), "pitwall-state-"));
@@ -131,7 +138,7 @@ test("the snapshot endpoint serves what is stored", async (t) => {
 
   const response = await fetch(`${origin}/api/snapshot`);
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), parseSnapshot(SNAPSHOT));
+  assert.deepEqual(documentOf(await response.json()), parseSnapshot(SNAPSHOT));
 });
 
 test("the version endpoint names the running process, not the process that wrote the snapshot", async (t) => {
@@ -228,7 +235,7 @@ test("the snapshot endpoint keeps its shape - the version is served beside it, n
   const { origin } = await started(server);
 
   const body = (await (await fetch(`${origin}/api/snapshot`)).json()) as Record<string, unknown>;
-  assert.deepEqual(body, parseSnapshot(SNAPSHOT));
+  assert.deepEqual(documentOf(body), parseSnapshot(SNAPSHOT));
   assert.equal("update" in body, false);
 });
 
@@ -400,8 +407,12 @@ function trackerServer(
   issues: Array<Record<string, unknown>>,
   errors: Array<Record<string, unknown>> = [],
   extra: Record<string, string> = {},
+  parks?: Parameters<typeof writeConsoleState>[0],
 ): Server {
   const { env } = stateWith(trackerSnapshot(issues, errors));
+  if (parks !== undefined) {
+    writeConsoleState(parks, { env });
+  }
   return createConsoleServer({
     env: { ...env, PATH: `${join(BD_FIXTURES, bin)}:/usr/bin:/bin`, ...extra },
     uiDir: builtConsole(),
@@ -475,6 +486,52 @@ test("an issue that is not there is a 404, told apart from one that could not be
   assert.match(unread.message, /mw-1 could not be read/);
   assert.ok(unread.tried.includes(shown));
   assert.ok(unread.tried.some((entry) => entry.endsWith(".beads")));
+});
+
+const PARKED_SINCE = "2026-08-28T10:00:00.000Z";
+
+test("the park the collection placed is served beside the board and again on the issue, from one store", async (t) => {
+  const entry = { label: "needs-decision", parkedSince: PARKED_SINCE, basis: "first-seen" as const, question: "Honour the paid checkout?" };
+  const server = trackerServer(
+    "ok",
+    [indexed("mw-3", "open", "yours:decision", { labels: ["needs-decision"] }), indexed("mw-1", "open", "parked:umbrella")],
+    [],
+    {},
+    { parks: { mw: { "mw-3": entry } } },
+  );
+  t.after(() => server.close());
+  const { origin } = await started(server);
+
+  const board = (await (await fetch(`${origin}/api/snapshot`)).json()) as {
+    console: { parks: Record<string, Record<string, unknown>> };
+    projects: Array<{ issues: Array<Record<string, unknown>> }>;
+  };
+  assert.deepEqual(board.console, { parks: { mw: { "mw-3": entry } } });
+  assert.equal(
+    board.projects[0]?.issues.some((issue) => "park" in issue || "parkedSince" in issue),
+    false,
+    "the document itself is unchanged",
+  );
+
+  const issue = (await (await fetch(`${origin}/api/issue/mw/mw-3`)).json()) as { issue: { park?: unknown } };
+  assert.deepEqual(issue.issue.park, entry, "the page reads the same store as the board and recomputes nothing");
+
+  const umbrella = (await (await fetch(`${origin}/api/issue/mw/mw-1`)).json()) as { issue: { park?: unknown } };
+  assert.equal(umbrella.issue.park, undefined, "a structural park has no label and so no age");
+});
+
+test("a park the store holds under a label the issue no longer carries is not served against it", async (t) => {
+  const server = trackerServer(
+    "ok",
+    [indexed("mw-3", "open", "yours:decision", { labels: ["needs-decision"] })],
+    [],
+    {},
+    { parks: { mw: { "mw-3": { label: "needs-access", parkedSince: PARKED_SINCE, basis: "carried" as const } } } },
+  );
+  t.after(() => server.close());
+  const { origin } = await started(server);
+  const issue = (await (await fetch(`${origin}/api/issue/mw/mw-3`)).json()) as { issue: { park?: unknown } };
+  assert.equal(issue.issue.park, undefined);
 });
 
 test("an issue closed since the snapshot reports both the reading and the snapshot", async (t) => {
@@ -716,12 +773,12 @@ test("a snapshot older than the floor is served at once and re-collected behind 
 
   const first = await fetch(`${origin}/api/snapshot`);
   assert.equal(first.status, 200);
-  assert.deepEqual(await first.json(), parseSnapshot(SNAPSHOT));
+  assert.deepEqual(documentOf(await first.json()), parseSnapshot(SNAPSHOT));
   assert.equal(calls.length, 1);
 
   const second = await fetch(`${origin}/api/snapshot`);
   assert.equal(second.status, 200);
-  assert.deepEqual(await second.json(), parseSnapshot(SNAPSHOT));
+  assert.deepEqual(documentOf(await second.json()), parseSnapshot(SNAPSHOT));
   assert.equal(calls.length, 1);
 
   stalled.resolve(READ);
@@ -837,7 +894,7 @@ test("a re-collection that succeeds clears the failure the last one left", async
 
   await (calls[1] as Promise<Collection>);
   await settle();
-  assert.deepEqual(await (await fetch(`${origin}/api/snapshot`)).json(), parseSnapshot(SNAPSHOT));
+  assert.deepEqual(documentOf(await (await fetch(`${origin}/api/snapshot`)).json()), parseSnapshot(SNAPSHOT));
 });
 
 test("nothing stored is still a 503, and still starts the collection that would fix it", async (t) => {
@@ -858,7 +915,7 @@ test("a console with no collector never re-collects, whatever the age of what it
   t.after(() => server.close());
   const { origin } = await started(server);
 
-  assert.deepEqual(await (await fetch(`${origin}/api/snapshot`)).json(), parseSnapshot(SNAPSHOT));
+  assert.deepEqual(documentOf(await (await fetch(`${origin}/api/snapshot`)).json()), parseSnapshot(SNAPSHOT));
 });
 
 test("a 503 with a failed collection behind it says why the collection failed too", async (t) => {

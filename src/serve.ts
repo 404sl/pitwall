@@ -4,7 +4,7 @@ import { extname, resolve, sep } from "node:path";
 import { pipeline } from "node:stream";
 import { fileURLToPath } from "node:url";
 import type { Classification, CollectionError, Issue, Project, Snapshot } from "@404sl/pitwall-schema";
-import { NOTICE_SOURCE, REFRESH_SOURCE, stalenessErrors } from "./board.js";
+import { NOTICE_SOURCE, REFRESH_SOURCE, stalenessErrors, type ParkEntry } from "./board.js";
 import {
   IssueActionFailure,
   OWNER_LABELS,
@@ -14,6 +14,7 @@ import {
   type IssueReading,
 } from "./beads.js";
 import { createBuildCheck, type BuildCheck } from "./build.js";
+import { parkLabelOf } from "./classify.js";
 import { collectionError } from "./errors.js";
 import {
   collectionFailedNotice,
@@ -22,6 +23,7 @@ import {
   type Delivery,
 } from "./notify.js";
 import { createUpdateCheck, type UpdateCheck } from "./registry.js";
+import { readConsoleState } from "./parks.js";
 import { outboundPath, type OutboundOptions } from "./sender.js";
 import { emitSnapshot, type SnapshotOptions } from "./snapshot.js";
 import { readSnapshot, type StateOptions, type StoredSnapshot } from "./state.js";
@@ -284,7 +286,10 @@ function serveSnapshot(res: ServerResponse, options: ServeOptions, refresher: Re
   const stored = readSnapshot(options);
   refresher.consider(stored);
   if (stored.snapshot !== undefined) {
-    sendJson(res, 200, withConsoleErrors(stored.snapshot, refresher));
+    sendJson(res, 200, {
+      ...withConsoleErrors(stored.snapshot, refresher),
+      console: { parks: readConsoleState(options).state.parks },
+    });
     return;
   }
   const { error } = stored;
@@ -323,6 +328,16 @@ function issueRoute(pathname: string): { project: string; id: string } | undefin
 
 function snapshotIssue(project: Project | undefined, id: string): Issue | undefined {
   return project?.issues.find((issue) => issue.id === id);
+}
+
+function parkOf(
+  options: ServeOptions,
+  project: string,
+  issue: { id: string; classification: Classification | undefined; labels: string[] },
+): ParkEntry | undefined {
+  const label = parkLabelOf(issue);
+  const entry = readConsoleState(options).state.parks[project]?.[issue.id];
+  return label !== undefined && entry !== undefined && entry.label === label ? entry : undefined;
 }
 
 function projectIn(snapshot: Snapshot, id: string): Project | undefined {
@@ -384,6 +399,7 @@ async function serveIssue(
     return;
   }
   const snapshotStatus = snapshotIssue(indexed, route.id);
+  const park = parkOf(options, indexed.id, reading.issue);
   sendJson(res, 200, {
     issue: {
       ...reading.issue,
@@ -391,6 +407,7 @@ async function serveIssue(
       projectName: indexed.name,
       authority: indexed.authority,
       staleness: snapshotStatus?.staleness ?? { verdict: "unchecked", evidence: [] },
+      ...(park === undefined ? {} : { park }),
     },
     readAt: new Date().toISOString(),
     errors: stalenessErrors(indexed, route.id),

@@ -9,14 +9,16 @@ import {
   type IssuePayload,
   type IssuePreview,
   type IssueView,
+  type ParkAge as ParkAgeValue,
   type StalenessView,
 } from "../model.js";
-import { VERDICT_CLASS, VERDICT_WORD, clock, fill, priorityLabel, stamp } from "../format.js";
+import { VERDICT_CLASS, VERDICT_WORD, clock, elapsed, fill, priorityLabel, stamp } from "../format.js";
 import { boardHref, issueHref, type IssueRoute } from "../routes.js";
 import { strings } from "../strings.js";
 import { Band } from "./Band.js";
 import { Failure } from "./Failure.js";
 import { IssueActions, type ActionName, type ActionOutcome } from "./IssueActions.js";
+import { ParkAge } from "./ParkAge.js";
 
 interface PageFailure {
   heading: string;
@@ -117,33 +119,54 @@ function reasonValues(
   }
 }
 
+function ParkLine({ park }: { park?: ParkAgeValue }) {
+  if (park === undefined) {
+    return null;
+  }
+  return (
+    <p className="pw-reason">
+      <ParkAge park={park} />
+      <span className="pw-reason__because">
+        {park.since === undefined
+          ? strings.park.unknownLine
+          : fill(strings.park.sinceLine, { at: stamp(park.since) })}
+      </span>
+    </p>
+  );
+}
+
 function Reason({
   classification,
   reason,
   project,
   filter,
+  park,
 }: {
   classification?: Classification;
   reason?: ClassificationReason;
   project: string;
   filter: FilterState;
+  park?: ParkAgeValue;
 }) {
   if (classification === undefined || reason?.rule === "closed") {
     return <p className="pw-reason">{strings.issue.notClassified}</p>;
   }
   return (
-    <p className="pw-reason">
-      <span className="pw-reason__token">{classification}</span>
-      {reason === undefined ? null : (
-        <span className="pw-reason__because">
-          {strings.issue.because}
-          <Interpolated
-            template={reasonTemplate(reason)}
-            values={reasonValues(reason, project, filter)}
-          />
-        </span>
-      )}
-    </p>
+    <>
+      <p className="pw-reason">
+        <span className="pw-reason__token">{classification}</span>
+        {reason === undefined ? null : (
+          <span className="pw-reason__because">
+            {strings.issue.because}
+            <Interpolated
+              template={reasonTemplate(reason)}
+              values={reasonValues(reason, project, filter)}
+            />
+          </span>
+        )}
+      </p>
+      <ParkLine park={park} />
+    </>
   );
 }
 
@@ -162,24 +185,52 @@ export function reasonTemplate(reason: Exclude<ClassificationReason, { rule: "cl
   }
 }
 
+export interface CallContext {
+  park?: ParkAgeValue;
+  misfiled?: boolean;
+}
+
+function agedText(park: ParkAgeValue | undefined): string | undefined {
+  return park?.suspect === true && park.ms !== undefined ? elapsed(park.ms) : undefined;
+}
+
+export function isMisfiled(shown: Pick<IssuePreview, "classification" | "park" | "question">): boolean {
+  return (
+    shown.classification === "yours:decision" &&
+    shown.park?.since !== undefined &&
+    shown.question === undefined
+  );
+}
+
 export function callFor(
   classification: Classification | undefined,
   verdict: StalenessVerdict,
   closed: boolean,
+  context: CallContext = {},
 ): { text: string; tone: "yours" | "waiting" } {
   if (closed || classification === undefined) {
     return { text: strings.issue.call.closed, tone: "waiting" };
   }
   const expired = verdict === "likely-stale" || verdict === "resolved";
+  const age = agedText(context.park);
   switch (classification) {
     case "yours:decision":
+      if (expired) {
+        return { text: strings.issue.call.decision.stale, tone: "yours" };
+      }
+      if (context.misfiled === true) {
+        return { text: strings.issue.call.decision.misfiled, tone: "yours" };
+      }
       return {
-        text: expired ? strings.issue.call.decision.stale : strings.issue.call.decision.standing,
+        text: age === undefined ? strings.issue.call.decision.standing : fill(strings.issue.call.decision.aged, { age }),
         tone: "yours",
       };
     case "yours:access":
+      if (expired) {
+        return { text: strings.issue.call.access.stale, tone: "yours" };
+      }
       return {
-        text: expired ? strings.issue.call.access.stale : strings.issue.call.access.standing,
+        text: age === undefined ? strings.issue.call.access.standing : fill(strings.issue.call.access.aged, { age }),
         tone: "yours",
       };
     case "in-flight":
@@ -190,17 +241,36 @@ export function callFor(
       return { text: strings.issue.call.ready, tone: "waiting" };
     case "blocked":
       return { text: strings.issue.call.blocked, tone: "waiting" };
-    default:
-      return {
-        text: fill(strings.issue.call.parked, { reason: classification.slice("parked:".length) }),
-        tone: "waiting",
-      };
+    default: {
+      const reason = classification.slice("parked:".length);
+      if (age !== undefined) {
+        return { text: fill(strings.issue.call.parkedAged, { reason, age }), tone: "yours" };
+      }
+      return { text: fill(strings.issue.call.parked, { reason }), tone: "waiting" };
+    }
   }
 }
 
 function Call({ shown }: { shown: IssuePreview }) {
-  const call = callFor(shown.classification, shown.staleness.verdict, shown.closed);
+  const call = callFor(shown.classification, shown.staleness.verdict, shown.closed, {
+    park: shown.park,
+    misfiled: isMisfiled(shown),
+  });
   return <p className={`pw-call pw-call--${call.tone}`}>{call.text}</p>;
+}
+
+export function Question({ shown }: { shown: IssuePreview }) {
+  if (shown.closed || shown.classification !== "yours:decision" || shown.question === undefined) {
+    return null;
+  }
+  return (
+    <p className="pw-call__ask">
+      <span className="pw-call__ask-meta">
+        <span className="pw-call__ask-label">{strings.issue.call.question}</span>
+      </span>
+      <q className="pw-call__ask-text">{shown.question}</q>
+    </p>
+  );
 }
 
 export function LatestNote({
@@ -476,6 +546,8 @@ export function shownOf(view: IssueView): IssuePreview {
     classification: issue.classification,
     closed: view.closed,
     staleness: view.staleness,
+    park: view.park,
+    question: view.question,
   };
 }
 
@@ -563,6 +635,7 @@ export function IssueDetail({
           {shown.title}
         </h2>
         <Call shown={shown} />
+        <Question shown={shown} />
         {view === undefined ? null : (
           <LatestNote
             classification={shown.classification}
@@ -605,6 +678,7 @@ export function IssueDetail({
           reason={view?.issue.reason}
           project={shown.project}
           filter={filter}
+          park={shown.park}
         />
       </Band>
       <Band id="staleness" label={strings.issue.band.staleness} level="h3">

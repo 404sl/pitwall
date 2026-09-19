@@ -24,6 +24,7 @@ import { KEPT_SOURCE, PARTIAL_SOURCE, REFRESH_SOURCE, buildBoard } from "../src/
 import { consoleCollector, createConsoleServer, listen } from "../src/serve.ts";
 import { collectSnapshot, emitSnapshot } from "../src/snapshot.ts";
 import { historyPath } from "../src/history.ts";
+import { readConsoleState } from "../src/parks.ts";
 import { SESSION_REF_VAR } from "../src/sender.ts";
 import { readSnapshot, snapshotPath } from "../src/state.ts";
 import { renderStatus } from "../src/status.ts";
@@ -894,14 +895,12 @@ test("the snapshot reads the note time from the tracker, and says once which tim
       .filter((error) => error.message.startsWith("nothing records when"))
       .map((error) => [error.source, error.message]),
     [
-      ["staleness", "nothing records when an issue stopped, so a note written since cannot be recognised"],
       [
         "staleness",
-        "nothing records when an issue stopped or when the newest note was written," +
-          " so a note written since cannot be recognised",
+        "nothing records when the newest note was written, so a note written since cannot be recognised",
       ],
     ],
-    "the stamp read off the newest note decides which timestamp the run reports, and each is reported once",
+    "the park is placed by the collection, so only an unstamped newest note is left unplaceable, and it is reported once",
   );
   assert.deepEqual(
     errors.filter((error) => error.source.startsWith("staleness ")),
@@ -909,8 +908,40 @@ test("the snapshot reads the note time from the tracker, and says once which tim
     "a limitation of the tracker names no issue, so no issue carries a line nobody can clear",
   );
   const byId = new Map((project?.issues ?? []).map((issue) => [issue.id, issue]));
-  assert.equal(byId.get("mw-30")?.staleness.verdict, "unchecked");
-  assert.deepEqual(byId.get("mw-30")?.staleness.evidence, []);
+  assert.equal(byId.get("mw-30")?.staleness.verdict, "still-blocking");
+  assert.deepEqual(byId.get("mw-30")?.staleness.evidence, [
+    "the earliest the console can place the needs-access park is 2026-09-08T09:00:00.000Z",
+  ]);
+  assert.equal(byId.get("mw-31")?.staleness.verdict, "unchecked");
+  assert.deepEqual(byId.get("mw-31")?.staleness.evidence, []);
+});
+
+test("a note written since the console first placed a park reads as an answer on the next collection", async () => {
+  const root = readableRoot();
+  const id = basename(root);
+  const place = workspace([root]);
+  const noted = join(root, "bd-output", "noted.json");
+  const rows = JSON.parse(readFileSync(noted, "utf8")) as Array<Record<string, unknown>>;
+  const before = rows.find((row) => row["id"] === "mw-30");
+  assert.ok(before);
+  before["notes"] = "Asked the owner for a seat.";
+  writeFileSync(noted, JSON.stringify(rows));
+  const env = { ...place.env, BD_LIST_FIXTURE: "noted" };
+  const first = await emitSnapshot({ ...options(place, new Date("2026-09-08T09:00:00Z")), env, probe: async () => true });
+  const seen = first.snapshot.projects.find((project) => project.id === id)?.issues.find((issue) => issue.id === "mw-30");
+  assert.equal(seen?.staleness.verdict, "unchecked", "an unstamped note cannot be placed against the park");
+
+  before["notes"] = "Asked the owner for a seat.\n\n2026-09-08T10:00:00Z lane-mw-30\nThe seat was granted and the upload went through.";
+  writeFileSync(noted, JSON.stringify(rows));
+  const second = await emitSnapshot({ ...options(place, new Date("2026-09-08T11:00:00Z")), env, probe: async () => true });
+  const again = second.snapshot.projects.find((project) => project.id === id)?.issues.find((issue) => issue.id === "mw-30");
+  assert.equal(again?.staleness.verdict, "likely-stale");
+  assert.ok(
+    again?.staleness.evidence.some((line) =>
+      line.includes("after the earliest the console can place the needs-access park (2026-09-08T09:00:00.000Z)"),
+    ),
+    "the park is dated from the collection that first saw it, not from the one that read the note",
+  );
 });
 
 test("emitting a snapshot appends it to the history store", { skip: !hasSqlite }, async () => {
@@ -1173,6 +1204,60 @@ test("a project that could not be read keeps the issues the last snapshot held f
     "2026-09-08T09:00:00.000Z",
     "a second failed run must not re-date issues it did not read either",
   );
+});
+
+test("every park the collection sees is dated once and carried through later collections", async () => {
+  const place = workspace([TRACKER]);
+  const env = { ...place.env, BD_LIST_FIXTURE: "stale" };
+  const state = { env: place.env, home: place.home };
+  const first = await emitSnapshot({ ...options(place, new Date("2026-09-08T09:00:00Z")), env, probe: async () => true });
+  assert.equal(first.read, true);
+  const firstSeen = readConsoleState(state).state.parks["tracker"];
+  assert.deepEqual(firstSeen, {
+    "mw-20": { label: "blocked-tooling", parkedSince: "2026-09-08T09:00:00.000Z", basis: "first-seen" },
+    "mw-21": { label: "needs-access", parkedSince: "2026-09-08T09:00:00.000Z", basis: "first-seen" },
+    "mw-22": {
+      label: "needs-decision",
+      parkedSince: "2026-09-08T09:00:00.000Z",
+      basis: "first-seen",
+      question: "Honour the paid checkout?",
+    },
+    "mw-24": { label: "roadmap", parkedSince: "2026-09-08T09:00:00.000Z", basis: "first-seen" },
+    "mw-25": { label: "blocked-tooling", parkedSince: "2026-09-08T09:00:00.000Z", basis: "first-seen" },
+  });
+  await emitSnapshot({ ...options(place, new Date("2026-09-09T09:00:00Z")), env, probe: async () => true });
+  const carried = readConsoleState(state).state.parks["tracker"];
+  assert.equal(carried?.["mw-22"]?.parkedSince, "2026-09-08T09:00:00.000Z", "the park is still dated from first sight");
+  assert.equal(carried?.["mw-22"]?.basis, "carried");
+  assert.equal(carried?.["mw-22"]?.question, "Honour the paid checkout?");
+  assert.deepEqual(Object.keys(carried ?? {}).sort(), Object.keys(firstSeen ?? {}).sort());
+  const board = buildBoard(readSnapshot(state).snapshot!, {}, readConsoleState(state).state.parks);
+  const row = board.needsYou.flatMap((group) => group.rows).find((entry) => entry.id === "mw-22");
+  assert.equal(row?.park.ms, 24 * 60 * 60_000);
+  assert.equal(row?.park.suspect, false);
+  assert.equal(row?.misfiled, false);
+});
+
+test("a project that could not be read keeps the park ages the last collection placed", async () => {
+  const root = readableRoot();
+  const id = basename(root);
+  const place = workspace([root, TRACKER]);
+  const env = { ...place.env, BD_LIST_FIXTURE: "stale" };
+  const state = { env: place.env, home: place.home };
+  await emitSnapshot({ ...options(place, new Date("2026-09-08T09:00:00Z")), env, probe: async () => true });
+  const before = readConsoleState(state).state.parks[id];
+  assert.equal(before?.["mw-22"]?.basis, "first-seen");
+
+  rmSync(join(root, "bd-output"), { recursive: true });
+  await emitSnapshot({ ...options(place, new Date("2026-09-08T09:30:00Z")), env, probe: async () => true });
+  const after = readConsoleState(state).state.parks;
+  assert.deepEqual(after[id], before, "an unreadable project must not lose the ages it had");
+  assert.equal(after["tracker"]?.["mw-22"]?.basis, "carried", "the project that was read moves on");
+  const stored = readSnapshot(state).snapshot;
+  assert.ok(stored);
+  const board = buildBoard(stored, {}, after);
+  const kept = board.needsYou.flatMap((group) => group.rows).find((row) => row.id === "mw-22");
+  assert.equal(kept?.park.since, "2026-09-08T09:00:00.000Z", "the age a kept project shows does not flicker to unknown");
 });
 
 function lanedRoot(): string {

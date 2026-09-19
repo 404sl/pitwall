@@ -7,6 +7,7 @@ import {
   previewIssue,
   type BuildState,
   type FilterState,
+  type ParkStore,
   type ProblemRow,
   type RunningVersion,
 } from "./model.js";
@@ -39,7 +40,20 @@ class SnapshotFailure extends Error {
   }
 }
 
-async function readSnapshot(signal: AbortSignal): Promise<Snapshot> {
+interface Taken {
+  snapshot: Snapshot;
+  parks: ParkStore;
+}
+
+function parksOf(body: unknown): ParkStore {
+  if (typeof body !== "object" || body === null) {
+    return {};
+  }
+  const parks = (body as { parks?: unknown }).parks;
+  return typeof parks === "object" && parks !== null ? (parks as ParkStore) : {};
+}
+
+async function readSnapshot(signal: AbortSignal): Promise<Taken> {
   let response: Response;
   try {
     response = await fetch(SNAPSHOT_URL, { signal, headers: { accept: "application/json" } });
@@ -62,7 +76,8 @@ async function readSnapshot(signal: AbortSignal): Promise<Snapshot> {
     }
     throw new SnapshotFailure(message, `${SNAPSHOT_URL} ${response.status}`);
   }
-  return JSON.parse(body) as Snapshot;
+  const { console: sidecar, ...snapshot } = JSON.parse(body) as Snapshot & { console?: unknown };
+  return { snapshot, parks: parksOf(sidecar) };
 }
 
 function stampOf(value: unknown): BuildStamp | undefined {
@@ -166,14 +181,14 @@ export function App() {
   const hash = useHash();
   const route = useMemo(() => routeOf(hash), [hash]);
   const filter = useMemo<FilterState>(() => filterOf(hash), [hash]);
-  const [taken, setTaken] = useState<Snapshot | undefined>(undefined);
+  const [taken, setTaken] = useState<Taken | undefined>(undefined);
   const [failure, setFailure] = useState<string | undefined>(undefined);
   const [refetchFailure, setRefetchFailure] = useState<ProblemRow | undefined>(undefined);
   const [loading, setLoading] = useState(true);
   const [version, setVersion] = useState("");
   const [update, setUpdate] = useState<string | undefined>(undefined);
   const [build, setBuild] = useState<BuildState>(() => buildState({ kind: "waiting" }));
-  const held = useRef<Snapshot | undefined>(undefined);
+  const held = useRef<Taken | undefined>(undefined);
 
   const load = useCallback(async (signal: AbortSignal) => {
     const [snapshot, running] = await Promise.allSettled([readSnapshot(signal), readVersion(signal)]);
@@ -223,7 +238,10 @@ export function App() {
     };
   }, [load]);
 
-  const board = useMemo(() => (taken === undefined ? undefined : buildBoard(taken, filter)), [taken, filter]);
+  const board = useMemo(
+    () => (taken === undefined ? undefined : buildBoard(taken.snapshot, filter, taken.parks)),
+    [taken, filter],
+  );
 
   if (route !== undefined) {
     return (
@@ -243,7 +261,9 @@ export function App() {
           <IssuePage
             route={route}
             filter={filter}
-            preview={taken === undefined ? undefined : previewIssue(taken, route.project, route.id)}
+            preview={
+              taken === undefined ? undefined : previewIssue(taken.snapshot, route.project, route.id, taken.parks)
+            }
           />
         </main>
       </>
@@ -310,6 +330,8 @@ export function App() {
           <Parked
             entries={board.parked}
             totals={board.filtered ? board.totals.parked : undefined}
+            rows={board.parkedRows}
+            filter={filter}
             filteredEmpty={emptyOf(board.totals.parked.length)}
           />
         </Band>

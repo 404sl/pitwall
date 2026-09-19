@@ -43,7 +43,21 @@ const PARKED_LABELS: ReadonlyArray<readonly [string, Classification]> = [
   ["roadmap", "parked:roadmap"],
 ];
 
+const LABEL_CLASSIFICATIONS: ReadonlyArray<readonly [string, Classification]> = [
+  ["needs-decision", "yours:decision"],
+  ["needs-access", "yours:access"],
+  ...PARKED_LABELS,
+];
+
 const EPIC_TITLE_MARKER = "[EPIC]";
+
+export function parkLabelOf(issue: {
+  classification?: Classification | undefined;
+  labels: readonly string[];
+}): string | undefined {
+  const mapped = LABEL_CLASSIFICATIONS.find(([, classification]) => classification === issue.classification);
+  return mapped !== undefined && issue.labels.includes(mapped[0]) ? mapped[0] : undefined;
+}
 
 function workingLane(issue: UnclassifiedIssue, lanes: readonly Lane[]): Lane | undefined {
   return lanes.find((lane) => lane.state === "working" && lane.issueId === issue.id);

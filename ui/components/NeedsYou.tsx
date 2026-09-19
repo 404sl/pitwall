@@ -2,14 +2,26 @@ import type { FilterState, NeedsYouGroup, NeedsYouRow } from "../model.js";
 import { VERDICT_CLASS, VERDICT_WORD, clock, priorityLabel } from "../format.js";
 import { issueHref } from "../routes.js";
 import { strings } from "../strings.js";
+import { ParkAge } from "./ParkAge.js";
 
-function Staleness({ row }: { row: NeedsYouRow }) {
+export function Staleness({ row }: { row: { verdict: NeedsYouRow["verdict"]; checkedAt?: string } }) {
   const title = row.checkedAt === undefined ? undefined : `${strings.stale.checkedAt} ${clock(row.checkedAt)}`;
   return (
     <span className={`pw-stale ${VERDICT_CLASS[row.verdict]}`} title={title}>
       {VERDICT_WORD[row.verdict]}
     </span>
   );
+}
+
+function Kind({ row }: { row: NeedsYouRow }) {
+  if (row.misfiled) {
+    return (
+      <td className="pw-cell pw-cell--kind" title={strings.park.misfiledTitle}>
+        {strings.kind.misfiled}
+      </td>
+    );
+  }
+  return <td className="pw-cell pw-cell--kind">{strings.kind[row.kind]}</td>;
 }
 
 interface NeedsYouProps {
@@ -31,13 +43,14 @@ export function NeedsYou({ groups, filter, filteredEmpty }: NeedsYouProps) {
           <th scope="col">{strings.column.priority}</th>
           <th scope="col">{strings.column.kind}</th>
           <th scope="col">{strings.column.title}</th>
+          <th scope="col">{strings.column.parked}</th>
           <th scope="col">{strings.column.staleness}</th>
         </tr>
       </thead>
       {groups.map((group) => (
         <tbody key={group.project}>
           <tr className="pw-group">
-            <th colSpan={5} scope="rowgroup">
+            <th colSpan={6} scope="rowgroup">
               {group.project}
             </th>
           </tr>
@@ -47,11 +60,14 @@ export function NeedsYou({ groups, filter, filteredEmpty }: NeedsYouProps) {
               <td className="pw-cell pw-cell--data" title={row.priority === undefined ? strings.stale.noPriority : undefined}>
                 {priorityLabel(row.priority)}
               </td>
-              <td className="pw-cell pw-cell--kind">{strings.kind[row.kind]}</td>
+              <Kind row={row} />
               <td className="pw-cell pw-cell--title">
                 <a className="pw-link" href={issueHref(group.projectId, row.id, filter)}>
                   {row.title}
                 </a>
+              </td>
+              <td className="pw-cell pw-cell--at">
+                <ParkAge park={row.park} />
               </td>
               <td className="pw-cell pw-cell--stale">
                 <Staleness row={row} />

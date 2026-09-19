@@ -47,8 +47,9 @@ failure then arrives invisible. A consequence is counted against its cause rathe
 listed beside it — 122 staleness checks that failed because one `gh` call was rate
 limited are one problem, not 123. A failure that clears itself waits six hours before it
 is anybody's. And a limitation every board carries on every run is documented rather than
-reported: a tracker records why an issue stopped and not when, so a note written since
-cannot always be placed, and nothing a person does will change that.
+reported: a tracker records why an issue stopped and not when, so the console dates a park
+from the first collection that saw it, and a note that carries no stamp still cannot be
+placed against it.
 
 ## Status
 
@@ -113,6 +114,15 @@ rendering them over the last few hours. `history.maxSnapshots`, `history.maxAgeD
 together — a fortnight at ten-minute resolution needs a `minIntervalMinutes` of 10 and about
 2000 snapshots, which at a couple of hundred kilobytes each is roughly half a gigabyte. The
 default is sized to be safe on an unattended laptop, not to reach the finest resolution.
+
+A park is aged from the first collection that saw its label, because the tracker records no
+label timestamp — adding or removing a label leaves `updated_at` untouched. That date is kept
+in `~/.local/state/pitwall/console.json` beside the snapshot, keyed by issue and by the label
+it was seen under, so a park that is relabelled starts again and one that is lifted leaves the
+store. The age the board shows is a floor: the park was already on at that instant. The first
+collection after an upgrade dates every existing park from that day. A park older than seven
+days is marked as not re-examined, and a decision whose text states no question is marked as
+misfiled; nothing here removes a park — a person does.
 
 `landedToday` needs one reading, not two: it counts the issues closed today whose closure
 names a merge, read from the tracker itself. Landed means merged, not deployed. Where the
