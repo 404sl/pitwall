@@ -182,6 +182,11 @@ export const strings = {
     notMineLabel: "Why this is not yours",
     notMineHint: "It goes on the ticket, and it is how the board learns it classified this wrong.",
     notMineSubmit: "Write the reason",
+    unpark: "Lift {label}",
+    unparkLabel: "Why {label} no longer applies",
+    unparkHint:
+      "It goes on the ticket first; the label comes off only after it lands. It is how the board learns the park had expired.",
+    unparkSubmit: "Write the reason and lift it",
     writing: "Writing to the tracker…",
     waiting: "Reading the issue first — these open when it has loaded.",
     doneAnswer:
@@ -189,6 +194,8 @@ export const strings = {
     doneReady: "{id} is cleared for a lane. The board catches up at its next snapshot.",
     doneNotMine:
       "Reason written to {id}, and it is off your queue. The board catches up at its next snapshot.",
+    doneUnpark:
+      "Reason written to {id}, and the park is lifted. Whatever still holds it shows above; the board catches up at its next snapshot.",
     failed: "{id} was not changed.",
     unreachable: "The console could not be reached, so nothing was written.",
   },
@@ -241,6 +248,8 @@ export const strings = {
       },
       parkedAged:
         "Read this - parked as {reason} for {age}, and nothing has re-examined why. If the reason has expired, remove the park in the tracker.",
+      parkedAgedLiftable:
+        "Read this - parked as {reason} for {age}, and nothing has re-examined why. If the reason has expired, say so below and lift the park.",
       question: "Question",
       inFlight: "Nothing for you — a lane is working it.",
       landing: "Nothing for you — it is waiting to be landed.",

@@ -49,6 +49,8 @@ const LABEL_CLASSIFICATIONS: ReadonlyArray<readonly [string, Classification]> = 
   ...PARKED_LABELS,
 ];
 
+export const LIFTABLE_PARK_LABELS = ["blocked-tooling", "watch", "roadmap"] as const;
+
 const EPIC_TITLE_MARKER = "[EPIC]";
 
 export function parkLabelOf(issue: {
@@ -57,6 +59,14 @@ export function parkLabelOf(issue: {
 }): string | undefined {
   const mapped = LABEL_CLASSIFICATIONS.find(([, classification]) => classification === issue.classification);
   return mapped !== undefined && issue.labels.includes(mapped[0]) ? mapped[0] : undefined;
+}
+
+export function liftableParkOf(issue: {
+  classification?: Classification | undefined;
+  labels: readonly string[];
+}): string | undefined {
+  const label = parkLabelOf(issue);
+  return label !== undefined && (LIFTABLE_PARK_LABELS as readonly string[]).includes(label) ? label : undefined;
 }
 
 function workingLane(issue: UnclassifiedIssue, lanes: readonly Lane[]): Lane | undefined {

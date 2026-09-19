@@ -1190,6 +1190,50 @@ test("pushing an issue off the owner's queue records the classification it is co
   );
 });
 
+test("lifting a park writes the reason first, then removes that one label and nothing else", async (t) => {
+  const box = await acting(t, [indexed("mw-16", "open", "parked:watch", { labels: ["watch"] })]);
+  const lifted = await box.post("/api/issue/mw/mw-16/unpark", {
+    text: "schema 0.5 published this morning",
+  });
+
+  assert.equal(lifted.status, 200, lifted.body);
+  assert.match(
+    readFileSync(box.notes, "utf8"),
+    noted(
+      "mw-16",
+      "Park lifted from the console — watch removed; the console classified this parked:watch\. Reason: schema 0.5 published this morning",
+    ),
+  );
+  const writes = writtenTo(box.log);
+  assert.equal(writes.length, 2);
+  assert.match(writes[0] ?? "", /--append-notes/);
+  assert.equal(writes[1], "update mw-16 --remove-label watch", "only the park label comes off, and only after the note");
+  assert.deepEqual((JSON.parse(lifted.body) as { removedLabels: string[] }).removedLabels, ["watch"]);
+});
+
+test("a park is never lifted without a reason, and never from an issue that carries no liftable label", async (t) => {
+  const box = await acting(t, [
+    indexed("mw-16", "open", "parked:watch", { labels: ["watch"] }),
+    indexed("mw-3", "open", "yours:decision", { labels: ["needs-decision"] }),
+  ]);
+  const unsaid = await box.post("/api/issue/mw/mw-16/unpark", { text: "  " });
+  assert.equal(unsaid.status, 400);
+  assert.match(unsaid.body, /mw-16 was not changed - say why the park no longer applies/);
+
+  const owned = await box.post("/api/issue/mw/mw-3/unpark", { text: "any engineer can pick this" });
+  assert.equal(owned.status, 400);
+  assert.match(owned.body, /mw-3 was not changed - it carries no park label the console lifts/);
+  assert.match(owned.body, /blocked-tooling, watch, roadmap/);
+  assert.match(owned.body, /classifies it yours:decision/);
+
+  const stored = await box.post("/api/issue/mw/mw-10/unpark", { text: "the release is out" });
+  assert.equal(stored.status, 400);
+  assert.match(stored.body, /mw-10 was not changed - it carries no park label the console lifts/);
+  assert.match(stored.body, /classifies it parked:roadmap/);
+
+  assert.deepEqual(writtenTo(box.log), []);
+});
+
 test("an empty box cannot unpark an issue", async (t) => {
   const box = await acting(t);
   const blank = await box.post("/api/issue/mw/mw-3/answer", { text: "   " });

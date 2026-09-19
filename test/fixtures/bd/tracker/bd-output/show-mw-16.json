@@ -1,0 +1,20 @@
+[
+  {
+    "id": "mw-16",
+    "title": "Watch the registry for the schema 0.5 release",
+    "description": "Nothing to do until the contract publishes 0.5. Check back then.",
+    "status": "open",
+    "priority": 2,
+    "issue_type": "task",
+    "notes": null,
+    "created_at": "2026-09-01T09:00:00Z",
+    "updated_at": "2026-09-01T09:00:00Z",
+    "metadata": null,
+    "labels": ["watch"],
+    "dependencies": null,
+    "dependents": null,
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "comment_count": 0
+  }
+]

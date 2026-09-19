@@ -14,7 +14,7 @@ import {
   type IssueReading,
 } from "./beads.js";
 import { createBuildCheck, type BuildCheck } from "./build.js";
-import { parkLabelOf } from "./classify.js";
+import { LIFTABLE_PARK_LABELS, liftableParkOf, parkLabelOf } from "./classify.js";
 import { collectionError } from "./errors.js";
 import {
   INTAKE_LABEL,
@@ -509,7 +509,7 @@ function serveConsole(res: ServerResponse, uiDir: string, pathname: string): voi
 }
 
 export const ACTION_HEADER = "x-pitwall-action";
-export const ACTIONS = ["answer", "ready", "not-mine"] as const;
+export const ACTIONS = ["answer", "ready", "not-mine", "unpark"] as const;
 export type ActionName = (typeof ACTIONS)[number];
 const MAX_BODY = 16_384;
 const SAME_ORIGIN = "same-origin";
@@ -598,12 +598,19 @@ function noteFor(action: ActionName, text: string, classification: Classificatio
   return "Marked ready from the console.";
 }
 
+function unparkNote(label: string, text: string, classification: Classification): string {
+  return `Park lifted from the console — ${label} removed; the console classified this ${classification}. Reason: ${text}`;
+}
+
 function missingText(action: ActionName, id: string): string | undefined {
   if (action === "answer") {
     return `${id} was not changed - an answer needs the answer itself, and this request carried none.`;
   }
   if (action === "not-mine") {
     return `${id} was not changed - say why it is not yours, so the next reader knows.`;
+  }
+  if (action === "unpark") {
+    return `${id} was not changed - say why the park no longer applies, so the next reader knows.`;
   }
   return undefined;
 }
@@ -683,8 +690,18 @@ async function serveAction(
     });
     return;
   }
-  const note = noteFor(route.action, text, classification);
-  const removedLabels = [...OWNER_LABELS];
+  const lifted = route.action === "unpark" ? liftableParkOf(reading.issue) : undefined;
+  if (route.action === "unpark" && lifted === undefined) {
+    sendJson(res, 400, {
+      message: `${route.id} was not changed - it carries no park label the console lifts (${LIFTABLE_PARK_LABELS.join(", ")}); the console classifies it ${classification}.`,
+      id: route.id,
+      action: route.action,
+    });
+    return;
+  }
+  const note =
+    lifted === undefined ? noteFor(route.action, text, classification) : unparkNote(lifted, text, classification);
+  const removedLabels = lifted === undefined ? [...OWNER_LABELS] : [lifted];
   const act = issueActor(indexed.root, {
     env: options.env,
     timeoutMs: options.timeoutMs,
