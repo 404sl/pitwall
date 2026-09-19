@@ -60,7 +60,7 @@ const ROOT = input.root
 // deploys is false. From the config, a repo deploys when its entry carries a deploy array, and the
 // commands in that array are what the deploy step runs.
 const REPOS = input.repos
-  ? Object.fromEntries(Object.entries(input.repos).map(([name, r]) => [name, {
+  ? Object.fromEntries(Object.entries(input.repos).filter(([, r]) => (r || {}).role !== 'workspace').map(([name, r]) => [name, {
       path: (r || {}).path || name,
       slug: (r || {}).slug,
       defaultBranch: trimmed((r || {}).defaultBranch) || 'master',

@@ -29,10 +29,10 @@ export const meta = {
 const input = (typeof args === 'string' ? JSON.parse(args) : args) || {}
 
 const ROOT = input.root
-const CONFIGURED = input.repos || {
+const CONFIGURED = Object.fromEntries(Object.entries(input.repos || {
   site: { path: 'site' }, extension: { path: 'extension' },
   integration: { path: 'integration' }, docs: { path: 'docs' }
-}
+}).filter(([, r]) => (r || {}).role !== 'workspace'))
 // name -> absolute path, which is what the prompts below want.
 const REPOS = Object.fromEntries(
   Object.entries(CONFIGURED).map(([name, r]) => [name, `${ROOT}/${(r || {}).path || name}`])
