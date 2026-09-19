@@ -109,7 +109,7 @@ case "$1" in
         fi
       fi
     done
-    [ "$found" -eq 1 ] || echo "nothing held by $2: no slot under $SLOTDIR names it, so there was nothing to release"
+    [ "$found" -eq 1 ] || echo "no slot under $SLOTDIR names $2, so no slot was released. Lane locks are reached only through a slot: a /tmp/${PFX}-lane-*.owner file may still name $2, and this does not read them."
     exit 0 ;;
   --gc)
     # A LIVE RUN'S SLOT IS NEVER FREED, and neither the lane lock nor the worktree is a reliable

@@ -123,30 +123,51 @@ test("a release step that ran and reported still_held is a leak, not a refusal, 
   assert.equal(result["slot"], "released");
 });
 
-test("a release refused twice is recorded as REFUSED in both fields, naming the path and the command that releases it", async () => {
-  const { calls, logs, done } = blocked(null, null);
+test("a release refused twice is recorded as REFUSED in both fields, each naming its path and carrying the plain command that releases it", async () => {
+  const { calls, logs, done } = blocked({ lane: "refused", slot: "refused", worktree: "refused", notes: "blocked by safety classifier: [Auto-Mode Bypass]" }, null);
   const result = await done;
 
-  assert.equal(labelled(calls, "release-retry:zz-aaa1").length, 1);
+  const retry = labelled(calls, "release-retry:zz-aaa1");
+  assert.equal(retry.length, 1);
+  const [slotCommand, laneCommand] = commandsOf(retry[0]!.prompt);
   assert.equal(result["outcome"], "blocked");
-  for (const [field, path] of [["lane", LANE_LOCK], ["slot", SLOT_FILE]] as const) {
+  for (const [field, path, command] of [["lane", LANE_LOCK, laneCommand], ["slot", SLOT_FILE, slotCommand]] as const) {
     const value = String(result[field]);
     assert.match(value, /^REFUSED - /, `${field} reads: ${value}`);
     assert.ok(value.includes(path), `${field} does not name ${path}: ${value}`);
-    assert.ok(value.includes("cd /root && bash /skill/slot.sh --release zz-aaa1"), `${field} does not say what to run: ${value}`);
+    assert.ok(command && value.endsWith(command), `${field} does not end with the plain command the retry was given: ${value}`);
+    assert.equal(value.includes("slot.sh --release"), false, `${field} points at slot.sh, which reaches a lane lock only through a slot file: ${value}`);
     assert.equal(value.includes("LEAKED"), false, "a refusal read as a leak sends a person to read a file the release never touched");
   }
+  assert.ok(String(result["lane"]).includes(`rmdir ${LANE_LOCK}`), `the lane field does not remove the lock on its own: ${result["lane"]}`);
+  assert.ok(String(result["lane"]).includes(`awk 'NR == 1 { print $1 }' ${OWNER_FILE}`), `the lane field does not read the owner file: ${result["lane"]}`);
+  assert.ok(String(result["slot"]).includes(`rm -f ${SLOT_FILE}`), `the slot field does not remove the slot file: ${result["slot"]}`);
   assert.match(String(result["worktree"]), /^UNKNOWN - /);
 
   const line = logs.find((l) => l.startsWith("lane 4: REFUSED - "));
   assert.ok(line, `the console never said the release was refused: ${logs.join(" | ")}`);
   assert.ok(line.includes("slot 3: REFUSED - "), `the console line does not carry the slot: ${line}`);
+  assert.ok(line.includes("blocked by safety classifier: [Auto-Mode Bypass]"), `a retry that answered nothing dropped what refused the first step: ${line}`);
+});
+
+test("the first refusal is logged with its reason before the retry, so a classifier refusing every run is visible when the retry succeeds", async () => {
+  const { logs, done } = blocked({ lane: "refused", slot: "refused", worktree: "refused", notes: "blocked by safety classifier: [Auto-Mode Bypass]" }, { lane: "released", slot: "released" });
+  const result = await done;
+  assert.equal(result["lane"], "released");
+  const line = logs.find((l) => l.startsWith("release:zz-aaa1: release-lane.sh was refused, retrying as plain commands"));
+  assert.ok(line, `nothing was logged about the refusal: ${logs.join(" | ")}`);
+  assert.ok(line.includes("blocked by safety classifier: [Auto-Mode Bypass]"), `the log line dropped the reason: ${line}`);
+
+  const silent = blocked(null, { lane: "released", slot: "released" });
+  await silent.done;
+  assert.ok(silent.logs.some((l) => l.startsWith("release:zz-aaa1: release-lane.sh was not answered, retrying as plain commands")), silent.logs.join(" | "));
 });
 
 test("a retry that is itself refused is REFUSED, and a field the retry did give back is not", async () => {
   const { done } = blocked(null, { lane: "refused", slot: "released", notes: "the lane command was not permitted" });
   const result = await done;
   assert.match(String(result["lane"]), /^REFUSED - /);
+  assert.ok(String(result["lane"]).includes(`rmdir ${LANE_LOCK}`), `with the slot already gone, the lane field must release the lock without going through the slot: ${result["lane"]}`);
   assert.equal(result["slot"], "released");
 
   const ran = blocked(null, { lane: "still_held", slot: "refused", notes: "rmdir: directory not empty" });
@@ -247,6 +268,38 @@ test("the plain commands release what names the run, leave what does not, and sa
   }
 });
 
+test("the lane command a REFUSED field carries releases a lock whose slot file is already gone", async () => {
+  const prefix = `pwmixed${process.pid}`;
+  const slots = slotsPath(prefix);
+  const lock = join(LOCK_ROOT, `${prefix}-lane-4.lock`);
+  const owner = join(LOCK_ROOT, `${prefix}-lane-4.owner`);
+  const { done } = runScript("task.js", { ...TASK_ARGS, lockPrefix: prefix }, (call, n) => {
+    if (n === 1) return TRIAGE_OK;
+    if (n === 2) return { status: "blocked", summary: "stopped" };
+    if (call.label === "release:zz-aaa1") return null;
+    return { lane: "refused", slot: "released", notes: "the lane command was not permitted" };
+  });
+  const result = await done;
+  const value = String(result["lane"]);
+  const command = value.slice(value.lastIndexOf(": if [ ") + 2);
+  assert.ok(command.startsWith("if [ "), `no command at the end of the lane field: ${value}`);
+  try {
+    mkdirSync(slots, { recursive: true });
+    mkdirSync(lock);
+    writeFileSync(owner, "zz-aaa1 slot 3 TEST_ENV_NUMBER 4\n");
+    assert.equal(existsSync(join(slots, "3")), false);
+
+    assert.equal(sh(command).out, "lane: RELEASED");
+    assert.equal(existsSync(lock), false, "the lock the field named is still there after its own command ran");
+    assert.equal(existsSync(owner), false);
+    assert.equal(sh(command).out, "lane: ALREADY_GONE");
+  } finally {
+    rmSync(slots, { recursive: true, force: true });
+    rmSync(lock, { recursive: true, force: true });
+    rmSync(owner, { force: true });
+  }
+});
+
 let sequence = 0;
 
 function workspace() {
@@ -279,7 +332,7 @@ function clean(box: ReturnType<typeof workspace>) {
   rmSync(box.root, { recursive: true, force: true });
 }
 
-test("slot.sh --release says when nothing names the id, and is the same answer the second time", () => {
+test("slot.sh --release says when no slot names the id and that it did not read the lane locks, and leaves a slot-less lock alone", () => {
   const box = workspace();
   try {
     mkdirSync(box.slots, { recursive: true });
@@ -296,8 +349,16 @@ test("slot.sh --release says when nothing names the id, and is the same answer t
 
     const again = release(box, "zz-aaa1");
     assert.equal(again.status, 0, again.stderr);
-    assert.match(again.stdout, /nothing held by zz-aaa1: no slot under \S+ names it/, `a second release printed: [${again.stdout}]`);
+    assert.match(again.stdout, /^no slot under \S+ names zz-aaa1, so no slot was released\./, `a second release printed: [${again.stdout}]`);
+    assert.ok(again.stdout.includes(`/tmp/${box.prefix}-lane-*.owner file may still name zz-aaa1, and this does not read them`), `the line reads as all-clear: [${again.stdout}]`);
     assert.equal(existsSync(box.slots), true, "the registry directory was removed by a release of nothing");
+
+    mkdirSync(lock);
+    writeFileSync(join(LOCK_ROOT, `${box.prefix}-lane-3.owner`), "zz-aaa1 slot 2 TEST_ENV_NUMBER 3\n");
+    const orphan = release(box, "zz-aaa1");
+    assert.equal(orphan.status, 0, orphan.stderr);
+    assert.match(orphan.stdout, /^no slot under /, `a release with a lock but no slot printed: [${orphan.stdout}]`);
+    assert.equal(existsSync(lock), true, "slot.sh --release is documented as reaching a lock only through its slot; if it now sweeps owner files, update the lane field's text and this test together");
   } finally {
     clean(box);
   }

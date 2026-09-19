@@ -1764,15 +1764,18 @@ that answer is acted on, and it is worth more than a guess at what the script wo
 Remove nothing by hand, run no other command, and never use 2>&1.`
 }
 
+const PLAIN_SLOT = `if [ ! -e ${SLOT_FILE} ]; then echo "slot: ALREADY_GONE"; elif [ "$(head -n 1 ${SLOT_FILE})" = "${ID}" ]; then rm -f ${SLOT_FILE} && echo "slot: RELEASED" || echo "slot: STILL_HELD"; else echo "slot: NOT_MINE - $(head -n 1 ${SLOT_FILE})"; fi`
+const PLAIN_LANE = `if [ -e ${LANE_LOCK} ] && [ ! -d ${LANE_LOCK} ]; then echo "lane: STILL_HELD - a regular file, not a lock"; elif [ ! -d ${LANE_LOCK} ]; then echo "lane: ALREADY_GONE"; elif [ "$(awk 'NR == 1 { print $1 }' ${OWNER_FILE} 2>/dev/null)" = "${ID}" ]; then rm -f ${OWNER_FILE} && rmdir ${LANE_LOCK} && echo "lane: RELEASED" || echo "lane: STILL_HELD"; else echo "lane: NOT_MINE - $(head -n 1 ${OWNER_FILE} 2>/dev/null)"; fi`
+
 function plainReleasePrompt() {
   return `The release step for lane ${LANE_NUMBER} and slot ${SLOT} did not answer, so give them back with plain
 commands instead. Each reads one file under /tmp that this run wrote and removes it only when it
 names this run. Run these two commands once each, exactly as they stand, in this order, and report
 what they printed:
 
-  if [ ! -e ${SLOT_FILE} ]; then echo "slot: ALREADY_GONE"; elif [ "$(head -n 1 ${SLOT_FILE})" = "${ID}" ]; then rm -f ${SLOT_FILE} && echo "slot: RELEASED" || echo "slot: STILL_HELD"; else echo "slot: NOT_MINE - $(head -n 1 ${SLOT_FILE})"; fi
+  ${PLAIN_SLOT}
 
-  if [ -e ${LANE_LOCK} ] && [ ! -d ${LANE_LOCK} ]; then echo "lane: STILL_HELD - a regular file, not a lock"; elif [ ! -d ${LANE_LOCK} ]; then echo "lane: ALREADY_GONE"; elif [ "$(awk 'NR == 1 { print $1 }' ${OWNER_FILE} 2>/dev/null)" = "${ID}" ]; then rm -f ${OWNER_FILE} && rmdir ${LANE_LOCK} && echo "lane: RELEASED" || echo "lane: STILL_HELD"; else echo "lane: NOT_MINE - $(head -n 1 ${OWNER_FILE} 2>/dev/null)"; fi
+  ${PLAIN_LANE}
 
 The slot goes first because a slot left behind is the silent one: nothing refuses a dispatch over
 it, the pool is simply one lane smaller. A lane lock left behind refuses the next run out loud.
@@ -1781,8 +1784,6 @@ Report the word after 'slot:' as 'slot' and the word after 'lane:' as 'lane', lo
 everything printed as 'notes'. If a command is not permitted to run, report 'refused' for it and say
 what refused it in 'notes'. Run no other command, remove nothing by hand, and never use 2>&1.`
 }
-
-const RELEASE_BY_HAND = `cd ${ROOT} && bash ${SKILL_DIR}/slot.sh --release ${ID}`
 
 function unanswered(answer) {
   return !answer || answer.lane === 'refused' || answer.slot === 'refused'
@@ -1797,10 +1798,10 @@ async function giveBack(prompt, label, schema) {
   }
 }
 
-function settle(path, answer, refused) {
+function settle(path, answer, refused, byHand) {
   if (GIVEN_BACK.has(answer)) return answer
   if (answer === 'not_mine') return `not_mine - ${path} does not record ${ID}, so nothing was removed and nothing should be`
-  if (answer === 'refused' || (refused && !answer)) return `REFUSED - neither release step was permitted to run or answered, so ${path} was never given back: it is leaked if it still records ${ID}. Release it on reading this, it removes only what names this run: ${RELEASE_BY_HAND}`
+  if (answer === 'refused' || (refused && !answer)) return `REFUSED - no release step was permitted to give ${path} back, so it is leaked if it still records ${ID}. Release it on reading this with the command below: it reads ${path} on its own, removes it only if it names this run, and says ALREADY_GONE when there is nothing left to do: ${byHand}`
   return `LEAKED - ${path} was not given back, or the release step answered nothing. Read it before removing anything: clear it if it records this run, and leave it alone if it records another.`
 }
 
@@ -2323,13 +2324,18 @@ if (!result && reworks >= MAX_REWORKS) {
 
 } finally {
   const first = await giveBack(releaseLanePrompt(), `release:${ID}`, LANE)
-  const back = unanswered(first) ? await giveBack(plainReleasePrompt(), `release-retry:${ID}`, LANE_PLAIN) : first
+  let back = first
+  if (unanswered(first)) {
+    log(`release:${ID}: release-lane.sh was ${first ? 'refused' : 'not answered'}, retrying as plain commands${first && first.notes ? ` - ${first.notes}` : ''}`)
+    back = await giveBack(plainReleasePrompt(), `release-retry:${ID}`, LANE_PLAIN)
+  }
   const refused = unanswered(back)
-  laneLock = settle(LANE_LOCK, back && back.lane, refused)
-  slotClaim = settle(SLOT_FILE, back && back.slot, refused)
+  laneLock = settle(LANE_LOCK, back && back.lane, refused, PLAIN_LANE)
+  slotClaim = settle(SLOT_FILE, back && back.slot, refused, PLAIN_SLOT)
   worktreeState = settleWorktree(first && first.worktree)
   if (!GIVEN_BACK.has(back && back.lane) || !GIVEN_BACK.has(back && back.slot)) {
-    log(`lane ${LANE_NUMBER}: ${laneLock}\n    slot ${SLOT}: ${slotClaim}${back && back.notes ? `\n    ${back.notes}` : ''}`)
+    const notes = (back && back.notes) || (first && first.notes)
+    log(`lane ${LANE_NUMBER}: ${laneLock}\n    slot ${SLOT}: ${slotClaim}${notes ? `\n    ${notes}` : ''}`)
   }
   if (!result && /^[A-Z]/.test(worktreeState)) log(`worktree: ${worktreeState}`)
 }
