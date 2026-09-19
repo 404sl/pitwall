@@ -42,7 +42,7 @@ case "$1 $2" in
     else
       registered='[]'
     fi
-    echo '{"labels":[{"name":"lane-verified"}],"statusCheckRollup":'"$registered"',"headRefOid":"'"$(git --git-dir=${JSON.stringify(bare)} rev-parse refs/heads/${BRANCH} 2>/dev/null)"'"}' ;;
+    echo '{"baseRefName":"master","labels":[{"name":"lane-verified"}],"statusCheckRollup":'"$registered"',"headRefOid":"'"$(git --git-dir=${JSON.stringify(bare)} rev-parse refs/heads/${BRANCH} 2>/dev/null)"'"}' ;;
   "api repos/"*)
     echo "$2" >> ${JSON.stringify(polls)}
     if [ "$(wc -l < ${JSON.stringify(polls)})" -ge ${registersOnPoll} ]; then
