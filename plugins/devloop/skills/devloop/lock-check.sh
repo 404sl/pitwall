@@ -118,13 +118,14 @@ if [ "$idle" -lt "$silent_for" ]; then
   exit 0
 fi
 
+bases="$(bash "$skill/default-branch.sh" --all 2>/dev/null | sed 's|^|origin/|' | paste -sd, - | sed 's|,| and |g')"
 echo "MERGE LOCK LOOKS DEAD: held ${held_min}m by ${token}, its run has not written for $(( idle / 60 ))m."
 echo "  run: ${owner}"
 echo "  Nothing will land until this is released, and queue-watch reads the lock as a live train,"
 echo "  so it will stay silent about the pull requests piling up behind it."
 echo "  BEFORE RELEASING, confirm no deploy is in flight - a mid-deploy train is legitimately slow:"
 echo "    ps ax | grep -E 'mina|land-one|deploy-one' | grep -v grep"
-echo "    staging and production and origin/master should all read the SAME revision;"
+echo "    staging and production and ${bases} should all read the SAME revision;"
 echo "    staging AHEAD of production means a train is between its two deploys - leave it alone."
 echo "  Then release it by TOKEN, never with a bare rm:"
 echo "    [ \"\$(cat ${lock}/holder)\" = \"${token}\" ] && rm -rf ${lock} || echo NOT_MINE"

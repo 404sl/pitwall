@@ -10,30 +10,34 @@
 # run that is not about that exact commit.
 set -u
 
+skill="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_path=""
 repo=""
+base=""
 once=0
 interval=60
 while [ $# -gt 0 ]; do
   case "$1" in
     --repo-path) repo_path=$2; shift 2 ;;
     --repo)      repo=$2;      shift 2 ;;
+    --base)      base=$2;      shift 2 ;;
     --interval)  interval=$2;  shift 2 ;;
     --once)      once=1;       shift   ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
-[ -n "$repo_path" ] || { echo "usage: master-watch.sh --repo-path <dir> [--repo owner/name] [--once] [--interval N]" >&2; exit 2; }
+[ -n "$repo_path" ] || { echo "usage: master-watch.sh --repo-path <dir> [--repo owner/name] [--base <branch>] [--once] [--interval N]" >&2; exit 2; }
 cd "$repo_path" || exit 2
+[ -n "$base" ] || base="$(bash "$skill/default-branch.sh" --checkout "$PWD")"
 
 # Resolve master HEAD, then the verdict of the runs whose head IS that commit.
 # Prints "<state>\t<sha>\t<title>"; state is pending when nothing has finished for
 # this commit yet, which is not a result and must not be announced either way.
 poll() {
-  git fetch origin master --quiet || true
+  git fetch origin "$base" --quiet || true
   local head
-  head=$(git rev-parse origin/master) || return 1
-  gh run list ${repo:+--repo "$repo"} --branch master --limit 40 \
+  head=$(git rev-parse "origin/$base") || return 1
+  gh run list ${repo:+--repo "$repo"} --branch "$base" --limit 40 \
      --json headSha,status,conclusion,displayTitle 2>/dev/null \
    | HEAD_SHA="$head" python3 -c '
 import json, os, sys
@@ -66,10 +70,10 @@ while true; do
   title=$(printf '%s' "$line" | cut -f3)
 
   if [ "$state" = "failure" ] && { [ "$prev_state" != "failure" ] || [ "$prev_sha" != "$sha" ]; }; then
-    echo "MASTER RED at $sha - $title - lanes cannot merge, stop dispatching and fix this first"
+    echo "MASTER RED: ${base} at $sha - $title - lanes cannot merge, stop dispatching and fix this first"
     prev_state=$state; prev_sha=$sha
   elif [ "$state" = "success" ] && [ "$prev_state" = "failure" ]; then
-    echo "MASTER GREEN again at $sha - $title"
+    echo "MASTER GREEN again: ${base} at $sha - $title"
     prev_state=$state; prev_sha=$sha
   elif [ "$state" = "success" ]; then
     prev_state=$state; prev_sha=$sha

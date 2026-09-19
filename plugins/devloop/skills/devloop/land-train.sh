@@ -198,7 +198,7 @@ while IFS="$(printf '\t')" read -r num branch title; do
     esac
     parent=$(git rev-parse --verify --quiet "${squash_ref}^1" 2>/dev/null)
     [ -n "$parent" ] || break
-    [ "$(git rev-list --count "origin/master..$parent" 2>/dev/null || echo 0)" -ge 1 ] || break
+    [ "$(git rev-list --count "origin/${BASE}..$parent" 2>/dev/null || echo 0)" -ge 1 ] || break
     changed=$(git diff --name-only "$parent" "$squash_ref" 2>/dev/null)
     [ -n "$changed" ] || break
     printf '%s\n' "$changed" \
