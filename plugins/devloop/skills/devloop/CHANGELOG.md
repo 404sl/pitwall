@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.99
+
+`config.sh --args` and `--rework` now say on stderr when a root checkout's default branch is behind origin, naming the repository, the count and both shas, and say when a checkout could not be compared. The dispatch proceeds either way and nothing is fast-forwarded - read the line and fast-forward the checkout yourself. Tolerate some lag with `warnBehind` in the workspace config; the default reports any lag at all.
+
 ## 0.1.98
 
 When the deploy step dies rather than answering, the lander no longer dies with it. It reads the hosts back, compares what they serve against the shas that merged, reports the deploy as unknown with the error the step died with, closes nothing, and still returns the merged list with its shas and logs the final counts line.
