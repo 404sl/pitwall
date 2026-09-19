@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -52,6 +52,29 @@ function guard(box: Box, args: string[]): Ran {
     cwd: box.root,
     encoding: "utf8",
     env: { ...process.env, ...GIT_ENV },
+  });
+  return {
+    code: run.status,
+    out: run.stdout ?? "",
+    err: run.stderr ?? "",
+    ran: existsSync(box.marker),
+  };
+}
+
+function push(box: Box, args: string[], pushArgs: string[]): Ran {
+  const bin = join(box.root, "bin");
+  mkdirSync(bin, { recursive: true });
+  const shim = join(bin, "git");
+  writeFileSync(
+    shim,
+    '#!/bin/sh\nfor a in "$@"; do [ "$a" = push ] && { touch "$GUARD_TEST_MARKER"; exit 0; }; done\n' +
+      'PATH="${PATH#*:}" exec git "$@"\n',
+  );
+  chmodSync(shim, 0o755);
+  const run = spawnSync("bash", [GUARD, ...args, "--", "git", "push", ...pushArgs], {
+    cwd: box.root,
+    encoding: "utf8",
+    env: { ...process.env, ...GIT_ENV, PATH: `${bin}:${process.env.PATH ?? ""}`, GUARD_TEST_MARKER: box.marker },
   });
   return {
     code: run.status,
@@ -202,4 +225,183 @@ test("no command after the separator is a refusal, not a silent success", () => 
     `the refusal does not say that nothing was handed to the guard, so this test would pass on ` +
       `any other refusal firing first:\n${ran.err}`,
   );
+});
+
+function refusedRefspec(ran: Ran, refspec: string, dst: string) {
+  refused(ran, `a push whose refspec ${refspec} lands on ${dst}`);
+  assert.match(
+    ran.err,
+    /push refspec/,
+    `the refusal came from some other branch of the guard, so this test would pass with the ` +
+      `refspec check deleted - the branch the worktree is on says nothing about where a push ` +
+      `lands, and the refspec is the only thing that does:\n${ran.err}`,
+  );
+  assert.match(ran.err, new RegExp(`names ${dst}`), `the refusal does not name the destination it refused:\n${ran.err}`);
+}
+
+test("a push whose refspec lands on master is refused even when --branch and HEAD agree", () => {
+  const box = workspace();
+
+  const ran = push(box, [`--dir=${box.lane}`, "--branch=devloop/zz-aaa1"], ["origin", "HEAD:master"]);
+
+  refusedRefspec(ran, "HEAD:master", "master");
+});
+
+test("a push with an empty source deletes the destination, and master as that destination is refused", () => {
+  const box = workspace();
+
+  const ran = push(box, [`--dir=${box.lane}`, "--branch=devloop/zz-aaa1"], ["origin", ":master"]);
+
+  refusedRefspec(ran, ":master", "master");
+});
+
+test("a forced push to main is refused, and the leading plus does not hide the destination", () => {
+  const box = workspace();
+
+  const ran = push(box, [`--dir=${box.lane}`, "--branch=devloop/zz-aaa1"], ["--force", "origin", "+HEAD:main"]);
+
+  refusedRefspec(ran, "+HEAD:main", "main");
+});
+
+test("the lane's own branch as the source does not make master an acceptable destination", () => {
+  const box = workspace();
+
+  const ran = push(box, [`--dir=${box.lane}`, "--branch=devloop/zz-aaa1"], ["origin", "devloop/zz-aaa1:master"]);
+
+  refusedRefspec(ran, "devloop/zz-aaa1:master", "master");
+});
+
+test("the fully qualified spelling of master is refused like the short one", () => {
+  const box = workspace();
+
+  const ran = push(box, [`--dir=${box.lane}`, "--branch=devloop/zz-aaa1"], ["origin", "+HEAD:refs/heads/master"]);
+
+  refusedRefspec(ran, "+HEAD:refs/heads/master", "refs/heads/master");
+});
+
+test("the heads/ spelling resolves to master on the remote and is refused like the others", () => {
+  const box = workspace();
+
+  const ran = push(box, [`--dir=${box.lane}`, "--branch=devloop/zz-aaa1"], ["origin", "HEAD:heads/master"]);
+
+  refusedRefspec(ran, "HEAD:heads/master", "heads/master");
+});
+
+test("the heads/ spelling of main is refused as well", () => {
+  const box = workspace();
+
+  const ran = push(box, [`--dir=${box.lane}`, "--branch=devloop/zz-aaa1"], ["origin", "HEAD:heads/main"]);
+
+  refusedRefspec(ran, "HEAD:heads/main", "heads/main");
+});
+
+test("a bare refspec is its own destination, so pushing master by name is refused", () => {
+  const box = workspace();
+
+  const ran = push(box, [`--dir=${box.lane}`, "--branch=devloop/zz-aaa1"], ["origin", "master"]);
+
+  refusedRefspec(ran, "master", "master");
+});
+
+function refusedPattern(ran: Ran, refspec: string, why: RegExp) {
+  refused(ran, `a push whose refspec ${refspec} has no single destination`);
+  assert.match(
+    ran.err,
+    /push refspec/,
+    `the refusal came from some other branch of the guard, so this test would pass with the ` +
+      `refspec check deleted - the branch the worktree is on says nothing about where a push ` +
+      `lands, and the refspec is the only thing that does:\n${ran.err}`,
+  );
+  assert.match(
+    ran.err,
+    why,
+    `the refusal came from the named-destination check rather than from the one for a destination ` +
+      `that is a pattern or empty, so this test would pass with that check deleted:\n${ran.err}`,
+  );
+}
+
+test("a pattern destination matches master among the rest and is refused", () => {
+  const box = workspace();
+
+  const ran = push(box, [`--dir=${box.lane}`, "--branch=devloop/zz-aaa1"], ["origin", "refs/heads/*:refs/heads/*"]);
+
+  refusedPattern(ran, "refs/heads/*:refs/heads/*", /pattern refs\/heads\/\*/);
+});
+
+test("a forced pattern destination is refused, and the leading plus does not hide the pattern", () => {
+  const box = workspace();
+
+  const ran = push(box, [`--dir=${box.lane}`, "--branch=devloop/zz-aaa1"], ["origin", "+refs/heads/*:refs/heads/*"]);
+
+  refusedPattern(ran, "+refs/heads/*:refs/heads/*", /pattern refs\/heads\/\*/);
+});
+
+test("the matching refspec has no destination and pushes every shared branch, so it is refused", () => {
+  const box = workspace();
+
+  const ran = push(box, [`--dir=${box.lane}`, "--branch=devloop/zz-aaa1"], ["origin", ":"]);
+
+  refusedPattern(ran, ":", /empty destination/);
+});
+
+test("the forced matching refspec is refused as well", () => {
+  const box = workspace();
+
+  const ran = push(box, [`--dir=${box.lane}`, "--branch=devloop/zz-aaa1"], ["origin", "+:"]);
+
+  refusedPattern(ran, "+:", /empty destination/);
+});
+
+test("the refspec is read with --dir alone, which is how the lander calls the guard", () => {
+  const box = workspace();
+
+  const ran = push(box, [`--dir=${box.lane}`], ["origin", "HEAD:master"]);
+
+  refusedRefspec(ran, "HEAD:master", "master");
+});
+
+test("a push to the lane's own branch still runs", () => {
+  const box = workspace();
+
+  const ran = push(box, [`--dir=${box.lane}`, "--branch=devloop/zz-aaa1"], ["-u", "origin", "devloop/zz-aaa1"]);
+
+  assert.equal(ran.code, 0, `the guard refused a push to the lane's own branch:\n${ran.out}\n${ran.err}`);
+  assert.equal(ran.ran, true, "the guard exited 0 without running the push it was given");
+});
+
+test("a bare --force-with-lease with no refspec still runs", () => {
+  const box = workspace();
+
+  const ran = push(box, [`--dir=${box.lane}`, "--branch=devloop/zz-aaa1"], ["--force-with-lease"]);
+
+  assert.equal(ran.code, 0, `the guard refused a push with no refspec at all:\n${ran.out}\n${ran.err}`);
+  assert.equal(ran.ran, true, "the guard exited 0 without running the push it was given");
+});
+
+test("the lander's lease-and-refspec push to the lane's own branch still runs with --dir alone", () => {
+  const box = workspace();
+  const head = git(box.lane, "rev-parse", "HEAD");
+
+  const ran = push(
+    box,
+    [`--dir=${box.lane}`],
+    [`--force-with-lease=refs/heads/devloop/zz-aaa1:${head}`, "origin", "HEAD:refs/heads/devloop/zz-aaa1"],
+  );
+
+  assert.equal(
+    ran.code,
+    0,
+    `the guard refused the exact push the lander makes, so no rebased branch could ever be ` +
+      `published again:\n${ran.out}\n${ran.err}`,
+  );
+  assert.equal(ran.ran, true, "the guard exited 0 without running the push it was given");
+});
+
+test("a push option whose value happens to be master is not read as a refspec", () => {
+  const box = workspace();
+
+  const ran = push(box, [`--dir=${box.lane}`, "--branch=devloop/zz-aaa1"], ["-o", "master", "origin", "devloop/zz-aaa1"]);
+
+  assert.equal(ran.code, 0, `the guard read an option value as a refspec:\n${ran.out}\n${ran.err}`);
+  assert.equal(ran.ran, true, "the guard exited 0 without running the push it was given");
 });

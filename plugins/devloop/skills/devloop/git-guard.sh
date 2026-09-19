@@ -81,5 +81,59 @@ if [ -n "$branch" ]; then
   fi
 fi
 
+case "$1" in
+  git|*/git)
+    seen_push=0
+    end_opts=0
+    want_value=0
+    remote_seen=0
+    for arg in "$@"; do
+      if [ "$seen_push" = 0 ]; then
+        [ "$arg" = push ] && seen_push=1
+        continue
+      fi
+      if [ "$want_value" = 1 ]; then
+        want_value=0
+        continue
+      fi
+      if [ "$end_opts" = 0 ]; then
+        case "$arg" in
+          --) end_opts=1; continue ;;
+          -o|--push-option|--repo|--receive-pack|--exec) want_value=1; continue ;;
+          -*) continue ;;
+        esac
+      fi
+      if [ "$remote_seen" = 0 ]; then
+        remote_seen=1
+        continue
+      fi
+      spec=${arg#+}
+      case "$spec" in
+        *:*) dst=${spec#*:} ;;
+        *)   dst=$spec ;;
+      esac
+      case "$dst" in
+        *\**)
+          echo "REFUSED" >&2
+          echo "git-guard.sh: the push refspec ${arg} has the pattern ${dst} as its destination. Nothing was run." >&2
+          echo "              A pattern lands on every branch it matches, and master is a local branch shared" >&2
+          echo "              across every worktree of a checkout, so a pattern push from a lane moves it too." >&2
+          exit 2 ;;
+        "")
+          echo "REFUSED" >&2
+          echo "git-guard.sh: the push refspec ${arg} has an empty destination. Nothing was run." >&2
+          echo "              An empty destination pushes every local branch the remote also has, and master" >&2
+          echo "              is a local branch shared across every worktree of a checkout, so it goes too." >&2
+          exit 2 ;;
+        master|main|heads/master|heads/main|refs/heads/master|refs/heads/main)
+          echo "REFUSED" >&2
+          echo "git-guard.sh: the push refspec ${arg} names ${dst}, which is a default branch. Nothing was run." >&2
+          echo "              The branch a worktree is on says nothing about where a push lands; the refspec" >&2
+          echo "              does, and this one lands on the branch this guard exists to keep pushes off." >&2
+          exit 2 ;;
+      esac
+    done ;;
+esac
+
 cd "$dir" || exit 2
 exec "$@"
