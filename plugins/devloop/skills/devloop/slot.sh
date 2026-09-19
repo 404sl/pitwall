@@ -126,15 +126,9 @@ case "$1" in
     # each is working on and when it last wrote anything. A recent write is proof of life that
     # arrives from the moment of dispatch, unlike the other two.
     LIVEOUT="$(bash "$(dirname "${BASH_SOURCE[0]}")/live.sh" 2>/dev/null)"
-    # Free any slot whose lane lock is not held.
+    # A slot is freed only on lane-running.sh answering NOT-RUNNING for its holder. An absent
+    # lane lock is no evidence either way, and every other check below is a reason to keep.
     #
-    # DANGEROUS SOON AFTER A DISPATCH, and the warning is here because it was ignored once: a
-    # run takes its lane lock only when it first touches the database, which is several minutes
-    # into the work. Before that it is running and looks idle, so this frees its lane and the
-    # next dispatch lands on top of it. Two live runs were freed that way within a minute of
-    # being started.
-    #
-    # Use it to clear up after a batch has plainly finished, never as part of refilling.
     # THE WORKTREE IS THE EARLY SIGNAL, and the lane lock is the late one. A run creates its
     # worktree within a minute of starting and takes the lane lock only when it first touches
     # the database, several minutes later. Judging on the lock alone therefore frees every young
@@ -182,7 +176,14 @@ case "$1" in
         echo "keeping slot $n ($held): no lane lock yet, but its worktree is being written to"
         continue
       fi
-      echo "freeing slot $n (held by $held, no lane lock and no active worktree)"
+      if [ -d "$wt" ]; then
+        wtstate="its worktree has not been written to in 25 minutes"
+      else
+        wtstate="it has no worktree"
+      fi
+      quiet=""
+      [ -n "$LIVEOUT" ] && quiet=" nothing wrote for it in 40 minutes,"
+      echo "freeing slot $n ($held): lane-running.sh reports NOT-RUNNING - no task in flight is its lane,$quiet and $wtstate"
       rm -f "$SLOTDIR/$n"
     done
     exit 0 ;;
@@ -249,21 +250,16 @@ for n in $(seq 1 $LANES); do
   fi
 done
 
-# FULL IS NOT ALWAYS FULL, and the caller cannot tell the difference from "all lanes busy".
-#
-# Most of the time the registry is full because stale entries piled up: an issue finished, the
-# lane lock went, and nothing gave the number back. Naming those here turns a dead end into an
-# instruction, and it is deliberately a SUGGESTION rather than an automatic --gc - a run takes
-# its lane lock minutes after it starts, so gc'ing as part of refilling frees lanes that are
-# alive. That has already been done once and cost two live runs.
-stale=""
+# FULL IS NOT ALWAYS FULL, but nothing readable here can say which held slot is finished: a
+# run takes its lane lock minutes in, so an absent lock says nothing, and --gc is not suggested.
+unlocked=0
 for n in $(seq 1 $MAX); do
   [ -f "$SLOTDIR/$n" ] || continue
-  [ -d "/tmp/${PFX}-lane-$((n + 1)).lock" ] || stale="$stale slot $n ($(cat "$SLOTDIR/$n"))"
+  [ -d "/tmp/${PFX}-lane-$((n + 1)).lock" ] || unlocked=$((unlocked + 1))
 done
 echo "all $LANES lanes busy" >&2
-if [ -n "$stale" ]; then
-  echo "  but these hold no lane lock and are probably finished:$stale" >&2
-  echo "  if none of them started in the last few minutes: slot.sh --gc" >&2
+if [ "$unlocked" -gt 0 ]; then
+  echo "  $unlocked of them hold no lane lock, which says nothing about whether they are finished." >&2
+  echo "  slot.sh --list shows who holds what; a run that has REPORTED gives its slot back with slot.sh --release <id>" >&2
 fi
 exit 1

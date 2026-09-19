@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.112
+
+`slot.sh` no longer suggests `--gc` when every lane is busy, and no longer lists slots without a lane lock as "probably finished" - an absent lock says nothing about whether a run is finished. When the pool is full it says how many held slots have no lock and names `slot.sh --release <id>` for a run that has reported; a pool whose every slot holds its lock prints the one line it always did. `--gc` still frees a slot only on `lane-running.sh` answering NOT-RUNNING, and its free line now names that verdict rather than the absence of a lock and a worktree.
+
+Closes pitwall-cqs.
+
 ## 0.1.111
 
 The fix brief keys its role-specific text on the configured `role`, not the repo key. A script-role repository under any key is told to branch from its own checkout, and its rule 5 names that repository's configured test command - or "the check script" when none is configured - rather than `ruby script/check.rb`. A repository keyed `docs` with another role gets that role's brief. The name fallback for the four historical keys is unchanged, so a config with no `role` set behaves as before.
