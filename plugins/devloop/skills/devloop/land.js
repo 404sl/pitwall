@@ -183,6 +183,10 @@ const DEPLOY_EVERY = input.deployEvery || 3
 const MAX_ROUNDS = 4
 const WT = `/tmp/${LOCK_PREFIX}-worktrees`
 
+const IDENTITY = (ref) => '  git -c user.name="$(git log -1 --format=%an ' + ref + ')" -c user.email="$(git log -1 --format=%ae ' + ref + ')" commit -F <message file>'
+const BASE_OF_EACH = () => Object.keys(CONFIGURED).map((name) => `  ${slug(name)}  origin/${baseOf(name)}`).join('\n')
+const IDENTITY_FROM = (base) => base ? IDENTITY(`origin/${base}`) : IDENTITY('<base>') + '\n\nwhere <base> is the default branch of the repository the commit is in. The repositories here do\nnot share one, so read it off this list rather than assuming:\n' + BASE_OF_EACH()
+
 const SHELL_FIRST = (base) => `EVERY COMMAND THAT RUNS git OR bundle STARTS WITH THESE TWO EXPORTS, and so does every
 command that runs a script which does:
 
@@ -207,7 +211,7 @@ COMMIT IDENTITY IS THE ONE THING THAT DOES NOT SURVIVE THEM, and every command t
 commit needs it - commit, rebase, merge, cherry-pick. Pass it on the command, taken from the
 branch being built on:
 
-  git -c user.name="$(git log -1 --format=%an origin/${base})" -c user.email="$(git log -1 --format=%ae origin/${base})" commit -F <message file>
+${IDENTITY_FROM(base)}
 
 Without it git either refuses outright, 'unable to auto-detect email address', or writes the
 wrong author - and nothing downstream notices the second. On this machine the credential helper
@@ -217,7 +221,7 @@ config, and these exports drop it. If a push asks for a password, say so rather 
 home config back.`
 
 const SHARED_BASE = [...new Set(Object.values(CONFIGURED).map((r) => (r || {}).defaultBranch || 'master'))]
-const LAW = (base = SHARED_BASE.length === 1 ? SHARED_BASE[0] : '<default branch>') => `
+const LAW = (base = SHARED_BASE.length === 1 ? SHARED_BASE[0] : null) => `
 Never use 2>&1 - it makes some commands fail outright.
 Use absolute paths, never relative ones.
 Nothing you write anywhere may mention AI, assistants, automated authorship or tooling:
