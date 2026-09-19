@@ -17,6 +17,7 @@ const SCRIPT = join(
 );
 
 const BRANCH = "lane/x";
+const PLUGIN_GATE = join("plugins", "devloop", "skills", "devloop", "lane-handoff.sh");
 const LINK = "Handed off https://example.invalid/acme/thing/pull/14 - green on the second run.";
 const NOTE = [LINK, "Kept both sides of the merge."].join("\n");
 
@@ -49,6 +50,7 @@ interface Second {
   labelGarbled?: boolean;
   noSlug?: boolean;
   commitsFails?: boolean;
+  pluginSource?: boolean;
 }
 
 interface Primary {
@@ -67,6 +69,12 @@ function git(dir: string, ...args: string[]): string {
 function executable(path: string, body: string): void {
   writeFileSync(path, body);
   chmodSync(path, 0o755);
+}
+
+function plantPluginSource(repo: string): void {
+  mkdirSync(join(repo, "plugins", "devloop", "skills", "devloop"), { recursive: true });
+  writeFileSync(join(repo, PLUGIN_GATE), "#!/bin/bash\n");
+  git(repo, "add", PLUGIN_GATE);
 }
 
 function commitsJson(message: string, oid: string): string {
@@ -139,6 +147,7 @@ function harness(
     git(other, "config", "user.email", "nobody@example.invalid");
     git(other, "config", "user.name", "Nobody");
     git(other, "remote", "add", "origin", second.noSlug ? "https://github.com/acme/other.git" : origin);
+    if (second.pluginSource) plantPluginSource(other);
     writeFileSync(join(other, "b.txt"), "one\n");
     git(other, "add", "b.txt");
     git(other, "commit", "--quiet", "-m", "base");
@@ -657,6 +666,72 @@ test("a bare pipeline noun outside a path is still not compliant", () => {
   assert.equal(ran.labelled, false, "a pull request was labelled despite a bare pipeline noun");
 });
 
+const PLUGIN_NOUN = "Resolve the root the way queue.sh does\n\nThe guard reads DEVLOOP_ROOT first, then walks up, so the devloop finds its config from a worktree.";
+
+test("a commit message naming the plugin is compliant in the repository that ships it", () => {
+  const box = harness("", {
+    list: '[{"number":7}]',
+    rollup: READY,
+    body: CLEAN,
+    message: PLUGIN_NOUN,
+    pluginSource: true,
+  });
+  const ran = handoff(box, [...required(box), "--issue", "acme-1", "--note-file", box.notePath], true);
+
+  assert.equal(ran.status, 0, ran.stdout + ran.stderr);
+  assert.doesNotMatch(ran.stdout, /non-compliant/);
+  assert.match(ran.calls, /pr edit 7 --repo acme\/other/);
+});
+
+test("a pull request body naming the plugin is compliant in the repository that ships it", () => {
+  const box = harness("", {
+    list: '[{"number":7}]',
+    rollup: READY,
+    body: '{"title":"Resolve the root","body":"The devloop reads DEVLOOP_ROOT before walking up."}',
+    pluginSource: true,
+  });
+  const ran = handoff(box, [...required(box), "--issue", "acme-1", "--note-file", box.notePath], true);
+
+  assert.equal(ran.status, 0, ran.stdout + ran.stderr);
+  assert.doesNotMatch(ran.stdout, /non-compliant/);
+  assert.match(ran.calls, /pr edit 7 --repo acme\/other/);
+});
+
+test("the same message naming the plugin is still refused in a repository that does not ship it", () => {
+  const box = harness("", {
+    list: '[{"number":7}]',
+    rollup: READY,
+    body: CLEAN,
+    message: PLUGIN_NOUN,
+  });
+  const ran = handoff(box, [...required(box), "--issue", "acme-1", "--note-file", box.notePath], true);
+
+  assert.equal(ran.status, 2, ran.stdout + ran.stderr);
+  assert.match(ran.stdout, /non-compliant: acme\/other#7/);
+  assert.equal(ran.labelled, false, "a pull request was labelled despite a bare pipeline noun");
+});
+
+for (const [what, message] of [
+  ["the handoff label token", "Read the token back\n\nThe gate greps for lane-verified itself."],
+  ["a scratch path", "Regenerate the artwork\n\nCaptured under /tmp/lanes/acme-14/repo while checking."],
+  ["a private scratch path", "Regenerate the artwork\n\nCaptured under /private/tmp/lanes/acme-14/repo while checking."],
+]) {
+  test(`${what} in a commit message is still refused in the repository that ships the plugin`, () => {
+    const box = harness("", {
+      list: '[{"number":7}]',
+      rollup: READY,
+      body: CLEAN,
+      message,
+      pluginSource: true,
+    });
+    const ran = handoff(box, [...required(box), "--issue", "acme-1", "--note-file", box.notePath], true);
+
+    assert.equal(ran.status, 2, ran.stdout + ran.stderr);
+    assert.match(ran.stdout, /non-compliant: acme\/other#7/);
+    assert.equal(ran.labelled, false, `a pull request was labelled despite ${what}`);
+  });
+}
+
 test("a repository whose open pull requests cannot be read is refused, not read as having none", () => {
   const box = harness("", { list: "[]", rollup: READY, body: CLEAN, listFails: true });
   const ran = handoff(box, [...required(box), "--issue", "acme-1", "--note-file", box.notePath], true);
@@ -953,7 +1028,7 @@ test("a flag that takes a value is refused when given none, not looped on foreve
 
 const LANE = "lane/probe";
 
-function localBranch(message: string | null, opts: { pushed?: boolean } = {}): string {
+function localBranch(message: string | null, opts: { pushed?: boolean; pluginSource?: boolean } = {}): string {
   const root = mkdtempSync(join(tmpdir(), "pitwall-prepush-"));
   const remote = join(root, "origin.git");
   const repo = join(root, "repo");
@@ -963,6 +1038,7 @@ function localBranch(message: string | null, opts: { pushed?: boolean } = {}): s
   git(repo, "config", "user.email", "nobody@example.invalid");
   git(repo, "config", "user.name", "Nobody");
   git(repo, "remote", "add", "origin", remote);
+  if (opts.pluginSource) plantPluginSource(repo);
   writeFileSync(join(repo, "a.txt"), "one\n");
   git(repo, "add", "a.txt");
   git(repo, "commit", "--quiet", "-m", "base");
@@ -1111,6 +1187,35 @@ test("a clean local commit passes the pre-push check with no pull request to rea
   assert.match(ran.stdout, /compliant commits: origin\/master\.\.HEAD/);
   assert.doesNotMatch(ran.stdout, /non-compliant/);
   assert.equal(ran.calls, "", "the pre-push check reached for a pull request that cannot exist yet");
+});
+
+test("a local commit naming the plugin passes the pre-push check in the repository that ships it", () => {
+  const ran = prePush(localBranch(PLUGIN_NOUN, { pluginSource: true }));
+
+  assert.equal(ran.status, 0, ran.stdout + ran.stderr);
+  assert.match(ran.stdout, /compliant commits/);
+});
+
+test("a local commit naming the plugin is caught before any push in a repository that does not ship it", () => {
+  const ran = prePush(localBranch(PLUGIN_NOUN));
+
+  assert.equal(ran.status, 2, ran.stdout + ran.stderr);
+  assert.match(ran.stdout, /non-compliant commits/);
+  assert.match(ran.stdout, /DEVLOOP_ROOT/);
+});
+
+test("a local commit quoting the handoff label token is caught in the repository that ships the plugin", () => {
+  const ran = prePush(localBranch("Read the token back\n\nThe gate greps for lane-verified itself.", { pluginSource: true }));
+
+  assert.equal(ran.status, 2, ran.stdout + ran.stderr);
+  assert.match(ran.stdout, /non-compliant commits/);
+});
+
+test("a local commit naming a scratch path is caught in the repository that ships the plugin", () => {
+  const ran = prePush(localBranch("Capture the board\n\nWritten under /tmp/lanes/acme-14/repo, then /private/tmp/shots.", { pluginSource: true }));
+
+  assert.equal(ran.status, 2, ran.stdout + ran.stderr);
+  assert.match(ran.stdout, /non-compliant commits/);
 });
 
 test("a HEAD that is not ahead of origin/master is refused rather than reported clean", () => {
