@@ -277,6 +277,28 @@ number is still accepted for the sake of `queue.sh`, which reserves before it pr
 CHECKED against the reservation rather than used instead of it - one that disagrees is refused,
 naming both.
 
+**A RESUME REPLAYS A CACHED FAILURE AS FAITHFULLY AS A CACHED SUCCESS.** The runner caches each
+completed step by its prompt, and a step that finished by answering `blocked` or `needs_feedback`
+is a completed step: resuming a run that stopped there returns the same answer instantly, the
+script stops on it exactly as it did the first time, and nothing runs - agent_count 2, tool_uses 0,
+in 9 milliseconds, measured 2026-09-08 on a lane whose fix had finished and been killed by a
+permission fault before review. Only a step that died without answering is re-run on its own.
+
+To continue such a run, resume with `retryFailed: true` added to the args object it was launched
+with, and nothing else about that object changed:
+
+```
+Workflow({ scriptPath: <the same scriptPath>, resumeFromRunId: <the runId>,
+           args: { ...<the object the launch used>, retryFailed: true } })
+```
+
+Steps that succeeded replay from cache; a fix, apply or handoff step whose cached answer is
+`blocked` or `needs_feedback` is issued once more, with a line appended to its brief saying so, and
+the run continues from whatever it answers this time. It is off by default, and it is issued once:
+a step that answers `blocked` again stands. Never build a resume from a fresh `config.sh --args`:
+that mints a new dispatch token, the token sits in every fix brief, and a brief that differs by one
+character misses the cache, so the resume would start the whole run again rather than continue it.
+
 **It also says when a root checkout is behind origin.** `--args` and `--rework` fetch each
 configured repository's default branch and compare the checkout's local branch with
 `origin/<defaultBranch>`. A checkout behind by more than `warnBehind` commits (default 0, set
