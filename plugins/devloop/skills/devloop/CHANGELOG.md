@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.91
+
+The handoff gate's survey of sibling pull requests no longer uses GraphQL, so a
+handoff is no longer blocked by the shared per-account secondary rate limiter
+when the branch has no sibling. A session that previously saw the gate exit 7
+with "could not list the open pull requests of <repo>" during a limiter outage
+should re-run it rather than labelling anything by hand. Note that compliance,
+status-rollup and label calls still use GraphQL, so a total outage can still stop
+a handoff — later in the run, and with a different message.
+
 ## 0.1.90
 
 - `.pitwall.json` accepts an optional `defaultBranch` per repository; absent means `master`, so nothing changes for a workspace that does not set it.
