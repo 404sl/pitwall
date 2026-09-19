@@ -48,8 +48,8 @@ listed beside it — 122 staleness checks that failed because one `gh` call was 
 limited are one problem, not 123. A failure that clears itself waits six hours before it
 is anybody's. And a limitation every board carries on every run is documented rather than
 reported: a tracker records why an issue stopped and not when, so the console dates a park
-from the first collection that saw it, and a note that carries no stamp still cannot be
-placed against it.
+from the first collection that saw it, places a note against it only from the collection
+after, and cannot place a note that carries no stamp at all.
 
 ## Status
 

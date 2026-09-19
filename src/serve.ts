@@ -35,6 +35,7 @@ export const LOCAL_HOSTNAMES = ["127.0.0.1", "localhost", "[::1]"];
 export const UI_DIR = fileURLToPath(new URL("../dist/ui", import.meta.url));
 export const ISSUE_PREFIX = "/api/issue/";
 export const VERSION_ROUTE = "/api/version";
+export const PARKS_ROUTE = "/api/parks";
 export const REFRESH_FLOOR_MS = 60_000;
 export const OUTAGE_AFTER_MS = 15 * 60_000;
 export const NOTHING_READ = "No project could be read. The board still shows the last snapshot collected.";
@@ -286,10 +287,7 @@ function serveSnapshot(res: ServerResponse, options: ServeOptions, refresher: Re
   const stored = readSnapshot(options);
   refresher.consider(stored);
   if (stored.snapshot !== undefined) {
-    sendJson(res, 200, {
-      ...withConsoleErrors(stored.snapshot, refresher),
-      console: { parks: readConsoleState(options).state.parks },
-    });
+    sendJson(res, 200, withConsoleErrors(stored.snapshot, refresher));
     return;
   }
   const { error } = stored;
@@ -300,6 +298,10 @@ function serveSnapshot(res: ServerResponse, options: ServeOptions, refresher: Re
     source: error.source,
     at: error.at,
   });
+}
+
+function serveParks(res: ServerResponse, options: ServeOptions): void {
+  sendJson(res, 200, { parks: readConsoleState(options).state.parks });
 }
 
 function serveVersion(res: ServerResponse, updates: UpdateCheck, builds: BuildCheck): void {
@@ -730,6 +732,10 @@ export function createConsoleServer(options: ServeOptions = {}): Server {
     }
     if (pathname === VERSION_ROUTE) {
       serveVersion(res, updates, builds);
+      return;
+    }
+    if (pathname === PARKS_ROUTE) {
+      serveParks(res, options);
       return;
     }
     if (req.method === "POST" && pathname.startsWith(ISSUE_PREFIX)) {

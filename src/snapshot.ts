@@ -9,7 +9,7 @@ import {
   type Snapshot,
 } from "@404sl/pitwall-schema";
 import { noteAppender, readIssues, type ClosedIssue, type IssueText } from "./beads.js";
-import { KEPT_SOURCE, PARTIAL_SOURCE, type ParkStore, type ProjectParks } from "./board.js";
+import { KEPT_SOURCE, PARTIAL_SOURCE, type ParkEntry, type ParkStore, type ProjectParks } from "./board.js";
 import { collectionError, recordOnce } from "./errors.js";
 import { hasLiveStructuralBlocker, type ClassifyContext } from "./classify.js";
 import {
@@ -159,6 +159,10 @@ async function assessed(
   return { issue: { ...issue, staleness: assessment.staleness }, errors: assessment.errors };
 }
 
+function placedSince(entry: ParkEntry | undefined): string | undefined {
+  return entry?.basis === "carried" ? entry.parkedSince : undefined;
+}
+
 interface Gathered {
   project: Project;
   closed: readonly ClosedIssue[];
@@ -187,9 +191,7 @@ async function gather(
   };
   const parks = parksFor(collected.issues, collected.texts, previous, day.toISOString());
   const assessments = await Promise.all(
-    collected.issues.map((issue) =>
-      assessed(issue, collected.texts, context, structure, parks[issue.id]?.parkedSince),
-    ),
+    collected.issues.map((issue) => assessed(issue, collected.texts, context, structure, placedSince(parks[issue.id]))),
   );
   const issues = assessments.map((entry) => entry.issue);
   const unassessable: CollectionError[] = [];

@@ -895,12 +895,14 @@ test("the snapshot reads the note time from the tracker, and says once which tim
       .filter((error) => error.message.startsWith("nothing records when"))
       .map((error) => [error.source, error.message]),
     [
+      ["staleness", "nothing records when an issue stopped, so a note written since cannot be recognised"],
       [
         "staleness",
-        "nothing records when the newest note was written, so a note written since cannot be recognised",
+        "nothing records when an issue stopped or when the newest note was written," +
+          " so a note written since cannot be recognised",
       ],
     ],
-    "the park is placed by the collection, so only an unstamped newest note is left unplaceable, and it is reported once",
+    "the stamp read off the newest note decides which timestamp the run reports, and each is reported once",
   );
   assert.deepEqual(
     errors.filter((error) => error.source.startsWith("staleness ")),
@@ -908,12 +910,27 @@ test("the snapshot reads the note time from the tracker, and says once which tim
     "a limitation of the tracker names no issue, so no issue carries a line nobody can clear",
   );
   const byId = new Map((project?.issues ?? []).map((issue) => [issue.id, issue]));
-  assert.equal(byId.get("mw-30")?.staleness.verdict, "still-blocking");
-  assert.deepEqual(byId.get("mw-30")?.staleness.evidence, [
-    "the earliest the console can place the needs-access park is 2026-09-08T09:00:00.000Z",
-  ]);
+  assert.equal(byId.get("mw-30")?.staleness.verdict, "unchecked", "a park first seen this collection has no floor to check against");
+  assert.deepEqual(byId.get("mw-30")?.staleness.evidence, []);
   assert.equal(byId.get("mw-31")?.staleness.verdict, "unchecked");
   assert.deepEqual(byId.get("mw-31")?.staleness.evidence, []);
+});
+
+test("the first sighting of a park leaves its verdict unchecked; the check runs from the collection after", async () => {
+  const place = workspace([TRACKER]);
+  const env = { ...place.env, BD_LIST_FIXTURE: "noted" };
+  const first = await emitSnapshot({ ...options(place, new Date("2026-09-08T09:00:00Z")), env, probe: async () => true });
+  const seen = first.snapshot.projects[0]?.issues.find((issue) => issue.id === "mw-30");
+  assert.equal(seen?.staleness.verdict, "unchecked", "a floor placed this instant is not evidence that nothing was written since");
+  assert.deepEqual(seen?.staleness.evidence, []);
+
+  const second = await emitSnapshot({ ...options(place, new Date("2026-09-09T09:00:00Z")), env, probe: async () => true });
+  const again = second.snapshot.projects[0]?.issues.find((issue) => issue.id === "mw-30");
+  assert.equal(again?.staleness.verdict, "still-blocking");
+  assert.deepEqual(again?.staleness.evidence, [
+    "the earliest the console can place the needs-access park is 2026-09-08T09:00:00.000Z",
+  ]);
+  assert.equal(again?.staleness.checkedAt, "2026-09-09T09:00:00.000Z");
 });
 
 test("a note written since the console first placed a park reads as an answer on the next collection", async () => {

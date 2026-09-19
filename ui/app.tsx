@@ -29,6 +29,7 @@ import { strings } from "./strings.js";
 
 const SNAPSHOT_URL = "/api/snapshot";
 const VERSION_URL = "/api/version";
+const PARKS_URL = "/api/parks";
 const POLL_MS = 30_000;
 
 class SnapshotFailure extends Error {
@@ -53,7 +54,16 @@ function parksOf(body: unknown): ParkStore {
   return typeof parks === "object" && parks !== null ? (parks as ParkStore) : {};
 }
 
-async function readSnapshot(signal: AbortSignal): Promise<Taken> {
+async function readParks(signal: AbortSignal): Promise<ParkStore> {
+  try {
+    const response = await fetch(PARKS_URL, { signal, headers: { accept: "application/json" } });
+    return response.ok ? parksOf(await response.json()) : {};
+  } catch {
+    return {};
+  }
+}
+
+async function readSnapshot(signal: AbortSignal): Promise<Snapshot> {
   let response: Response;
   try {
     response = await fetch(SNAPSHOT_URL, { signal, headers: { accept: "application/json" } });
@@ -76,8 +86,7 @@ async function readSnapshot(signal: AbortSignal): Promise<Taken> {
     }
     throw new SnapshotFailure(message, `${SNAPSHOT_URL} ${response.status}`);
   }
-  const { console: sidecar, ...snapshot } = JSON.parse(body) as Snapshot & { console?: unknown };
-  return { snapshot, parks: parksOf(sidecar) };
+  return JSON.parse(body) as Snapshot;
 }
 
 function stampOf(value: unknown): BuildStamp | undefined {
@@ -191,7 +200,11 @@ export function App() {
   const held = useRef<Taken | undefined>(undefined);
 
   const load = useCallback(async (signal: AbortSignal) => {
-    const [snapshot, running] = await Promise.allSettled([readSnapshot(signal), readVersion(signal)]);
+    const [snapshot, running, parks] = await Promise.allSettled([
+      readSnapshot(signal),
+      readVersion(signal),
+      readParks(signal),
+    ]);
     if (signal.aborted) {
       return;
     }
@@ -204,8 +217,9 @@ export function App() {
       setBuild(buildState(answered === undefined ? { kind: "unanswered" } : { kind: "read", version: answered }));
     }
     if (snapshot.status === "fulfilled") {
-      held.current = snapshot.value;
-      setTaken(snapshot.value);
+      const read = { snapshot: snapshot.value, parks: parks.status === "fulfilled" ? parks.value : {} };
+      held.current = read;
+      setTaken(read);
       setFailure(undefined);
       setRefetchFailure(undefined);
     } else {
