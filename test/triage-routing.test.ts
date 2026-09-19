@@ -211,3 +211,63 @@ test("the routing instruction hands out no 2>&1 and no backticks", () => {
     "a backtick inside the brief closes its template literal early",
   );
 });
+
+const NINE_REPOS = {
+  pro: { path: "pro", slug: "acme/pro", test: "bundle exec rspec", role: "rails" },
+  ui: { path: "ui", slug: "acme/ui", test: "npm test", role: "node" },
+  cli: { path: "cli", slug: "acme/cli", test: "npm test", role: "node" },
+  schema: { path: "schema", slug: "acme/schema", test: "npm test", role: "node" },
+  web: { path: "web", slug: "acme/web", test: "bundle exec rspec", role: "rails" },
+  admin: { path: "admin", slug: "acme/admin", test: "bundle exec rspec", role: "rails" },
+  mailer: { path: "mailer", slug: "acme/mailer", test: "npm test", role: "node" },
+  worker: { path: "worker", slug: "acme/worker", test: "npm test", role: "node" },
+  handbook: { path: "handbook", slug: "acme/handbook", test: "ruby script/check.rb", role: "script" },
+};
+const NINE_KEYS = Object.keys(NINE_REPOS);
+
+function repoEnum(call: Call | undefined, ...path: string[]): unknown {
+  assert.ok(call, "the step did not run");
+  let node: any = call.schema;
+  for (const key of path) {
+    node = node?.[key];
+  }
+  return node?.enum;
+}
+
+test("the repo enums are the configured keys, not a fixed list of four names", async () => {
+  const { calls, done } = runScript("task.js", { ...TASK_ARGS, repos: NINE_REPOS }, (call, n) => {
+    if (n === 1) return { ...TRIAGE_OK, repo: "handbook" };
+    if (n === 2) return { status: "no_change_needed", summary: "nothing to do", repo: "handbook" };
+    return RELEASED;
+  });
+
+  const result = await done;
+  assert.equal(result["outcome"], "no_change_needed");
+
+  const triage = calls.find((c) => c.label === "triage:zz-aaa1");
+  assert.deepEqual(repoEnum(triage, "properties", "repo"), [...NINE_KEYS, "unknown"]);
+  assert.deepEqual(
+    repoEnum(triage, "properties", "splitPlan", "items", "properties", "repo"),
+    NINE_KEYS,
+    "a split child may only be routed at a configured key",
+  );
+
+  const fix = calls.find((c) => c.label.startsWith("fix:"));
+  assert.deepEqual(repoEnum(fix, "properties", "repo"), [...NINE_KEYS, "unknown"]);
+
+  for (const stale of ["site", "extension", "integration", "docs"]) {
+    assert.ok(
+      !(repoEnum(triage, "properties", "repo") as string[]).includes(stale),
+      `'${stale}' is still offered although this workspace has no such key`,
+    );
+  }
+});
+
+test("a workspace configuring no repositories is refused before triage runs", async () => {
+  const { calls, done } = runScript("task.js", { ...TASK_ARGS, repos: {} }, () => RELEASED);
+
+  const result = await done;
+  assert.equal(result["outcome"], "error");
+  assert.match(String(result["notes"]), /no repositories/);
+  assert.equal(calls.length, 0, "a step ran although nothing could be routed");
+});
