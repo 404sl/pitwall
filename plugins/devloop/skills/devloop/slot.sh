@@ -96,8 +96,10 @@ case "$1" in
     # reported completion, so the lane is definitively finished. --gc must not do this, because
     # it runs against slots whose runs may still be alive.
     [ -z "$2" ] && { echo "usage: slot.sh --release <issue-id>" >&2; exit 2; }
+    found=0
     for n in $(seq 1 $MAX); do
       if [ -f "$SLOTDIR/$n" ] && [ "$(cat "$SLOTDIR/$n")" = "$2" ]; then
+        found=1
         rm -f "$SLOTDIR/$n"
         lock="/tmp/${PFX}-lane-$((n + 1)).lock"
         if [ -d "$lock" ] && rm -f "${lock%.lock}.owner" && rmdir "$lock" 2>/dev/null; then
@@ -107,6 +109,7 @@ case "$1" in
         fi
       fi
     done
+    [ "$found" -eq 1 ] || echo "no slot under $SLOTDIR names $2, so no slot was released. Lane locks are reached only through a slot: a /tmp/${PFX}-lane-*.owner file may still name $2, and this does not read them."
     exit 0 ;;
   --gc)
     # A LIVE RUN'S SLOT IS NEVER FREED, and neither the lane lock nor the worktree is a reliable

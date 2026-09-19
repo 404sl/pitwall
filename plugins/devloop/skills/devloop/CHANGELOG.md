@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.106
+
+A release step that is not permitted to run, dies, or answers `refused` is logged with its reason and retried once with two plain commands that read the slot file and the lane's owner file and remove each only when it names the run, slot first. If that is refused too, `lane` and `slot` in the run's result read `REFUSED`, name the path, and each carries its own plain command to run on reading it, so a lane lock left behind after its slot was given back is released without going through the slot - a run no longer ends holding a slot with only "answered nothing" to show for it. `slot.sh --release` now says when no slot names the id and that it did not read the lane locks, instead of exiting silently.
+
+Refs pitwall-wb72
+
 ## 0.1.105
 
 In the repository that ships the plugin, a commit message or pull request body that names the handoff label is compliant: the label is the subject of such a change, not a leak. In every other repository the token is still refused, and the scratch-path and authorship checks are unchanged everywhere.
