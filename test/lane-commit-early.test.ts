@@ -7,7 +7,7 @@ const IDENTITY =
   'git -c user.name="$(git log -1 --format=%an origin/master)" -c user.email="$(git log -1 --format=%ae origin/master)"';
 const COMMIT_EARLY = "COMMIT AS SOON AS THE CHANGE COMPILES";
 const SQUASH =
-  'git reset --soft "$(git merge-base --is-ancestor origin/devloop/zz-aaa1 HEAD 2>/dev/null && git rev-parse origin/devloop/zz-aaa1 || git rev-parse origin/master)"';
+  'git reset --soft "$(git merge-base --is-ancestor origin/devloop/zz-aaa1 HEAD 2>/dev/null && git rev-parse origin/devloop/zz-aaa1 || git merge-base origin/master HEAD)"';
 
 const TASK_ARGS = {
   id: "zz-aaa1",
@@ -88,9 +88,10 @@ test("the fix brief tells a lane to commit as it goes, on the first attempt and 
     );
     assert.ok(
       block.includes(SQUASH) && block.includes(`${IDENTITY} commit -F`),
-      `${label} lets an interim commit reach the pushed branch as it stands: it never says to fold ` +
-        "them into one commit, reset to the head the remote holds when the branch is published and to " +
-        `origin/master when it is not. Offered:\n${block}`,
+      `${label} lets an interim commit reach the pushed branch as it stands, or folds them onto the ` +
+        "wrong base: the fold must reset to the head the remote holds when the branch is published and " +
+        "to the fork point when it is not. Resetting to origin/master after a fetch commits the lane's " +
+        `stale tree on top of whatever other lanes landed since it forked, and reverts their work. Offered:\n${block}`,
     );
 
     const early = brief.indexOf(COMMIT_EARLY);
