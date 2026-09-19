@@ -232,10 +232,11 @@ leakage='(devloop|lane-verified|/tmp/|/private/tmp)'
 # \bclaude\b on 2026-08-29. Neutralised before the test rather than excused after it.
 neutral='s#[A-Za-z/._-]*CLAUDE\.md#REPO-DOC#g; s#[A-Za-z/._-]*AGENTS\.md#REPO-DOC#g; s#\.claude-plugin#DOT-PLUGIN-DIR#g; s#plugins/devloop#PLUGIN-DIR#g; s#skills/devloop#SKILL-DIR#g'
 plugin_name='s#[Dd][Ee][Vv][Ll][Oo][Oo][Pp]#PLUGIN-NAME#g'
+label_token='s#[Ll][Aa][Nn][Ee]-[Vv][Ee][Rr][Ii][Ff][Ii][Ee][Dd]#HANDOFF-LABEL#g'
 
 neutral_for() {
   if [ -f "$1/plugins/devloop/skills/devloop/$(basename "${BASH_SOURCE[0]}")" ]; then
-    printf '%s; %s' "$neutral" "$plugin_name"
+    printf '%s; %s; %s' "$neutral" "$plugin_name" "$label_token"
   else
     printf '%s' "$neutral"
   fi
