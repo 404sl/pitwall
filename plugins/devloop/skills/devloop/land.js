@@ -1716,7 +1716,14 @@ try {
 
   if (landed.length && !masterBroken) {
     phase('Deploy')
-    const d = await agent(deployPrompt(landed), { label: 'deploy', phase: 'Deploy', schema: DEPLOYED })
+    let d = null
+    let died = ''
+    try {
+      d = await agent(deployPrompt(landed), { label: 'deploy', phase: 'Deploy', schema: DEPLOYED })
+    } catch (e) {
+      died = trimmed(e && e.message) || String(e)
+      log(`the deploy step died before it reported - ${died}. Every merge below is already on its default branch and stays there; whether the hosts are serving it is what the read-back settles:\n    merged: ${landed.map((l) => `${l.repo} ${(l.mergeSha || '').slice(0, 12) || '(sha not recorded)'}`).join(', ')}`)
+    }
     const reportedStatus = (d && d.status) || 'unknown'
     deployed = reportedStatus
     let servingText = ''
@@ -1747,7 +1754,7 @@ try {
     }
 
     const unsettled = reportedStatus !== 'deployed'
-      ? 'the deploy step reported nothing'
+      ? died ? `the deploy step died before it reported (${died})` : 'the deploy step reported nothing'
       : refuted
         ? ownMismatched
           ? 'the deploy step reported deployed and named a revision that is not what merged'

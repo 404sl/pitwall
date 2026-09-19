@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.98
+
+When the deploy step dies rather than answering, the lander no longer dies with it. It reads the hosts back, compares what they serve against the shas that merged, reports the deploy as unknown with the error the step died with, closes nothing, and still returns the merged list with its shas and logs the final counts line.
+
 ## 0.1.97
 
 A lane now cuts its worktree from, reads its commit identity from, checks its commit range against and opens its pull request with --base set to the repository's configured default branch, and its reviewer diffs against that branch. Triage names each checkout's branch in the routing table and asks that branch rather than origin/master. A repository with no defaultBranch configured behaves exactly as before.
