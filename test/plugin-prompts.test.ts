@@ -58,7 +58,9 @@ function standingShellBlock(source: string, file: string): string {
       "unreadable home-directory config. Every git command fails and every bundler-fronted " +
       "command hangs when that file cannot be read, and the hang is silent.",
   );
-  const body = start + "const SHELL_FIRST = `".length;
+  const opened = source.indexOf("`", start);
+  assert.notEqual(opened, -1, `the standing shell block in ${file} never opens its template literal`);
+  const body = opened + 1;
   const end = source.indexOf("`\n", body);
   assert.notEqual(end, -1, `the standing shell block in ${file} has no end`);
   return source.slice(body, end);

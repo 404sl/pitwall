@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.90
+
+- `.pitwall.json` accepts an optional `defaultBranch` per repository; absent means `master`, so nothing changes for a workspace that does not set it.
+- Every dispatch (`config.sh --args`, `--rework`, `--land`, `--train`) now asks GitHub for each repository's real default branch and refuses, naming both, when it disagrees with the configured or assumed one. A repository whose `origin/master` is stale while GitHub's default is elsewhere can no longer be dispatched, rebased or landed silently. If gh cannot answer, or does not answer within 30 seconds, the dispatch is refused rather than assumed or waited on. `config.sh --check` reports the same mismatch, and now needs gh auth and a network.
+- A `deploy-one.sh` entry in `repos.<key>.deploy` must ship the repository's default branch: add `--base <branch>` to each entry of a repository whose `defaultBranch` is not `master`, or the dispatch is refused naming the entry. Without `--base`, `deploy-one.sh` fetches and deploys `origin/master` even when it is stale, and nothing before the post-deploy read-back would notice.
+- `land-one.sh`, `land-train.sh`, `lane-handoff.sh` and `deploy-one.sh` take `--base <branch>`, defaulting to `master`; the landers pass it from the config. `land-train.sh` opens its pull request with an explicit `--base`.
+- A repository with no `slug` cannot have its default branch checked; `--check` says so as a note.
+
 ## 0.1.89
 
 `queue.sh --next`, `dispatchable.sh`, `precheck.sh` and `slot.sh` now treat `needs-feedback` as parked, alongside the six labels they already parked on. Write `needs-decision` (a choice only a person can make) or `needs-access` (something only a person can run) when you park an issue - those are the labels triage writes and the console counts as yours. The queue for a person is `bd list --status open --label-any needs-decision,needs-access`; an issue still carrying `needs-feedback` is parked but not counted, so relabel it when you meet one.

@@ -17,9 +17,9 @@
 # Usage:
 #   lane-handoff.sh --repo-path <abs> --slug <owner/name> --pr <n> --branch <name> \
 #                   --issue <app-xxxx> --note-file <path> [--worktree <abs>] [--lane-lock <abs>]
-#                   [--label lane-verified] [--check-only]
+#                   [--label lane-verified] [--check-only] [--base master]
 #
-#   lane-handoff.sh --repo-path <abs> --pre-push [--rebased] [--branch <name>]
+#   lane-handoff.sh --repo-path <abs> --pre-push [--rebased] [--branch <name>] [--base master]
 #
 #   Other open pull requests on --branch, across the repositories the workspace config names, are
 #   derived and handled in the same invocation.
@@ -71,7 +71,7 @@ SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 LABEL=lane-verified
 REPO_PATH=""; SLUG=""; PR=""; BRANCH=""; ISSUE=""; NOTE_FILE=""; WT=""; LOCK=""; CHECK_ONLY=0
-PRE_PUSH=0; REBASED=0
+PRE_PUSH=0; REBASED=0; BASE=master
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -102,12 +102,16 @@ while [ $# -gt 0 ]; do
     --label)
       [ $# -ge 2 ] || { echo "--label needs a value" >&2; exit 6; }
       LABEL="${2:-}"; shift 2 ;;
+    --base)
+      [ $# -ge 2 ] || { echo "--base needs a value" >&2; exit 6; }
+      BASE="${2:-}"; shift 2 ;;
     --check-only) CHECK_ONLY=1;      shift 1 ;;
     --pre-push)  PRE_PUSH=1;         shift 1 ;;
     --rebased)   REBASED=1;         shift 1 ;;
     *) echo "unknown argument: $1" >&2; exit 6 ;;
   esac
 done
+[ -n "$BASE" ] || { echo "--base must name a branch" >&2; exit 6; }
 if [ "$PRE_PUSH" = "1" ]; then
   [ -n "$REPO_PATH" ] || { echo "missing --repo-path" >&2; exit 6; }
 else
@@ -238,13 +242,13 @@ neutral_for() {
 }
 
 if [ "$PRE_PUSH" = "1" ]; then
-  git rev-parse --verify --quiet origin/master >/dev/null || {
-    echo "lane-handoff.sh: no origin/master in ${REPO_PATH}, so there is no range to check." >&2
+  git rev-parse --verify --quiet "origin/${BASE}" >/dev/null || {
+    echo "lane-handoff.sh: no origin/${BASE} in ${REPO_PATH}, so there is no range to check." >&2
     exit 6; }
 
-  range=$(git rev-list origin/master..HEAD 2>/dev/null)
+  range=$(git rev-list "origin/${BASE}..HEAD" 2>/dev/null)
   if [ -z "$range" ]; then
-    echo "lane-handoff.sh: HEAD is not ahead of origin/master in ${REPO_PATH} - nothing was read," >&2
+    echo "lane-handoff.sh: HEAD is not ahead of origin/${BASE} in ${REPO_PATH} - nothing was read," >&2
     echo "                 so nothing was checked. Commit first, then run this again." >&2
     exit 6
   fi
@@ -387,20 +391,20 @@ $(printf '%s\n' "$hit" | sed 's/^/    /')
     echo "refuses outright or stamps a hostname-derived name and address, which then lands on"
     echo "master and which no grep here reads. Take it from the branch you are building on:"
     echo "  the tip commit only:"
-    echo '    git -c user.name="$(git log -1 --format=%an origin/master)" -c user.email="$(git log -1 --format=%ae origin/master)" commit --amend -F <a file holding the new message>'
+    echo "    git -c user.name=\"\$(git log -1 --format=%an origin/${BASE})\" -c user.email=\"\$(git log -1 --format=%ae origin/${BASE})\" commit --amend -F <a file holding the new message>"
     if [ "$REBASED" = "1" ]; then
       echo "THAT AMEND IS THE ONLY REMEDY IN THIS MODE, and it is for the top commit alone."
       echo "There is deliberately no squash: the commits underneath were reviewed as they stand,"
       echo "and a rebase having renewed their shas does not make them yours."
     elif [ -n "$pushed_tip" ]; then
       echo "  anything deeper:"
-      echo "    git reset --soft ${short_remote} && git -c user.name=\"\$(git log -1 --format=%an origin/master)\" -c user.email=\"\$(git log -1 --format=%ae origin/master)\" commit -F <a file>"
-      echo "THAT BASE IS THE HEAD THE REMOTE HOLDS FOR ${PRE_BRANCH}, not origin/master. Resetting"
+      echo "    git reset --soft ${short_remote} && git -c user.name=\"\$(git log -1 --format=%an origin/${BASE})\" -c user.email=\"\$(git log -1 --format=%ae origin/${BASE})\" commit -F <a file>"
+      echo "THAT BASE IS THE HEAD THE REMOTE HOLDS FOR ${PRE_BRANCH}, not origin/${BASE}. Resetting"
       echo "past it would collapse the commits the remote branch is built on, and the push after it"
       echo "is refused as a non-fast-forward - which leaves only a force-push, which you may not run."
     else
       echo "  anything deeper:"
-      echo '    git reset --soft origin/master && git -c user.name="$(git log -1 --format=%an origin/master)" -c user.email="$(git log -1 --format=%ae origin/master)" commit -F <a file>'
+      echo "    git reset --soft origin/${BASE} && git -c user.name=\"\$(git log -1 --format=%an origin/${BASE})\" -c user.email=\"\$(git log -1 --format=%ae origin/${BASE})\" commit -F <a file>"
       echo "Squashing costs nothing here: the remote has no such branch, so no commit on it has been"
       echo "published, and the train squashes the branch when it lands anyway."
     fi
@@ -413,7 +417,7 @@ $(printf '%s\n' "$hit" | sed 's/^/    /')
   fi
 
   if [ "$rewritten" = "1" ]; then
-    echo "published-rewritten: every commit message in origin/master..HEAD is clear, and this is"
+    echo "published-rewritten: every commit message in origin/${BASE}..HEAD is clear, and this is"
     echo "still not a push you can make. The remote holds ${PRE_BRANCH} at ${short_remote}, which"
     echo "HEAD does not contain, so the branch was published and then rewritten: a plain push is"
     echo "refused as a non-fast-forward and the only way on rewrites what the remote already holds."
@@ -427,7 +431,7 @@ $(printf '%s\n' "$hit" | sed 's/^/    /')
     exit 10
   fi
 
-  echo "compliant commits: origin/master..HEAD in ${REPO_PATH} is clear - safe to push"
+  echo "compliant commits: origin/${BASE}..HEAD in ${REPO_PATH} is clear - safe to push"
   exit 0
 fi
 

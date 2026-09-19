@@ -70,6 +70,7 @@ if (!PR) return { error: 'no pull request number given - build the args with con
 if (!repo) return { error: `unknown repo ${REPO_KEY} - expected one of ${Object.keys(REPOS).join(', ')}` }
 
 const SLUG = repo.slug
+const BASE = repo.defaultBranch || 'master'
 const REPO_PATH = `${ROOT}/${repo.path}`
 const OWNER = ID || `pr-${PR}`
 const WT_PATH = `${WT}/${OWNER}-rework`
@@ -121,7 +122,7 @@ COMMIT IDENTITY IS THE ONE THING THAT DOES NOT SURVIVE THEM, and every command t
 commit needs it - commit, rebase, merge, cherry-pick. Pass it on the command, taken from the
 branch being built on:
 
-  git -c user.name="$(git log -1 --format=%an origin/master)" -c user.email="$(git log -1 --format=%ae origin/master)" commit -F <message file>
+  git -c user.name="$(git log -1 --format=%an origin/${BASE})" -c user.email="$(git log -1 --format=%ae origin/${BASE})" commit -F <message file>
 
 Without it git either refuses outright, 'unable to auto-detect email address', or writes the
 wrong author - and nothing downstream notices the second. On this machine the credential helper
@@ -200,7 +201,7 @@ and neither is a rejection - its own work is fine and shipped green:
 
 Check which one you have as soon as the worktree below exists, before you touch anything:
 
-  git -C ${WT_PATH} merge-base --is-ancestor origin/master HEAD && echo ON_MASTER || echo BEHIND
+  git -C ${WT_PATH} merge-base --is-ancestor origin/${BASE} HEAD && echo ON_MASTER || echo BEHIND
 
 ON_MASTER is the second arrival.
 
@@ -265,13 +266,13 @@ that is not there, and its absence is expected rather than a sign something else
 
 REBASE ONTO MASTER. Do not merge master in.
 
-  cd ${WT_PATH} && git -c user.name="$(git log -1 --format=%an origin/master)" -c user.email="$(git log -1 --format=%ae origin/master)" rebase origin/master
+  cd ${WT_PATH} && git -c user.name="$(git log -1 --format=%an origin/${BASE})" -c user.email="$(git log -1 --format=%ae origin/${BASE})" rebase origin/${BASE}
 
 The rebase stops at each commit that conflicts. Resolve inside the conflict regions, stage what
 you resolved, and continue:
 
   cd ${WT_PATH} && git add <the files you resolved>
-  cd ${WT_PATH} && git -c user.name="$(git log -1 --format=%an origin/master)" -c user.email="$(git log -1 --format=%ae origin/master)" -c core.editor=true rebase --continue
+  cd ${WT_PATH} && git -c user.name="$(git log -1 --format=%an origin/${BASE})" -c user.email="$(git log -1 --format=%ae origin/${BASE})" -c core.editor=true rebase --continue
 
 THE IDENTITY GOES ON '--continue' TOO, not only on the first command. Continuing is what writes
 the replayed commit, so without it the rebase stops again with 'unable to auto-detect email
@@ -285,7 +286,7 @@ input, exiting...', exits 1 and leaves the branch mid-rebase exactly as a missin
 of your own instead: that REPLACES the message the replayed commit already carries.
 
 REBASE, NOT MERGE, AND THE REASON IS THE LANDER. land-one.sh runs a plain rebase onto
-origin/master on whatever branch it is handed, and a rebase replays the branch's OWN commits - a
+origin/${BASE} on whatever branch it is handed, and a rebase replays the branch's OWN commits - a
 resolution that exists only inside a merge commit is not one of them, so it is dropped. That is
 not theoretical: the pitwall-qku6 branch was merged up to master, master moved, and the lander's
 rebase lost a line from a test file and left a version line unmerged. The rebase exited non-zero,
@@ -327,7 +328,7 @@ generator would emit, and the next person to run the generator gets a diff nobod
 
   db/schema.rb        take master's version wholesale, then re-run the migrations and let Rails
                       rewrite it:
-                        git checkout origin/master -- db/schema.rb
+                        git checkout origin/${BASE} -- db/schema.rb
                         TEST_ENV_NUMBER=${LANE} RAILS_ENV=test bundle exec rails db:migrate
                       The version line at the top must end up naming the LATEST migration across
                       both sides. Check that before committing - a schema.rb whose version is
@@ -346,14 +347,14 @@ dropped by a train on 2026-08-30 for exactly this, and nothing else.
 
 THEN PROVE IT, rather than assuming:
 
-  cd ${REPO_PATH} && git fetch origin && git merge-tree --write-tree origin/master "origin/$branch"
+  cd ${REPO_PATH} && git fetch origin && git merge-tree --write-tree origin/${BASE} "origin/$branch"
 
 after pushing - it must exit 0, and exit 1 means conflicts remain. While still local, the
 equivalent check is that
-'git -C ${WT_PATH} status' reports no unmerged paths and 'git -C ${WT_PATH} merge-base --is-ancestor origin/master HEAD'
+'git -C ${WT_PATH} status' reports no unmerged paths and 'git -C ${WT_PATH} merge-base --is-ancestor origin/${BASE} HEAD'
 succeeds.
 
-AND THE BRANCH MUST BE LINEAR. 'git -C ${WT_PATH} rev-list --merges origin/master..HEAD' prints
+AND THE BRANCH MUST BE LINEAR. 'git -C ${WT_PATH} rev-list --merges origin/${BASE}..HEAD' prints
 NOTHING. A line there is a merge commit, and a merge commit is what the lander's rebase drops -
 along with every resolution that only exists inside it.
 
@@ -367,7 +368,7 @@ BEFORE YOU PUSH, READ BACK THE MESSAGES THE REBASE REPLAYED. There is no message
 write here, but a resolution that amended one, or a message graded only against an older
 compliance pattern, reaches master otherwise:
 
-  bash ${SKILL_DIR}/lane-handoff.sh --repo-path ${WT_PATH} --pre-push --rebased
+  bash ${SKILL_DIR}/lane-handoff.sh --repo-path ${WT_PATH} --pre-push --rebased --base ${BASE}
 
 Exit 0 means push. Exit 2 prints the offending lines and names the commit each one is in.
 --rebased is not optional here and it is what makes the answer usable: a rebase gives every
@@ -534,7 +535,7 @@ WHEN IT IS GREEN, hand off with the script rather than by hand:
     --pr ${PR} --branch ${BRANCH} \\
     ${ID ? `--issue ${ID} --note-file <a file holding your tracker note>` : ''} \\
     --worktree ${WT_PATH} \\
-    --lane-lock ${LANE_LOCK}
+    --lane-lock ${LANE_LOCK} --base ${BASE}
 
 It reads the title, body and commit messages back from GitHub, runs the compliance check
 over them, refuses to label anything whose rollup is empty or stale, applies lane-verified, reads
@@ -624,14 +625,14 @@ person's question.
 
 THEN FIND WHAT MASTER CHANGED, because that is where the answer is. For each failing file:
 
-  cd ${WT_PATH} && git log -p -5 origin/master -- <the file the failure names>
+  cd ${WT_PATH} && git log -p -5 origin/${BASE} -- <the file the failure names>
 ${resolved.oldHead && resolved.oldHead !== resolved.newHead
-    ? `  cd ${WT_PATH} && git diff ${resolved.oldHead}...origin/master -- <that file>
+    ? `  cd ${WT_PATH} && git diff ${resolved.oldHead}...origin/${BASE} -- <that file>
 
 The second command shows everything master gained in that file since the branch forked from it.`
     : `The branch already sat on top of master when this run began, so a three-dot diff from the head
 it had would compare master with itself and show nothing - read the log above, and if the file
-the failure names is one this branch changed, 'git log -p -10 origin/master -- <that file>' reaches
+the failure names is one this branch changed, 'git log -p -10 origin/${BASE} -- <that file>' reaches
 the commits master landed before the lander rebased onto them.`}
 
 A compiler error naming a symbol that no longer exists, an import of a path master moved, a test
@@ -652,8 +653,8 @@ comments in the code. Match the surrounding style.
 WHEN IT IS GREEN LOCALLY, commit, read the message you just wrote back, and push:
 
   cd ${WT_PATH} && git add <the files you changed>
-  cd ${WT_PATH} && git -c user.name="$(git log -1 --format=%an origin/master)" -c user.email="$(git log -1 --format=%ae origin/master)" commit -F <a message file>
-  bash ${SKILL_DIR}/lane-handoff.sh --repo-path ${WT_PATH} --pre-push --rebased
+  cd ${WT_PATH} && git -c user.name="$(git log -1 --format=%an origin/${BASE})" -c user.email="$(git log -1 --format=%ae origin/${BASE})" commit -F <a message file>
+  bash ${SKILL_DIR}/lane-handoff.sh --repo-path ${WT_PATH} --pre-push --rebased --base ${BASE}
   cd ${WT_PATH} && git push --force-with-lease=refs/heads/<the branch>:<the head you recorded> origin HEAD:refs/heads/<the branch>
 
 THE CHECK SITS BETWEEN THE COMMIT AND THE PUSH BECAUSE THAT IS THE ONLY PLACE IT HELPS. It greps

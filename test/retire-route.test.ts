@@ -136,6 +136,9 @@ function stubBd(open: readonly Issue[]): Bd {
     ].join("\n"),
   );
   chmodSync(stub, 0o755);
+  const gh = join(bin, "gh");
+  writeFileSync(gh, '#!/bin/sh\ncase "$*" in\n  "repo view "*) echo \'{"defaultBranchRef":{"name":"master"}}\' ;;\n  *) exit 0 ;;\nesac\n');
+  chmodSync(gh, 0o755);
   return { bin, log, cwd };
 }
 

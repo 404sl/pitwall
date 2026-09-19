@@ -52,6 +52,9 @@ function harness(): Harness {
   const bd = join(bin, "bd");
   writeFileSync(bd, "#!/bin/sh\nexit 1\n");
   chmodSync(bd, 0o755);
+  const gh = join(bin, "gh");
+  writeFileSync(gh, "#!/bin/sh\necho '{\"defaultBranchRef\":{\"name\":\"master\"}}'\n");
+  chmodSync(gh, 0o755);
   return { root, bin, config, prefix, slots: slotsPath(prefix), stage: join(root, ".autofix-run") };
 }
 
