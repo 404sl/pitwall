@@ -104,15 +104,28 @@ if [ -n "$worktree" ]; then
     echo "  ${worktree} exists but git cannot read it as a checkout, so whether it holds work is unknown."
     echo "  Look inside it before anything removes it."
   else
-    changes="$(git -C "$worktree" status --porcelain 2>/dev/null | grep -c . || true)"
-    unpushed="$(git -C "$worktree" rev-list --count HEAD --not --remotes 2>/dev/null || echo 0)"
-    branch="$(git -C "$worktree" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)"
-    if [ "${changes:-0}" -gt 0 ]; then
+    changed="$(git -C "$worktree" status --porcelain 2>/dev/null)"
+    status_rc=$?
+    changes=0
+    [ -n "$changed" ] && changes="$(printf '%s\n' "$changed" | grep -c .)"
+    unpushed="$(git -C "$worktree" rev-list --count HEAD --not --remotes 2>/dev/null)"
+    revlist_rc=$?
+    branch="$(git -C "$worktree" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+    branch="${branch:-HEAD}"
+    if [ "$status_rc" -ne 0 ]; then
+      echo "worktree: UNREAD"
+      echo "  ${worktree} is a checkout but git status failed inside it (exit ${status_rc}), so whether it holds work is"
+      echo "  unknown. Look inside it before anything removes it."
+    elif [ "$changes" -gt 0 ]; then
       echo "worktree: UNCOMMITTED"
-      echo "  ${worktree} holds ${changes} uncommitted change(s) and ${unpushed} unpushed commit(s) on ${branch}. No branch"
-      echo "  protects an uncommitted change: kill-lane.sh, slot.sh --gc and a re-dispatch each remove the"
-      echo "  worktree. Commit it or copy it out first."
-    elif [ "${unpushed:-0}" -gt 0 ]; then
+      echo "  ${worktree} holds ${changes} uncommitted change(s) and ${unpushed:-an unknown number of} unpushed commit(s) on ${branch}."
+      echo "  No branch protects an uncommitted change: kill-lane.sh removes the worktree with everything in it."
+      echo "  Commit it or copy it out first."
+    elif [ "$revlist_rc" -ne 0 ]; then
+      echo "worktree: UNREAD"
+      echo "  ${worktree} is clean but git rev-list failed inside it (exit ${revlist_rc}), so whether ${branch} holds"
+      echo "  commits no remote has is unknown. Look inside it before anything removes it."
+    elif [ "$unpushed" -gt 0 ]; then
       echo "worktree: UNPUSHED"
       echo "  ${worktree} is clean but ${branch} holds ${unpushed} commit(s) no remote has. The branch survives the"
       echo "  worktree being removed; the commits are lost only if the branch is deleted. Push it first."

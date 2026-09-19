@@ -1729,7 +1729,7 @@ function settle(path, answer) {
 
 const WORKTREE = `${WT}/${ID}`
 const HOLDS_WORK = {
-  uncommitted: `UNCOMMITTED - ${WORKTREE} holds uncommitted work that no branch protects. Commit it or copy it out before kill-lane.sh, slot.sh --gc or a re-dispatch removes the worktree.`,
+  uncommitted: `UNCOMMITTED - ${WORKTREE} holds uncommitted work that no branch protects. Commit it or copy it out before anything removes the worktree; kill-lane.sh takes everything in it.`,
   unpushed: `UNPUSHED - ${WORKTREE} holds commits no remote has. The branch survives the worktree being removed; push it or copy it out before the branch is deleted.`,
   unread: `UNREAD - ${WORKTREE} exists but could not be read as a checkout. Look inside it before anything removes it.`
 }

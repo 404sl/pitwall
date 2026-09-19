@@ -108,6 +108,18 @@ test("a directory that is not a checkout is reported as unread rather than clean
   assert.match(ran.out, /Look inside it/);
 });
 
+test("a checkout whose git read fails is reported as unread, never clean", () => {
+  const { root, wt } = checkout();
+  writeFileSync(join(wt, "finished.rb"), "class Finished; end\n");
+  writeFileSync(join(wt, ".git", "index"), "garbage");
+
+  const ran = release(root, wt);
+  assert.equal(ran.code, 0, ran.err);
+  assert.equal(ran.word, "UNREAD", `a failed status read looked like an empty worktree: ${ran.out}`);
+  assert.match(ran.out, /Look inside it/);
+  assert.equal(existsSync(join(wt, "finished.rb")), true, "reading the worktree changed it");
+});
+
 test("without --worktree the script reports the lane and the slot exactly as before", () => {
   const root = mkdtempSync(join(tmpdir(), "lane-worktree-"));
   const box = held(root);
