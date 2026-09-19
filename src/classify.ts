@@ -44,6 +44,7 @@ const PARKED_LABELS: ReadonlyArray<readonly [string, Classification]> = [
 ];
 
 const LABEL_CLASSIFICATIONS: ReadonlyArray<readonly [string, Classification]> = [
+  ["needs-call", "parked:call"],
   ["needs-decision", "yours:decision"],
   ["needs-access", "yours:access"],
   ...PARKED_LABELS,
@@ -149,6 +150,9 @@ export function classify(issue: UnclassifiedIssue, context: ClassifyContext): Cl
     return lane === undefined
       ? { classification: "landing", reason: { rule: "in-progress-no-lane" } }
       : { classification: "in-flight", reason: { rule: "in-progress-lane", slot: lane.slot } };
+  }
+  if (issue.labels.includes("needs-call")) {
+    return { classification: "parked:call", reason: { rule: "label", label: "needs-call" } };
   }
   if (issue.labels.includes("needs-decision")) {
     return { classification: "yours:decision", reason: { rule: "label", label: "needs-decision" } };

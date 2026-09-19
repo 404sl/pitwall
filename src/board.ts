@@ -23,7 +23,7 @@ import {
   type UnresolvedKind,
 } from "./staleness.js";
 
-export type NeedsYouKind = "decision" | "access";
+export type NeedsYouKind = "decision" | "access" | "call";
 export type RunningState = "working" | "awaiting-lander" | "stranded";
 
 export { problemKey, type ProblemRow, type ProblemScope } from "./problems.js";
@@ -172,6 +172,7 @@ export function sortKeyOf(value: string | null | undefined): SortKey | undefined
 
 export interface BoardTotals {
   needsYou: number;
+  calls: number;
   running: number;
   runningStates: RunningTotal[];
   ready: number;
@@ -189,6 +190,8 @@ export interface Board {
   projectCount: number;
   needsYou: NeedsYouGroup[];
   needsYouCount: number;
+  calls: NeedsYouGroup[];
+  callCount: number;
   running: RunningRow[];
   runningTotals: RunningTotal[];
   runningCount: number;
@@ -259,7 +262,14 @@ function verdictOf(issue: Issue): StalenessVerdict {
 }
 
 function kindOf(issue: Issue): NeedsYouKind {
+  if (issue.classification === "parked:call") {
+    return "call";
+  }
   return issue.classification === "yours:decision" ? "decision" : "access";
+}
+
+function isCall(classification: ClassificationValue): boolean {
+  return classification === "parked:call";
 }
 
 function parkOf(parks: ProjectParks | undefined, issue: Issue): ParkEntry | undefined {
@@ -389,10 +399,11 @@ function needsYouRow(issue: Issue, entry: ParkEntry | undefined, generatedAt: st
   };
 }
 
-function needsYouGroups(
+function rowGroups(
   projects: Project[],
   generatedAt: string,
   parks: ParkStore,
+  pick: (classification: ClassificationValue) => boolean,
   sort?: SortKey,
 ): NeedsYouGroup[] {
   return projects
@@ -400,7 +411,7 @@ function needsYouGroups(
       project: project.name,
       projectId: project.id,
       rows: issuesOf(project)
-        .filter((issue) => isYours(issue.classification))
+        .filter((issue) => pick(issue.classification))
         .map((issue) => needsYouRow(issue, parkOf(parks[project.id], issue), generatedAt))
         .sort(sortedBy(sort, byParkThenPriority)),
     }))
@@ -408,8 +419,16 @@ function needsYouGroups(
     .sort((a, b) => byCountThenName({ count: a.rows.length, name: a.project }, { count: b.rows.length, name: b.project }));
 }
 
+function needsYouGroups(projects: Project[], generatedAt: string, parks: ParkStore, sort?: SortKey): NeedsYouGroup[] {
+  return rowGroups(projects, generatedAt, parks, isYours, sort);
+}
+
+function callGroups(projects: Project[], generatedAt: string, parks: ParkStore): NeedsYouGroup[] {
+  return rowGroups(projects, generatedAt, parks, isCall);
+}
+
 function parkedReasonOf(issue: Issue): ParkedReason | undefined {
-  if (!issue.classification.startsWith("parked:") || parkLabelOf(issue) === undefined) {
+  if (!issue.classification.startsWith("parked:") || isCall(issue.classification) || parkLabelOf(issue) === undefined) {
     return undefined;
   }
   return issue.classification.slice("parked:".length) as ParkedReason;
@@ -541,7 +560,7 @@ export function readyByProject(snapshot: Snapshot, limit: number): ReadyGroup[] 
 
 export function parkedReasons(): string[] {
   const parked = Classification.options
-    .filter((option) => option.startsWith("parked:"))
+    .filter((option) => option.startsWith("parked:") && !isCall(option))
     .map((option) => option.slice("parked:".length));
   return [...parked, "blocked"];
 }
@@ -721,6 +740,10 @@ function boardTotals(projects: Project[], generatedAt: string, running: RunningR
       (sum, project) => sum + issuesOf(project).filter((issue) => isYours(issue.classification)).length,
       0,
     ),
+    calls: projects.reduce(
+      (sum, project) => sum + issuesOf(project).filter((issue) => isCall(issue.classification)).length,
+      0,
+    ),
     running: running.reduce((sum, row) => sum + row.count, 0),
     runningStates: runningTotals(running),
     ready: readyRows(projects).length,
@@ -740,6 +763,7 @@ export function buildBoard(
   const shown = filteredProjects(projects, filter);
   const filtered = isFiltered(filter);
   const needsYou = needsYouGroups(shown, generatedAt, parks, sort);
+  const calls = callGroups(shown, generatedAt, parks);
   const everyRunning = runningRows(projects, generatedAt);
   const running = filtered ? withRunningTotals(runningRows(shown, generatedAt), everyRunning) : everyRunning;
   const ready = readyRows(shown, sort);
@@ -749,6 +773,8 @@ export function buildBoard(
     projectCount: projects.length,
     needsYou,
     needsYouCount: needsYou.reduce((sum, group) => sum + group.rows.length, 0),
+    calls,
+    callCount: calls.reduce((sum, group) => sum + group.rows.length, 0),
     running,
     runningTotals: runningTotals(running),
     runningCount: running.reduce((sum, row) => sum + row.count, 0),

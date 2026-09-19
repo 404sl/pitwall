@@ -14,6 +14,7 @@ import {
 } from "./model.js";
 import { Band } from "./components/Band.js";
 import { BuildBanner } from "./components/Build.js";
+import { Calls } from "./components/Calls.js";
 import { Failure } from "./components/Failure.js";
 import { Filters, filterSentence } from "./components/Filters.js";
 import { Header } from "./components/Header.js";
@@ -379,6 +380,13 @@ export function App() {
             sort={sort}
             filteredEmpty={emptyOf(board.totals.needsYou)}
           />
+        </Band>
+        <Band
+          id="calls"
+          label={strings.band.calls}
+          count={countLabel(board.callCount, board.totals.calls, board.filtered)}
+        >
+          <Calls groups={board.calls} filter={filter} filteredEmpty={emptyOf(board.totals.calls)} />
         </Band>
         <Band
           id="running"
