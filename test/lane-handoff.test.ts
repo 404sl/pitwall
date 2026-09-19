@@ -50,6 +50,7 @@ interface Second {
   labelSimilar?: boolean;
   labelGarbled?: boolean;
   noSlug?: boolean;
+  workspaceRoot?: boolean;
   commitsFails?: boolean;
   pluginSource?: boolean;
 }
@@ -115,6 +116,7 @@ function harness(
     if (second.omitPath) repos["other"] = { slug: "acme/other" };
     else if (second.noSlug) repos["docs"] = { path: "other" };
     else repos["docs"] = { path: "other", slug: "acme/other" };
+    if (second.workspaceRoot) repos["workspace"] = { path: ".", role: "workspace" };
   }
   writeFileSync(
     config,
@@ -1041,6 +1043,16 @@ test("a configured repository with no slug has one read from its own origin", ()
   assert.equal(ran.status, 0, ran.stdout + ran.stderr);
   assert.match(ran.stdout, /also labelled lane-verified on lane\/x: acme\/other#7/);
   assert.match(ran.calls, /^api -X POST repos\/acme\/other\/issues\/7\/labels /m);
+});
+
+test("a workspace-root entry with no slug and no remote is skipped by the survey rather than refusing the handoff", () => {
+  const box = harness("", { list: '[{"number":7}]', rollup: READY, body: CLEAN, workspaceRoot: true });
+  const ran = handoff(box, [...required(box), "--issue", "acme-1", "--note-file", box.notePath], true);
+
+  assert.equal(ran.status, 0, ran.stdout + ran.stderr);
+  assert.doesNotMatch(ran.stderr, /workspace has no slug/);
+  assert.match(ran.stdout, /also labelled lane-verified on lane\/x: acme\/other#7/);
+  assert.match(ran.calls, /^api -X POST repos\/acme\/thing\/issues\/14\/labels /m);
 });
 
 function elsewhere(box: Harness): string {

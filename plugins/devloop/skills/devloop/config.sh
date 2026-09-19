@@ -207,6 +207,8 @@ def git(path, *args, timeout=None):
     return ran.returncode, ran.stdout.strip(), ran.stderr.strip()
 
 for name, r in repos.items():
+    if r.get("role") == "workspace":
+        continue
     branch = r.get("defaultBranch") or "master"
     rel = r.get("path", name)
     path = os.path.join(root, rel)
@@ -255,7 +257,15 @@ if root and not os.path.isdir(root): bad.append(f"root does not exist: {root}")
 if root and not os.path.isdir(os.path.join(root, ".beads")):
     bad.append(f"no .beads tracker at {root}")
 for name, r in (cfg.get("repos") or {}).items():
-    p = os.path.join(root, r.get("path", name))
+    p = os.path.normpath(os.path.join(root, r.get("path", name)))
+    if r.get("role") == "workspace":
+        if p != os.path.normpath(root):
+            bad.append(f"repo {name}: role workspace but path resolves to {p}, not the workspace root {root} - "
+                       f"set path to \".\"")
+        if r.get("slug"):
+            bad.append(f"repo {name}: role workspace carries a slug - the root is not a repository on GitHub, "
+                       f"nothing is pushed or labelled there, so remove it")
+        continue
     if not os.path.isdir(p): bad.append(f"repo {name}: no directory at {p}")
     elif not os.path.isdir(os.path.join(p, ".git")): bad.append(f"repo {name}: {p} is not a git repo")
     if not r.get("test"): bad.append(f"repo {name}: no test command - a lane cannot verify its own work")
@@ -402,6 +412,9 @@ repos = json.load(open(sys.argv[1])).get("repos", {})
 if sys.argv[2] not in repos:
     sys.stderr.write("config.sh --rework: no repository %s in this config - have: %s\n"
                      % (sys.argv[2], ", ".join(sorted(repos)))); sys.exit(2)
+if (repos[sys.argv[2]] or {}).get("role") == "workspace":
+    sys.stderr.write("config.sh --rework: %s is the workspace root, which has no pull requests to rework\n"
+                     % sys.argv[2]); sys.exit(2)
 PY
     REPOS_JSON="$(resolve_repos "$4")" || {
       echo "config.sh --rework: the default branch of $4 could not be confirmed - dispatch stops." >&2
@@ -506,6 +519,9 @@ repos = json.load(open(sys.argv[1])).get("repos", {})
 if repos and sys.argv[2] not in repos:
     sys.stderr.write("no repository %s in this config - have: %s\n"
                      % (sys.argv[2], ", ".join(sorted(repos)))); sys.exit(2)
+if (repos.get(sys.argv[2]) or {}).get("role") == "workspace":
+    sys.stderr.write("config.sh --train: %s is the workspace root, which has no pull requests to land\n"
+                     % sys.argv[2]); sys.exit(2)
 PY
     REPOS_JSON="$(resolve_repos "$2")" || {
       echo "config.sh --train: the default branch of $2 could not be confirmed - the train does not start." >&2
