@@ -279,6 +279,22 @@ test("the fully qualified spelling of master is refused like the short one", () 
   refusedRefspec(ran, "+HEAD:refs/heads/master", "refs/heads/master");
 });
 
+test("the heads/ spelling resolves to master on the remote and is refused like the others", () => {
+  const box = workspace();
+
+  const ran = push(box, [`--dir=${box.lane}`, "--branch=devloop/zz-aaa1"], ["origin", "HEAD:heads/master"]);
+
+  refusedRefspec(ran, "HEAD:heads/master", "heads/master");
+});
+
+test("the heads/ spelling of main is refused as well", () => {
+  const box = workspace();
+
+  const ran = push(box, [`--dir=${box.lane}`, "--branch=devloop/zz-aaa1"], ["origin", "HEAD:heads/main"]);
+
+  refusedRefspec(ran, "HEAD:heads/main", "heads/main");
+});
+
 test("a bare refspec is its own destination, so pushing master by name is refused", () => {
   const box = workspace();
 

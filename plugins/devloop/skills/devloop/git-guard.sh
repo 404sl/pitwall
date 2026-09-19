@@ -113,7 +113,7 @@ case "$1" in
         *)   dst=$spec ;;
       esac
       case "$dst" in
-        master|main|refs/heads/master|refs/heads/main)
+        master|main|heads/master|heads/main|refs/heads/master|refs/heads/main)
           echo "REFUSED" >&2
           echo "git-guard.sh: the push refspec ${arg} names ${dst}, which is a default branch. Nothing was run." >&2
           echo "              The branch a worktree is on says nothing about where a push lands; the refspec" >&2
