@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.111
+
+The fix brief keys its role-specific text on the configured `role`, not the repo key. A script-role repository under any key is told to branch from its own checkout, and its rule 5 names that repository's configured test command - or "the check script" when none is configured - rather than `ruby script/check.rb`. A repository keyed `docs` with another role gets that role's brief. The name fallback for the four historical keys is unchanged, so a config with no `role` set behaves as before.
+
 ## 0.1.110
 
 The supervisor helpers that run from a checkout now read the repository's configured default branch: `master-watch.sh` watches it, `stranded.sh` measures every pull request against it, `deployed.sh` compares the servers with it, and `lock-check.sh` names it in its release advice. `master-watch.sh` also accepts `--base <branch>`. A workspace with no `defaultBranch` configured sees no change. `stranded.sh` no longer consults `origin/HEAD`; the config is the only source, which is what the train uses too.
