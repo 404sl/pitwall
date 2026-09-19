@@ -303,6 +303,55 @@ test("a bare refspec is its own destination, so pushing master by name is refuse
   refusedRefspec(ran, "master", "master");
 });
 
+function refusedPattern(ran: Ran, refspec: string, why: RegExp) {
+  refused(ran, `a push whose refspec ${refspec} has no single destination`);
+  assert.match(
+    ran.err,
+    /push refspec/,
+    `the refusal came from some other branch of the guard, so this test would pass with the ` +
+      `refspec check deleted - the branch the worktree is on says nothing about where a push ` +
+      `lands, and the refspec is the only thing that does:\n${ran.err}`,
+  );
+  assert.match(
+    ran.err,
+    why,
+    `the refusal came from the named-destination check rather than from the one for a destination ` +
+      `that is a pattern or empty, so this test would pass with that check deleted:\n${ran.err}`,
+  );
+}
+
+test("a pattern destination matches master among the rest and is refused", () => {
+  const box = workspace();
+
+  const ran = push(box, [`--dir=${box.lane}`, "--branch=devloop/zz-aaa1"], ["origin", "refs/heads/*:refs/heads/*"]);
+
+  refusedPattern(ran, "refs/heads/*:refs/heads/*", /pattern refs\/heads\/\*/);
+});
+
+test("a forced pattern destination is refused, and the leading plus does not hide the pattern", () => {
+  const box = workspace();
+
+  const ran = push(box, [`--dir=${box.lane}`, "--branch=devloop/zz-aaa1"], ["origin", "+refs/heads/*:refs/heads/*"]);
+
+  refusedPattern(ran, "+refs/heads/*:refs/heads/*", /pattern refs\/heads\/\*/);
+});
+
+test("the matching refspec has no destination and pushes every shared branch, so it is refused", () => {
+  const box = workspace();
+
+  const ran = push(box, [`--dir=${box.lane}`, "--branch=devloop/zz-aaa1"], ["origin", ":"]);
+
+  refusedPattern(ran, ":", /empty destination/);
+});
+
+test("the forced matching refspec is refused as well", () => {
+  const box = workspace();
+
+  const ran = push(box, [`--dir=${box.lane}`, "--branch=devloop/zz-aaa1"], ["origin", "+:"]);
+
+  refusedPattern(ran, "+:", /empty destination/);
+});
+
 test("the refspec is read with --dir alone, which is how the lander calls the guard", () => {
   const box = workspace();
 
