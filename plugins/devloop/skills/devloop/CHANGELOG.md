@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.86
+
+`queue.sh --next` now prints an issue the lander retired as `<id> <slot> rework <pr> <repo>`; dispatch that line with `config.sh --rework <id> <pr> <repo>` and `rework.js`, never `task.js`. `config.sh --args` refuses such an issue and prints the command that takes it. The lander records the route on the issue as `rework` metadata as it retires, for `red_after_rebase` and `conflict` alike, so nobody reads a pull request number out of a note. A rework that ends red after its one repair takes the route off, labels the issue `needs-decision` and sets it open, so a reopen does not run a second repair; when no step of the run could do that - the repair returned nothing, or reported a fix whose head did not move - the result's `notes` end with that one `bd update` command, and it must run before `-s open`. `config.sh --args` asks bd from the tracker root, so the refusal holds from inside a repository. On bd 1.2.2, `--metadata` merges top-level keys (the issue's `origin` survives a `rework` write) and `--unset-metadata` on an absent key is a no-op; both measured, neither in bd's own help text.
+
 ## 0.1.85
 
 In the repository that ships the plugin, the handoff gate and the pre-push check no longer refuse a commit message or pull request body for naming the plugin - the name is neutralised there the same way the plugin's paths already are. Everywhere else it is still a leak, and the handoff label token and scratch paths are still leaks in every repository.
