@@ -240,6 +240,22 @@ test("bd fields map onto the contract's names", async () => {
   assert.deepEqual(decision?.staleness, { verdict: "unchecked", evidence: [] });
 });
 
+test("the queue is bd's assignee and the reporter is who created it; the field bd calls owner is never read", async () => {
+  const byId = byIdOf(await readIssues(TRACKER, { env: env("ok"), errors: [] }));
+  assert.equal(byId.get("mw-3")?.owner, "mw-planning-session");
+  assert.equal(byId.get("mw-3")?.reporter, "mw-devloop");
+  assert.equal(byId.get("mw-1")?.owner, undefined, "a git email under the key owner is not a queue");
+  assert.equal(byId.get("mw-1")?.reporter, "Vladimir Elchinov");
+  assert.equal(byId.get("mw-5")?.owner, undefined, "an empty assignee is nobody, not somebody called nothing");
+  assert.equal(byId.get("mw-5")?.reporter, undefined);
+  assert.equal(byId.get("mw-6")?.owner, undefined);
+  assert.equal(byId.get("mw-6")?.reporter, undefined);
+  assert.equal("owner" in (byId.get("mw-6") ?? {}) && byId.get("mw-6")?.owner !== undefined, false);
+  for (const issue of byId.values()) {
+    assert.notEqual(issue.owner, "elik@elik.ru", `${issue.id} carries the git identity as its queue`);
+  }
+});
+
 test("a null labels field becomes an empty list rather than a parse failure", async () => {
   const collected = await readIssues(TRACKER, { env: env("ok"), errors: [] });
   assert.deepEqual(collected.issues.find((issue) => issue.id === "mw-5")?.labels, []);
@@ -334,6 +350,20 @@ test("one issue is read with its body, and with the rule that classified it", as
   assert.deepEqual(reading.issue.reason, { rule: "umbrella-open-child", childId: "mw-1.1" });
   assert.equal(reading.issue.classification, "parked:umbrella");
   assert.deepEqual(reading.issue.origin, { session: "mw-planning-session", ref: "c1796a" });
+  assert.equal(reading.issue.owner, undefined);
+  assert.equal(reading.issue.reporter, "Vladimir Elchinov");
+});
+
+test("one issue read on its own carries whose queue it is in and who asked", async () => {
+  const reading = await readIssue(TRACKER, "mw-3", {
+    env: env("ok"),
+    issues: await indexedIssues(),
+    collectionComplete: true,
+  });
+  assert.equal(reading.kind, "found");
+  if (reading.kind !== "found") return;
+  assert.equal(reading.issue.owner, "mw-planning-session");
+  assert.equal(reading.issue.reporter, "mw-devloop");
 });
 
 test("a dependency row is a blocking edge, never a merely related one", async () => {

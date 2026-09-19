@@ -107,6 +107,21 @@ test("the assembled document is one the contract accepts", async () => {
   assert.equal(snapshot.projects[0]?.issues.length, 15);
 });
 
+test("the snapshot carries whose queue an issue is in and who asked, and nothing where the tracker has nobody", async () => {
+  const place = workspace([TRACKER]);
+  const snapshot = await collectSnapshot(options(place, new Date("2026-09-08T09:00:00Z")));
+  const issues = new Map(snapshot.projects[0]?.issues.map((issue) => [issue.id, issue]));
+  assert.equal(issues.get("mw-3")?.owner, "mw-planning-session");
+  assert.equal(issues.get("mw-3")?.reporter, "mw-devloop");
+  assert.equal(issues.get("mw-1")?.owner, undefined);
+  assert.equal(issues.get("mw-1")?.reporter, "Vladimir Elchinov");
+  assert.equal(issues.get("mw-5")?.owner, undefined);
+  assert.equal(issues.get("mw-5")?.reporter, undefined);
+  const written = JSON.stringify(snapshot);
+  assert.equal(written.includes("elik@elik.ru"), false, "the git identity never reaches the snapshot");
+  assert.equal(written.includes('"owner":""'), false, "absent is absent, never an empty string");
+});
+
 test("a project whose tracker cannot be read still appears and the others are unaffected", async () => {
   const place = workspace([NO_TRACKER, TRACKER]);
   const snapshot = await collectSnapshot(options(place));

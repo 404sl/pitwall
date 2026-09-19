@@ -10,6 +10,7 @@ import {
   type ParkStore,
   type ProblemRow,
   type RunningVersion,
+  type SortKey,
 } from "./model.js";
 import { Band } from "./components/Band.js";
 import { BuildBanner } from "./components/Build.js";
@@ -25,7 +26,7 @@ import { Running, runningSummary } from "./components/Running.js";
 import { Today } from "./components/Today.js";
 import { IssuePage } from "./components/IssuePage.js";
 import { countLabel } from "./format.js";
-import { filterOf, routeOf } from "./routes.js";
+import { filterOf, routeOf, sortOf } from "./routes.js";
 import { strings } from "./strings.js";
 
 const SNAPSHOT_URL = "/api/snapshot";
@@ -191,6 +192,7 @@ export function App() {
   const hash = useHash();
   const route = useMemo(() => routeOf(hash), [hash]);
   const filter = useMemo<FilterState>(() => filterOf(hash), [hash]);
+  const sort = useMemo<SortKey | undefined>(() => sortOf(hash), [hash]);
   const [taken, setTaken] = useState<Taken | undefined>(undefined);
   const [failure, setFailure] = useState<string | undefined>(undefined);
   const [refetchFailure, setRefetchFailure] = useState<ProblemRow | undefined>(undefined);
@@ -257,8 +259,8 @@ export function App() {
   }, [load]);
 
   const board = useMemo(
-    () => (taken === undefined ? undefined : buildBoard(taken.snapshot, filter, taken.parks)),
-    [taken, filter],
+    () => (taken === undefined ? undefined : buildBoard(taken.snapshot, filter, taken.parks, sort)),
+    [taken, filter, sort],
   );
 
   const onDragEnter = useCallback((event: DragEvent<HTMLElement>) => {
@@ -311,6 +313,7 @@ export function App() {
           <IssuePage
             route={route}
             filter={filter}
+            sort={sort}
             preview={
               taken === undefined ? undefined : previewIssue(taken.snapshot, route.project, route.id, taken.parks)
             }
@@ -351,7 +354,13 @@ export function App() {
         onDrop={onDrop}
       >
         <BuildBanner build={build} />
-        <Filters filter={filter} options={board.options} shown={board.issueCount} total={board.totals.issues} />
+        <Filters
+          filter={filter}
+          sort={sort}
+          options={board.options}
+          shown={board.issueCount}
+          total={board.totals.issues}
+        />
         <Intake
           projects={board.options.project}
           selected={filter.project}
@@ -364,7 +373,12 @@ export function App() {
           count={countLabel(board.needsYouCount, board.totals.needsYou, board.filtered)}
           alert={board.totals.needsYou > 0}
         >
-          <NeedsYou groups={board.needsYou} filter={filter} filteredEmpty={emptyOf(board.totals.needsYou)} />
+          <NeedsYou
+            groups={board.needsYou}
+            filter={filter}
+            sort={sort}
+            filteredEmpty={emptyOf(board.totals.needsYou)}
+          />
         </Band>
         <Band
           id="running"
@@ -374,7 +388,7 @@ export function App() {
             board.filtered ? board.totals.runningStates : undefined,
           )}
         >
-          <Running rows={board.running} filter={filter} filteredEmpty={emptyOf(board.totals.running)} />
+          <Running rows={board.running} filter={filter} sort={sort} filteredEmpty={emptyOf(board.totals.running)} />
         </Band>
         <Band
           id="ready"
@@ -385,6 +399,7 @@ export function App() {
             rows={board.ready}
             total={board.readyCount}
             filter={filter}
+            sort={sort}
             filteredEmpty={emptyOf(board.totals.ready)}
           />
         </Band>
@@ -394,6 +409,7 @@ export function App() {
             totals={board.filtered ? board.totals.parked : undefined}
             rows={board.parkedRows}
             filter={filter}
+            sort={sort}
             filteredEmpty={emptyOf(board.totals.parked.length)}
           />
         </Band>

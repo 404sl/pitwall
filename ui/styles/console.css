@@ -185,6 +185,11 @@ body {
   color: var(--pw-muted);
 }
 
+.pw-absent {
+  font-style: italic;
+  color: var(--pw-muted);
+}
+
 .pw-band {
   border-inline-start: var(--pw-rail) solid transparent;
   padding-inline-start: 16px;
@@ -278,6 +283,13 @@ body {
 .pw-cell--project {
   font-weight: 600;
   white-space: nowrap;
+}
+
+.pw-cell--who {
+  max-inline-size: 24ch;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .pw-cell--title {

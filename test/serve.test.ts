@@ -443,6 +443,26 @@ test("one issue is served with its body, which the snapshot never carries", asyn
   assert.equal(document.includes("\"notes\""), false);
 });
 
+test("one issue is served with whose queue it is in and who asked", async (t) => {
+  const server = trackerServer("ok", [
+    indexed("mw-3", "open", "yours:decision", { owner: "mw-planning-session", reporter: "mw-devloop" }),
+    indexed("mw-1", "open", "parked:umbrella"),
+  ]);
+  t.after(() => server.close());
+  const { origin } = await started(server);
+
+  const decision = (await (await fetch(`${origin}/api/issue/mw/mw-3`)).json()) as {
+    issue: { owner?: string; reporter?: string };
+  };
+  assert.equal(decision.issue.owner, "mw-planning-session");
+  assert.equal(decision.issue.reporter, "mw-devloop");
+  const umbrella = (await (await fetch(`${origin}/api/issue/mw/mw-1`)).json()) as {
+    issue: { owner?: string; reporter?: string };
+  };
+  assert.equal(umbrella.issue.owner, undefined, "a git email under the key owner is not a queue");
+  assert.equal(umbrella.issue.reporter, "Vladimir Elchinov");
+});
+
 test("opening one ticket costs one call to the tracker, not a reading of the whole board", async (t) => {
   const log = join(mkdtempSync(join(tmpdir(), "pitwall-calls-")), "bd.log");
   const server = trackerServer(

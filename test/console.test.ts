@@ -23,7 +23,7 @@ import {
 import type { Board, BuildState, FilterState, IssuePayload, IssuePreview, ParkStore } from "../ui/model.ts";
 import { strings } from "../ui/strings.ts";
 import { countLabel } from "../ui/format.ts";
-import { boardHref, filterOf, filterQuery, issueHref, routeOf } from "../ui/routes.ts";
+import { boardHref, filterOf, filterQuery, issueHref, routeOf, sortOf } from "../ui/routes.ts";
 import type { ClassificationReason } from "../src/classify.ts";
 import { VERSION } from "../src/version.ts";
 
@@ -1207,7 +1207,7 @@ test("the needs-you band shows how long each park has waited between the title a
   const board = buildBoard(AGED, {}, AGED_PARKS);
   const markup = renderToStaticMarkup(createElement(NeedsYouBand, { groups: board.needsYou }));
   assert.match(markup, /<th scope="col">Title<\/th><th scope="col">Parked<\/th><th scope="col">Staleness<\/th>/);
-  assert.match(markup, /<th colSpan="6" scope="rowgroup">pitwall<\/th>/);
+  assert.match(markup, /<th colSpan="8" scope="rowgroup">pitwall<\/th>/);
   const old = markup.indexOf("pitwall-old");
   const mute = markup.indexOf("pitwall-mute");
   assert.ok(old > -1 && old < mute, "the oldest park is read first");
@@ -1464,10 +1464,33 @@ test("a verdict with no evidence to act on says so rather than showing an empty 
   assert.doesNotMatch(markup, /<ul class="pw-evidence">/);
 });
 
+test("the ticket view opens its facts with whose queue it is in, then who asked, and says unassigned in words", () => {
+  const both = pageMarkup(aPreview({ owner: "pitwall-devloop", reporter: "pitwall-planning-session" }));
+  assert.match(
+    both,
+    /<dl class="pw-facts__list"><div class="pw-facts__pair"><dt class="pw-facts__term">Queue<\/dt><dd class="pw-facts__value pw-cell--data">pitwall-devloop<\/dd><\/div><div class="pw-facts__pair"><dt class="pw-facts__term">Asked by<\/dt><dd class="pw-facts__value pw-cell--data">pitwall-planning-session<\/dd><\/div><div class="pw-facts__pair"><dt class="pw-facts__term">Project<\/dt>/,
+  );
+  const neither = pageMarkup(aPreview());
+  assert.match(
+    neither,
+    /<dt class="pw-facts__term">Queue<\/dt><dd class="pw-facts__value"><span class="pw-absent">unassigned<\/span><\/dd><\/div><div class="pw-facts__pair"><dt class="pw-facts__term">Asked by<\/dt><dd class="pw-facts__value"><span class="pw-absent">not recorded<\/span><\/dd>/,
+  );
+  assert.equal(neither.includes("pitwall-devloop"), false, "an unassigned issue is owned by nobody in particular");
+  const origin = { session: "pitwall-planning-session", ref: "843c93" };
+  const view = buildIssueView(payload({ owner: "pitwall-devloop", origin }));
+  const shown = shownOf(view);
+  assert.equal(shown.owner, "pitwall-devloop");
+  assert.equal(shown.reporter, undefined);
+  const loaded = renderToStaticMarkup(createElement(IssueDetail, { shown, view, sort: "owner" }));
+  assert.match(loaded, /<dt class="pw-facts__term">Session<\/dt><dd class="pw-facts__value pw-cell--data">pitwall-planning-session<\/dd>/, "the origin band is what the creator wrote about itself and stays");
+  assert.match(loaded, /<dt class="pw-facts__term">Asked by<\/dt><dd class="pw-facts__value"><span class="pw-absent">not recorded<\/span>/, "origin is never stood in for the reporter");
+  assert.match(loaded, /class="pw-link pw-link--back" href="#\/\?sort=owner"/, "the way back keeps the sort");
+});
+
 test("the preview a click starts from is the snapshot's own record of the issue", () => {
   const snapshot = snapshotOf([
     project("session-replay", {
-      issues: [issue("sr-15s2", "yours:decision", { labels: ["needs-access"], staleness: { verdict: "still-blocking", checkedAt: "2026-09-08T13:00:00Z", evidence: ["it names sr-9, still open"] } })],
+      issues: [issue("sr-15s2", "yours:decision", { labels: ["needs-access"], owner: "sr-planning-session", staleness: { verdict: "still-blocking", checkedAt: "2026-09-08T13:00:00Z", evidence: ["it names sr-9, still open"] } })],
       errors: [
         { source: "staleness sr-15s2", message: "2 preconditions could not be run: `npm whoami`, `gh auth status`", at: GENERATED_AT },
         { source: "staleness sr-other", message: "1 precondition could not be run: `npm whoami`", at: GENERATED_AT },
@@ -1476,6 +1499,8 @@ test("the preview a click starts from is the snapshot's own record of the issue"
   ]);
   const preview = previewIssue(snapshot, "session-replay", "sr-15s2");
   assert.equal(preview?.title, "title for sr-15s2");
+  assert.equal(preview?.owner, "sr-planning-session");
+  assert.equal(preview?.reporter, undefined);
   assert.equal(preview?.projectName, "session-replay");
   assert.equal(preview?.classification, "yours:decision");
   assert.equal(preview?.closed, false);
@@ -1516,14 +1541,15 @@ test("a failed check is counted under the kind its message names, and an uncount
 const { Band } = await import("../ui/components/Band.tsx");
 const { Filters, filterSentence } = await import("../ui/components/Filters.tsx");
 const { NeedsYou } = await import("../ui/components/NeedsYou.tsx");
+const { Ready } = await import("../ui/components/Ready.tsx");
 const { Problems } = await import("../ui/components/Problems.tsx");
 
 const MIXED_PROJECTS = [
   project("pitwall", {
     issues: [
-      issue("pitwall-4b5", "yours:decision", { issueType: "epic" }),
-      issue("pitwall-4b5.1", "yours:decision", { issueType: "bug" }),
-      issue("pitwall-4b5.2", "ready", { issueType: "task", priority: 2 }),
+      issue("pitwall-4b5", "yours:decision", { issueType: "epic", owner: "pitwall-planning-session", reporter: "pitwall-devloop" }),
+      issue("pitwall-4b5.1", "yours:decision", { issueType: "bug", owner: "pitwall-devloop" }),
+      issue("pitwall-4b5.2", "ready", { issueType: "task", priority: 2, owner: "pitwall-devloop", reporter: "pitwall-planning-session" }),
       issue("pitwall-7qq", "ready", { issueType: undefined, priority: undefined }),
     ],
     lanes: [
@@ -1532,7 +1558,7 @@ const MIXED_PROJECTS = [
     ],
   }),
   project("session-replay", {
-    issues: [issue("sr-1aa", "ready", { issueType: "chore", priority: 3 })],
+    issues: [issue("sr-1aa", "ready", { issueType: "chore", priority: 3, reporter: "sr-seo" })],
     errors: [{ source: "bd list --json", message: "tracker read timed out after 10s", at: "2026-09-08T14:10:00Z" }],
   }),
 ];
@@ -1548,7 +1574,9 @@ const FILTER_MATRIX: FilterState[] = [
   { priority: "none" },
   { epic: "pitwall-4b5" },
   { epic: "none" },
-  { project: "session-replay", type: "zzz", priority: "4", epic: "nothing" },
+  { owner: "pitwall-devloop" },
+  { owner: "none" },
+  { project: "session-replay", type: "zzz", priority: "4", epic: "nothing", owner: "nobody" },
 ];
 
 function shownIds(board: Board): string[] {
@@ -1655,6 +1683,160 @@ test("a lane is filtered by the issue it claims, and an unclaimed lane counts as
   assert.equal(buildBoard(MIXED, { type: "bug" }).runningCount, 0);
   assert.equal(buildBoard(MIXED, { type: "none" }).runningCount, 1);
   assert.equal(buildBoard(MIXED).runningCount, 2);
+});
+
+test("the board filters by queue, and an issue with no queue is reachable as unassigned rather than owned by anyone", () => {
+  assert.deepEqual(shownIds(buildBoard(MIXED, { owner: "pitwall-devloop" })), ["pitwall-4b5.1", "pitwall-4b5.2"]);
+  assert.deepEqual(shownIds(buildBoard(MIXED, { owner: "pitwall-planning-session" })), ["pitwall-4b5"]);
+  assert.deepEqual(shownIds(buildBoard(MIXED, { owner: "none" })), ["pitwall-7qq", "sr-1aa"]);
+  assert.deepEqual(shownIds(buildBoard(MIXED, { owner: "sr-seo" })), [], "a reporter is not a queue");
+  const board = buildBoard(MIXED, { owner: "none" });
+  assert.equal(board.filtered, true);
+  assert.equal(board.issueCount, 2);
+  assert.deepEqual(
+    board.options.owner.map((option) => option.value),
+    ["pitwall-devloop", "pitwall-planning-session"],
+    "the queue options are the distinct queues in the snapshot, sorted, and nothing stands in for absent",
+  );
+});
+
+test("a lane whose issue cannot be resolved matches the unassigned queue and no named one", () => {
+  assert.equal(buildBoard(MIXED, { owner: "pitwall-devloop" }).runningCount, 1);
+  assert.equal(buildBoard(MIXED, { owner: "pitwall-planning-session" }).runningCount, 0);
+  assert.equal(buildBoard(MIXED, { owner: "none" }).runningCount, 1);
+});
+
+const SORTED_PROJECTS = [
+  project("pitwall", {
+    issues: [
+      issue("pitwall-1", "yours:decision", { labels: ["needs-decision"], priority: 0 }),
+      issue("pitwall-2", "yours:decision", { labels: ["needs-decision"], priority: 1, owner: "pitwall-planning-session", reporter: "pitwall-devloop" }),
+      issue("pitwall-3", "yours:access", { labels: ["needs-access"], priority: 2, owner: "pitwall-devloop" }),
+      issue("pitwall-4", "yours:decision", { labels: ["needs-decision"], priority: 3, owner: "pitwall-blogging", reporter: "pitwall-planning-session" }),
+      issue("pitwall-5", "ready", { priority: 0 }),
+      issue("pitwall-6", "ready", { priority: 1, owner: "pitwall-devloop", reporter: "pitwall-planning-session" }),
+      issue("pitwall-7", "ready", { priority: 2, owner: "pitwall-blogging", reporter: "pitwall-seo" }),
+      issue("pitwall-8", "parked:watch", { labels: ["watch"], priority: 0, reporter: "pitwall-seo" }),
+      issue("pitwall-9", "parked:watch", { labels: ["watch"], priority: 1, owner: "pitwall-planning-session" }),
+      issue("pitwall-10", "parked:roadmap", { labels: ["roadmap"], priority: 2, owner: "pitwall-devloop", reporter: "pitwall-devloop" }),
+    ],
+  }),
+  project("session-replay", {
+    issues: [
+      issue("sr-1", "ready", { priority: 0, owner: "sr-devloop" }),
+      issue("sr-2", "ready", { priority: 1 }),
+    ],
+  }),
+];
+
+const SORTED = snapshotOf(SORTED_PROJECTS);
+
+function rowsOf(groups: Array<{ rows: Array<{ id: string }> }>): string[][] {
+  return groups.map((group) => group.rows.map((row) => row.id));
+}
+
+test("sorting by queue orders each project's rows by queue name, with the unassigned rows last as their own group", () => {
+  const board = buildBoard(SORTED, {}, {}, "owner");
+  assert.equal(board.sort, "owner");
+  assert.deepEqual(rowsOf(board.needsYou), [["pitwall-4", "pitwall-3", "pitwall-2", "pitwall-1"]]);
+  assert.deepEqual(
+    board.ready.map((row) => row.id),
+    ["pitwall-7", "pitwall-6", "pitwall-5", "sr-1", "sr-2"],
+    "projects keep their count-then-name order; the sort runs inside each",
+  );
+  assert.deepEqual(rowsOf(board.parkedRows.rest), [["pitwall-10", "pitwall-9", "pitwall-8"]]);
+  assert.deepEqual(rowsOf(buildBoard(SORTED).needsYou), [["pitwall-1", "pitwall-2", "pitwall-3", "pitwall-4"]]);
+});
+
+test("sorting by reporter likewise groups the rows nobody is recorded as asking for last", () => {
+  const board = buildBoard(SORTED, {}, {}, "reporter");
+  assert.deepEqual(rowsOf(board.needsYou), [["pitwall-2", "pitwall-4", "pitwall-1", "pitwall-3"]]);
+  assert.deepEqual(board.ready.map((row) => row.id), ["pitwall-6", "pitwall-7", "pitwall-5", "sr-1", "sr-2"]);
+  assert.deepEqual(rowsOf(board.parkedRows.rest), [["pitwall-10", "pitwall-8", "pitwall-9"]]);
+});
+
+test("a sort is not a filter: the counts, the filtered flag and the view stay whole", () => {
+  const plain = buildBoard(SORTED);
+  for (const sort of ["owner", "reporter"] as const) {
+    const sorted = buildBoard(SORTED, {}, {}, sort);
+    assert.equal(sorted.filtered, false, sort);
+    assert.equal(sorted.issueCount, plain.issueCount);
+    assert.equal(sorted.readyCount, plain.readyCount);
+    assert.equal(sorted.needsYouCount, plain.needsYouCount);
+    assert.deepEqual(sorted.totals, plain.totals);
+  }
+  const both = buildBoard(SORTED, { project: "pitwall" }, {}, "owner");
+  assert.equal(both.filtered, true);
+  assert.deepEqual(both.ready.map((row) => row.id), ["pitwall-7", "pitwall-6", "pitwall-5"]);
+});
+
+test("the sort survives the hash, with and without filters, and an unknown sort falls back to the default", () => {
+  assert.equal(boardHref({}, "owner"), "#/?sort=owner");
+  assert.equal(boardHref({ project: "pitwall" }, "reporter"), "#/?project=pitwall&sort=reporter");
+  assert.equal(issueHref("pitwall", "pitwall-1", { owner: "none" }, "owner"), "#/issue/pitwall/pitwall-1?owner=none&sort=owner");
+  assert.equal(sortOf("#/?sort=owner"), "owner");
+  assert.equal(sortOf("#/issue/pitwall/pitwall-1?project=pitwall&sort=reporter"), "reporter");
+  assert.equal(sortOf("#/?project=pitwall"), undefined);
+  assert.equal(sortOf("#/?sort=zzz"), undefined);
+  assert.deepEqual(filterOf("#/?sort=owner"), {}, "a sort alone is no filter");
+  assert.deepEqual(filterOf("#/?owner=none&sort=owner"), { owner: "none" });
+  assert.deepEqual(filterOf(filterQuery({ owner: "pitwall-devloop" }, "reporter")), { owner: "pitwall-devloop" });
+});
+
+test("the sort control sits last, says default rather than priority, and keeps the filters it is beside", () => {
+  const board = buildBoard(SORTED, { project: "pitwall" }, {}, "reporter");
+  const markup = renderToStaticMarkup(
+    createElement(Filters, {
+      filter: board.filter,
+      sort: board.sort,
+      options: board.options,
+      shown: board.issueCount,
+      total: board.totals.issues,
+    }),
+  );
+  const owner = markup.indexOf('id="filter-owner"');
+  const clear = markup.indexOf(strings.filters.clear);
+  const sort = markup.indexOf('id="board-sort"');
+  assert.ok(owner > markup.indexOf('id="filter-epic"'), "queue follows epic");
+  assert.ok(clear > owner && sort > clear, "the sort control follows the clear link");
+  assert.match(markup, /<option value="">default<\/option><option value="owner">queue<\/option><option value="reporter" selected="">asked by<\/option>/);
+  assert.match(markup, /href="#\/\?sort=reporter">Clear filters/, "clearing the filters keeps the sort");
+  assert.equal(markup.includes("Filtered: sort"), false, "a sort states itself in the control, never as a filter");
+  assert.match(
+    markup,
+    /<select class="pw-select" id="filter-owner"[^>]*><option value=""[^>]*>All<\/option><option value="pitwall-blogging">pitwall-blogging<\/option><option value="pitwall-devloop">pitwall-devloop<\/option><option value="pitwall-planning-session">pitwall-planning-session<\/option><option value="sr-devloop">sr-devloop<\/option><option value="none">unassigned<\/option><\/select>/,
+  );
+  const unassigned = buildBoard(SORTED, { owner: "none" });
+  const stated = textOf(
+    renderToStaticMarkup(
+      createElement(Filters, {
+        filter: unassigned.filter,
+        options: unassigned.options,
+        shown: unassigned.issueCount,
+        total: unassigned.totals.issues,
+      }),
+    ),
+  );
+  assert.ok(stated.includes("Filtered: unassigned — 4 of 12 issues."), stated);
+  const named = buildBoard(SORTED, { owner: "pitwall-devloop" });
+  assert.equal(filterSentence(named.filter, named.options), "No issue matches queue pitwall-devloop.");
+});
+
+test("every issue row shows whose queue it is in and who asked, and absent reads as absent in words", () => {
+  const board = buildBoard(SORTED, {}, {}, "owner");
+  const needs = renderToStaticMarkup(createElement(NeedsYou, { groups: board.needsYou, sort: board.sort }));
+  assert.match(needs, /<th scope="col">Priority<\/th><th scope="col">Queue<\/th><th scope="col">Asked by<\/th><th scope="col">Kind<\/th>/);
+  assert.match(needs, /pitwall-2<\/td><td class="pw-cell pw-cell--data">P1<\/td><td class="pw-cell pw-cell--data pw-cell--who" title="pitwall-planning-session">pitwall-planning-session<\/td><td class="pw-cell pw-cell--data pw-cell--who" title="pitwall-devloop">pitwall-devloop<\/td><td class="pw-cell pw-cell--kind">decision<\/td>/);
+  assert.match(needs, /pitwall-1<\/td><td class="pw-cell pw-cell--data">P0<\/td><td class="pw-cell pw-cell--who"><span class="pw-absent">unassigned<\/span><\/td><td class="pw-cell pw-cell--who"><span class="pw-absent">not recorded<\/span><\/td>/);
+  assert.match(needs, /href="#\/issue\/pitwall\/pitwall-1\?sort=owner"/, "opening a ticket keeps the sort");
+  assert.doesNotMatch(needs, /pw-row--signal|pw-row--alert|pw-row--hold|pw-chip/, "a queue name is not a signal");
+  const ready = renderToStaticMarkup(createElement(Ready, { rows: board.ready, total: board.readyCount, sort: board.sort }));
+  assert.match(ready, /<th scope="col">Priority<\/th><th scope="col">Queue<\/th><th scope="col">Asked by<\/th><th scope="col">Title<\/th>/);
+  assert.match(ready, /pitwall-5<\/td><td class="pw-cell pw-cell--data">P0<\/td><td class="pw-cell pw-cell--who"><span class="pw-absent">unassigned<\/span><\/td><td class="pw-cell pw-cell--who"><span class="pw-absent">not recorded<\/span><\/td><td class="pw-cell pw-cell--title">/);
+  const parked = renderToStaticMarkup(createElement(ParkedBand, { entries: board.parked, rows: board.parkedRows, sort: board.sort }));
+  assert.match(parked, /<th scope="col">Priority<\/th><th scope="col">Queue<\/th><th scope="col">Asked by<\/th><th scope="col">Kind<\/th>/);
+  assert.match(parked, /<th colSpan="8" scope="rowgroup">pitwall<\/th>/);
+  assert.match(parked, /pitwall-9<\/td><td class="pw-cell pw-cell--data">P1<\/td><td class="pw-cell pw-cell--data pw-cell--who" title="pitwall-planning-session">pitwall-planning-session<\/td><td class="pw-cell pw-cell--who"><span class="pw-absent">not recorded<\/span><\/td>/);
 });
 
 test("an empty result names the filters that emptied it", () => {
@@ -1864,7 +2046,7 @@ test("no filter control is ever disabled, because a control that cannot be used 
     }),
   );
   assert.equal(markup.includes("disabled"), false);
-  assert.equal((markup.match(/<select/g) ?? []).length, 4);
+  assert.equal((markup.match(/<select/g) ?? []).length, 6);
 });
 
 test("a filter value the snapshot never knew says so where it is chosen and where it is stated", () => {

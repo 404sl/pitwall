@@ -1,16 +1,18 @@
-import type { FilterState, ReadyRow } from "../model.js";
+import type { FilterState, ReadyRow, SortKey } from "../model.js";
 import { priorityLabel } from "../format.js";
 import { issueHref } from "../routes.js";
 import { strings } from "../strings.js";
+import { WhoCells } from "./NeedsYou.js";
 
 interface ReadyProps {
   rows: ReadyRow[];
   total: number;
   filter?: FilterState;
+  sort?: SortKey;
   filteredEmpty?: string;
 }
 
-export function Ready({ rows, total, filter, filteredEmpty }: ReadyProps) {
+export function Ready({ rows, total, filter, sort, filteredEmpty }: ReadyProps) {
   if (rows.length === 0) {
     return <p className="pw-empty">{filteredEmpty ?? strings.empty.ready}</p>;
   }
@@ -24,6 +26,8 @@ export function Ready({ rows, total, filter, filteredEmpty }: ReadyProps) {
             <th scope="col">{strings.column.project}</th>
             <th scope="col">{strings.column.issue}</th>
             <th scope="col">{strings.column.priority}</th>
+            <th scope="col">{strings.column.owner}</th>
+            <th scope="col">{strings.column.reporter}</th>
             <th scope="col">{strings.column.title}</th>
           </tr>
         </thead>
@@ -37,8 +41,9 @@ export function Ready({ rows, total, filter, filteredEmpty }: ReadyProps) {
               <td className="pw-cell pw-cell--data" title={row.priority === undefined ? strings.stale.noPriority : undefined}>
                 {priorityLabel(row.priority)}
               </td>
+              <WhoCells row={row} />
               <td className="pw-cell pw-cell--title">
-                <a className="pw-link" href={issueHref(row.projectId, row.id, filter)}>
+                <a className="pw-link" href={issueHref(row.projectId, row.id, filter, sort)}>
                   {row.title}
                 </a>
               </td>

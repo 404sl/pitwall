@@ -10,6 +10,7 @@ import {
   type IssuePreview,
   type IssueView,
   type ParkAge as ParkAgeValue,
+  type SortKey,
   type StalenessView,
 } from "../model.js";
 import { VERDICT_CLASS, VERDICT_WORD, clock, elapsed, fill, priorityLabel, stamp } from "../format.js";
@@ -72,21 +73,41 @@ function Interpolated({ template, values }: { template: string; values: Record<s
   );
 }
 
-function IdLink({ project, id, filter }: { project: string; id: string; filter: FilterState }) {
+function IdLink({
+  project,
+  id,
+  filter,
+  sort,
+}: {
+  project: string;
+  id: string;
+  filter: FilterState;
+  sort?: SortKey;
+}) {
   return (
-    <a className="pw-link" href={issueHref(project, id, filter)}>
+    <a className="pw-link" href={issueHref(project, id, filter, sort)}>
       {id}
     </a>
   );
 }
 
-function IdList({ project, ids, filter }: { project: string; ids: string[]; filter: FilterState }) {
+function IdList({
+  project,
+  ids,
+  filter,
+  sort,
+}: {
+  project: string;
+  ids: string[];
+  filter: FilterState;
+  sort?: SortKey;
+}) {
   return (
     <>
       {ids.map((id, index) => (
         <Fragment key={id}>
           {index === 0 ? null : strings.issue.reason.separator}
-          <IdLink project={project} id={id} filter={filter} />
+          <IdLink project={project} id={id} filter={filter} sort={sort} />
         </Fragment>
       ))}
     </>
@@ -97,6 +118,7 @@ function reasonValues(
   reason: ClassificationReason,
   project: string,
   filter: FilterState,
+  sort: SortKey | undefined,
 ): Record<string, ReactNode> {
   switch (reason.rule) {
     case "in-progress-lane":
@@ -106,12 +128,12 @@ function reasonValues(
     case "umbrella-type":
       return { issueType: reason.issueType };
     case "umbrella-open-child":
-      return { childId: <IdLink project={project} id={reason.childId} filter={filter} /> };
+      return { childId: <IdLink project={project} id={reason.childId} filter={filter} sort={sort} /> };
     case "blocked-open":
     case "blocked-unreadable":
-      return { ids: <IdList project={project} ids={reason.ids} filter={filter} /> };
+      return { ids: <IdList project={project} ids={reason.ids} filter={filter} sort={sort} /> };
     case "blocked-parent-in-progress":
-      return { parentId: <IdLink project={project} id={reason.parentId} filter={filter} /> };
+      return { parentId: <IdLink project={project} id={reason.parentId} filter={filter} sort={sort} /> };
     case "stored-status":
       return { status: reason.status };
     default:
@@ -140,12 +162,14 @@ function Reason({
   reason,
   project,
   filter,
+  sort,
   park,
 }: {
   classification?: Classification;
   reason?: ClassificationReason;
   project: string;
   filter: FilterState;
+  sort?: SortKey;
   park?: ParkAgeValue;
 }) {
   if (classification === undefined || reason?.rule === "closed") {
@@ -160,7 +184,7 @@ function Reason({
             {strings.issue.because}
             <Interpolated
               template={reasonTemplate(reason)}
-              values={reasonValues(reason, project, filter)}
+              values={reasonValues(reason, project, filter, sort)}
             />
           </span>
         )}
@@ -396,17 +420,19 @@ function DependencyRows({
   project,
   links,
   filter,
+  sort,
 }: {
   project: string;
   links: IssueLink[];
   filter: FilterState;
+  sort?: SortKey;
 }) {
   return (
     <>
       {links.map((link) => (
         <tr key={link.id} className="pw-row">
           <td className="pw-cell pw-cell--id">
-            <IdLink project={project} id={link.id} filter={filter} />
+            <IdLink project={project} id={link.id} filter={filter} sort={sort} />
           </td>
           <td className="pw-cell pw-cell--title">{link.title}</td>
           <td className="pw-cell pw-cell--data">{link.status}</td>
@@ -416,7 +442,7 @@ function DependencyRows({
   );
 }
 
-function Dependencies({ view, filter }: { view: IssueView; filter: FilterState }) {
+function Dependencies({ view, filter, sort }: { view: IssueView; filter: FilterState; sort?: SortKey }) {
   const { project, blockedBy, blocks } = view.issue;
   return (
     <table className="pw-table pw-table--deps">
@@ -441,7 +467,7 @@ function Dependencies({ view, filter }: { view: IssueView; filter: FilterState }
             </td>
           </tr>
         ) : (
-          <DependencyRows project={project} links={blockedBy} filter={filter} />
+          <DependencyRows project={project} links={blockedBy} filter={filter} sort={sort} />
         )}
       </tbody>
       <tbody>
@@ -457,11 +483,22 @@ function Dependencies({ view, filter }: { view: IssueView; filter: FilterState }
             </td>
           </tr>
         ) : (
-          <DependencyRows project={project} links={blocks} filter={filter} />
+          <DependencyRows project={project} links={blocks} filter={filter} sort={sort} />
         )}
       </tbody>
     </table>
   );
+}
+
+function WhoFact({ value, absent }: { value: string | undefined; absent: string }) {
+  if (value === undefined) {
+    return (
+      <dd className="pw-facts__value">
+        <span className="pw-absent">{absent}</span>
+      </dd>
+    );
+  }
+  return <dd className="pw-facts__value pw-cell--data">{value}</dd>;
 }
 
 function Facts({ shown, superseded }: { shown: IssuePreview; superseded?: { status: string; at: string } }) {
@@ -477,6 +514,14 @@ function Facts({ shown, superseded }: { shown: IssuePreview; superseded?: { stat
         </p>
       )}
       <dl className="pw-facts__list">
+      <div className="pw-facts__pair">
+        <dt className="pw-facts__term">{strings.issue.facts.owner}</dt>
+        <WhoFact value={shown.owner} absent={strings.who.unassigned} />
+      </div>
+      <div className="pw-facts__pair">
+        <dt className="pw-facts__term">{strings.issue.facts.reporter}</dt>
+        <WhoFact value={shown.reporter} absent={strings.who.unreported} />
+      </div>
       <div className="pw-facts__pair">
         <dt className="pw-facts__term">{strings.issue.facts.project}</dt>
         <dd className="pw-facts__value">{shown.projectName}</dd>
@@ -544,6 +589,8 @@ export function shownOf(view: IssueView): IssuePreview {
     issueType: issue.issueType,
     priority: issue.priority,
     labels: issue.labels,
+    owner: issue.owner,
+    reporter: issue.reporter,
     project: issue.project,
     projectName: issue.projectName,
     classification: issue.classification,
@@ -554,9 +601,9 @@ export function shownOf(view: IssueView): IssuePreview {
   };
 }
 
-function backLink(filter: FilterState) {
+function backLink(filter: FilterState, sort: SortKey | undefined) {
   return (
-    <a className="pw-link pw-link--back" href={boardHref(filter)}>
+    <a className="pw-link pw-link--back" href={boardHref(filter, sort)}>
       {strings.issue.back}
     </a>
   );
@@ -616,6 +663,7 @@ export function IssueDetail({
   view,
   failure,
   filter = {},
+  sort,
   heading,
   route,
   onOutcome,
@@ -625,6 +673,7 @@ export function IssueDetail({
   view?: IssueView;
   failure?: PageFailure;
   filter?: FilterState;
+  sort?: SortKey;
   heading?: Ref<HTMLHeadingElement>;
   route?: IssueRoute;
   onOutcome?: (outcome: ActionOutcome) => Promise<void>;
@@ -634,7 +683,7 @@ export function IssueDetail({
   return (
     <>
       <div className="pw-issue__head">
-        {backLink(filter)}
+        {backLink(filter, sort)}
         <h2 className="pw-issue__title" ref={heading} tabIndex={-1}>
           {shown.title}
         </h2>
@@ -682,6 +731,7 @@ export function IssueDetail({
           reason={view?.issue.reason}
           project={shown.project}
           filter={filter}
+          sort={sort}
           park={shown.park}
         />
       </Band>
@@ -708,7 +758,7 @@ export function IssueDetail({
             <Notes authority={view.issue.authority} text={view.issue.notes} />
           </Band>
           <Band id="dependencies" label={strings.issue.band.dependencies} level="h3">
-            <Dependencies view={view} filter={filter} />
+            <Dependencies view={view} filter={filter} sort={sort} />
           </Band>
           <Origin view={view} />
         </>
@@ -721,10 +771,12 @@ export function IssuePage({
   route,
   preview,
   filter = {},
+  sort,
 }: {
   route: IssueRoute;
   preview?: IssuePreview;
   filter?: FilterState;
+  sort?: SortKey;
 }) {
   const [view, setView] = useState<IssueView | undefined>(undefined);
   const [failure, setFailure] = useState<PageFailure | undefined>(undefined);
@@ -819,7 +871,7 @@ export function IssuePage({
   if (shown === undefined) {
     return (
       <>
-        {backLink(filter)}
+        {backLink(filter, sort)}
         {loading ? (
           <p className="pw-empty" role="status">
             {strings.issue.loading}
@@ -837,6 +889,7 @@ export function IssuePage({
       view={view}
       failure={failure}
       filter={filter}
+      sort={sort}
       heading={heading}
       route={route}
       onOutcome={onOutcome}
