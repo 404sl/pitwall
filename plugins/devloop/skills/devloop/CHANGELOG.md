@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.113
+
+A lane kills what it launched by the pid it recorded at launch, never with a pattern kill on a path or flag substring. Without a recorded pid it lists matches first, prints them, and kills only those whose command starts with the intended binary; if it cannot identify the process that way it leaves it running and says so. A permission failure that appears right after a cleanup step is to be reported as self-inflicted, not as an environment fault.
+
 ## 0.1.112
 
 `slot.sh` no longer suggests `--gc` when every lane is busy, and no longer lists slots without a lane lock as "probably finished" - an absent lock says nothing about whether a run is finished. When the pool is full it says how many held slots have no lock and names `slot.sh --release <id>` for a run that has reported; a pool whose every slot holds its lock prints the one line it always did. `--gc` still frees a slot only on `lane-running.sh` answering NOT-RUNNING, and its free line now names that verdict rather than the absence of a lock and a worktree.

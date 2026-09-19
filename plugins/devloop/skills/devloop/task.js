@@ -485,6 +485,22 @@ NON-NEGOTIABLE RULES. They outrank speed, and they outrank finishing the task.
    A brief that sends you to 'gh' names this run's slug above, or the command that reads it from
    the checkout. If a command needs a number from another repository, name that repository
    explicitly too.
+13. ANYTHING YOU LAUNCH, YOU KILL BY THE PID YOU RECORDED WHEN YOU LAUNCHED IT - a headless
+   browser, a dev server, a watcher. NEVER 'pkill -f' ON A PATH OR FLAG SUBSTRING. pkill -f
+   matches the full argument list of every process on the machine, and the shell wrapping a
+   backgrounded command carries that command in its own argv - so the wrapper matches its own
+   target, and /tmp is shared with every other lane and every other workspace besides. A lane
+   tidying up after itself can kill the process it is running inside, and nothing in the output
+   says what else went. On 2026-09-08 a lane did exactly that against its browser's
+   user-data-dir, and from that moment every path under the owner's home read 'Operation not
+   permitted' for the lane and its supervisor until the whole process tree was relaunched - a
+   correlation rather than a proven cause, and the pattern is unsafe either way.
+   If you did not record the pid and must match by pattern: 'pgrep -f' first, print every match
+   with its full command line, and kill only the pids whose command starts with the intended
+   binary. If you cannot identify the process that way, LEAVE IT RUNNING AND SAY SO in your
+   summary: a stray browser costs somebody one kill command; a killed supervisor costs the run.
+   THE TELL: 'Operation not permitted' appearing across your session right after a cleanup step
+   looks like an environment fault. Suspect the cleanup first, and say so.
 
 ${SHELL_FIRST(base)}
 `
