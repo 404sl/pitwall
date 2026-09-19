@@ -1212,8 +1212,38 @@ Otherwise:
 4. Run the checks above until green - but iterate on the targeted file first and keep the
    full suite for the end. On site the full suite is about two and a half minutes and a fix
    round that runs it after every edit spends most of its life waiting. Narrow while you
-   work ('rspec path/to/file_spec.rb:42'), then run everything once before you commit, and
-   again only if you changed something after that.
+   work ('rspec path/to/file_spec.rb:42'), then run everything once before you fold and push,
+   and again only if you changed something after that.
+
+   COMMIT AS SOON AS THE CHANGE COMPILES, AND AGAIN BEFORE ANYTHING THAT WAITS - the full
+   suite, a capture, a CI wait. Stage the files you changed and commit them to ${branch} with
+   the identity on the command, exactly as step 5 does:
+     git -c user.name="$(git log -1 --format=%an origin/${base})" -c user.email="$(git log -1 --format=%ae origin/${base})" commit -F <message file>
+   A commit is the shape in which a stopped run's work comes back. kill-lane.sh is the documented
+   response to a stuck lane, and a re-dispatch cannot start until it has run, because git worktree
+   add refuses a directory that exists and a branch that exists: it removes the worktree and deletes
+   a branch the remote never saw, and first writes what it found to a rescue directory - each commit
+   no remote holds as a patch git am replays with its message and author intact, and uncommitted
+   files as one diff of the whole tree, staged, unstaged and untracked run together, which is
+   evidence for a person to read rather than a change anyone can land. slot.sh --gc frees the slot
+   file and touches neither. A commit also outlives a worktree removed by hand, which the rescue
+   never sees, and a push outlives the machine. That is how pitwall#148 went: a run stopped with
+   337 finished, on-brief lines uncommitted, and they survived only because a person read an
+   unusually thorough summary and copied them out by hand.
+
+   AN INTERIM COMMIT IS A REAL COMMIT. Its message goes through the same grep step 5 runs, so
+   write it as one plain line saying what it holds so far, not "wip" or "checkpoint" - and never
+   let one reach the pushed branch as it stands. Before the pre-push check in step 5, fold them
+   into the one commit whose message you want on the pull request:
+     git fetch origin --quiet && git reset --soft "$(git merge-base --is-ancestor origin/${branch} HEAD 2>/dev/null && git rev-parse origin/${branch} || git merge-base origin/${base} HEAD)" && git -c user.name="$(git log -1 --format=%an origin/${base})" -c user.email="$(git log -1 --format=%ae origin/${base})" commit -F <message file>
+   That resets to the head the remote holds for ${branch} when HEAD builds on it, because a
+   reset past a commit the remote already holds makes the next push a force-push, which you
+   may not run. When the remote has no such branch it resets to the commit this lane forked
+   from, and NOT to origin/${base}: the fetch just moved origin/${base} to whatever other lanes
+   have landed since you started, and a soft reset onto that head keeps the index you built on
+   the old one, so the folded commit would put your stale copy of every file they touched on
+   top of their work and silently revert it. The fork point carries only your own change; the
+   lander rebases it onto ${base} when it merges.
 5. ${task.repo === 'docs'
    ? `Run 'ruby script/check.rb', then commit, read your own commit messages back with
      bash ${SKILL_DIR}/lane-handoff.sh --repo-path ${wtPath} --pre-push --base ${base}
@@ -1221,7 +1251,8 @@ Otherwise:
    fix, and what you checked by reading. Reference ${task.id}. Do NOT merge it. This repository
    gained a remote and CI on 2026-08-19; the instruction that it had neither outlived the fact
    by a day and would have had you commit straight onto a real default branch.`
-   : `Commit with the identity on the command rather than from a config nobody read -
+   : `Commit with the identity on the command rather than from a config nobody read - the fold
+   in step 4 is that commit, so when it has already run there is nothing left to commit here -
    git -c user.name="$(git log -1 --format=%an origin/${base})" -c user.email="$(git log -1 --format=%ae origin/${base})" commit -F <message file> -
    then READ YOUR OWN COMMIT MESSAGES BACK BEFORE YOU PUSH:
      bash ${SKILL_DIR}/lane-handoff.sh --repo-path ${wtPath} --pre-push --base ${base}

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.104
+
+The fix brief now tells a lane to commit its work to the branch as soon as it compiles and again before every long-running step, and to fold those interim commits into one before the pre-push check - onto the head the remote holds when the branch is published, and onto the fork point when it is not. kill-lane.sh rescues the commits a never-pushed branch holds as a mailbox in the rescue directory, listed on stdout and replayable with git am, before it deletes the branch; a dry run names the file it would write. A fix step that is killed mid-suite leaves commits, and the cleanup keeps them.
+
+Refs pitwall-2tt2
+
 ## 0.1.103
 
 A run that ends short of a handoff - blocked, needs_feedback, a dead fix step - now says in a top-level `worktree` field whether its worktree is gone, clean, or still holding uncommitted or unpushed work, naming the path, and the console line for that outcome says the same. Read that field before `kill-lane.sh` removes the worktree; `UNCOMMITTED` means work no branch protects. `release-lane.sh --worktree <path>` is what reports it, and it only reads. A git read that fails inside the checkout is `UNREAD`, never `CLEAN`, and a release step that does not answer leaves the field `UNKNOWN`, never clean.

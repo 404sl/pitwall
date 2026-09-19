@@ -50,6 +50,8 @@ function lane(t: TestContext): Lane {
   writeFileSync(join(repo, "unstaged.bin"), BASE);
   git(repo, "add", "staged.bin", "unstaged.bin");
   git(repo, "commit", "-qm", "first");
+  git(repo, "remote", "add", "origin", repo);
+  git(repo, "fetch", "-q", "origin");
 
   const worktrees = `/tmp/${prefix}-worktrees`;
   const worktree = join(worktrees, ID);
