@@ -558,3 +558,87 @@ test("the lander's lease-and-refspec push still runs with --default given and --
   );
   assert.equal(ran.ran, true, "the guard exited 0 without running the push it was given");
 });
+
+function refusedEveryBranch(ran: Ran, flag: string) {
+  refused(ran, `a push with ${flag}, which writes every local branch without naming one`);
+  assert.match(
+    ran.err,
+    new RegExp(`push ${flag}`),
+    `the refusal came from some other branch of the guard, so this test would pass with the ` +
+      `${flag} check deleted - the flag carries no refspec, so none of the destination checks ` +
+      `can see it, and it moves master all the same:\n${ran.err}`,
+  );
+}
+
+test("git push --all carries no refspec and moves master with the rest, so it is refused", () => {
+  const box = workspace();
+
+  const ran = push(box, [`--dir=${box.lane}`, "--branch=devloop/zz-aaa1"], ["--all", "origin"]);
+
+  refusedEveryBranch(ran, "--all");
+});
+
+test("git push --mirror carries no refspec and moves master with the rest, so it is refused", () => {
+  const box = workspace();
+
+  const ran = push(box, [`--dir=${box.lane}`, "--branch=devloop/zz-aaa1"], ["--mirror", "origin"]);
+
+  refusedEveryBranch(ran, "--mirror");
+});
+
+test("--all after the remote is refused like --all before it", () => {
+  const box = workspace();
+
+  const ran = push(box, [`--dir=${box.lane}`, "--branch=devloop/zz-aaa1"], ["origin", "--all"]);
+
+  refusedEveryBranch(ran, "--all");
+});
+
+test("--branches is the newer spelling of --all and is refused with it", () => {
+  const box = workspace();
+
+  const ran = push(box, [`--dir=${box.lane}`, "--branch=devloop/zz-aaa1"], ["--branches", "origin"]);
+
+  refusedEveryBranch(ran, "--branches");
+});
+
+test("--mirror with --dir alone is refused, which is how the lander calls the guard", () => {
+  const box = workspace();
+
+  const ran = push(box, [`--dir=${box.lane}`], ["--mirror", "origin"]);
+
+  refusedEveryBranch(ran, "--mirror");
+});
+
+test("git accepts --mirr as --mirror, so the abbreviation is refused with the full spelling", () => {
+  const box = workspace();
+
+  const ran = push(box, [`--dir=${box.lane}`, "--branch=devloop/zz-aaa1"], ["--mirr", "origin"]);
+
+  refusedEveryBranch(ran, "--mirr");
+});
+
+test("git accepts --al as --all, so the abbreviation is refused with the full spelling", () => {
+  const box = workspace();
+
+  const ran = push(box, [`--dir=${box.lane}`, "--branch=devloop/zz-aaa1"], ["--al", "origin"]);
+
+  refusedEveryBranch(ran, "--al");
+});
+
+test("--m is the shortest spelling git accepts for --mirror and is refused", () => {
+  const box = workspace();
+
+  const ran = push(box, [`--dir=${box.lane}`, "--branch=devloop/zz-aaa1"], ["--m", "origin"]);
+
+  refusedEveryBranch(ran, "--m");
+});
+
+test("--atomic shares a prefix with --all and still runs, so the abbreviation check refuses only the three flags", () => {
+  const box = workspace();
+
+  const ran = push(box, [`--dir=${box.lane}`, "--branch=devloop/zz-aaa1"], ["--atomic", "origin", "devloop/zz-aaa1"]);
+
+  assert.equal(ran.code, 0, `the guard refused --atomic as an abbreviation of --all:\n${ran.out}\n${ran.err}`);
+  assert.equal(ran.ran, true, "the guard exited 0 without running the push it was given");
+});
