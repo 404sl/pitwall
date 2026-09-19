@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.109
+
+- The landing prompts that span every repository - lock, survey, release, deploy, read-back, retire and close - now list each repository beside the remote branch it lands on when the configured default branches differ, instead of showing a placeholder in the identity command. With one shared default, or none configured, the prompts are unchanged.
+
 ## 0.1.108
 
 `git push --all`, `git push --mirror` and `git push --branches`, and any abbreviation git accepts for them such as `--mirr` or `--al`, are refused by the guard from any worktree, with exit 2 and nothing run: none of them names a destination, and all three write the shared local master to the remote along with the rest. Push one branch by name instead. A push alias, a push wrapped in `sh -c` or `env`, and a refspec supplied by configuration are still not read by the guard.
