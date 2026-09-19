@@ -20,11 +20,6 @@ if [ -z "$dir" ]; then
   exit 2
 fi
 
-if [ -z "$branch" ]; then
-  echo "git-guard.sh: --branch is required. Refusing to guess which branch the caller believes it is on." >&2
-  exit 2
-fi
-
 if [ "$have_cmd" = 0 ] || [ $# -eq 0 ]; then
   echo "git-guard.sh: no command after --. Nothing to guard and nothing was run." >&2
   exit 2
@@ -67,21 +62,23 @@ if [ "$top" != "$want" ]; then
   exit 2
 fi
 
-head=$(git -C "$dir" symbolic-ref --quiet --short HEAD || true)
+if [ -n "$branch" ]; then
+  head=$(git -C "$dir" symbolic-ref --quiet --short HEAD || true)
 
-if [ -z "$head" ]; then
-  echo "REFUSED" >&2
-  echo "git-guard.sh: ${dir} is on a detached HEAD, so there is no branch to check ${branch} against." >&2
-  echo "              Nothing was run." >&2
-  exit 2
-fi
+  if [ -z "$head" ]; then
+    echo "REFUSED" >&2
+    echo "git-guard.sh: ${dir} is on a detached HEAD, so there is no branch to check ${branch} against." >&2
+    echo "              Nothing was run." >&2
+    exit 2
+  fi
 
-if [ "$head" != "$branch" ]; then
-  echo "REFUSED" >&2
-  echo "git-guard.sh: ${dir} is on ${head} and the caller believes it is on ${branch}. Nothing was run." >&2
-  echo "              A push from the wrong branch is the failure this guard exists to stop, and the" >&2
-  echo "              disagreement is the evidence that a cd went somewhere it was not meant to." >&2
-  exit 2
+  if [ "$head" != "$branch" ]; then
+    echo "REFUSED" >&2
+    echo "git-guard.sh: ${dir} is on ${head} and the caller believes it is on ${branch}. Nothing was run." >&2
+    echo "              A push from the wrong branch is the failure this guard exists to stop, and the" >&2
+    echo "              disagreement is the evidence that a cd went somewhere it was not meant to." >&2
+    exit 2
+  fi
 fi
 
 cd "$dir" || exit 2
