@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.100
+
+The handoff no longer needs GraphQL. Every read and write it makes to label a pull request goes through `gh api` on the REST budget, so a session whose `gh pr view` and `gh pr list` are being refused for a rate limit can still hand off a green branch. A REST call that is itself rate limited is retried with backoff, five attempts over 75 seconds, before the handoff reports it, and every refusal now prints what gh said. Exit 7 still means nothing could be read at all. The paginated reads need gh 2.44 or later.
+
 ## 0.1.99
 
 `config.sh --args` and `--rework` now say on stderr when a root checkout's default branch is behind origin, naming the repository, the count and both shas, and say when a checkout could not be compared. The dispatch proceeds either way and nothing is fast-forwarded - read the line and fast-forward the checkout yourself. Tolerate some lag with `warnBehind` in the workspace config; the default reports any lag at all.

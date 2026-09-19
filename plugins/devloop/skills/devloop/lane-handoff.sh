@@ -59,7 +59,7 @@
 #                    a throttled or failing gh, or output that did not parse. Nothing is known
 #                    about its checks, which is not the same as knowing they failed, so this is
 #                    never reported as 4. Nothing was labelled anywhere. It names the exact
-#                    'gh pr view' it attempted and what gh or the reader said. Retry the read.
+#                    'gh api' read it attempted and what gh or the reader said. Retry the read.
 #  10  published-rewritten  --pre-push without --rebased. The branch exists on the remote and HEAD
 #                    does not contain the head it holds, so it was published and then rewritten and
 #                    no plain push will be accepted. Every commit message graded clear - there is
@@ -435,46 +435,78 @@ $(printf '%s\n' "$hit" | sed 's/^/    /')
   exit 0
 fi
 
+REST_TRIES="${LANE_HANDOFF_REST_TRIES:-5}"
+REST_BACKOFF="${LANE_HANDOFF_REST_BACKOFF:-5}"
+case "$REST_TRIES" in ''|*[!0-9]*|0) REST_TRIES=1 ;; esac
+case "$REST_BACKOFF" in ''|*[!0-9]*) REST_BACKOFF=5 ;; esac
+
+gh_rest() {
+  local _out="$1" _err="$2" _try=1 _rc _wait
+  shift 2
+  while :; do
+    gh api "$@" >"$_out" 2>"$_err"; _rc=$?
+    [ "$_rc" -eq 0 ] && return 0
+    [ "$_try" -lt "$REST_TRIES" ] || return "$_rc"
+    grep -qiE 'rate limit|secondary rate|abuse detection|HTTP 429' "$_err" || return "$_rc"
+    _wait=$(( REST_BACKOFF << (_try - 1) ))
+    echo "lane-handoff.sh: gh api $* was rate limited on attempt ${_try} of ${REST_TRIES} - waiting ${_wait}s" >&2
+    sleep "$_wait"
+    _try=$((_try + 1))
+  done
+}
+
 # 1. COMPLIANCE, read back from where the text is actually stored rather than from what anybody
 #    meant to write. GitHub and git both add and rewrite text.
 check_one() {
-  local _path="$1" _slug="$2" _pr="$3"
-  local body msgs body_hits msg_hits head_sha state verdict rollup_head msgs_rc
-  local attempt rollup_json rollup_err gh_rc read_rc said began repo_neutral
+  local box rc
+  box=$(mktemp -d "${TMPDIR:-/tmp}/lane-handoff-check.XXXXXX")
+  check_one_in "$box" "$@"; rc=$?
+  rm -rf "$box"
+  return "$rc"
+}
 
-  body=$(gh pr view "$_pr" --repo "$_slug" --json title,body 2>/dev/null \
-         | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('title','')); print(d.get('body',''))" 2>/dev/null)
+check_one_in() {
+  local box="$1" _path="$2" _slug="$3" _pr="$4"
+  local body msgs body_hits msg_hits head_sha state verdict rollup_head msgs_rc
+  local attempt gh_rc read_rc said began repo_neutral pr_json pr_rc checks_json endpoint
+
+  gh_rest "$box/pr.json" "$box/err" "repos/${_slug}/pulls/${_pr}"; pr_rc=$?
+  pr_json=$(cat "$box/pr.json" 2>/dev/null)
+  body=$(printf '%s' "$pr_json" \
+         | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('title') or ''); print(d.get('body') or '')" 2>/dev/null)
 
   # AN EMPTY BODY IS A FAILED READ, NOT A CLEAN ONE. gh can fail for a wrong slug, an
   # expired token, a rate limit or a deleted pull request, and every one of those produces
   # the same empty string that a compliant pull request with no text would. The check below
   # cannot tell them apart, so refuse here instead of passing trivially.
-  if [ -z "$(printf '%s' "$body" | tr -d '[:space:]')" ]; then
+  if [ "$pr_rc" -ne 0 ] || [ -z "$(printf '%s' "$body" | tr -d '[:space:]')" ]; then
+    said=$(head -n 1 "$box/err" 2>/dev/null)
     echo "lane-handoff.sh: read an EMPTY body for $_slug#$_pr - refusing to report compliance." >&2
     echo "                 gh may have failed, the token may be expired, or the pull request" >&2
     echo "                 may not exist. An empty read is not a clean read." >&2
+    [ -n "$said" ] && echo "                 gh said: ${said}" >&2
     return 7
   fi
-  msgs=$(gh pr view "$_pr" --repo "$_slug" --json commits 2>/dev/null \
-    | python3 -c "
+  gh_rest "$box/commits.json" "$box/err" -X GET "repos/${_slug}/pulls/${_pr}/commits" --paginate --slurp -F per_page=100; gh_rc=$?
+  msgs=$(python3 -c "
 import json,sys
-d=json.load(sys.stdin)
-cs=d.get('commits') if isinstance(d,dict) else None
+pages=json.load(open(sys.argv[1]))
+cs=[c for p in pages for c in (p if isinstance(p,list) else [])]
 if not cs: raise SystemExit(1)
 for c in cs:
-    h=c.get('messageHeadline') or ''
-    b=c.get('messageBody') or ''
-    if h.endswith('\u2026') and b.startswith('\u2026'): print(h[:-1]+b[1:])
-    else: print(h); print(b)
-    for a in c.get('authors') or []:
-        print('%s <%s>' % (a.get('name') or a.get('login') or '', a.get('email') or ''))
-" 2>/dev/null); msgs_rc=$?
-  if [ "$msgs_rc" != 0 ] || [ -z "$(printf '%s' "$msgs" | tr -d '[:space:]')" ]; then
+    cm=(c or {}).get('commit') or {}
+    print(cm.get('message') or '')
+    for who in (cm.get('author'), cm.get('committer')):
+        if who: print('%s <%s>' % (who.get('name') or '', who.get('email') or ''))
+" "$box/commits.json" 2>/dev/null); msgs_rc=$?
+  if [ "$gh_rc" != 0 ] || [ "$msgs_rc" != 0 ] || [ -z "$(printf '%s' "$msgs" | tr -d '[:space:]')" ]; then
+    said=$(head -n 1 "$box/err" 2>/dev/null)
     echo "lane-handoff.sh: could not read the commits of ${_slug}#${_pr} from GitHub, so its" >&2
     echo "                 commit messages and trailers cannot be graded. A compliance pass over" >&2
     echo "                 the pull request body alone is not a compliance pass, so nothing was" >&2
     echo "                 labelled. gh may have failed, the token may be expired, or the pull" >&2
     echo "                 request may not exist. An empty read is not a clean read." >&2
+    [ -n "$said" ] && echo "                 gh said: ${said}" >&2
     return 7
   fi
 
@@ -529,64 +561,76 @@ for c in cs:
 
   # 2. Is it actually green? An empty rollup is not a pass, and a rollup describing an older head
   #    says nothing about what is on the branch now.
-  head_sha=$(gh api "repos/${_slug}/git/ref/heads/${BRANCH}" 2>/dev/null \
-    | python3 -c "
+  gh_rest "$box/ref.json" "$box/err" "repos/${_slug}/git/ref/heads/${BRANCH}"
+  head_sha=$(python3 -c "
 import json,sys
-d=json.load(sys.stdin)
+d=json.load(open(sys.argv[1]))
 if not isinstance(d,dict): raise SystemExit(1)
 print((d.get('object') or {}).get('sha') or '')
-" 2>/dev/null)
+" "$box/ref.json" 2>/dev/null)
   HEAD_OF="$head_sha"
   if [ -z "$head_sha" ]; then
+    said=$(head -n 1 "$box/err" 2>/dev/null)
     echo "lane-handoff.sh: could not read what sha ${BRANCH} is at in ${_slug} from GitHub, so" >&2
     echo "                 whether the rollup describes the current head is unknown. An empty" >&2
     echo "                 read is not a clean read. Nothing was labelled." >&2
+    [ -n "$said" ] && echo "                 gh said: ${said}" >&2
     return 7
   fi
-  attempt="gh pr view ${_pr} --repo ${_slug} --json statusCheckRollup,headRefOid,mergeable,mergeStateStatus"
-  rollup_err=$(mktemp "${TMPDIR:-/tmp}/lane-handoff-rollup.XXXXXX")
-  rollup_json=$(gh pr view "$_pr" --repo "$_slug" --json statusCheckRollup,headRefOid,mergeable,mergeStateStatus 2>"$rollup_err")
-  gh_rc=$?
-  if [ "$gh_rc" -ne 0 ] || [ -z "$rollup_json" ]; then
-    said=$(head -n 1 "$rollup_err")
-    rm -f "$rollup_err"
-    echo "unreadable: could not read the status rollup for ${_slug}#${_pr} - nothing is known about its checks"
-    echo "            attempted: ${attempt}"
-    echo "            gh exited ${gh_rc} and said: ${said:-nothing on stderr}"
+  rollup_head=$(printf '%s' "$pr_json" \
+    | python3 -c "import json,sys; print(((json.load(sys.stdin).get('head') or {}).get('sha') or ''))" 2>/dev/null)
+  if [ -z "$rollup_head" ]; then
+    began=$(printf '%s' "$pr_json" | head -c 120 | tr '\n\t' '  ')
+    echo "unreadable: the pull request ${_slug}#${_pr} names no head sha - nothing is known about its checks"
+    echo "            attempted: gh api repos/${_slug}/pulls/${_pr}"
+    echo "            gh returned ${#pr_json} bytes beginning: ${began}"
     echo "            Nothing was labelled and no check is known to have failed. Retry the read."
     return 9
   fi
+  for endpoint in check-runs status; do
+    attempt="gh api repos/${_slug}/commits/${rollup_head}/${endpoint}"
+    gh_rest "$box/${endpoint}.json" "$box/err" -X GET "repos/${_slug}/commits/${rollup_head}/${endpoint}" --paginate --slurp -F per_page=100
+    gh_rc=$?
+    if [ "$gh_rc" -ne 0 ] || [ ! -s "$box/${endpoint}.json" ]; then
+      said=$(head -n 1 "$box/err" 2>/dev/null)
+      echo "unreadable: could not read the status rollup for ${_slug}#${_pr} - nothing is known about its checks"
+      echo "            attempted: ${attempt}"
+      echo "            gh exited ${gh_rc} and said: ${said:-nothing on stderr}"
+      echo "            Nothing was labelled and no check is known to have failed. Retry the read."
+      return 9
+    fi
+  done
 
-  state=$(printf '%s' "$rollup_json" | python3 -c "
+  state=$(python3 -c "
 import json,sys
-d=json.load(sys.stdin)
-r=d.get('statusCheckRollup') or []
-m=str(d.get('mergeable') or '').upper()
-s=str(d.get('mergeStateStatus') or '').upper()
-c='CONFLICTED' if m == 'CONFLICTING' or s == 'DIRTY' else ''
-if not r: print('EMPTY||'+c); raise SystemExit
-def green(c2):
-    if c2.get('__typename')=='StatusContext' or ('state' in c2 and 'conclusion' not in c2):
-        return str(c2.get('state') or '').upper()=='SUCCESS'
-    return str(c2.get('conclusion') or '').upper() in ('SUCCESS','NEUTRAL','SKIPPED')
-bad=[c2.get('name') or c2.get('context') or c2.get('__typename') or 'unnamed' for c2 in r if not green(c2)]
-print(('BAD:'+','.join(bad) if bad else 'GREEN')+'|'+(d.get('headRefOid') or '')+'|'+c)
-" 2>"$rollup_err")
+def pages(path):
+    p=json.load(open(path))
+    return p if isinstance(p,list) else [p]
+runs=[c for p in pages(sys.argv[1]) for c in (p.get('check_runs') or [])]
+ctx=[c for p in pages(sys.argv[2]) for c in (p.get('statuses') or [])]
+pr=json.load(open(sys.argv[3]))
+m=pr.get('mergeable'); s=str(pr.get('mergeable_state') or '').lower()
+c='CONFLICTED' if m is False or s == 'dirty' else ''
+if not runs and not ctx: print('EMPTY|'+c); raise SystemExit
+bad=[c2.get('name') or 'unnamed' for c2 in runs
+     if str(c2.get('conclusion') or '').lower() not in ('success','neutral','skipped')]
+bad+=[c2.get('context') or 'unnamed' for c2 in ctx if str(c2.get('state') or '').lower() != 'success']
+print(('BAD:'+','.join(bad) if bad else 'GREEN')+'|'+c)
+" "$box/check-runs.json" "$box/status.json" "$box/pr.json" 2>"$box/err")
   read_rc=$?
   if [ "$read_rc" -ne 0 ] || [ -z "$state" ]; then
-    said=$(tail -n 1 "$rollup_err")
-    began=$(printf '%s' "$rollup_json" | head -c 120 | tr '\n\t' '  ')
-    rm -f "$rollup_err"
+    said=$(tail -n 1 "$box/err" 2>/dev/null)
+    checks_json=$(cat "$box/check-runs.json" 2>/dev/null)
+    began=$(printf '%s' "$checks_json" | head -c 120 | tr '\n\t' '  ')
     echo "unreadable: the status rollup for ${_slug}#${_pr} did not parse - nothing is known about its checks"
-    echo "            attempted: ${attempt}"
+    echo "            attempted: gh api repos/${_slug}/commits/${rollup_head}/check-runs and /status"
     echo "            the reader exited ${read_rc} and said: ${said:-nothing on stderr}"
-    echo "            gh returned ${#rollup_json} bytes beginning: ${began}"
+    echo "            gh returned ${#checks_json} bytes beginning: ${began}"
     echo "            Nothing was labelled and no check is known to have failed. Retry the read."
     return 9
   fi
-  rm -f "$rollup_err"
 
-  verdict=${state%%|*}; rest=${state#*|}; rollup_head=${rest%%|*}; conflict=${rest#*|}
+  verdict=${state%%|*}; conflict=${state#*|}
 
   stale=0
   if [ -n "$rollup_head" ] && [ "$rollup_head" != "$head_sha" ]; then stale=1; fi
@@ -683,22 +727,30 @@ while IFS="|" read -r rname rpath rslug; do
     echo "                 to it, then re-run." >&2
     exit 7
   fi
-  found=$(gh api -X GET "repos/${rslug}/pulls" -f head="${rslug%%/*}:${BRANCH}" -f state=open -F per_page=100 2>/dev/null \
-    | python3 -c "
+  survey_out=$(mktemp "${TMPDIR:-/tmp}/lane-handoff-survey.XXXXXX")
+  survey_err=$(mktemp "${TMPDIR:-/tmp}/lane-handoff-survey.XXXXXX")
+  gh_rest "$survey_out" "$survey_err" -X GET "repos/${rslug}/pulls" -f head="${rslug%%/*}:${BRANCH}" -f state=open -F per_page=100
+  survey_rc=$?
+  found=$(python3 -c "
 import json,sys
-try: prs=json.load(sys.stdin)
+try: prs=json.load(open(sys.argv[1]))
 except Exception: raise SystemExit(1)
 if not isinstance(prs,list): raise SystemExit(1)
 for p in prs:
     n=(p or {}).get('number')
     if n: print(n)
-" 2>/dev/null)
-  if [ $? != 0 ]; then
+" "$survey_out" 2>/dev/null)
+  found_rc=$?
+  if [ "$survey_rc" != 0 ] || [ "$found_rc" != 0 ]; then
+    said=$(head -n 1 "$survey_err" 2>/dev/null)
+    rm -f "$survey_out" "$survey_err"
     echo "lane-handoff.sh: could not list the open pull requests of ${rslug} on ${BRANCH}." >&2
     echo "                 Nothing was labelled. An empty read is not a clean read, and a" >&2
     echo "                 second repository's pull request is exactly what hides in one." >&2
+    [ -n "$said" ] && echo "                 gh said: ${said}" >&2
     exit 7
   fi
+  rm -f "$survey_out" "$survey_err"
   for num in $found; do
     case " $SEEN " in *" ${rslug}#${num} "*) continue ;; esac
     if [ "$rslug" = "$SLUG" ]; then rp="$REPO_PATH"; else rp="$rdir"; fi
@@ -747,24 +799,27 @@ fi
 
 # 3. Prove every repository in the set can carry the label before the first one is labelled.
 preflight_err_file=$(mktemp "${TMPDIR:-/tmp}/lane-handoff-label.XXXXXX")
+preflight_out_file=$(mktemp "${TMPDIR:-/tmp}/lane-handoff-label.XXXXXX")
 for pslug in $(printf '%s\n' "$TRIPLES" | cut -f2 | sort -u); do
   [ -n "$pslug" ] || continue
   : > "$preflight_err_file"
-  label_json=$(gh label list --repo "$pslug" --search "$LABEL" --limit 100 --json name 2>"$preflight_err_file")
+  gh_rest "$preflight_out_file" "$preflight_err_file" -X GET "repos/${pslug}/labels" --paginate --slurp -F per_page=100
   label_rc=$?
+  label_json=$(cat "$preflight_out_file" 2>/dev/null)
   if [ "$label_rc" -ne 0 ]; then
     echo "lane-handoff.sh: could not read the labels of ${pslug}, so whether it can carry" >&2
     echo "                 ${LABEL} is unknown. Nothing was labelled." >&2
     perr=$(cat "$preflight_err_file"); [ -n "$perr" ] && printf '                 gh said: %s\n' "$perr" >&2
-    rm -f "$preflight_err_file"
+    rm -f "$preflight_err_file" "$preflight_out_file"
     exit 7
   fi
   case "$label_json" in
     *[![:space:]]*)
       have=$(printf '%s' "$label_json" | python3 -c "
 import json,sys
-try: labels=json.load(sys.stdin)
+try: pages=json.load(sys.stdin)
 except Exception: raise SystemExit(1)
+labels=[l for p in pages for l in (p if isinstance(p,list) else [p])]
 print('YES' if any((l or {}).get('name') == sys.argv[1] for l in labels) else 'NO')
 " "$LABEL" 2>/dev/null) ;;
     *) have=NO ;;
@@ -773,7 +828,7 @@ print('YES' if any((l or {}).get('name') == sys.argv[1] for l in labels) else 'N
     echo "lane-handoff.sh: ${pslug} answered its label list in a shape this cannot read, so" >&2
     echo "                 whether it can carry ${LABEL} is unknown. Nothing was labelled." >&2
     printf '                 it said: %s\n' "$label_json" >&2
-    rm -f "$preflight_err_file"
+    rm -f "$preflight_err_file" "$preflight_out_file"
     exit 7
   fi
   if [ "$have" = "NO" ]; then
@@ -788,7 +843,7 @@ print('YES' if any((l or {}).get('name') == sys.argv[1] for l in labels) else 'N
           echo "                 so labelling it would fail part-way through the branch." >&2
           echo "                 Nothing was labelled." >&2
           [ -n "$perr" ] && printf '                 gh said: %s\n' "$perr" >&2
-          rm -f "$preflight_err_file"
+          rm -f "$preflight_err_file" "$preflight_out_file"
           exit 7 ;;
       esac
     fi
@@ -804,10 +859,14 @@ while IFS="$TAB" read -r cpath cslug cpr; do
   # KEEP gh's REASON. This discarded stderr, so a 403, a rate limit or a missing label all read
   # as the same bare "the label did not stick" with nothing to act on.
   edit_err=""
-  gh pr edit "$cpr" --repo "$cslug" --add-label "$LABEL" >/dev/null 2>"$preflight_err_file" \
+  gh_rest "$preflight_out_file" "$preflight_err_file" -X POST "repos/${cslug}/issues/${cpr}/labels" -f "labels[]=${LABEL}" \
     || edit_err=$(cat "$preflight_err_file")
-  back=$(gh pr view "$cpr" --repo "$cslug" --json labels 2>/dev/null \
-    | python3 -c "import json,sys; print(','.join(l['name'] for l in json.load(sys.stdin).get('labels') or []))" 2>/dev/null)
+  gh_rest "$preflight_out_file" "$preflight_err_file" -X GET "repos/${cslug}/issues/${cpr}/labels" --paginate --slurp -F per_page=100
+  back=$(python3 -c "
+import json,sys
+pages=json.load(open(sys.argv[1]))
+print(','.join((l or {}).get('name') or '' for p in pages for l in (p if isinstance(p,list) else [p])))
+" "$preflight_out_file" 2>/dev/null)
   case ",$back," in
     *,"$LABEL",*) LABELLED="$LABELLED ${cslug}#${cpr}" ;;
     *)
@@ -819,14 +878,14 @@ while IFS="$TAB" read -r cpath cslug cpr; do
       echo "  invisible to it and its half of the ticket closes on the half that landed."
       echo "  Adding a label is idempotent and nothing has been cleaned up or recorded yet, so fix"
       echo "  what gh reported and RE-RUN this command rather than labelling the rest by hand."
-      rm -f "$preflight_err_file"
+      rm -f "$preflight_err_file" "$preflight_out_file"
       exit 8 ;;
   esac
   if [ "$cslug" = "$SLUG" ] && [ "$cpr" = "$PR" ]; then labels="$back"; fi
 done <<EOF
 $TRIPLES
 EOF
-rm -f "$preflight_err_file"
+rm -f "$preflight_err_file" "$preflight_out_file"
 
 # 5. Remove the lane's worktree so the lander's --delete-branch does not trip on a checked-out
 #    branch. Only this lane's own - never a sweep.

@@ -35,7 +35,8 @@ interface Second {
   list: string;
   rollup: string;
   body: string;
-  mergeable?: string;
+  statuses?: string;
+  mergeable?: boolean | null;
   mergeState?: string;
   message?: string;
   listFails?: boolean;
@@ -78,18 +79,20 @@ function plantPluginSource(repo: string): void {
 }
 
 function commitsJson(message: string, oid: string): string {
-  const [headline, ...rest] = message.split("\n");
+  const who = { name: "Nobody", email: "nobody@example.invalid", date: "2026-09-19T00:00:00Z" };
+  return JSON.stringify([[{ sha: oid, commit: { message, author: who, committer: who } }]]);
+}
+
+function pullJson(titleAndBody: string, sha: string, mergeable?: boolean | null, mergeState?: string): string {
   return JSON.stringify({
-    commits: [
-      {
-        messageHeadline: headline,
-        messageBody: rest.join("\n").replace(/^\n/, ""),
-        authors: [{ name: "Nobody", email: "nobody@example.invalid", login: "nobody" }],
-        oid,
-      },
-    ],
+    ...(JSON.parse(titleAndBody) as Record<string, string>),
+    head: { sha },
+    mergeable: mergeable ?? null,
+    mergeable_state: mergeState ?? "unknown",
   });
 }
+
+const RATE_LIMITED = "gh: API rate limit exceeded for user ID 7195135 (HTTP 403)";
 
 function harness(
   seededNotes: string,
@@ -166,45 +169,58 @@ function harness(
   }
 
   const ghLog = join(root, "gh.log");
+  const otherPull = second
+    ? pullJson(second.body, otherHead, second.mergeable, second.mergeState)
+    : "";
+  const thingPull = pullJson(
+    '{"title":"Fix the thing","body":"It was broken. Now it is not."}',
+    primary?.rollupHead ?? head,
+  );
   executable(
     join(bin, "gh"),
     [
       "#!/bin/sh",
       `printf '%s\\n' "$*" >> "${ghLog}"`,
+      'if [ -n "${GH_STUB_THROTTLE:-}" ]; then',
+      '  case "$*" in',
+      '    "$GH_STUB_THROTTLE"*)',
+      `      n=$(cat "${ghLog}.throttle" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "${ghLog}.throttle"`,
+      `      if [ "$n" -le "\${GH_STUB_THROTTLE_TIMES:-1}" ]; then echo "${RATE_LIMITED}" >&2; exit 1; fi ;;`,
+      "  esac",
+      "fi",
       'case "$*" in',
       ...(second
         ? [
-            `  "api -X GET repos/acme/other/pulls"*)${
+            `  "api -X GET repos/acme/other/pulls -f head="*)${
               second.listFails
                 ? ` echo "gh: could not read acme/other" >&2; exit 1 ;;`
                 : ` printf '%s\\n' '${second.list}' ;;`
             }`,
             `  "api repos/acme/other/git/ref/heads/${BRANCH}"*) printf '{"object":{"sha":"${otherHead}"}}\\n' ;;`,
-            `  *"--repo acme/other"*statusCheckRollup*)${
-              second.rollupFails
-                ? ` echo "gh: API rate limit exceeded for acme/other" >&2; exit 1 ;;`
-                : second.rollupGarbled
-                  ? ` printf 'error connecting to api.github.com\\n' ;;`
-                  : ` printf '{"statusCheckRollup":%s,"headRefOid":"%s"${
-                      second.mergeable ? `,"mergeable":"${second.mergeable}"` : ""
-                    }${second.mergeState ? `,"mergeStateStatus":"${second.mergeState}"` : ""}}\\n' '${second.rollup}' '${otherHead}' ;;`
-            }`,
-            `  *"--repo acme/other --json title,body"*) printf '%s\\n' '${second.body}' ;;`,
-            `  *"--repo acme/other --json commits"*)${
+            `  "api repos/acme/other/pulls/7") printf '%s\\n' '${otherPull}' ;;`,
+            `  "api -X GET repos/acme/other/pulls/7/commits"*)${
               second.commitsFails
                 ? ` echo "gh: API rate limit exceeded for acme/other" >&2; exit 1 ;;`
                 : ` cat "${join(root, "commits-other.json")}" ;;`
             }`,
-            `  "label list --repo acme/other"*)${
+            `  "api -X GET repos/acme/other/commits/${otherHead}/check-runs"*)${
+              second.rollupFails
+                ? ` echo "gh: API rate limit exceeded for acme/other" >&2; exit 1 ;;`
+                : second.rollupGarbled
+                  ? ` printf 'error connecting to api.github.com\\n' ;;`
+                  : ` printf '[{"total_count":1,"check_runs":%s}]\\n' '${second.rollup}' ;;`
+            }`,
+            `  "api -X GET repos/acme/other/commits/${otherHead}/status"*) printf '[{"state":"pending","statuses":%s}]\\n' '${second.statuses ?? "[]"}' ;;`,
+            `  "api -X GET repos/acme/other/labels"*)${
               second.labelListFails
                 ? ` echo "gh: HTTP 403 on acme/other labels" >&2; exit 1 ;;`
                 : second.labelSimilar
-                  ? ` printf '[{"name":"lane-verified-2025"}]\\n' ;;`
+                  ? ` printf '[[{"name":"lane-verified-2025"}]]\\n' ;;`
                   : second.labelGarbled
                     ? ` printf 'not json at all\\n' ;;`
                     : second.labelMissing
                       ? ` : ;;`
-                      : ` printf '[{"name":"lane-verified"}]\\n' ;;`
+                      : ` printf '[[{"name":"lane-verified"}]]\\n' ;;`
             }`,
             `  "label create"*"--repo acme/other"*)${
               second.labelCreateFails
@@ -213,26 +229,27 @@ function harness(
             }`,
             ...(second.editFails
               ? [
-                  `  "pr edit 7 --repo acme/other"*) echo "gh: could not add label: HTTP 403" >&2; exit 1 ;;`,
-                  `  *"--repo acme/other"*"--json labels"*) printf '{"labels":[]}\\n' ;;`,
+                  `  "api -X POST repos/acme/other/issues/7/labels"*) echo "gh: could not add label: HTTP 403" >&2; exit 1 ;;`,
+                  `  "api -X GET repos/acme/other/issues/7/labels"*) printf '[[]]\\n' ;;`,
                 ]
               : []),
           ]
         : []),
-      `  "api -X GET repos/acme/thing/pulls"*) printf '[{"number":14}]\\n' ;;`,
-      `  "pr list"*) echo "GraphQL: API rate limit already exceeded for user ID 7195135" >&2; exit 1 ;;`,
+      `  "api -X GET repos/acme/thing/pulls -f head="*) printf '[{"number":14}]\\n' ;;`,
       `  "api repos/acme/thing/git/ref/heads/${BRANCH}"*)${
         primary?.refFails
           ? ` echo '{"message":"Not Found","status":"404"}' >&2; exit 1 ;;`
           : ` printf '{"object":{"sha":"${primary?.refSha ?? head}"}}\\n' ;;`
       }`,
-      `  *statusCheckRollup*) printf '{"statusCheckRollup":[{"name":"ci","conclusion":"SUCCESS"}],"headRefOid":"${primary?.rollupHead ?? head}"}\\n' ;;`,
-      `  *"--json title,body"*) printf '{"title":"Fix the thing","body":"It was broken. Now it is not."}\\n' ;;`,
-      `  *"--json commits"*) cat "${thingCommits}" ;;`,
-      `  *"--json labels"*) printf '{"labels":[{"name":"lane-verified"}]}\\n' ;;`,
-      `  "label list"*) printf '[{"name":"lane-verified"}]\\n' ;;`,
+      `  "api repos/acme/thing/pulls/14") printf '%s\\n' '${thingPull}' ;;`,
+      `  "api -X GET repos/acme/thing/pulls/14/commits"*) cat "${thingCommits}" ;;`,
+      `  "api -X GET repos/acme/thing/commits/"*"/check-runs"*) printf '[{"total_count":1,"check_runs":[{"name":"ci","status":"completed","conclusion":"success"}]}]\\n' ;;`,
+      `  "api -X GET repos/acme/thing/commits/"*"/status"*) printf '[{"state":"success","statuses":[]}]\\n' ;;`,
+      `  "api -X GET repos/acme/thing/labels"*) printf '[[{"name":"lane-verified"}]]\\n' ;;`,
+      `  "api -X POST "*"/labels"*) printf '[{"name":"lane-verified"}]\\n' ;;`,
+      `  *"/issues/"*"/labels"*) printf '[[{"name":"lane-verified"}]]\\n' ;;`,
       `  "label create"*) : ;;`,
-      "  *\"pr edit\"*) : ;;",
+      `  "pr "*|"label list"*) echo "GraphQL: API rate limit already exceeded for user ID 7195135" >&2; exit 1 ;;`,
       '  *) echo "gh stub: unhandled $*" >&2; exit 1 ;;',
       "esac",
       "",
@@ -298,6 +315,7 @@ function handoff(
       BEADS_DIR: "",
       BD_NOTES: box.notesFile,
       BD_RECORD: record ? "1" : "0",
+      LANE_HANDOFF_REST_BACKOFF: "0",
       ...env,
     },
   });
@@ -312,7 +330,7 @@ function handoff(
     signal: ran.signal,
     stdout: ran.stdout ?? "",
     stderr: ran.stderr ?? "",
-    labelled: calls.includes("pr edit"),
+    labelled: /^api -X POST repos\/[^ ]+\/issues\/\d+\/labels /m.test(calls),
     calls,
   };
 }
@@ -414,7 +432,7 @@ test("a notes field that cannot be read at all is unreadable, not a note to appe
   assert.doesNotMatch(ran.stdout, /bd-note\.sh acme-1 --note-file/);
 });
 
-const READY = '[{"name":"ci","conclusion":"SUCCESS"}]';
+const READY = '[{"name":"ci","status":"completed","conclusion":"success"}]';
 const CLEAN = '{"title":"Regenerate the artwork","body":"The generator was the orphan. Now it is not."}';
 
 test("every repository with a pull request on the branch is labelled, not only the one named", () => {
@@ -424,8 +442,8 @@ test("every repository with a pull request on the branch is labelled, not only t
   assert.equal(ran.status, 0, ran.stdout + ran.stderr);
   assert.match(ran.stdout, /handed off: acme\/thing#14/);
   assert.match(ran.stdout, /also labelled lane-verified on lane\/x: acme\/other#7/);
-  assert.match(ran.calls, /pr edit 14 --repo acme\/thing/);
-  assert.match(ran.calls, /pr edit 7 --repo acme\/other/);
+  assert.match(ran.calls, /^api -X POST repos\/acme\/thing\/issues\/14\/labels /m);
+  assert.match(ran.calls, /^api -X POST repos\/acme\/other\/issues\/7\/labels /m);
 });
 
 test("a second repository's pull request that is not green leaves NOTHING labelled", () => {
@@ -443,8 +461,8 @@ test("a conflicted pull request is reported as conflicted rather than waited on 
     list: '[{"number":7}]',
     rollup: "[]",
     body: CLEAN,
-    mergeable: "CONFLICTING",
-    mergeState: "DIRTY",
+    mergeable: false,
+    mergeState: "dirty",
   });
   const ran = handoff(box, [...required(box), "--issue", "acme-1", "--note-file", box.notePath], true);
 
@@ -459,8 +477,8 @@ test("an uncomputed mergeability is not read as a conflict", () => {
     list: '[{"number":7}]',
     rollup: "[]",
     body: CLEAN,
-    mergeable: "UNKNOWN",
-    mergeState: "UNKNOWN",
+    mergeable: null,
+    mergeState: "unknown",
   });
   const ran = handoff(box, [...required(box), "--issue", "acme-1", "--note-file", box.notePath], true);
 
@@ -473,10 +491,10 @@ test("an uncomputed mergeability is not read as a conflict", () => {
 test("a failing check is reported as red, not as a conflict", () => {
   const box = harness("", {
     list: '[{"number":7}]',
-    rollup: '[{"name":"ci","conclusion":"FAILURE"}]',
+    rollup: '[{"name":"ci","status":"completed","conclusion":"failure"}]',
     body: CLEAN,
-    mergeable: "MERGEABLE",
-    mergeState: "CLEAN",
+    mergeable: true,
+    mergeState: "clean",
   });
   const ran = handoff(box, [...required(box), "--issue", "acme-1", "--note-file", box.notePath], true);
 
@@ -494,7 +512,7 @@ test("a rollup gh could not fetch is reported as unreadable, not as not-green", 
   assert.match(ran.stdout, /unreadable: could not read the status rollup for acme\/other#7/);
   assert.match(
     ran.stdout,
-    /attempted: gh pr view 7 --repo acme\/other --json statusCheckRollup,headRefOid,mergeable,mergeStateStatus/,
+    /attempted: gh api repos\/acme\/other\/commits\/[0-9a-f]{40}\/check-runs/,
   );
   assert.match(ran.stdout, /gh exited 1 and said: gh: API rate limit exceeded for acme\/other/);
   assert.doesNotMatch(ran.stdout, /not-green/);
@@ -510,7 +528,7 @@ test("a rollup that does not parse is reported as unreadable, not as not-green",
   assert.match(ran.stdout, /unreadable: the status rollup for acme\/other#7 did not parse/);
   assert.match(
     ran.stdout,
-    /attempted: gh pr view 7 --repo acme\/other --json statusCheckRollup,headRefOid,mergeable,mergeStateStatus/,
+    /attempted: gh api repos\/acme\/other\/commits\/[0-9a-f]{40}\/check-runs/,
   );
   assert.match(ran.stdout, /beginning: error connecting to api.github.com/);
   assert.doesNotMatch(ran.stdout, /not-green/);
@@ -522,8 +540,8 @@ test("a green pull request that conflicts with master is still handed off for th
     list: '[{"number":7}]',
     rollup: READY,
     body: CLEAN,
-    mergeable: "CONFLICTING",
-    mergeState: "DIRTY",
+    mergeable: false,
+    mergeState: "dirty",
   });
   const ran = handoff(box, [...required(box), "--issue", "acme-1", "--note-file", box.notePath], true);
 
@@ -556,7 +574,7 @@ test("a commit message naming the plugin manifest and skill directories is compl
 
   assert.equal(ran.status, 0, ran.stdout + ran.stderr);
   assert.doesNotMatch(ran.stdout, /non-compliant/);
-  assert.match(ran.calls, /pr edit 7 --repo acme\/other/);
+  assert.match(ran.calls, /^api -X POST repos\/acme\/other\/issues\/7\/labels /m);
 });
 
 test("a refusal tells a lane the exit is terminal and that its judgement only picks the rewording", () => {
@@ -681,7 +699,7 @@ test("a commit message naming the plugin is compliant in the repository that shi
 
   assert.equal(ran.status, 0, ran.stdout + ran.stderr);
   assert.doesNotMatch(ran.stdout, /non-compliant/);
-  assert.match(ran.calls, /pr edit 7 --repo acme\/other/);
+  assert.match(ran.calls, /^api -X POST repos\/acme\/other\/issues\/7\/labels /m);
 });
 
 test("a pull request body naming the plugin is compliant in the repository that ships it", () => {
@@ -695,7 +713,7 @@ test("a pull request body naming the plugin is compliant in the repository that 
 
   assert.equal(ran.status, 0, ran.stdout + ran.stderr);
   assert.doesNotMatch(ran.stdout, /non-compliant/);
-  assert.match(ran.calls, /pr edit 7 --repo acme\/other/);
+  assert.match(ran.calls, /^api -X POST repos\/acme\/other\/issues\/7\/labels /m);
 });
 
 test("the same message naming the plugin is still refused in a repository that does not ship it", () => {
@@ -761,6 +779,92 @@ test("the sibling survey scopes the head filter to the owner, which GitHub needs
   assert.match(ran.calls, /^api -X GET repos\/acme\/other\/pulls -f head=acme:lane\/x -f state=open\b/m);
 });
 
+function countCalls(calls: string, line: string): number {
+  return calls.split("\n").filter((c) => c === line).length;
+}
+
+test("every read and write on the labelling path is REST, so a branch hands off while GraphQL refuses everything", () => {
+  const box = harness("", { list: '[{"number":7}]', rollup: READY, body: CLEAN });
+  const ran = handoff(box, [...required(box), "--issue", "acme-1", "--note-file", box.notePath], true);
+
+  assert.equal(ran.status, 0, ran.stdout + ran.stderr);
+  assert.match(ran.stdout, /handed off: acme\/thing#14/);
+  assert.match(ran.stdout, /also labelled lane-verified on lane\/x: acme\/other#7/);
+  assert.doesNotMatch(ran.calls, /^pr /m);
+  assert.doesNotMatch(ran.calls, /^label list/m);
+  assert.match(ran.calls, /^api repos\/acme\/other\/pulls\/7$/m);
+  assert.match(ran.calls, /^api -X GET repos\/acme\/other\/pulls\/7\/commits --paginate --slurp -F per_page=100$/m);
+  assert.match(ran.calls, /^api -X GET repos\/acme\/other\/commits\/[0-9a-f]{40}\/check-runs --paginate --slurp -F per_page=100$/m);
+  assert.match(ran.calls, /^api -X GET repos\/acme\/other\/commits\/[0-9a-f]{40}\/status --paginate --slurp -F per_page=100$/m);
+  assert.match(ran.calls, /^api -X GET repos\/acme\/other\/labels --paginate --slurp -F per_page=100$/m);
+  assert.match(ran.calls, /^api -X POST repos\/acme\/other\/issues\/7\/labels -f labels\[\]=lane-verified$/m);
+  assert.match(ran.calls, /^api -X GET repos\/acme\/other\/issues\/7\/labels --paginate --slurp -F per_page=100$/m);
+});
+
+test("a rate-limited read of the pull request is retried and the label still lands", () => {
+  const box = harness("", { list: '[{"number":7}]', rollup: READY, body: CLEAN });
+  const ran = handoff(
+    box,
+    [...required(box), "--issue", "acme-1", "--note-file", box.notePath],
+    true,
+    { GH_STUB_THROTTLE: "api repos/acme/other/pulls/7", GH_STUB_THROTTLE_TIMES: "2" },
+  );
+
+  assert.equal(ran.status, 0, ran.stdout + ran.stderr);
+  assert.match(ran.stdout, /also labelled lane-verified on lane\/x: acme\/other#7/);
+  assert.match(ran.stderr, /gh api repos\/acme\/other\/pulls\/7 was rate limited on attempt 1 of 5 - waiting 0s/);
+  assert.match(ran.stderr, /was rate limited on attempt 2 of 5 - waiting 0s/);
+  assert.equal(countCalls(ran.calls, "api repos/acme/other/pulls/7"), 3, ran.calls);
+  assert.equal(ran.labelled, true, "the label was never written after the read recovered");
+});
+
+test("a rate-limited label write is retried and read back, not reported as half-labelled", () => {
+  const box = harness("", { list: '[{"number":7}]', rollup: READY, body: CLEAN });
+  const ran = handoff(
+    box,
+    [...required(box), "--issue", "acme-1", "--note-file", box.notePath],
+    true,
+    { GH_STUB_THROTTLE: "api -X POST repos/acme/other/issues/7/labels" },
+  );
+
+  assert.equal(ran.status, 0, ran.stdout + ran.stderr);
+  assert.doesNotMatch(ran.stdout, /half-labelled/);
+  assert.match(ran.stdout, /also labelled lane-verified on lane\/x: acme\/other#7/);
+  assert.equal(countCalls(ran.calls, "api -X POST repos/acme/other/issues/7/labels -f labels[]=lane-verified"), 2, ran.calls);
+});
+
+test("a read still rate limited after every retry is refused with nothing labelled", () => {
+  const box = harness("", { list: '[{"number":7}]', rollup: READY, body: CLEAN });
+  const ran = handoff(
+    box,
+    [...required(box), "--issue", "acme-1", "--note-file", box.notePath],
+    true,
+    { GH_STUB_THROTTLE: "api repos/acme/other/pulls/7", GH_STUB_THROTTLE_TIMES: "99", LANE_HANDOFF_REST_TRIES: "3" },
+  );
+
+  assert.equal(ran.status, 7, ran.stdout + ran.stderr);
+  assert.match(ran.stderr, /read an EMPTY body for acme\/other#7/);
+  assert.match(ran.stderr, /gh said: gh: API rate limit exceeded for user ID 7195135/);
+  assert.equal(countCalls(ran.calls, "api repos/acme/other/pulls/7"), 3, ran.calls);
+  assert.equal(ran.labelled, false, "a pull request was labelled with its text never read");
+});
+
+test("the backoff between retries grows from the configured base", () => {
+  const box = harness("", { list: '[{"number":7}]', rollup: READY, body: CLEAN });
+  const began = Date.now();
+  const ran = handoff(
+    box,
+    [...required(box), "--issue", "acme-1", "--note-file", box.notePath],
+    true,
+    { GH_STUB_THROTTLE: "api repos/acme/other/pulls/7", GH_STUB_THROTTLE_TIMES: "2", LANE_HANDOFF_REST_BACKOFF: "1" },
+  );
+
+  assert.equal(ran.status, 0, ran.stdout + ran.stderr);
+  assert.match(ran.stderr, /attempt 1 of 5 - waiting 1s/);
+  assert.match(ran.stderr, /attempt 2 of 5 - waiting 2s/);
+  assert.ok(Date.now() - began >= 3000, "the retries did not wait the 1s and 2s they announced");
+});
+
 test("a repository the config names with no pull request on the branch is not labelled", () => {
   const box = harness("", { list: "[]", rollup: READY, body: CLEAN });
   const ran = handoff(box, [...required(box), "--issue", "acme-1", "--note-file", box.notePath], true);
@@ -768,7 +872,7 @@ test("a repository the config names with no pull request on the branch is not la
   assert.equal(ran.status, 0, ran.stdout + ran.stderr);
   assert.match(ran.stdout, /handed off: acme\/thing#14/);
   assert.doesNotMatch(ran.stdout, /also labelled/);
-  assert.doesNotMatch(ran.calls, /pr edit \d+ --repo acme\/other/);
+  assert.doesNotMatch(ran.calls, /^api -X POST repos\/acme\/other\/issues\/\d+\/labels /m);
 });
 
 test("a sibling that cannot be given the label leaves NOTHING labelled", () => {
@@ -808,7 +912,7 @@ test("a label missing from a sibling is created before any pull request is label
   assert.equal(ran.status, 0, ran.stdout + ran.stderr);
   assert.match(ran.stdout, /created the lane-verified label in acme\/other/);
   assert.ok(
-    ran.calls.indexOf("label create") < ran.calls.indexOf("pr edit"),
+    ran.calls.indexOf("label create") < ran.calls.indexOf("api -X POST"),
     `the label was created after the first pull request was labelled:\n${ran.calls}`,
   );
 });
@@ -820,7 +924,7 @@ test("a sibling whose only near-match is a different label gets the label create
   assert.equal(ran.status, 0, ran.stdout + ran.stderr);
   assert.match(ran.stdout, /created the lane-verified label in acme\/other/);
   assert.ok(
-    ran.calls.indexOf("label create") < ran.calls.indexOf("pr edit"),
+    ran.calls.indexOf("label create") < ran.calls.indexOf("api -X POST"),
     `the label was created after the first pull request was labelled:\n${ran.calls}`,
   );
 });
@@ -883,7 +987,7 @@ test("a configured repository with no path of its own is read under its name", (
 
   assert.equal(ran.status, 0, ran.stdout + ran.stderr);
   assert.match(ran.stdout, /also labelled lane-verified on lane\/x: acme\/other#7/);
-  assert.match(ran.calls, /pr edit 7 --repo acme\/other/);
+  assert.match(ran.calls, /^api -X POST repos\/acme\/other\/issues\/7\/labels /m);
 });
 
 test("a configured repository with no slug has one read from its own origin", () => {
@@ -892,7 +996,7 @@ test("a configured repository with no slug has one read from its own origin", ()
 
   assert.equal(ran.status, 0, ran.stdout + ran.stderr);
   assert.match(ran.stdout, /also labelled lane-verified on lane\/x: acme\/other#7/);
-  assert.match(ran.calls, /pr edit 7 --repo acme\/other/);
+  assert.match(ran.calls, /^api -X POST repos\/acme\/other\/issues\/7\/labels /m);
 });
 
 function elsewhere(box: Harness): string {
@@ -930,7 +1034,7 @@ test("a --repo-path whose checkout does not carry the branch still hands off a g
 
   assert.equal(ran.status, 0, ran.stdout + ran.stderr);
   assert.match(ran.stdout, /handed off: acme\/thing#14/);
-  assert.match(ran.calls, /pr view 14 --repo acme\/thing --json commits/);
+  assert.match(ran.calls, /^api -X GET repos\/acme\/thing\/pulls\/14\/commits /m);
   assert.doesNotMatch(ran.stderr, /could not read/);
 });
 
@@ -984,6 +1088,8 @@ test("a head sha GitHub will not report is refused instead of reported as not-gr
 
   assert.equal(ran.status, 7, ran.stdout + ran.stderr);
   assert.match(ran.stderr, /could not read what sha lane\/x is at in acme\/thing/);
+  assert.match(ran.stderr, /gh said: \{"message":"Not Found","status":"404"\}/);
+  assert.equal(countCalls(ran.calls, `api repos/acme/thing/git/ref/heads/${BRANCH}`), 1, ran.calls);
   assert.doesNotMatch(ran.stdout, /not-green/);
   assert.equal(ran.labelled, false, "a pull request was labelled on an unreadable head sha");
 });
@@ -991,7 +1097,8 @@ test("a head sha GitHub will not report is refused instead of reported as not-gr
 test("a second repository's commit statuses are read, not reported as a rollup that did not parse", () => {
   const box = harness("", {
     list: '[{"number":7}]',
-    rollup: '[{"__typename":"StatusContext","context":"codecov/project","state":"SUCCESS"}]',
+    rollup: "[]",
+    statuses: '[{"context":"codecov/project","state":"success"}]',
     body: CLEAN,
   });
   const ran = handoff(box, [...required(box), "--issue", "acme-1", "--note-file", box.notePath], true);
@@ -1004,12 +1111,11 @@ test("a second repository's commit statuses are read, not reported as a rollup t
 test("a second repository's failed commit status is not-green and names the context", () => {
   const box = harness("", {
     list: '[{"number":7}]',
-    rollup:
-      '[{"__typename":"CheckRun","name":"ci","conclusion":"SUCCESS"},' +
-      '{"__typename":"StatusContext","context":"codecov/project","state":"FAILURE"}]',
+    rollup: READY,
+    statuses: '[{"context":"codecov/project","state":"failure"}]',
     body: CLEAN,
-    mergeable: "MERGEABLE",
-    mergeState: "CLEAN",
+    mergeable: true,
+    mergeState: "clean",
   });
   const ran = handoff(box, [...required(box), "--issue", "acme-1", "--note-file", box.notePath], true);
 
@@ -1022,7 +1128,8 @@ test("a second repository's failed commit status is not-green and names the cont
 test("a second repository's pending commit status is not-green, not unreadable", () => {
   const box = harness("", {
     list: '[{"number":7}]',
-    rollup: '[{"__typename":"StatusContext","context":"codecov/project","state":"PENDING"}]',
+    rollup: "[]",
+    statuses: '[{"context":"codecov/project","state":"pending"}]',
     body: CLEAN,
   });
   const ran = handoff(box, [...required(box), "--issue", "acme-1", "--note-file", box.notePath], true);
