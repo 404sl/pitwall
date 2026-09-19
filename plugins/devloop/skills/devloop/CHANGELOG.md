@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.88
+
+A release train no longer loses a plugin pull request that an earlier lander round had
+already stamped with a version. The branch's version commit is dropped as it is squashed
+on, so it cannot replay a changelog entry under a number master has since used, and the
+train assigns the one version the whole set ships under.
+
 ## 0.1.87
 
 **Rule 3 of every lane brief named a binary no lane could run.** `git-guard` resolved to a file
