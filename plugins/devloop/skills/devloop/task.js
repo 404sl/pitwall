@@ -124,6 +124,39 @@ const MAX_ATTEMPTS = input.maxAttempts || 3
 const MAX_REWORKS = input.maxReworks || 2
 const ID = input.id
 const SLOT = input.slot || 1
+const DISPATCH = /^[A-Za-z0-9._-]+$/.test(String(input.dispatch || '')) ? String(input.dispatch) : null
+const LANE_NUMBER = SLOT - 1 + 2
+const LANE_LOCK = `/tmp/${LOCK_PREFIX}-lane-${LANE_NUMBER}.lock`
+const OWNER_FILE = `/tmp/${LOCK_PREFIX}-lane-${LANE_NUMBER}.owner`
+const SLOT_FILE = `/tmp/${LOCK_PREFIX}-slots/${SLOT}`
+
+function claimLane(line) {
+  const held = `${line}${DISPATCH ? ` dispatch ${DISPATCH}` : ''}`
+  const take = `mkdir ${LANE_LOCK} 2>/dev/null && printf '%s\\n' "${held}" > ${OWNER_FILE} && echo GOT_LANE`
+  if (!DISPATCH) return `${take} || echo LANE_BUSY`
+  return `${take} || { [ -d ${LANE_LOCK} ] && grep -qxF "${held}" ${OWNER_FILE} 2>/dev/null && echo LANE_RECLAIMED || echo LANE_BUSY; }`
+}
+
+function reclaimRule() {
+  if (!DISPATCH) return '\n'
+  return `
+LANE_RECLAIMED MEANS THE LANE IS ALREADY YOURS. This brief is handed to every attempt, including
+a retry of a fix step that died while it held the lock, so the holder can be an earlier attempt of
+this same run. The owner file says which, and the command above reads it for you: it compares the
+whole line against what this run would write - the issue, the slot and the dispatch token
+${DISPATCH}, minted for this dispatch alone and carried by no other run - and prints
+LANE_RECLAIMED only on an exact match. Treat it exactly as GOT_LANE: the lock and the owner file
+are already right, so touch neither and carry on. Do not wait for the holder to finish, because
+the holder is a step of this run that is no longer running, and do not read the worktree as
+somebody else's - whatever is already there is this run's own earlier work, and continuing it
+is the job. A retry once inferred a duplicate dispatch from the lock's timestamps, refused, and
+left a worktree full of finished, uncommitted work with no branch and no pull request; the
+token exists so that nothing has to be inferred. Say in your result that the lane was reclaimed.
+
+LANE_BUSY is a genuine other run - another issue, this issue under a different dispatch token,
+or a lock with no owner file beside it - and is what the stop below is for.
+`
+}
 
 // Returning here leaves the issue claimed, because this script cannot run bd. The caller
 // must release it - see 'a dispatch that returns error' in SKILL.md.
@@ -493,13 +526,13 @@ a change nobody can reproduce.
 Other lanes run at the same time on this machine. If this repository's suite uses a shared
 resource - a database, a fixed port, a scratch directory - claim lane ${laneIndex + 2} first:
 
-  mkdir /tmp/${LOCK_PREFIX}-lane-${laneIndex + 2}.lock 2>/dev/null && printf '%s\\n' "${ID} slot ${SLOT} lane ${laneIndex + 2}" > /tmp/${LOCK_PREFIX}-lane-${laneIndex + 2}.owner && echo GOT_LANE || echo LANE_BUSY
+  ${claimLane(`${ID} slot ${SLOT} lane ${laneIndex + 2}`)}
 
 ONE COMMAND, not two. The owner file beside the lock is what proves the lock is yours: when this
 run ends, whatever way it ends, the lane is given back by reading that file and removing the lock
 only if it names this run. A lock taken without it cannot be proved to be anybody's, so it is
 left standing and the lane is lost until a person clears it.
-
+${reclaimRule()}
 If that prints LANE_BUSY, stop and hand back rather than running anyway.`
   }
 
@@ -526,7 +559,7 @@ this repository's test database ${laneIndex + 2}. If another run is already usin
 database mid-suite and it will reset yours, and neither of you will be told - it surfaces as
 unexplained spec failures in files you never touched. Before anything else:
 
-  mkdir /tmp/${LOCK_PREFIX}-lane-${laneIndex + 2}.lock 2>/dev/null && printf '%s\\n' "${ID} slot ${SLOT} TEST_ENV_NUMBER ${laneIndex + 2}" > /tmp/${LOCK_PREFIX}-lane-${laneIndex + 2}.owner && echo GOT_LANE || echo LANE_BUSY
+  ${claimLane(`${ID} slot ${SLOT} TEST_ENV_NUMBER ${laneIndex + 2}`)}
 
 ONE COMMAND, not two, and the owner file is not optional. It records who holds the lock, so the
 next run that is refused can read the answer instead of guessing it off a process list that has
@@ -545,7 +578,7 @@ not this one, and confusing the two has already cost a lane. A regular file appe
 /tmp/<prefix>-lane-9.lock containing 'review <id> <pid>', and because mkdir can never succeed
 against an existing file, that lane was blocked permanently rather than until the holder
 finished - a dead process holding a lock nothing could release.
-
+${reclaimRule()}
 If it prints LANE_BUSY, STOP: return with a
 result saying lane ${laneIndex + 2} was already held, and do not touch the database. Read the
 holder and quote it in your result, because it names the run rather than leaving the next person
@@ -1655,9 +1688,6 @@ async function design(task) {
   return brief
 }
 
-const LANE_NUMBER = SLOT - 1 + 2
-const LANE_LOCK = `/tmp/${LOCK_PREFIX}-lane-${LANE_NUMBER}.lock`
-const SLOT_FILE = `/tmp/${LOCK_PREFIX}-slots/${SLOT}`
 const GIVEN_BACK = new Set(['released', 'already_gone'])
 
 function releaseLanePrompt() {

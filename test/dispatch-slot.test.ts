@@ -107,6 +107,23 @@ test("a dispatch reserves the lane it reports", () => {
   }
 });
 
+test("every dispatch mints its own token, so a retry can tell its lock from a second dispatch's", () => {
+  const box = harness(2);
+  try {
+    const first = args(box, "zz-aaa1");
+    const second = args(box, "zz-aaa1");
+    assert.equal(first.status, 0, first.stderr);
+    assert.equal(second.status, 0, second.stderr);
+    const a = (JSON.parse(first.stdout) as { dispatch: string }).dispatch;
+    const b = (JSON.parse(second.stdout) as { dispatch: string }).dispatch;
+    assert.match(a, /^[0-9a-f]{16}$/, `the dispatch token is not a hex string: ${a}`);
+    assert.match(b, /^[0-9a-f]{16}$/, `the dispatch token is not a hex string: ${b}`);
+    assert.notEqual(a, b, "two dispatches of one issue share a token, so a duplicate dispatch would reclaim the first one's lane");
+  } finally {
+    clean(box);
+  }
+});
+
 test("dispatching the same issue twice hands back the one reservation", () => {
   const box = harness(2);
   try {

@@ -311,7 +311,13 @@ if isinstance(pr, int) and not isinstance(pr, bool) and pr > 0:
       echo "                  reservation decides the lane and is not overridden from here." >&2
       exit 1
     fi
-    python3 - "$CONFIG" "$2" "$SLOT" "$SKILL_DIR" "$SCRIPT_PATH" "$REPOS_JSON" <<'PY'
+    DISPATCH="$(od -An -N8 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')"
+    case "$DISPATCH" in
+      ''|*[!0-9a-f]*)
+        echo "config.sh --args: could not mint a dispatch token from /dev/urandom - dispatch stops." >&2
+        exit 1 ;;
+    esac
+    python3 - "$CONFIG" "$2" "$SLOT" "$SKILL_DIR" "$SCRIPT_PATH" "$REPOS_JSON" "$DISPATCH" <<'PY'
 import json, sys
 cfg = json.load(open(sys.argv[1]))
 print(json.dumps({
@@ -319,6 +325,7 @@ print(json.dumps({
     "slot": int(sys.argv[3]),
     "skillDir": sys.argv[4],
     "scriptPath": sys.argv[5],
+    "dispatch": sys.argv[7],
     "root": cfg["root"],
     "idPrefix": cfg.get("idPrefix", "sr"),
     "lockPrefix": cfg.get("lockPrefix", "devloop"),
