@@ -533,3 +533,73 @@ test("the brief that parks an issue renders the note command against the issue i
       `issue, so the run has nothing to invoke:\n${handover.prompt}`,
   );
 });
+
+function triageTemplate(source: string): string {
+  const open = "const triage = await agent(`";
+  const start = source.indexOf(open);
+  assert.notEqual(start, -1, "the triage brief moved - update this test rather than deleting it");
+  const end = source.indexOf("`,\n  { label: `triage:", start);
+  assert.notEqual(end, -1, "could not find the end of the triage brief");
+  return source.slice(start + open.length, end);
+}
+
+async function triageBrief(): Promise<string> {
+  const { calls, done } = runScript(
+    "task.js",
+    { id: "zz-aaa3", slot: 1, root: "/root", skillDir: "/skill", lockPrefix: "pw", repos: HANDOFF_REPOS },
+    (call, n) => {
+      if (n === 1) {
+        return { eligible: false, repo: "site", title: "needs a person", priority: 2, ui: false, reason: "a decision", ticket: "" };
+      }
+      return { verification: "zz-aaa3 [BUG] OPEN needs-decision", notes: "" };
+    },
+  );
+  await done;
+  const triage = calls.find((c) => c.label.startsWith("triage:"));
+  assert.ok(triage, `no triage step ran. Steps seen: ${calls.map((c) => c.label || "?").join(", ")}`);
+  return triage.prompt;
+}
+
+test("the triage brief carries no backticks of its own", () => {
+  const brief = triageTemplate(readFileSync(join(SKILL, "task.js"), "utf8"));
+  const found = brief.split("\n").filter((line) => line.includes("`"));
+  assert.deepEqual(
+    found,
+    [],
+    `a backtick inside the brief closes its template literal early. Use 'single quotes':\n${found.join("\n")}`,
+  );
+});
+
+const CHECKS_A_CHECKOUT = /^\s+(git|ls)\b/;
+
+test("the triage brief verifies files and ancestry against origin/master, never the checkout's HEAD", async () => {
+  const brief = await triageBrief();
+  const commands = brief.split("\n").filter((line) => CHECKS_A_CHECKOUT.test(line));
+
+  assert.ok(
+    commands.some((line) => line.includes("ls-tree --name-only origin/master")),
+    "the brief no longer tells triage how to ask origin/master whether a path exists, so a run " +
+      "improvises against the root checkout - which nobody fast-forwards in a workflow where every " +
+      "lane branches from origin/master and lands from a worktree",
+  );
+  assert.ok(
+    commands.some((line) => line.includes("merge-base --is-ancestor <sha> origin/master")),
+    "the brief no longer tells triage how to check a commit has landed, so a run asks HEAD of the " +
+      "root checkout and reports a merged, deployed commit as not an ancestor",
+  );
+  assert.ok(
+    commands.some((line) => line.includes("fetch origin --quiet")),
+    "the brief asks origin/master without fetching first, and a remote-tracking ref nobody has " +
+      "fetched is stale one level down from the checkout it sits in",
+  );
+
+  const stale = commands.filter((line) => /\bHEAD\b|\bls-files\b|^\s+ls\s/.test(line));
+  assert.deepEqual(
+    stale,
+    [],
+    "a command in the triage brief reads the root checkout's working tree or HEAD. On 2026-09-12 " +
+      "that checkout was 35 merges behind origin/master, and triage bounced an issue over a file " +
+      "and a commit that were both on master, naming prerequisite branches already merged and " +
+      `deployed:\n${stale.join("\n")}`,
+  );
+});

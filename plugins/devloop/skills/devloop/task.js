@@ -1719,7 +1719,22 @@ Return eligible:false, with a reason, if any of these holds:
   VERIFY A RECORDED BLOCKER BEFORE HONOURING IT. A note saying "blocked on X" or "do not
   dispatch until X closes" records what was true the day it was written. Run 'bd show X' and
   look at the status. If the note names a pull request, check whether it merged. If it names a
-  file, a locale key or a column that supposedly does not exist yet, look on origin/master.
+  file, a locale key or a column that supposedly does not exist yet, or a commit that supposedly
+  has not landed, ask origin/master - fetched first, because a remote-tracking ref nobody has
+  fetched is stale one level down:
+    git -C <checkout> fetch origin --quiet
+    git -C <checkout> ls-tree --name-only origin/master <path>
+    git -C <checkout> show origin/master:<file> | head
+    git -C <checkout> merge-base --is-ancestor <sha> origin/master
+
+  NEVER AGAINST THE CHECKOUT'S OWN HEAD - not 'git show HEAD:<file>', not 'ls <checkout>/<path>',
+  not '--is-ancestor <sha> HEAD'. You run before any worktree exists, so origin/master is the
+  only current reference there is, and the root checkout's HEAD is whatever master was the day
+  somebody last pulled it: every lane branches from origin/master and lands from a worktree, so
+  nobody fast-forwards it. On 2026-09-12 it was 35 merges behind. A file that had been on
+  origin/master for days was reported as not existing anywhere, a merged commit as not an
+  ancestor, and the issue was bounced to a person over prerequisite branches that were already
+  merged and deployed.
 
   Four tickets on 2026-08-28 carried a blocker that had already cleared, and every one cost a
   full lane dispatch to discover - roughly 100k tokens each. On app-grlg the note said it was
@@ -1874,9 +1889,12 @@ ${reposTable()}
    from a repository the work does not belong to. If the work belongs somewhere with no key here,
    return eligible:false and say which repository it needs.
 2. DERIVE THE KEY FROM THE SOURCE PATHS THE TICKET NAMES. For each path it names, find which
-   checkout actually contains it:
-     ls <checkout>/<the path it names> 2>/dev/null
-     git -C <checkout> ls-files 'the path it names' 2>/dev/null
+   checkout's origin/master actually contains it:
+     git -C <checkout> fetch origin --quiet
+     git -C <checkout> ls-tree --name-only origin/master '<the path it names>' 2>/dev/null
+   Not 'ls' and not 'ls-files': both read the checkout's HEAD, which is stale for the reason
+   above, so a path another lane landed yesterday is invisible to them and the ticket naming it
+   routes nowhere.
    The assigned repo must be one where those paths exist. A ticket whose subject is a spec under
    spec/ does not belong in a TypeScript package that has no spec/ directory, whatever its
    wording suggests.
