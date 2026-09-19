@@ -227,6 +227,15 @@ leakage='(devloop|lane-verified|/tmp/|/private/tmp)'
 # Gemfile or schema.rb would. It is not a claim about who wrote the code, and it tripped
 # \bclaude\b on 2026-08-29. Neutralised before the test rather than excused after it.
 neutral='s#[A-Za-z/._-]*CLAUDE\.md#REPO-DOC#g; s#[A-Za-z/._-]*AGENTS\.md#REPO-DOC#g; s#\.claude-plugin#DOT-PLUGIN-DIR#g; s#plugins/devloop#PLUGIN-DIR#g; s#skills/devloop#SKILL-DIR#g'
+plugin_name='s#[Dd][Ee][Vv][Ll][Oo][Oo][Pp]#PLUGIN-NAME#g'
+
+neutral_for() {
+  if [ -f "$1/plugins/devloop/skills/devloop/$(basename "${BASH_SOURCE[0]}")" ]; then
+    printf '%s; %s' "$neutral" "$plugin_name"
+  else
+    printf '%s' "$neutral"
+  fi
+}
 
 if [ "$PRE_PUSH" = "1" ]; then
   git rev-parse --verify --quiet origin/master >/dev/null || {
@@ -295,9 +304,10 @@ if [ "$PRE_PUSH" = "1" ]; then
   fi
 
   local_hits=""; remote_hits=""; deep_hits=""; rewritten_hits=""
+  repo_neutral=$(neutral_for "$REPO_PATH")
   for sha in $range; do
     hit=$(git log -1 --format='%B%n%an <%ae>%n%(trailers)' "$sha" 2>/dev/null \
-      | sed "$neutral" \
+      | sed "$repo_neutral" \
       | grep -inE "$authorship|$leakage" \
       | head -5)
     [ -n "$hit" ] || continue
@@ -426,7 +436,7 @@ fi
 check_one() {
   local _path="$1" _slug="$2" _pr="$3"
   local body msgs body_hits msg_hits head_sha state verdict rollup_head msgs_rc
-  local attempt rollup_json rollup_err gh_rc read_rc said began
+  local attempt rollup_json rollup_err gh_rc read_rc said began repo_neutral
 
   body=$(gh pr view "$_pr" --repo "$_slug" --json title,body 2>/dev/null \
          | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('title','')); print(d.get('body',''))" 2>/dev/null)
@@ -464,12 +474,13 @@ for c in cs:
     return 7
   fi
 
+  repo_neutral=$(neutral_for "$_path")
   body_hits=$(printf '%s\n' "$body" \
-    | sed "$neutral" \
+    | sed "$repo_neutral" \
     | grep -inE "$authorship|$leakage" \
     | head -20)
   msg_hits=$(printf '%s\n' "$msgs" \
-    | sed "$neutral" \
+    | sed "$repo_neutral" \
     | grep -inE "$authorship|$leakage" \
     | head -20)
 
