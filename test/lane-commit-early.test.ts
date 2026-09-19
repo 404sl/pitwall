@@ -52,10 +52,10 @@ function paragraph(brief: string, label: string): string {
   const start = brief.indexOf(COMMIT_EARLY);
   assert.ok(
     start > 0,
-    `${label} never tells the lane to commit its work as it goes. kill-lane.sh, slot.sh --gc and a ` +
-      "re-dispatch that recreates the worktree all delete uncommitted files, and each is the " +
-      "documented response to a stuck lane - so a fix step that dies mid-suite leaves nothing " +
-      "behind but a worktree the next dispatch destroys.",
+    `${label} never tells the lane to commit its work as it goes. kill-lane.sh is the documented ` +
+      "response to a stuck lane and removes the worktree and a never-pushed branch, rescuing " +
+      "commits as patches git am replays and uncommitted files only as one diff a person has to " +
+      "read - so a fix step that dies mid-suite with its work uncommitted leaves evidence, not a change.",
   );
   const end = brief.indexOf("\n5. ", start);
   assert.ok(end > start, `${label} puts the commit-as-you-go instruction somewhere other than before step 5`);
@@ -83,8 +83,24 @@ test("the fix brief tells a lane to commit as it goes, on the first attempt and 
     );
     assert.ok(
       block.includes("kill-lane.sh") && block.includes("slot.sh --gc"),
-      `${label} does not name the tools that delete uncommitted work, so the lane has no reason to ` +
-        "believe a commit is worth the interruption",
+      `${label} does not name kill-lane.sh, which removes a stuck lane's worktree and branch and ` +
+        "rescues commits as patches, or say that slot.sh --gc touches neither, so the lane has no " +
+        "reason to believe a commit is worth the interruption",
+    );
+    assert.ok(
+      block.includes("git am"),
+      `${label} does not say a rescued commit comes back as a patch git am replays, which is the ` +
+        "reason a commit is worth more than the diff the rescue writes for uncommitted files",
+    );
+    assert.doesNotMatch(
+      block,
+      /slot\.sh --gc[^.]*delete/,
+      `${label} claims slot.sh --gc deletes files; it removes the slot file and nothing else`,
+    );
+    assert.ok(
+      brief.includes("the fold\n   in step 4 is that commit"),
+      `${label} opens step 5 with a commit command a lane that folded in step 4 has nothing left to ` +
+        "run, and does not say so",
     );
     assert.ok(
       block.includes(SQUASH) && block.includes(`${IDENTITY} commit -F`),

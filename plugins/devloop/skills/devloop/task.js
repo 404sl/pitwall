@@ -1219,13 +1219,17 @@ Otherwise:
    suite, a capture, a CI wait. Stage the files you changed and commit them to ${branch} with
    the identity on the command, exactly as step 5 does:
      git -c user.name="$(git log -1 --format=%an origin/${base})" -c user.email="$(git log -1 --format=%ae origin/${base})" commit -F <message file>
-   A commit is the only thing on this machine that survives the run being stopped. kill-lane.sh,
-   slot.sh --gc and a re-dispatch that recreates the worktree all delete uncommitted files, and
-   each of them is the documented response to a stuck lane - so a fix step that dies mid-suite
-   with its work in the working tree leaves nothing, and the next dispatch starts again from
-   origin/${base}. That is how pitwall#148 went: a run stopped with 337 finished, on-brief lines
-   uncommitted, and they survived only because a person read an unusually thorough summary and
-   copied them out by hand.
+   A commit is the shape in which a stopped run's work comes back. kill-lane.sh is the documented
+   response to a stuck lane, and a re-dispatch cannot start until it has run, because git worktree
+   add refuses a directory that exists and a branch that exists: it removes the worktree and deletes
+   a branch the remote never saw, and first writes what it found to a rescue directory - each commit
+   no remote holds as a patch git am replays with its message and author intact, and uncommitted
+   files as one diff of the whole tree, staged, unstaged and untracked run together, which is
+   evidence for a person to read rather than a change anyone can land. slot.sh --gc frees the slot
+   file and touches neither. A commit also outlives a worktree removed by hand, which the rescue
+   never sees, and a push outlives the machine. That is how pitwall#148 went: a run stopped with
+   337 finished, on-brief lines uncommitted, and they survived only because a person read an
+   unusually thorough summary and copied them out by hand.
 
    AN INTERIM COMMIT IS A REAL COMMIT. Its message goes through the same grep step 5 runs, so
    write it as one plain line saying what it holds so far, not "wip" or "checkpoint" - and never
@@ -1247,7 +1251,8 @@ Otherwise:
    fix, and what you checked by reading. Reference ${task.id}. Do NOT merge it. This repository
    gained a remote and CI on 2026-08-19; the instruction that it had neither outlived the fact
    by a day and would have had you commit straight onto a real default branch.`
-   : `Commit with the identity on the command rather than from a config nobody read -
+   : `Commit with the identity on the command rather than from a config nobody read - the fold
+   in step 4 is that commit, so when it has already run there is nothing left to commit here -
    git -c user.name="$(git log -1 --format=%an origin/${base})" -c user.email="$(git log -1 --format=%ae origin/${base})" commit -F <message file> -
    then READ YOUR OWN COMMIT MESSAGES BACK BEFORE YOU PUSH:
      bash ${SKILL_DIR}/lane-handoff.sh --repo-path ${wtPath} --pre-push --base ${base}
