@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.101
+
+The lander refuses a pull request that is open against a branch other than the one it was told to land on, before touching anything. The refusal names both branches and the `gh pr edit --base` that retargets the pull request; a base GitHub cannot report is refused the same way rather than assumed.
+
+Refs pitwall-hdgs
+
 ## 0.1.100
 
 The handoff no longer needs GraphQL. Every read and write it makes to label a pull request goes through `gh api` on the REST budget, so a session whose `gh pr view` and `gh pr list` are being refused for a rate limit can still hand off a green branch. A REST call that is itself rate limited is retried with backoff, five attempts over 75 seconds, before the handoff reports it, and every refusal now prints what gh said. Exit 7 still means nothing could be read at all. The paginated reads need gh 2.44 or later.
