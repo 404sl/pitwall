@@ -126,12 +126,8 @@ case "$1" in
     # each is working on and when it last wrote anything. A recent write is proof of life that
     # arrives from the moment of dispatch, unlike the other two.
     LIVEOUT="$(bash "$(dirname "${BASH_SOURCE[0]}")/live.sh" 2>/dev/null)"
-    # A SLOT IS FREED ON ONE VERDICT ONLY: lane-running.sh answering NOT-RUNNING for its holder,
-    # which is a scan of the harness's task results and not a search that can come back empty.
-    # An absent lane lock is not evidence of anything - a run takes its lock only when it first
-    # touches the database, several minutes in, so a lane dispatched seconds ago, one that has
-    # handed off and one that is dead all hold none. Every other check below is a reason to
-    # KEEP a slot, never a reason to free one, and a verdict that cannot be established keeps it.
+    # A slot is freed only on lane-running.sh answering NOT-RUNNING for its holder. An absent
+    # lane lock is no evidence either way, and every other check below is a reason to keep.
     #
     # THE WORKTREE IS THE EARLY SIGNAL, and the lane lock is the late one. A run creates its
     # worktree within a minute of starting and takes the lane lock only when it first touches
@@ -185,7 +181,9 @@ case "$1" in
       else
         wtstate="it has no worktree"
       fi
-      echo "freeing slot $n ($held): lane-running.sh reports NOT-RUNNING - no task in flight is its lane, nothing wrote for it in 40 minutes, and $wtstate"
+      quiet=""
+      [ -n "$LIVEOUT" ] && quiet=" nothing wrote for it in 40 minutes,"
+      echo "freeing slot $n ($held): lane-running.sh reports NOT-RUNNING - no task in flight is its lane,$quiet and $wtstate"
       rm -f "$SLOTDIR/$n"
     done
     exit 0 ;;
@@ -252,12 +250,8 @@ for n in $(seq 1 $LANES); do
   fi
 done
 
-# FULL IS NOT ALWAYS FULL, but nothing readable here can say which held slot is finished. A
-# slot with no lane lock used to be listed as "probably finished" with --gc suggested against
-# it, and on 2026-09-10 two of the three it named had been dispatched minutes earlier and were
-# alive: a run takes its lock minutes in, so an absent lock says nothing. --gc deletes registry
-# entries, and a destructive command is reached for deliberately, never from a hint printed
-# while lanes are live. The one safe, per-issue path is named instead.
+# FULL IS NOT ALWAYS FULL, but nothing readable here can say which held slot is finished: a
+# run takes its lane lock minutes in, so an absent lock says nothing, and --gc is not suggested.
 unlocked=0
 for n in $(seq 1 $MAX); do
   [ -f "$SLOTDIR/$n" ] || continue
