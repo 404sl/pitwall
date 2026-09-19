@@ -317,6 +317,56 @@ workflows must never carry the same one, which is what reserving it is for. `dis
 a step that died holding the lock can prove the lock is its own run's and reclaim it, while a second
 dispatch of the same issue is still refused. Other args: `maxAttempts` (3), `root`, `worktrees`.
 
+## Work that lives in no checkout
+
+A ticket whose work is tracker edits - a split, a note, a label, closing something already done -
+or a paragraph in the workspace's own instructions names no source path, and triage cannot route
+it to a checkout because it is in none. Four tickets in one day were dispatched that way and each
+cost a slot before the lane could say so. So one entry in `repos` may name the workspace root
+itself, and the owner adds it by hand:
+
+```
+"workspace": { "path": ".", "role": "workspace" }
+```
+
+`path` is `.` - the directory the config sits in - and `role` MUST be written down: `roleOf()` in
+task.js falls back on the key name only for the four historical keys, and no name falls through to
+this shape. The role is what every reader keys on, so the key itself may be called anything;
+`workspace` is the convention. It carries no `slug`, no `test` and no `lint`, and `--check` does
+not ask it for them; it refuses instead a `slug` on it and a path that is not the root. A
+single-repository workspace whose one checkout sits at `.` is unaffected: the role, not the path,
+selects this shape.
+
+A lane dispatched there does not cut a worktree, does not branch, does not open a pull request and
+runs no suite. It applies the tracker edits through bd, edits root-level documentation in place
+and leaves it **uncommitted** - the root is the owner's own checkout, with their unfinished work
+in it and possibly no remote - lists every file it touched, and then **closes the issue itself**,
+because nothing merges and no lander will. It returns `CLOSED` rather than `READY TO LAND`, with
+the files it edited on the line below, and `CLOSED` is taken from the status token at the end of
+the first line of `bd show`, not from the word appearing anywhere in the read-back, because a
+title can carry it. It refuses to edit inside any checkout: a ticket that turns out
+to need one comes back as `NEEDS YOU` naming the checkout, for re-routing or a split.
+
+Three things at the root are off-limits to it whatever the ticket says, and a ticket that needs
+one of them comes back as `NEEDS YOU` naming the file: `.pitwall.json` and `.autofix.json`, which
+every concurrent lane re-reads while it runs, and everything under `.beads/`, which only bd writes.
+The step runs unattended, uncommitted and unreviewed, and those are the files where a live edit
+changes the ground under work already in flight.
+
+`applied` is that step's outcome and no other's: a checkout lane that returns it is refused
+before review, because there is no branch and no pull request to review.
+
+Triage is told the key exists and routes to it a ticket whose `Repo:` line says none, or whose
+only work is bd commands and root-level files. A path inside a configured checkout still routes to
+that checkout, whatever the ticket calls the work: the pipeline's own scripts are ordinary files
+in the repository that holds them.
+
+The lander, the train, `--rework`, the handoff survey, the queue scan and the console all skip
+the entry, and the snapshot the console publishes leaves it out of `repos[]`, because the
+contract's repositories are checkouts and the root is not one. Without the role they would not:
+the lander refuses to start over any repository with no slug, and the handoff survey refuses to
+label anything while one is present.
+
 ## When a lane dies
 
 **Ask `lane-running.sh <id>` before you believe it.** It is the only thing that answers "is a
@@ -813,7 +863,8 @@ MERGED? NO app-1056 P0 site - ...
 ```
 
 Outcomes are `SHIPPED`, `NEEDS YOU`, `SPLIT`, `NOTHING TO DO`, `BLOCKED`, `MERGED? NO`,
-`AGENT DIED`. A `SPLIT` returns no work done on purpose - its children appear in the queue
+`AGENT DIED`, and `CLOSED` for the workspace key, whose work lands as it is written and has no
+pull request to hand on. A `SPLIT` returns no work done on purpose - its children appear in the queue
 on the next tick, so the loop makes progress on the following pass rather than this one.
 Designs and rejected review rounds print as they happen too.
 

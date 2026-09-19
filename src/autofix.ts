@@ -74,8 +74,9 @@ function reposOf(root: string, workspace: Record<string, unknown>): WorkspaceRep
   }
   return Object.entries(asRecord(repos, "repos"))
     .filter(([name]) => !name.startsWith("_"))
-    .map(([name, value]) => {
-      const repo = asRecord(value, `repo ${name}`);
+    .map(([name, value]): [string, Record<string, unknown>] => [name, asRecord(value, `repo ${name}`)])
+    .filter(([, repo]) => repo["role"] !== "workspace")
+    .map(([name, repo]) => {
       const path = repoPath(root, name, repo);
       return {
         name,

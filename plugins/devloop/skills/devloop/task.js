@@ -215,9 +215,11 @@ const WORK = {
   type: 'object',
   required: ['status', 'summary'],
   properties: {
-    status: { enum: ['pushed', 'needs_feedback', 'needs_design', 'no_change_needed', 'blocked'] },
+    status: { enum: ['pushed', 'applied', 'needs_feedback', 'needs_design', 'no_change_needed', 'blocked'] },
     summary: { type: 'string' },
     repo: { enum: [...REPO_KEYS, 'unknown'] },
+    changed: { type: 'array', items: { type: 'string' }, description: 'workspace key only: every root-level file edited in place, as an absolute path' },
+    verification: { type: 'string', description: 'workspace key only: the VERBATIM first six lines of bd show <id> run AFTER the close' },
     branch: { type: 'string' },
     prNumber: { type: 'integer' },
     prUrl: { type: 'string' },
@@ -489,7 +491,13 @@ ${SHELL_FIRST(base)}
 
 // The config may place a repo anywhere under the workspace; falling back to the repo's own name
 // keeps a bare dispatch working for the common case where they match.
-function repoPath(repo) { return `${ROOT}/${(REPOS[repo] || {}).path || repo}` }
+function repoPath(repo) {
+  const p = (REPOS[repo] || {}).path || repo
+  return p === '.' ? ROOT : `${ROOT}/${p}`
+}
+function isWorkspace(repo) { return roleOf(repo) === 'workspace' }
+const WORKSPACE_KEY = REPO_KEYS.find(isWorkspace) || null
+const CHECKOUT_KEYS = REPO_KEYS.filter((k) => !isWorkspace(k))
 
 function reposTable() {
   if (!REPO_KEYS.length) {
@@ -497,10 +505,28 @@ function reposTable() {
 Return eligible:false saying so.`
   }
   const rows = REPO_KEYS.map((k) => {
+    if (isWorkspace(k)) return `  ${k}  ->  ${repoPath(k)}  the workspace root itself: tracker edits and root-level files, no pull request`
     const slug = (REPOS[k] || {}).slug
     return `  ${k}  ->  ${repoPath(k)}${slug ? `  (${slug})` : ''}  lands on origin/${baseOf(k)}`
   })
   return rows.join('\n')
+}
+
+function workspaceRouting() {
+  if (WORKSPACE_KEY) {
+    return `5. WORK THAT LIVES IN NO CHECKOUT ROUTES TO '${WORKSPACE_KEY}'. That key is the workspace root
+   itself, ${ROOT}, not a repository. It exists for tracker edits - labels, notes, assignees,
+   dependencies, splitting or closing issues - and for files that sit in the root outside every
+   checkout in the table, such as the workspace's own instructions. A ticket whose 'Repo:' line
+   says none, or whose only work is bd commands and root-level files, goes there. Step 2 cannot
+   confirm that route, because the root has no origin to ask, so confirm it the other way round:
+   none of the paths it names is inside a checkout in the table. A path that IS inside one routes
+   to that checkout whatever the ticket calls the work - the pipeline's own scripts are ordinary
+   files in the repository that holds them, and a ticket about them is that repository's ticket.`
+  }
+  return `5. A ticket whose work lives in no checkout in the table - tracker edits only, or files in the
+   workspace root itself - has no route here, because this workspace configures no key with
+   role 'workspace'. Return eligible:false and say so: adding that key is the owner's edit.`
 }
 
 function unconfigured(repo) { return !Object.prototype.hasOwnProperty.call(REPOS, String(repo)) }
@@ -1317,6 +1343,135 @@ Return the structured result, with the real final counts line from the test run 
 testOutput - the actual line, not a paraphrase.`
 }
 
+function workspacePrompt(task) {
+  const scratch = `${SCRATCH}/${task.id}`
+  const checkouts = CHECKOUT_KEYS.map((k) => `  ${k}  ->  ${repoPath(k)}`).join('\n')
+  return `Apply one tracker issue in the workspace root, then close it.
+
+Issue: ${task.id} - ${task.title}
+Repo: ${task.repo} - the workspace root itself, ${ROOT}. It is not a repository checkout.
+Scratch: ${scratch} - every temporary file you write goes in here. Message drafts, note files,
+  captured output. Never write scratch into ${ROOT}.
+
+THERE IS NO BRANCH, NO WORKTREE, NO PULL REQUEST AND NO SUITE HERE. Every other key in this
+workspace is a checkout with a remote, a test command and a lander that merges its pull requests;
+this one is where the work happens when a ticket has no code in it. What lands here lands the
+moment you write it - a tracker edit is live as soon as bd accepts it, and a file in the root is
+read from where it sits.
+
+THE TICKET IS BELOW IN FULL - triage already read it and passed the text on, so you do not
+need to run bd to see it. Read it before touching anything.
+
+--- ticket ${task.id} ---
+${task.ticket || '(not carried - run: bd show ' + task.id + ' from ' + ROOT + ')'}
+--- end ticket ---
+
+CHECK THE TICKET IS STILL OPEN BEFORE YOUR FIRST EDIT. One command, and it costs nothing:
+
+  export BEADS_DIR=${ROOT}/.beads
+  cd ${ROOT} && bd show ${task.id} | head -1
+
+If it says CLOSED, STOP and return status no_change_needed, naming what closed it. The owner
+works the tracker in his own sessions in parallel with this pipeline, and a ticket can be
+answered between triage reading it and you reaching this line.
+
+WHAT THIS KEY IS FOR. Two kinds of work, and nothing else:
+- tracker edits: labels, notes, assignees, dependencies, metadata, splitting a ticket into
+  children, closing tickets whose work is already done. All of it through bd.
+- documentation that sits in ${ROOT} and belongs to no checkout: the workspace's own
+  instructions and notes, a paragraph in a root-level document.
+
+WHAT IT IS NOT FOR. These directories are repository checkouts with lanes of their own:
+
+${checkouts || '  (none configured)'}
+
+A change inside any of them is a different ticket, routed to that key, with a branch and a pull
+request and a review. If the ticket turns out to need one, do not make the change from here:
+return status needs_feedback saying which checkout and which paths, so it can be re-routed or
+split. Do not edit inside a checkout from this step, and do not edit inside any directory that
+has its own .git, whether or not it is in the table.
+
+OFF-LIMITS AT THE ROOT, whatever the ticket says. These are not documentation, and a step that
+runs unattended, uncommitted and unreviewed must not edit them in place:
+- ${ROOT}/.pitwall.json and ${ROOT}/.autofix.json - the dispatch configuration. Every other lane
+  re-reads it while it runs, so a live edit changes the ground under work already in flight.
+- everything under ${ROOT}/.beads/ - the tracker's own database and its export. It is written
+  through bd and through nothing else; a file edit there corrupts what bd reads back.
+A ticket that needs one of them returns status needs_feedback naming the file, so the owner
+makes the edit. A ticket whose only documentation change is a note on what the config should
+say puts that note on the ticket, not in the file.
+
+EDIT THE ROOT IN PLACE, AND COMMIT NOTHING. ${ROOT} is the owner's own checkout, not a worktree
+cut for this run: it may hold uncommitted work of theirs, it may have no remote at all, and its
+default branch is the only branch there is. So:
+- edit files where they sit, and leave them uncommitted for the owner to commit
+- run no git command that writes there: no add, commit, checkout, stash, reset, clean or
+  branch. Read-only git is fine and useful - 'git -C ${ROOT} status --porcelain' and
+  'git -C ${ROOT} diff -- <file>' show you what you changed, if the root is a git repository
+- list every file you touched in 'changed', as absolute paths, so the result names them
+
+TRACKER RULES, because the tracker is the deliverable here:
+- WRITE bd TEXT THROUGH A FILE OR A QUOTED HEREDOC, never as an inline double-quoted argument
+  containing backticks or $(...). The shell evaluates them before bd sees the string and the
+  failure is silent: the issue is created and a sentence is missing. Use --body-file, or a
+  heredoc quoted as <<'EOF'. Then read the field back with --json and check the text is there.
+- WRITE EVERY NOTE THROUGH bd-note.sh, FROM A FILE, and never with 'bd update --notes', which
+  REPLACES everything already there:
+    cd ${ROOT} && PITWALL_SESSION=lane-devloop/${task.id} bash ${SKILL_DIR}/bd-note.sh <id> --note-file <path under ${scratch}>
+  A non-zero exit means the note did NOT land; say so rather than reporting it recorded.
+- NOTES PASSED TO 'bd create' ARE SILENTLY DROPPED. Create first, then note with bd-note.sh.
+- SEARCH BEFORE YOU FILE: 'bd search <a distinctive phrase>'. If a match exists, add to it.
+- WHEN YOU FILE OR SPLIT A TICKET, follow WRITING-TICKETS.md in ${SKILL_DIR}: line one is what
+  to do, then only traps that prevent a specific wrong action, a link to the evidence rather
+  than a restatement, and checkable acceptance. Assign every ticket you file.
+- A DEPENDENCY IS NOT A DECISION. If the answer is 'after that other ticket lands', record it
+  with 'bd dep add' rather than parking anything.
+- Never run 'bd init', never run 'bd hooks install', and never write to the 'owner' field.
+
+WHATEVER YOU WRITE IN A FILE OR A NOTE IS WRITTEN AS A PERSON. Never mention AI, assistants,
+automated authorship or tooling in any documentation, note or ticket text: describe what the
+software does, not how it was built. Write no comments into configuration files.
+
+STOP AND ASK instead of guessing, if any of these is true:
+- the ticket offers a choice that changes what ships and names no recommendation, and the
+  answer is about what the product SHOULD DO, who it is for, what it is worth or what it is
+  called. Which of two wordings, where a paragraph goes, how a note is phrased - those are
+  yours; decide, write down what you chose, and carry on.
+- the work needs a checkout, an account, a deploy or a device.
+To stop: write the exact question, the options and your recommendation to ${scratch}/park-note.txt,
+then, in this order:
+  cd ${ROOT} && bd label add ${task.id} <needs-decision or needs-access>
+  cd ${ROOT} && PITWALL_SESSION=lane-devloop/${task.id} bash ${SKILL_DIR}/bd-note.sh ${task.id} --note-file ${scratch}/park-note.txt
+  cd ${ROOT} && bd update ${task.id} -s open
+and return status needs_feedback with the question. That is a good outcome, not a failure.
+
+IF THE TICKET'S PREMISE IS WRONG - the edit is already there, the issue it describes does not
+exist - that is a real result. Close it yourself with the evidence in the reason, written to a
+file first so that nothing in it is evaluated by the shell:
+  cd ${ROOT} && bd close ${task.id} --reason-file ${scratch}/close-reason.txt
+and return status no_change_needed. Never invent a change to justify a ticket.
+
+WHEN THE WORK IS DONE, CLOSE THE ISSUE YOURSELF. Nothing merges and nothing deploys from this
+key, so no lander will close it for you, and an issue left in_progress comes straight back to
+the front of the queue. Put what changed in the reason - the tickets edited, the files touched -
+so that whoever reads it does not have to re-derive it. Write it to ${scratch}/close-reason.txt
+and close from the file:
+  cd ${ROOT} && bd close ${task.id} --reason-file ${scratch}/close-reason.txt
+Then run 'bd show ${task.id}' once more and return its first six lines VERBATIM as
+'verification', so the close can be checked rather than believed. The first line ends in the
+status inside square brackets, and CLOSED there is what is checked - not the word anywhere else,
+because a title can carry it. A step of this shape once reported an issue closed that was still
+in_progress, and the queue offered it straight back out.
+
+Return status 'applied' with 'summary' saying what changed, 'changed' listing every file edited,
+and 'verification' as above. Never use 2>&1. Always use absolute paths.`
+}
+
+function closedProperly(v) {
+  const header = String(v || '').split('\n')[0]
+  return /·\s*CLOSED\]\s*$/.test(header)
+}
+
 function reviewPrompt(task, work, attempt) {
   const base = baseOf(task.repo)
   return `Review a pushed fix. Try to REFUTE it. You are the only thing between this change
@@ -2042,6 +2197,7 @@ ${reposTable()}
 4. WHEN THE LINE AND THE PATHS DISAGREE, THAT IS A STOP, NOT A TIEBREAK. Return eligible:false and
    name both - the key the line claims and the checkout the paths are in. Guessing between them is
    how a lane ends up labelling an unrelated pull request that happens to share a number.
+${workspaceRouting()}
 
 FOUR LIVE MISROUTES IN ONE DAY, every one recovered by the lane rather than by the pipeline, and
 they cost a dispatch each: a ticket naming src/notify.ts routed to the contract repo; a child
@@ -2235,8 +2391,26 @@ task = { id: ID, title: triage.title, repo: triage.repo, priority: triage.priori
 log(`starting ${ID} (P${task.priority}, ${task.repo}) - ${task.title}`)
 
 let feedback = null
-let brief = task.ui ? await design(task) : null
+let brief = task.ui && !isWorkspace(task.repo) ? await design(task) : null
 let reworks = 0
+
+if (isWorkspace(task.repo)) {
+  phase('Fix')
+  const work = await agent(workspacePrompt(task), { label: `apply:${task.id}`, phase: 'Fix', schema: WORK })
+  if (!work) result = { outcome: 'agent_error', at: 'fix', attempts: 1 }
+  else if (work.status === 'applied') {
+    if (closedProperly(work.verification)) {
+      result = { outcome: 'closed', summary: work.summary, changed: work.changed || [] }
+    } else {
+      log(`CLOSE FAILED ${task.id} - the edits are applied but the tracker does not show it closed. Close it by hand or it will be dispatched again.`)
+      result = { outcome: 'blocked', summary: `applied but not closed: ${work.summary}`, changed: work.changed || [] }
+    }
+  }
+  else if (work.status === 'needs_feedback') result = { outcome: 'needs_feedback', question: work.question, attempts: 1 }
+  else if (work.status === 'no_change_needed') result = { outcome: 'no_change_needed', summary: work.summary }
+  else if (work.status === 'blocked') result = { outcome: 'blocked', summary: work.summary, attempts: 1 }
+  else result = { outcome: 'blocked', summary: `the workspace step returned '${work.status}', which is not an outcome for the workspace key: nothing is pushed or designed there. ${work.summary || ''}` }
+}
 
 // Outer: rebase cycles. Inner: review rounds. A rebase that goes red restarts the inner
 // loop with a full budget, capped so a branch that can never sit on top of master ends up
@@ -2260,6 +2434,10 @@ for (let attempt = 1; attempt <= MAX_ATTEMPTS && !result && !rework; attempt++) 
   if (work.status === 'needs_feedback') { result = { outcome: 'needs_feedback', question: work.question, attempts: attempt }; break }
   if (work.status === 'no_change_needed') { result = { outcome: 'no_change_needed', summary: work.summary }; break }
   if (work.status === 'blocked') { result = { outcome: 'blocked', summary: work.summary, attempts: attempt }; break }
+  if (work.status === 'applied') {
+    result = { outcome: 'blocked', summary: `the fix step returned 'applied', which is only an outcome for the workspace key: a checkout lane pushes a branch and opens a pull request, and there is nothing here to review. ${work.summary || ''}`, attempts: attempt }
+    break
+  }
 
   phase('Review')
   const review = await agent(reviewPrompt(task, work, attempt), {
@@ -2341,7 +2519,7 @@ if (!result && reworks >= MAX_REWORKS) {
 }
 
 const MARK = {
-  verified: 'READY TO LAND', needs_feedback: 'NEEDS YOU', no_change_needed: 'NOTHING TO DO',
+  verified: 'READY TO LAND', closed: 'CLOSED', needs_feedback: 'NEEDS YOU', no_change_needed: 'NOTHING TO DO',
   blocked: 'BLOCKED', handoff_failed: 'NOT LABELLED', agent_error: 'AGENT DIED', split: 'SPLIT'
 }
 const bits = []
@@ -2351,6 +2529,7 @@ if (result.pr && result.outcome === 'verified') bits.push('labelled lane-verifie
 if (result.question) bits.push(`asks: ${result.question}`)
 if (result.summary && !result.question) bits.push(result.summary)
 if (result.outcome !== 'verified' || /^[A-Z]/.test(worktreeState)) bits.push(`worktree: ${worktreeState}`)
+if (result.changed && result.changed.length) bits.push(`edited in place, uncommitted: ${result.changed.join(', ')}`)
 log(`${MARK[result.outcome] || result.outcome} ${task.id} P${task.priority} ${task.repo} - ${task.title}${bits.length ? `\n    ${bits.join('\n    ')}` : ''}`)
 
 return { id: task.id, title: task.title, repo: task.repo, priority: task.priority, ...result, lane: laneLock, slot: slotClaim, worktree: worktreeState }
