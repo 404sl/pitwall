@@ -24,12 +24,12 @@ interface Workspace {
   lock: string;
 }
 
-function workspace(): Workspace {
+function workspace(repos: Record<string, Record<string, unknown>> = {}): Workspace {
   const prefix = `fixture-${process.pid}-${Date.now().toString(36)}`;
   const root = mkdtempSync(join(tmpdir(), "pitwall-lock-check-"));
   writeFileSync(
     join(root, ".autofix.json"),
-    `${JSON.stringify({ root, idPrefix: "fixture", lockPrefix: prefix, repos: {} })}\n`,
+    `${JSON.stringify({ root, idPrefix: "fixture", lockPrefix: prefix, repos })}\n`,
   );
   const home = join(root, "home");
   mkdirSync(home, { recursive: true });
@@ -104,6 +104,26 @@ test("a holder whose run stopped writing is called dead with both ages as number
     assert.match(out, /MERGE LOCK LOOKS DEAD: held 45m by tok-dead, its run has not written for 30m\./);
   } finally {
     drop(space);
+  }
+});
+
+test("a dead lock's release advice names the configured default branches, and master when none is", () => {
+  const configured = workspace({ site: { path: "site", defaultBranch: "main" }, docs: { path: "docs" } });
+  const bare = workspace();
+  try {
+    for (const space of [configured, bare]) {
+      holder(space, "tok-dead", 45);
+      claimingJournal(space, "wf-dead", "tok-dead", 30);
+    }
+    const named = check(configured);
+    assert.equal(named.status, 1, `${named.out}${named.err}`);
+    assert.match(named.out, /staging and production and origin\/main and origin\/master should all read the SAME revision/);
+    const assumed = check(bare);
+    assert.equal(assumed.status, 1, `${assumed.out}${assumed.err}`);
+    assert.match(assumed.out, /staging and production and origin\/master should all read the SAME revision/);
+  } finally {
+    drop(configured);
+    drop(bare);
   }
 });
 

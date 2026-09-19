@@ -27,14 +27,17 @@ if [ ! -d "$ROOT/.beads" ]; then
   echo "             Run from the workspace root, or set DEVLOOP_ROOT." >&2
   exit 3
 fi
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$ROOT/site"
 HOST="${DEVLOOP_DEPLOY_HOST:-deploy@your-server}"
 
 cd "$REPO" 2>/dev/null || { echo "not a directory: $REPO" >&2; exit 2; }
+BASE="$(bash "$HERE/default-branch.sh" --checkout "$REPO")"
+BASE="${BASE:-master}"
 git fetch origin --quiet 2>/dev/null
 
-master=$(git rev-parse origin/master 2>/dev/null)
-[ -n "$master" ] || { echo "could not read origin/master" >&2; exit 2; }
+master=$(git rev-parse "origin/$BASE" 2>/dev/null)
+[ -n "$master" ] || { echo "could not read origin/$BASE" >&2; exit 2; }
 
 revs=$(timeout 25 ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST" \
   'for e in production staging; do echo -n "$e "; cat /home/deploy/your-app/$e/current/.mina_git_revision 2>/dev/null; echo; done' 2>/dev/null)
@@ -44,7 +47,7 @@ revs=$(timeout 25 ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST" \
 behind=0
 printf '%-12s %-10s %s\n' "where" "revision" "state"
 printf '%-12s %-10s %s\n' "-----" "--------" "-----"
-printf '%-12s %-10s %s\n' "master" "${master:0:8}" "-"
+printf '%-12s %-10s %s\n' "$BASE" "${master:0:8}" "-"
 
 while read -r env rev; do
   [ -n "$rev" ] || continue
@@ -61,12 +64,12 @@ EOF
 
 if [ "$behind" = "1" ]; then
   echo
-  echo "Undeployed on master:"
+  echo "Undeployed on ${BASE}:"
   first=$(printf '%s\n' "$revs" | awk 'NF>1 {print $2; exit}')
   git log --oneline "$first..$master" 2>/dev/null | sed 's/^/  /'
   echo
   echo "A train deploys only what IT lands, so this does not close itself. Run one - it will"
-  echo "deploy the whole of master, not just its own passengers - or deploy by hand from ${REPO}:"
+  echo "deploy the whole of ${BASE}, not just its own passengers - or deploy by hand from ${REPO}:"
   echo "  bash ~/.claude/skills/devloop/deploy-one.sh --label staging --repo-path ${REPO} --deploy 'bundle exec mina staging deploy' --revision \"ssh deploy@your-server 'cat /home/deploy/your-app/staging/current/.mina_git_revision'\""
   echo "  bash ~/.claude/skills/devloop/deploy-one.sh --label production --repo-path ${REPO} --deploy 'bundle exec mina production deploy' --revision \"ssh deploy@your-server 'cat /home/deploy/your-app/production/current/.mina_git_revision'\""
   echo
@@ -78,5 +81,5 @@ if [ "$behind" = "1" ]; then
 fi
 
 echo
-echo "master, staging and production agree - what is landed is live."
+echo "${BASE}, staging and production agree - what is landed is live."
 exit 0
