@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.85
+
+In the repository that ships the plugin, the handoff gate and the pre-push check no longer refuse a commit message or pull request body for naming the plugin - the name is neutralised there the same way the plugin's paths already are. Everywhere else it is still a leak, and the handoff label token and scratch paths are still leaks in every repository.
+
 ## 0.1.84
 
 The repo keys in `.pitwall.json` are free choices now. Triage, split and work schemas offer exactly the keys the workspace configures, plus `unknown`, so a workspace with any number of repositories can be onboarded without renaming them, and a key the workspace does not have cannot be returned at all. A config that lists no repositories is refused before any step runs instead of reaching triage with nothing to route to.
