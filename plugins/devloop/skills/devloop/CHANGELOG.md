@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.110
+
+The supervisor helpers that run from a checkout now read the repository's configured default branch: `master-watch.sh` watches it, `stranded.sh` measures every pull request against it, `deployed.sh` compares the servers with it, and `lock-check.sh` names it in its release advice. `master-watch.sh` also accepts `--base <branch>`. A workspace with no `defaultBranch` configured sees no change. `stranded.sh` no longer consults `origin/HEAD`; the config is the only source, which is what the train uses too.
+
 ## 0.1.109
 
 - The landing prompts that span every repository - lock, survey, release, deploy, read-back, retire and close - now list each repository beside the remote branch it lands on when the configured default branches differ, instead of showing a placeholder in the identity command. With one shared default, or none configured, the prompts are unchanged.
