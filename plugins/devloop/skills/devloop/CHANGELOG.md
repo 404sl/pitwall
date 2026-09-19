@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.105
+
+In the repository that ships the plugin, a commit message or pull request body that names the handoff label is compliant: the label is the subject of such a change, not a leak. In every other repository the token is still refused, and the scratch-path and authorship checks are unchanged everywhere.
+
+Closes pitwall-7ddo.
+
 ## 0.1.104
 
 The fix brief now tells a lane to commit its work to the branch as soon as it compiles and again before every long-running step, and to fold those interim commits into one before the pre-push check - onto the head the remote holds when the branch is published, and onto the fork point when it is not. kill-lane.sh rescues the commits a never-pushed branch holds as a mailbox in the rescue directory, listed on stdout and replayable with git am, before it deletes the branch; a dry run names the file it would write. A fix step that is killed mid-suite leaves commits, and the cleanup keeps them.
