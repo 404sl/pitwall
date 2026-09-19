@@ -1279,6 +1279,19 @@ test("the call names the age once a park is suspect, and a decision with no ques
     text: "Nothing for you — it is parked: tooling.",
     tone: "waiting",
   });
+  assert.deepEqual(callFor("parked:tooling", "unchecked", false, { park: suspect, liftable: true }), {
+    text: "Read this - parked as tooling for 11d0h, and nothing has re-examined why. If the reason has expired, say so below and lift the park.",
+    tone: "yours",
+  });
+  assert.deepEqual(callFor("parked:umbrella", "unchecked", false, { park: suspect, liftable: false }), {
+    text: "Read this - parked as umbrella for 11d0h, and nothing has re-examined why. If the reason has expired, remove the park in the tracker.",
+    tone: "yours",
+  });
+  assert.equal(
+    callFor("parked:tooling", "unchecked", false, { park: fresh, liftable: true }).text,
+    "Nothing for you — it is parked: tooling.",
+    "a fresh park is not a call to lift it",
+  );
   assert.equal(callFor("blocked", "unchecked", false, { park: suspect }).text, strings.issue.call.blocked);
   assert.equal(callFor("yours:decision", "unchecked", true, { park: suspect }).text, strings.issue.call.closed);
 });
@@ -1967,7 +1980,7 @@ function actingDetailMarkup(over: Partial<IssuePayload["issue"]> = {}): string {
   );
 }
 
-test("only an issue in the owner's own queue offers anything to do about it", () => {
+test("an issue in the owner's own queue, or parked by a label the owner can lift, offers something to do; structural parks and blocks offer nothing", () => {
   assert.match(actionsMarkup(), /<section class="pw-actions"/);
   assert.match(actionsMarkup({ classification: "yours:access" }), /<section class="pw-actions"/);
   for (const classification of ["ready", "in-flight", "landing", "blocked", "parked:roadmap"] as const) {
@@ -1983,6 +1996,64 @@ test("only an issue in the owner's own queue offers anything to do about it", ()
     "",
     "an unclassified issue is not acted on, and reading one must not throw",
   );
+
+  const watched = actionsMarkup({ classification: "parked:watch", labels: ["watch"] });
+  assert.match(watched, /<section class="pw-actions"/);
+  assert.equal(watched.match(/class="pw-button"/g)?.length, 1, "one control: lift the label, nothing else");
+  assert.ok(watched.includes("Lift watch"), "the button names the label it lifts");
+  for (const label of [strings.actions.answer, strings.actions.ready, strings.actions.notMine]) {
+    assert.ok(!watched.includes(label), `${label} is the owner's queue, not a park`);
+  }
+  assert.doesNotMatch(watched, /<textarea/, "the reason box opens on request, never pre-opened");
+  assert.match(watched, /aria-expanded="false"/);
+  assert.ok(watched.includes(strings.actions.scope));
+  assert.equal(
+    actionsMarkup({ classification: "parked:roadmap", labels: [] }),
+    "",
+    "a park with no label on the issue has nothing the console can lift",
+  );
+  assert.equal(
+    actionsMarkup({ classification: "parked:umbrella", labels: ["umbrella"] }),
+    "",
+    "an umbrella is not lifted from the console, labelled or not",
+  );
+  assert.equal(actionsMarkup({ classification: "blocked", labels: ["watch"] }), "", "blocked carries no label to remove");
+});
+
+test("an aged park the console can lift says so in the call, and the control sits under it", () => {
+  const markup = renderToStaticMarkup(
+    createElement(IssueDetail, {
+      shown: aPreview({
+        classification: "parked:tooling",
+        labels: ["blocked-tooling"],
+        park: { since: "2026-08-28T14:11:00Z", ms: 11 * DAY, suspect: true },
+      }),
+      route: ACTING_ROUTE,
+      onOutcome: () => Promise.resolve(),
+    }),
+  );
+  assert.match(markup, /class="pw-call pw-call--yours">Read this - parked as tooling for 11d0h,[^<]*say so below and lift the park\./);
+  const call = markup.indexOf('class="pw-call ');
+  const actions = markup.indexOf('<section class="pw-actions"');
+  const id = markup.indexOf('class="pw-issue__id"');
+  assert.ok(call > -1 && actions > -1 && id > -1);
+  assert.ok(call < actions && actions < id, "the control answers the call above it");
+  assert.ok(markup.includes("Lift blocked-tooling"));
+  assert.doesNotMatch(markup, /remove the park in the tracker/, "the page no longer sends the reader elsewhere");
+
+  const umbrella = renderToStaticMarkup(
+    createElement(IssueDetail, {
+      shown: aPreview({
+        classification: "parked:umbrella",
+        labels: ["umbrella"],
+        park: { since: "2026-08-28T14:11:00Z", ms: 11 * DAY, suspect: true },
+      }),
+      route: ACTING_ROUTE,
+      onOutcome: () => Promise.resolve(),
+    }),
+  );
+  assert.match(umbrella, /remove the park in the tracker\./, "an umbrella is still lifted in the tracker");
+  assert.doesNotMatch(umbrella, /<section class="pw-actions"/);
 });
 
 test("a ticket parked on a question arrives with the box open; one parked on access does not", () => {
@@ -2038,16 +2109,23 @@ test("the controls sit under the note being answered, not above it", () => {
 });
 
 test("a page with nothing to act on renders exactly as it did before", () => {
-  const view = buildIssueView(payload({ classification: "ready" }));
-  assert.equal(
-    renderToStaticMarkup(
-      createElement(IssueDetail, {
-        shown: shownOf(view),
-        view,
-        route: ACTING_ROUTE,
-        onOutcome: () => Promise.resolve(),
-      }),
-    ),
-    renderToStaticMarkup(createElement(IssueDetail, { shown: shownOf(view), view })),
-  );
+  for (const over of [
+    { classification: "ready" as const },
+    { classification: "parked:roadmap" as const, labels: [], reason: { rule: "stored-status" as const, status: "deferred" } },
+    { classification: "parked:umbrella" as const, labels: ["umbrella"], reason: { rule: "label" as const, label: "umbrella" } },
+  ]) {
+    const view = buildIssueView(payload(over));
+    assert.equal(
+      renderToStaticMarkup(
+        createElement(IssueDetail, {
+          shown: shownOf(view),
+          view,
+          route: ACTING_ROUTE,
+          onOutcome: () => Promise.resolve(),
+        }),
+      ),
+      renderToStaticMarkup(createElement(IssueDetail, { shown: shownOf(view), view })),
+      `${over.classification} with labels ${JSON.stringify(over.labels ?? [])} gains nothing`,
+    );
+  }
 });

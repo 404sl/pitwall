@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode, type Ref } from "react";
 import { isYours, type Authority, type Classification, type StalenessVerdict } from "@404sl/pitwall-schema";
-import type { ClassificationReason } from "../../src/classify.js";
+import { liftableParkOf, type ClassificationReason } from "../../src/classify.js";
 import { noteBlocks, noteSaid, quote } from "../../src/staleness.js";
 import {
   buildIssueView,
@@ -188,6 +188,7 @@ export function reasonTemplate(reason: Exclude<ClassificationReason, { rule: "cl
 export interface CallContext {
   park?: ParkAgeValue;
   misfiled?: boolean;
+  liftable?: boolean;
 }
 
 function agedText(park: ParkAgeValue | undefined): string | undefined {
@@ -244,7 +245,8 @@ export function callFor(
     default: {
       const reason = classification.slice("parked:".length);
       if (age !== undefined) {
-        return { text: fill(strings.issue.call.parkedAged, { reason, age }), tone: "yours" };
+        const template = context.liftable === true ? strings.issue.call.parkedAgedLiftable : strings.issue.call.parkedAged;
+        return { text: fill(template, { reason, age }), tone: "yours" };
       }
       return { text: fill(strings.issue.call.parked, { reason }), tone: "waiting" };
     }
@@ -255,6 +257,7 @@ function Call({ shown }: { shown: IssuePreview }) {
   const call = callFor(shown.classification, shown.staleness.verdict, shown.closed, {
     park: shown.park,
     misfiled: isMisfiled(shown),
+    liftable: liftableParkOf(shown) !== undefined,
   });
   return <p className={`pw-call pw-call--${call.tone}`}>{call.text}</p>;
 }
@@ -583,6 +586,7 @@ const DONE: Record<ActionName, string> = {
   answer: strings.actions.doneAnswer,
   ready: strings.actions.doneReady,
   "not-mine": strings.actions.doneNotMine,
+  unpark: strings.actions.doneUnpark,
 };
 
 function outcomeNotice(
