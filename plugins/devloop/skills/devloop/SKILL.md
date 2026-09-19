@@ -316,22 +316,34 @@ single-repository workspace whose one checkout sits at `.` is unaffected: the ro
 selects this shape.
 
 A lane dispatched there does not cut a worktree, does not branch, does not open a pull request and
-runs no suite. It applies the tracker edits through bd, edits root-level files in place and leaves
-them **uncommitted** - the root is the owner's own checkout, with their unfinished work in it and
-possibly no remote - lists every file it touched, and then **closes the issue itself**, because
-nothing merges and no lander will. It returns `CLOSED` rather than `READY TO LAND`, with the
-files it edited on the line below. It refuses to edit inside any checkout: a ticket that turns out
+runs no suite. It applies the tracker edits through bd, edits root-level documentation in place
+and leaves it **uncommitted** - the root is the owner's own checkout, with their unfinished work
+in it and possibly no remote - lists every file it touched, and then **closes the issue itself**,
+because nothing merges and no lander will. It returns `CLOSED` rather than `READY TO LAND`, with
+the files it edited on the line below, and `CLOSED` is taken from the status token at the end of
+the first line of `bd show`, not from the word appearing anywhere in the read-back, because a
+title can carry it. It refuses to edit inside any checkout: a ticket that turns out
 to need one comes back as `NEEDS YOU` naming the checkout, for re-routing or a split.
+
+Three things at the root are off-limits to it whatever the ticket says, and a ticket that needs
+one of them comes back as `NEEDS YOU` naming the file: `.pitwall.json` and `.autofix.json`, which
+every concurrent lane re-reads while it runs, and everything under `.beads/`, which only bd writes.
+The step runs unattended, uncommitted and unreviewed, and those are the files where a live edit
+changes the ground under work already in flight.
+
+`applied` is that step's outcome and no other's: a checkout lane that returns it is refused
+before review, because there is no branch and no pull request to review.
 
 Triage is told the key exists and routes to it a ticket whose `Repo:` line says none, or whose
 only work is bd commands and root-level files. A path inside a configured checkout still routes to
 that checkout, whatever the ticket calls the work: the pipeline's own scripts are ordinary files
 in the repository that holds them.
 
-The lander, the train, `--rework`, the handoff survey, the queue scan and the console's pull
-request listing all skip the entry. Without the role they would not: the lander refuses to start
-over any repository with no slug, and the handoff survey refuses to label anything while one is
-present.
+The lander, the train, `--rework`, the handoff survey, the queue scan and the console all skip
+the entry, and the snapshot the console publishes leaves it out of `repos[]`, because the
+contract's repositories are checkouts and the root is not one. Without the role they would not:
+the lander refuses to start over any repository with no slug, and the handoff survey refuses to
+label anything while one is present.
 
 ## When a lane dies
 
