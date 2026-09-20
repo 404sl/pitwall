@@ -424,6 +424,26 @@ test("a needs-decision issue is never reported resolved, however many checks fir
   assert.equal(staleness.verdict, "likely-stale");
 });
 
+test("a call is never reported resolved either: a referenced issue closing does not make the call", async () => {
+  const { probe } = answers(true);
+  const { staleness } = await assess(
+    aRecord({
+      classification: "parked:call",
+      labels: ["needs-call"],
+      labelledAt: "2026-09-01T10:00:00Z",
+      notedAt: "2026-09-05T14:00:00Z",
+      notes: "Answered: go ahead. Superseded mw-9. npm whoami is a 401 on this machine.",
+    }),
+    aContext({
+      idPrefix: "mw",
+      ...tracker({ "mw-9": "closed" }),
+      probe,
+    }),
+  );
+  assert.equal(staleness.verdict, "likely-stale");
+  assert.ok(!matches(staleness.evidence, /no open dependency of its own remains/));
+});
+
 test("an issue nobody has been able to check reports unchecked and claims no finding", async () => {
   const { staleness, errors } = await assess(
     aRecord({ classification: "parked:roadmap" }),

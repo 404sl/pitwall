@@ -1686,9 +1686,15 @@ const CALLS_PARKS: ParkStore = {
 const CALLS = snapshotOf([
   project("pitwall", {
     issues: [
-      issue("pitwall-c2", "parked:call", { labels: ["needs-call"], priority: 0, issueType: "bug" }),
+      issue("pitwall-c2", "parked:call", {
+        labels: ["needs-call"],
+        priority: 0,
+        issueType: "bug",
+        owner: "pitwall-devloop",
+        reporter: "pitwall-planning-session",
+      }),
       issue("pitwall-c1", "parked:call", { labels: ["needs-call", "needs-decision"], priority: 2, issueType: "task" }),
-      issue("pitwall-d1", "yours:decision", { labels: ["needs-decision"], issueType: "bug" }),
+      issue("pitwall-d1", "yours:decision", { labels: ["needs-decision"], issueType: "bug", owner: "pitwall-devloop" }),
       issue("pitwall-a1", "yours:access", { labels: ["needs-access"], issueType: "task" }),
       issue("pitwall-t1", "parked:tooling", { labels: ["blocked-tooling"], issueType: "task" }),
     ],
@@ -1770,6 +1776,23 @@ test("the calls band renders beside needs you, with the call kind, and never as 
   assert.ok(needs.includes("pw-band--alert"), "needs you still paints when something is the owner's");
   assert.equal(needs.includes("pitwall-c1"), false);
   assert.ok(needs.includes(">2<"));
+});
+
+test("the calls band follows the board's sort by the same rule as needs you", () => {
+  const plain = buildBoard(CALLS, {}, CALLS_PARKS);
+  assert.deepEqual(rowsOf(plain.calls), [["pitwall-c1", "pitwall-c2"], ["maas-c1"]], "oldest park first by default");
+  assert.deepEqual(rowsOf(plain.needsYou), [["pitwall-a1", "pitwall-d1"]]);
+  for (const sort of ["owner", "reporter"] as const) {
+    const sorted = buildBoard(CALLS, {}, CALLS_PARKS, sort);
+    assert.equal(sorted.sort, sort);
+    assert.deepEqual(rowsOf(sorted.calls), [["pitwall-c2", "pitwall-c1"], ["maas-c1"]], `${sort}: the named row first, the unrecorded last`);
+    assert.equal(sorted.callCount, plain.callCount, sort);
+    assert.deepEqual(sorted.totals, plain.totals, sort);
+  }
+  assert.deepEqual(rowsOf(buildBoard(CALLS, {}, CALLS_PARKS, "owner").needsYou), [["pitwall-d1", "pitwall-a1"]]);
+  const markup = renderToStaticMarkup(createElement(Calls, { groups: buildBoard(CALLS, {}, CALLS_PARKS, "owner").calls, sort: "owner" }));
+  assert.match(markup, /href="#\/issue\/pitwall\/pitwall-c2\?sort=owner"/, "opening a call keeps the sort");
+  assert.equal(markup.match(/pw-cell--who/g)?.length, 6, "the queue and reporter cells render for every call");
 });
 
 test("the calls band under a filter reads as a subset, and an empty one says which is which", () => {

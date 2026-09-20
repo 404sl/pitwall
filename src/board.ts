@@ -423,8 +423,8 @@ function needsYouGroups(projects: Project[], generatedAt: string, parks: ParkSto
   return rowGroups(projects, generatedAt, parks, isYours, sort);
 }
 
-function callGroups(projects: Project[], generatedAt: string, parks: ParkStore): NeedsYouGroup[] {
-  return rowGroups(projects, generatedAt, parks, isCall);
+function callGroups(projects: Project[], generatedAt: string, parks: ParkStore, sort?: SortKey): NeedsYouGroup[] {
+  return rowGroups(projects, generatedAt, parks, isCall, sort);
 }
 
 function parkedReasonOf(issue: Issue): ParkedReason | undefined {
@@ -763,7 +763,7 @@ export function buildBoard(
   const shown = filteredProjects(projects, filter);
   const filtered = isFiltered(filter);
   const needsYou = needsYouGroups(shown, generatedAt, parks, sort);
-  const calls = callGroups(shown, generatedAt, parks);
+  const calls = callGroups(shown, generatedAt, parks, sort);
   const everyRunning = runningRows(projects, generatedAt);
   const running = filtered ? withRunningTotals(runningRows(shown, generatedAt), everyRunning) : everyRunning;
   const ready = readyRows(shown, sort);

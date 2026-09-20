@@ -386,7 +386,7 @@ export function App() {
           label={strings.band.calls}
           count={countLabel(board.callCount, board.totals.calls, board.filtered)}
         >
-          <Calls groups={board.calls} filter={filter} filteredEmpty={emptyOf(board.totals.calls)} />
+          <Calls groups={board.calls} filter={filter} sort={sort} filteredEmpty={emptyOf(board.totals.calls)} />
         </Band>
         <Band
           id="running"
