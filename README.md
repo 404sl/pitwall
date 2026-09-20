@@ -95,6 +95,17 @@ still read, so a workspace that has not been renamed keeps working; where a dire
 both, `.pitwall.json` is the one in use. Run it from a directory whose children are
 project workspaces, or configure the roots explicitly.
 
+Each repository's `defaultBranch` is taken from its entry in `.pitwall.json` when one is set,
+and otherwise read from the checkout's `refs/remotes/origin/HEAD`. That ref is written by
+`git clone` and by nothing else, so a checkout made with `git init` and pushed does not have
+it. Where neither is available the field is absent from the snapshot - never assumed to be
+`main` or `master` - and `pitwall doctor` warns on that repository, naming the two ways to fix
+it: set `defaultBranch` in `.pitwall.json`, or run `git remote set-head origin -a` once in the
+checkout. The reader never asks the remote itself. A snapshot is local and instant, the console
+re-collects on request against a 60-second floor, and a laptop is often offline, so a network
+call per repository per collection would make a command that works everywhere into one that is
+slow or fails where there is no connection.
+
 A `snapshot` run is appended to a local SQLite log at `~/.local/state/pitwall/history.db`
 (`XDG_STATE_HOME` is honoured), at most one row an hour however often it runs. A tracker
 holds current state and no time series, so the metrics that need more than one reading — the

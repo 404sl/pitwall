@@ -78,11 +78,12 @@ function reposOf(root: string, workspace: Record<string, unknown>): WorkspaceRep
     .filter(([, repo]) => repo["role"] !== "workspace")
     .map(([name, repo]) => {
       const path = repoPath(root, name, repo);
+      const defaultBranch = defaultBranchIn(name, repo) ?? defaultBranchOf(path);
       return {
         name,
         path,
         kind: repoKind(repo["deploy"]),
-        defaultBranch: defaultBranchIn(name, repo) ?? defaultBranchOf(path),
+        ...(defaultBranch !== undefined && { defaultBranch }),
       };
     });
 }
