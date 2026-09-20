@@ -199,6 +199,13 @@ export interface Board {
   today: TodayTotals;
   totals: BoardTotals;
   refreshFailure?: CollectionError;
+  projectAges: ProjectAge[];
+}
+
+export interface ProjectAge {
+  project: string;
+  projectId: string;
+  readAt?: string;
 }
 
 export const READY_LIMIT = 8;
@@ -606,6 +613,29 @@ export function refreshFailure(snapshot: Snapshot): CollectionError | undefined 
   );
 }
 
+function readAtMs(readAt: string | undefined): number {
+  const at = readAt === undefined ? Number.NaN : new Date(readAt).getTime();
+  return Number.isNaN(at) ? Number.POSITIVE_INFINITY : at;
+}
+
+export function projectAges(projects: readonly Project[]): ProjectAge[] {
+  const distinct = new Set(projects.map((project) => project.issuesReadAt));
+  if (distinct.size < 2) {
+    return [];
+  }
+  return projects
+    .map((project, index) => ({
+      index,
+      entry: {
+        project: project.name,
+        projectId: project.id,
+        ...(project.issuesReadAt === undefined ? {} : { readAt: project.issuesReadAt }),
+      },
+    }))
+    .sort((a, b) => readAtMs(a.entry.readAt) - readAtMs(b.entry.readAt) || a.index - b.index)
+    .map(({ entry }) => entry);
+}
+
 export const ISSUE_TYPES = ["bug", "feature", "task", "chore", "epic", "decision"];
 
 export const PRIORITIES = [0, 1, 2, 3, 4];
@@ -755,6 +785,7 @@ export function buildBoard(
     today: todayTotals(projects),
     totals: boardTotals(projects, generatedAt, everyRunning),
     refreshFailure: refreshFailure(snapshot),
+    projectAges: projectAges(projects),
   };
 }
 

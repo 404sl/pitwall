@@ -11,6 +11,9 @@ export const strings = {
     refreshNotice: "The last refresh failed. This board is {age} old and is not being updated.",
     versionLabel: "version",
     update: "{version} available",
+    agesLabel: "Age by project",
+    readAt: "{project} issues read {at}.",
+    readAtUnknown: "When this project's issues were read is not recorded.",
   },
   build: {
     label: "build",

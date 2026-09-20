@@ -219,6 +219,7 @@ async function gather(
       signals: found.signals,
       candidates: found.candidates,
       issues,
+      ...(collected.errors.length === 0 ? { issuesReadAt: day.toISOString() } : {}),
       pipeline: pipeline.pipeline,
       metrics: metricsOf(issues, collected.closed, day, !unreadable),
       errors: [
@@ -243,6 +244,7 @@ function keeping(project: Project, held: Project, at: string, day: Date): Projec
   return Project.parse({
     ...project,
     issues: held.issues,
+    issuesReadAt: held.issuesReadAt ?? at,
     metrics: { ...project.metrics, ...metricsOf(held.issues, [], day, false) },
     errors: [
       ...project.errors,

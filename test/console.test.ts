@@ -6,6 +6,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { Classification, SCHEMA_VERSION, isYours, parseSnapshot } from "@404sl/pitwall-schema";
 import type { CollectionError } from "@404sl/pitwall-schema";
 import {
+  KEPT_SOURCE,
   PARK_SUSPECT_AFTER_MS,
   PARTIAL_SOURCE,
   REFRESH_SOURCE,
@@ -20,7 +21,15 @@ import {
   problemKey,
   snapshotAge,
 } from "../ui/model.ts";
-import type { Board, BuildState, FilterState, IssuePayload, IssuePreview, QuestionStore } from "../ui/model.ts";
+import type {
+  Board,
+  BuildState,
+  FilterState,
+  IssuePayload,
+  IssuePreview,
+  ProjectAge,
+  QuestionStore,
+} from "../ui/model.ts";
 import { strings } from "../ui/strings.ts";
 import { countLabel } from "../ui/format.ts";
 import { boardHref, filterOf, filterQuery, issueHref, routeOf, sortOf } from "../ui/routes.ts";
@@ -41,12 +50,21 @@ function headerMarkup(
   update?: string,
   refreshFailure?: CollectionError,
   build?: BuildState,
+  projectAges?: ProjectAge[],
 ): string {
   const realNow = Date.now;
   Date.now = () => HEADER_NOW;
   try {
     return renderToStaticMarkup(
-      createElement(Header, { projectCount, generatedAt, version: VERSION, update, refreshFailure, build }),
+      createElement(Header, {
+        projectCount,
+        generatedAt,
+        version: VERSION,
+        update,
+        refreshFailure,
+        build,
+        projectAges,
+      }),
     );
   } finally {
     Date.now = realNow;
@@ -790,6 +808,96 @@ test("a confirmed newer release is named beside the running version", () => {
   const markup = headerMarkup(3, new Date(HEADER_NOW - 60_000).toISOString(), "0.1.99");
   assert.match(markup, new RegExp(`</span>${RUNNING_VERSION}<span class="pw-header__update" role="status">`));
   assert.match(markup, /<span aria-hidden="true"> · <\/span>0\.1\.99 available<\/span>/);
+});
+
+const KEPT_READ_AT = new Date(Date.parse(GENERATED_AT) - 2 * 24 * 60 * 60_000).toISOString();
+
+function keptProject(name: string, readAt: string): Record<string, unknown> {
+  return project(name, {
+    issuesReadAt: readAt,
+    errors: [
+      {
+        source: KEPT_SOURCE,
+        message: "2 issues kept from the last collection that could read this project.",
+        at: readAt,
+      },
+    ],
+  });
+}
+
+const PARTIAL_RUN = {
+  source: PARTIAL_SOURCE,
+  message: "1 of 2 projects could not be read: brochure (issues kept from the last snapshot).",
+  at: GENERATED_AT,
+};
+
+test("a board where one project was kept and another read shows each project's own age, oldest first", () => {
+  const mixed = snapshotOf(
+    [project("pitwall", { issuesReadAt: GENERATED_AT }), keptProject("brochure", KEPT_READ_AT)],
+    [PARTIAL_RUN],
+  );
+  const board = buildBoard(mixed);
+  assert.deepEqual(board.projectAges, [
+    { project: "brochure", projectId: "brochure", readAt: KEPT_READ_AT },
+    { project: "pitwall", projectId: "pitwall", readAt: GENERATED_AT },
+  ]);
+  const markup = headerMarkup(2, GENERATED_AT, undefined, board.refreshFailure, undefined, board.projectAges);
+  assert.match(markup, /<header class="pw-header pw-header--stale">/);
+  assert.match(markup, /<span class="pw-header__age">38m old<\/span>/);
+  assert.match(markup, /<span aria-hidden="true"> · refresh failed<\/span>/);
+  assert.match(markup, /<ul class="pw-header__ages" aria-label="Age by project">/);
+  assert.match(
+    markup,
+    /<li class="pw-header__project"><span class="pw-header__project-name">brochure<\/span> <span class="pw-age" title="[^"]+">2d0h<\/span><time class="pw-sr" dateTime="2026-09-06T14:11:00.000Z">brochure issues read [^<]+\.<\/time><\/li>/,
+  );
+  assert.match(
+    markup,
+    /<li class="pw-header__project"><span aria-hidden="true"> · <\/span><span class="pw-header__project-name">pitwall<\/span> <span class="pw-age" title="[^"]+">38m<\/span><time class="pw-sr" dateTime="2026-09-08T14:11:00Z">pitwall issues read [^<]+\.<\/time><\/li>/,
+  );
+  assert.match(markup, /<\/p><ul class="pw-header__ages"/, "the ages sit beside the meta line, not inside it");
+});
+
+test("a board whose projects were all read in the same run keeps one age", () => {
+  const read = snapshotOf([
+    project("pitwall", { issuesReadAt: GENERATED_AT }),
+    project("brochure", { issuesReadAt: GENERATED_AT }),
+  ]);
+  const board = buildBoard(read);
+  assert.deepEqual(board.projectAges, []);
+  const markup = headerMarkup(2, GENERATED_AT, undefined, undefined, undefined, board.projectAges);
+  assert.doesNotMatch(markup, /pw-header__ages/);
+  assert.equal(markup, headerMarkup(2, GENERATED_AT));
+});
+
+test("a snapshot from a producer that never dated its projects renders the header it always did", () => {
+  const board = buildBoard(snapshotOf([project("pitwall"), project("brochure")]));
+  assert.deepEqual(board.projectAges, []);
+  const markup = headerMarkup(2, GENERATED_AT, undefined, undefined, undefined, board.projectAges);
+  assert.equal(markup, headerMarkup(2, GENERATED_AT));
+  assert.doesNotMatch(markup, /pw-header__ages/);
+});
+
+test("a project with no read date sorts after the dated ones and claims no age", () => {
+  const board = buildBoard(
+    snapshotOf([project("brochure"), project("pitwall", { issuesReadAt: GENERATED_AT }), project("docs")]),
+  );
+  assert.deepEqual(board.projectAges, [
+    { project: "pitwall", projectId: "pitwall", readAt: GENERATED_AT },
+    { project: "brochure", projectId: "brochure" },
+    { project: "docs", projectId: "docs" },
+  ]);
+  const unknown = /<span class="pw-age" title="When this project&#x27;s issues were read is not recorded\.">—<\/span><\/li>/;
+  const markup = headerMarkup(3, GENERATED_AT, undefined, undefined, undefined, board.projectAges);
+  assert.match(markup, /<span class="pw-header__project-name">pitwall<\/span> <span class="pw-age" title="[^"]+">38m<\/span><time/);
+  assert.match(markup, new RegExp(`<span class="pw-header__project-name">brochure</span> ${unknown.source}`));
+  assert.match(markup, new RegExp(`<span class="pw-header__project-name">docs</span> ${unknown.source}`));
+  assert.equal((markup.match(/<time/g) ?? []).length, 2, "the run and the one dated project, nothing else");
+
+  const unreadable = headerMarkup(1, GENERATED_AT, undefined, undefined, undefined, [
+    { project: "docs", projectId: "docs", readAt: "yesterday" },
+  ]);
+  assert.match(unreadable, new RegExp(`<span class="pw-header__project-name">docs</span> ${unknown.source}`));
+  assert.doesNotMatch(unreadable, /yesterday/);
 });
 
 test("a header rendered from a stamp it cannot read shows the stamp and claims nothing about it", () => {
