@@ -2,7 +2,7 @@ import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import type { CollectionError, Metrics, Snapshot } from "@404sl/pitwall-schema";
-import { collectionError } from "./errors.js";
+import { collectionError, hard } from "./errors.js";
 import { stateHome, type StateOptions } from "./state.js";
 
 export const DEFAULT_MAX_SNAPSHOTS = 500;
@@ -120,9 +120,16 @@ function statusOf(value: unknown): Status | undefined {
   return value === "open" || value === "in_progress" || value === "closed" ? value : undefined;
 }
 
+function unreadable(value: unknown): boolean {
+  if (typeof value !== "object" || value === null) {
+    return true;
+  }
+  return hard(value as CollectionError);
+}
+
 function statusesOf(project: StoredProject): Map<string, Status> | undefined {
   const issues = project.issues ?? [];
-  if (issues.length === 0 && (project.errors ?? []).length > 0) {
+  if (issues.length === 0 && (project.errors ?? []).some(unreadable)) {
     return undefined;
   }
   const statuses = new Map<string, Status>();
