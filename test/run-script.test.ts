@@ -19,7 +19,7 @@ import { GIT_ENV } from "./support/git.js";
 const SKILL = join(import.meta.dirname, "..", "plugins", "devloop", "skills", "devloop");
 const RUN_SCRIPT = join(SKILL, "run-script.sh");
 const CONFIG_SH = join(SKILL, "config.sh");
-const STAGED = ["task.js", "land.js", "rework.js", "land-train.js"];
+const STAGED = ["task.js", "land.js", "rework.js", "land-train.js", "refine.js"];
 const RECORD = "staged-from";
 const PLUGIN_VERSION = (
   JSON.parse(readFileSync(join(SKILL, "..", "..", ".claude-plugin", "plugin.json"), "utf8")) as {

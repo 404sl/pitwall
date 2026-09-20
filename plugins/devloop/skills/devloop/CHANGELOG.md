@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.120
+
+A request the console records - a bead labelled `unrefined` - is now refined by a run rather than by hand. `queue.sh --next` prints it as a three-field line, `<id> <slot> refine`, and the loop dispatches it with `config.sh --refine <id>`, which emits the args for `refine.js`. The run reads the request and its dropped files, measures the claim against origin following `WRITING-TICKETS.md`, and either writes the specification beside the raw text and hands the ticket to the devloop, parks it with one question for the planning session (keeping `unrefined` so an answer sends it round again), or closes it as a duplicate, done, or a note. It never rewrites the request. A workspace must declare `actor` in its config before any refine can dispatch; `config.sh --args` and `dispatchable.sh` refuse an unrefined issue.
+
 ## 0.1.119
 
 A rework that ends green now takes its rework route off the tracker issue once the handoff label is on, so reopening that issue later hands it to the task path rather than to a rework against a pull request that has already merged.

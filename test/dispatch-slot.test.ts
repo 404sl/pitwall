@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { INTAKE_LABEL } from "../src/intake.ts";
 import { LOCK_ROOT, slotsPath } from "../src/lanes.ts";
 import { GIT_ENV } from "./support/git.js";
 
@@ -441,6 +442,115 @@ test("--gc frees a slot only when its lane is positively not running, and says w
     assert.match(ran.stdout, /freeing slot 1 \(zz-aaa1\): lane-running\.sh reports NOT-RUNNING/);
     assert.doesNotMatch(ran.stdout, /no lane lock/, "the free names the verdict, not the absence of a lock");
     assert.ok(!existsSync(join(box.slots, "1")));
+  } finally {
+    clean(box);
+  }
+});
+
+function tracked(box: Harness, issues: Record<string, { labels: readonly string[] }>, actor?: string): void {
+  const config = JSON.parse(readFileSync(box.config, "utf8")) as Record<string, unknown>;
+  if (actor) config["actor"] = actor;
+  else delete config["actor"];
+  writeFileSync(box.config, JSON.stringify(config));
+  const cases = Object.entries(issues)
+    .map(([id, issue]) => `  "show ${id} --json") echo '${JSON.stringify({ id, labels: issue.labels })}' ;;`)
+    .join("\n");
+  writeFileSync(
+    join(box.bin, "bd"),
+    ["#!/bin/sh", 'case "$*" in', cases, "  *) exit 1 ;;", "esac", ""].join("\n"),
+  );
+  chmodSync(join(box.bin, "bd"), 0o755);
+}
+
+function refine(box: Harness, ...rest: string[]): Ran {
+  return dispatch(box, "--refine", ...rest);
+}
+
+interface Refine {
+  id: string;
+  slot: number;
+  actor: string;
+  scriptPath: string;
+  skillDir: string;
+  root: string;
+  repos: Record<string, unknown>;
+}
+
+test("a refine dispatch reserves the lane it reports and carries the actor every tracker write needs", () => {
+  const box = harness(2);
+  try {
+    tracked(box, { "zz-req1": { labels: [INTAKE_LABEL] } }, "zz-devloop");
+    const ran = refine(box, "zz-req1");
+    assert.equal(ran.status, 0, ran.stderr);
+    const built = JSON.parse(ran.stdout) as Refine;
+    assert.equal(built.id, "zz-req1");
+    assert.equal(built.slot, 1);
+    assert.equal(holder(box, 1), "zz-req1");
+    assert.equal(built.actor, "zz-devloop");
+    assert.equal(built.root, box.root);
+    assert.match(built.scriptPath, /\/refine\.js$/);
+    assert.ok(existsSync(built.scriptPath), "the staged refine.js is not where scriptPath says");
+    assert.ok(existsSync(join(built.skillDir, "WRITING-TICKETS.md")), "skillDir does not hold the standard the run is pointed at");
+    assert.ok("site" in built.repos);
+  } finally {
+    clean(box);
+  }
+});
+
+test("a refine dispatch takes no slot from the caller", () => {
+  const box = harness(2);
+  try {
+    tracked(box, { "zz-req1": { labels: [INTAKE_LABEL] } }, "zz-devloop");
+    const ran = refine(box, "zz-req1", "2");
+    assert.notEqual(ran.status, 0);
+    assert.equal(ran.stdout, "");
+    assert.match(ran.stderr, /usage: config.sh --refine/);
+    assert.ok(!existsSync(join(box.slots, "1")));
+  } finally {
+    clean(box);
+  }
+});
+
+test("a workspace that declares no actor cannot dispatch a refine, and reserves nothing finding out", () => {
+  const box = harness(2);
+  try {
+    tracked(box, { "zz-req1": { labels: [INTAKE_LABEL] } });
+    const ran = refine(box, "zz-req1");
+    assert.equal(ran.status, 2);
+    assert.equal(ran.stdout, "");
+    assert.match(ran.stderr, /declares no usable "actor"/);
+    assert.match(ran.stderr, /"actor": "<project>-devloop"/);
+    assert.ok(!existsSync(join(box.slots, "1")));
+  } finally {
+    clean(box);
+  }
+});
+
+test("an issue without the intake label is not refined, and the refusal names the door it should take", () => {
+  const box = harness(2);
+  try {
+    tracked(box, { "zz-tkt1": { labels: ["needs-tests"] } }, "zz-devloop");
+    const ran = refine(box, "zz-tkt1");
+    assert.equal(ran.status, 1);
+    assert.equal(ran.stdout, "");
+    assert.match(ran.stderr, new RegExp(`does not carry the '${INTAKE_LABEL}' label`));
+    assert.match(ran.stderr, /config.sh --args zz-tkt1/);
+    assert.ok(!existsSync(join(box.slots, "1")));
+  } finally {
+    clean(box);
+  }
+});
+
+test("a task dispatch refuses an unrefined request and prints the refine command instead", () => {
+  const box = harness(2);
+  try {
+    tracked(box, { "zz-req1": { labels: [INTAKE_LABEL] } }, "zz-devloop");
+    const ran = args(box, "zz-req1");
+    assert.equal(ran.status, 1);
+    assert.equal(ran.stdout, "");
+    assert.match(ran.stderr, /has not been refined, not a task/);
+    assert.match(ran.stderr, /config.sh --refine zz-req1/);
+    assert.ok(!existsSync(join(box.slots, "1")), "a lane was reserved for a request no lane can start from");
   } finally {
     clean(box);
   }

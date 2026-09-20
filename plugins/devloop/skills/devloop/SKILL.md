@@ -49,7 +49,7 @@ three times and spent 4h26m shipping 43 minutes of work, and the cost grew with 
 of lanes. The old merge lock serialised the merge but not the rebase-and-wait in front of it.
 
 **Never pick a slot from memory. Ask `slot.sh`.** A dispatch has no number left to pick:
-`config.sh --args <id>` and `config.sh --rework <id> <pr> <repo>` call `slot.sh` themselves, carry
+`config.sh --args <id>`, `config.sh --rework <id> <pr> <repo>` and `config.sh --refine <id>` call `slot.sh` themselves, carry
 the number it reserved into the args, and stop the dispatch when it cannot reserve one. Call
 `slot.sh` by hand to give a lane back, or to see who holds what.
 
@@ -316,7 +316,7 @@ that says so.
 
 **THE SCRIPT YOU DISPATCH IS A COPY, AND `--args` MAKES IT FRESH.** The Workflow tool refuses
 a `scriptPath` outside the working directory, so the workflow scripts cannot be dispatched from
-the install. `run-script.sh` copies all four into `<root>/.autofix-run/` and prints the path of
+the install. `run-script.sh` copies every workflow script into `<root>/.autofix-run/` and prints the path of
 the one asked for; `config.sh --args` and `--land` call it before they print anything and carry
 the result as `scriptPath`. So take the path out of the object and dispatch that - never a path
 under the install, and never one remembered from an earlier tick.
@@ -657,6 +657,63 @@ on CI. So the resolve step's rebase replays nothing, it pushes nothing, and it a
 `already_clean` with the same head twice - that is the expected shape of this arrival, not a
 resolve that failed, and the run goes on to wait for CI and repair from there.
 
+## A request from the console
+
+The console records a request as typed: a bead labelled `unrefined`, assigned to the planning
+session, with the text in the description and any dropped files under `.pitwall-intake/<id>/`.
+It is a true sentence, not a ticket - it names no repository and measures nothing - so
+`queue.sh` counts it under `to refine`, never under `ready to start`, and `dispatchable.sh` and
+`config.sh --args` both refuse it. When the workspace declares an `actor`, `--next` hands it out
+as a three-field line, claimed with a plain status change rather than `--claim`, because `--claim`
+under the loop's actor refuses an issue intake assigned to somebody else. A workspace with no
+`actor` sees the count with a note saying so and nothing is claimed: `config.sh --refine` would
+refuse the dispatch, and a claim it cannot follow through on is a request stuck `in_progress` with
+a lane reserved for nobody.
+
+```
+# BUILD THE ARGS WITH config.sh --refine. Do not hand-write them, and do not pass a slot.
+args=$(bash ${CLAUDE_PLUGIN_ROOT}/skills/devloop/config.sh --refine app-zzzz)
+
+Workflow({ scriptPath: <the scriptPath in it>,
+           args: <the object config.sh printed> })
+```
+
+`--refine` is `--args` for a recorded request: it checks the issue carries the label and the
+workspace declares an `actor` BEFORE it reserves anything, stages `refine.js`, reserves the lane
+through `slot.sh`, and prints one object carrying the id, the slot, `scriptPath`, `root`,
+`repos`, `skillDir` and `actor`. **The actor is required**, and it is the same declared name
+`dispatchable.sh` gates on: every tracker write the run makes carries `--actor <that name>`, and a
+refined ticket is assigned to it. A workspace with no `actor` cannot dispatch a refine, and the
+refusal says what to add.
+
+`refine.js` runs two steps and takes no lane lock, because it opens no worktree and runs no suite:
+it reads code from `origin/<default branch>` and runs only commands that change nothing. The first
+step reads the request, every dropped file, and `WRITING-TICKETS.md` - the standard it refines
+against - and measures the claim against origin. The second records the result and routes the
+issue. Three outcomes:
+
+- **refined** - the specification is appended as a note beside the request, leading with
+  `Repo: <key> (<path>)`; the `unrefined` label comes off; the issue is assigned to the actor and
+  set open, so the next tick offers it as a task. A specification naming no configured repository
+  is refused by the script before anything is written, because nothing reaches a lane without the
+  repository named.
+- **needs_answer** - what was understood and ONE question are appended, `needs-decision` goes on,
+  the issue stays open in the planning session's queue, and the `unrefined` label STAYS. That is
+  the loop closing: the person answers as a note and removes `needs-decision`, and the next tick
+  offers it for refinement again with the answer in front of it.
+- **not_work** - closed with the reason: a duplicate (with the id), already done (with where on
+  origin), or a note.
+
+**The raw text is never overwritten**, in any outcome. The record step is handed only commands
+that append a note or move labels, assignee and status; the description, title and `intake`
+metadata are left exactly as the console wrote them, and the step reads the description back
+and reports whether it still matches. A reader must always be able to hold the request and the
+refinement side by side and judge one against the other.
+
+A refine that returns `error` before its record step - no actor, no slot, a specification with
+no repository - leaves the issue `in_progress` and untouched, like any other dispatch that bails
+early: release it with `bd update <id> -s open` and it is offered again.
+
 ## The loop
 
 Each tick, about a minute apart:
@@ -677,12 +734,16 @@ Then, from the numbers it printed:
 ${CLAUDE_PLUGIN_ROOT}/skills/devloop/queue.sh --next 2   # claims 2, prints one line per issue
 ```
 
-Each line is one of two shapes, and the shape decides the script:
+Each line is one of three shapes, and the shape decides the script:
 
 ```
 app-xxxx 3                       a task:    config.sh --args app-xxxx        -> task.js
 app-yyyy 4 rework 186 site       a rework:  config.sh --rework app-yyyy 186 site -> rework.js
+app-zzzz 5 refine                a request: config.sh --refine app-zzzz      -> refine.js
 ```
+
+The three-field line is a request the console recorded - see "A request from the console" below.
+It is not a ticket yet, and `config.sh --args` refuses it the same way it refuses a rework.
 
 The five-field line is an issue the lander retired - `red_after_rebase` or `conflict` - and it
 carries the pull request number and the repository key from the issue's `rework` metadata, which
@@ -713,9 +774,9 @@ exists to stop. It is a no-op when the metadata is already gone.
 now coerces a string rather than no-opping, but the object form is what to write.
 
 `--next` sets each issue to `in_progress` **as it hands the id back**, so two ticks - or two
-supervisors - cannot dispatch the same issue. It prints one line per issue, in one of the two
-shapes above. Launch one workflow per line - `task.js` for a two-field line, `rework.js` for a five-field one -
-passing **exactly the slot it was given** - `{ id: "app-xxxx", slot: 3 }` - all in the background.
+supervisors - cannot dispatch the same issue. It prints one line per issue, in one of the three
+shapes above. Launch one workflow per line - `task.js` for a two-field line, `rework.js` for a five-field one,
+`refine.js` for a three-field one - passing **exactly the slot it was given** - `{ id: "app-xxxx", slot: 3 }` - all in the background.
 Never dispatch an id `--next` did not give you, and never choose a slot yourself.
 
 The slot is not decoration: `task.js` derives `TEST_ENV_NUMBER` from it, so the slot number

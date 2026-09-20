@@ -67,7 +67,7 @@ function standingShellBlock(source: string, file: string): string {
 }
 
 test("the standing shell block carries no backticks in any script that hands it out", () => {
-  for (const file of ["task.js", "land.js", "rework.js", "land-train.js"]) {
+  for (const file of ["task.js", "land.js", "rework.js", "land-train.js", "refine.js"]) {
     const block = standingShellBlock(readFileSync(join(SKILL, file), "utf8"), file);
     const found = block.split("\n").filter((line) => line.includes("`"));
     assert.deepEqual(
@@ -85,7 +85,7 @@ test("the standing shell block carries no backticks in any script that hands it 
 const WRITES_A_COMMIT = /(^\s*|&&\s*|\|\|\s*|;\s*)(if ! )?git\s+(-C\s+\S+\s+)?(commit|rebase|cherry-pick|merge)(?![-\w])/;
 
 test("nothing in the plugin commits or rebases on an identity it did not pass", () => {
-  for (const file of ["task.js", "land.js", "rework.js", "land-train.js", "land-train.sh", "land-one.sh"]) {
+  for (const file of ["task.js", "land.js", "rework.js", "land-train.js", "refine.js", "land-train.sh", "land-one.sh"]) {
     const source = readFileSync(join(SKILL, file), "utf8");
     const writes = source
       .split("\n")
@@ -104,7 +104,7 @@ test("nothing in the plugin commits or rebases on an identity it did not pass", 
 });
 
 test("every workflow script is present in the plugin", () => {
-  for (const file of ["task.js", "land.js", "rework.js", "land-train.js", "config.sh", "lock-check.sh", "lane-running.sh", "git-guard.sh"]) {
+  for (const file of ["task.js", "land.js", "rework.js", "land-train.js", "refine.js", "config.sh", "lock-check.sh", "lane-running.sh", "git-guard.sh"]) {
     const path = join(SKILL, file);
     assert.doesNotThrow(() => readFileSync(path), `${file} is missing from the published plugin`);
   }
@@ -468,7 +468,7 @@ test("the briefs name the answer the pre-push check gives a branch it cannot fas
   );
 });
 
-const NOTE_WRITERS = ["task.js", "land.js", "land-train.js", "rework.js"];
+const NOTE_WRITERS = ["task.js", "land.js", "land-train.js", "rework.js", "refine.js"];
 
 test("no brief tells a run to write a tracker note with a raw append", () => {
   for (const file of NOTE_WRITERS) {
@@ -490,7 +490,7 @@ test("no brief tells a run to write a tracker note with a raw append", () => {
   }
 });
 
-const WRITES_NOTES = ["task.js", "land.js", "land-train.js"];
+const WRITES_NOTES = ["task.js", "land.js", "land-train.js", "refine.js"];
 
 test("every brief that asks for a tracker note names the script and the writer", () => {
   for (const file of WRITES_NOTES) {
