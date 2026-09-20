@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { register } from "node:module";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -1745,6 +1746,35 @@ test("problems render whole under every filter, because a hidden collection fail
   );
   assert.ok(markup.includes("bd list --json"), "the source that could not be read must survive filtering");
   assert.ok(markup.includes(strings.filters.notFiltered), "a filtered board must say problems are not filtered");
+});
+
+test("a long source in the problems band wraps at phone width, while issue ids stay on one line", () => {
+  const source = "/Users/somebody/Documents/work/pitwall/.beads";
+  assert.equal(source.length, 45);
+  const board = buildBoard(
+    snapshotOf([
+      project("pitwall", {
+        issues: [issue("pitwall-4b5.2", "ready")],
+        errors: [{ source, message: "field scope origin/HEAD could not be resolved", at: "2026-09-20T09:00:00Z" }],
+      }),
+    ]),
+  );
+  const problems = renderToStaticMarkup(createElement(Problems, { rows: board.problems }));
+  assert.ok(problems.includes(`<td class="pw-cell pw-cell--source">${source}</td>`));
+  assert.ok(!problems.includes("pw-cell--id"), "the id cell means one line everywhere it appears");
+  const ready = renderToStaticMarkup(createElement(Ready, { rows: board.ready, total: board.ready.length }));
+  assert.ok(ready.includes('<td class="pw-cell pw-cell--id">pitwall-4b5.2</td>'));
+
+  const css = readFileSync(new URL("../ui/styles/console.css", import.meta.url), "utf8");
+  const phone = css.indexOf("@media (max-width: 640px)");
+  assert.ok(phone > 0);
+  const base = css.slice(0, phone);
+  const narrow = css.slice(phone);
+  const dataCells = base.match(/\.pw-cell--id,\n\.pw-cell--source,[^}]*\}/);
+  assert.ok(dataCells, "the source cell shares the data-font rule with the id cell");
+  assert.match(dataCells[0], /white-space: nowrap;/);
+  assert.doesNotMatch(base, /\.pw-cell--source\s*\{/, "above 640px the source column stays on one line beside the full-width message");
+  assert.match(narrow, /\.pw-cell--source \{\n\s+white-space: normal;\n\s+overflow-wrap: anywhere;\n\s+\}/);
 });
 
 test("a count under a filter says what it is counting, and an unfiltered one stays a plain number", () => {

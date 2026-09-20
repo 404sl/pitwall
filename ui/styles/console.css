@@ -285,6 +285,7 @@ body {
 }
 
 .pw-cell--id,
+.pw-cell--source,
 .pw-cell--data,
 .pw-cell--at,
 .pw-count {
@@ -1007,6 +1008,11 @@ button.pw-link {
 
   .pw-cell--at {
     text-align: start;
+  }
+
+  .pw-cell--source {
+    white-space: normal;
+    overflow-wrap: anywhere;
   }
 
   .pw-issue__title {
