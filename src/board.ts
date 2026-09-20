@@ -11,6 +11,8 @@ import {
   type Snapshot,
   type Staleness,
   type StalenessVerdict,
+  type Stopped,
+  type StoppedBasis,
 } from "@404sl/pitwall-schema";
 import { parentIdOf, parkLabelOf, type ClassificationReason } from "./classify.js";
 import { priorityLabel } from "./format.js";
@@ -33,24 +35,15 @@ export const NOTICE_SOURCE = "pitwall serve: outbound notice";
 export const PARTIAL_SOURCE = "pitwall snapshot: partial collection";
 export const KEPT_SOURCE = "pitwall snapshot: kept from the last readable collection";
 
-export type ParkBasis = "carried" | "first-seen";
+export type ProjectQuestions = Record<string, string>;
 
-export interface ParkEntry {
-  label: string;
-  parkedSince: string;
-  basis: ParkBasis;
-  question?: string;
-}
-
-export type ProjectParks = Record<string, ParkEntry>;
-
-export type ParkStore = Record<string, ProjectParks>;
+export type QuestionStore = Record<string, ProjectQuestions>;
 
 export interface ParkAge {
   since?: string;
   ms?: number;
   suspect: boolean;
-  basis?: ParkBasis;
+  basis?: StoppedBasis;
 }
 
 export type ParkedReason = "tooling" | "watch" | "umbrella" | "roadmap";
@@ -262,22 +255,16 @@ function kindOf(issue: Issue): NeedsYouKind {
   return issue.classification === "yours:decision" ? "decision" : "access";
 }
 
-function parkOf(parks: ProjectParks | undefined, issue: Issue): ParkEntry | undefined {
-  const label = parkLabelOf(issue);
-  const entry = parks?.[issue.id];
-  return label !== undefined && entry !== undefined && entry.label === label ? entry : undefined;
-}
-
-export function parkAgeOf(entry: ParkEntry | undefined, generatedAt: string): ParkAge {
-  if (entry === undefined) {
+export function parkAgeOf(stopped: Stopped | undefined, generatedAt: string): ParkAge {
+  if (stopped === undefined) {
     return { suspect: false };
   }
-  const ms = elapsedMs(generatedAt, entry.parkedSince);
+  const ms = elapsedMs(generatedAt, stopped.since);
   return {
-    since: entry.parkedSince,
+    since: stopped.since,
     ms,
     suspect: ms !== undefined && ms >= PARK_SUSPECT_AFTER_MS,
-    basis: entry.basis,
+    basis: stopped.basis,
   };
 }
 
@@ -370,10 +357,9 @@ function chipsFor(project: Project, generatedAt: string, state: RunningState): L
     .sort(byElapsedDescending);
 }
 
-function needsYouRow(issue: Issue, entry: ParkEntry | undefined, generatedAt: string): NeedsYouRow {
+function needsYouRow(issue: Issue, question: string | undefined, generatedAt: string): NeedsYouRow {
   const kind = kindOf(issue);
-  const park = parkAgeOf(entry, generatedAt);
-  const question = entry?.question;
+  const park = parkAgeOf(issue.stopped, generatedAt);
   return {
     id: issue.id,
     priority: issue.priority,
@@ -392,7 +378,7 @@ function needsYouRow(issue: Issue, entry: ParkEntry | undefined, generatedAt: st
 function needsYouGroups(
   projects: Project[],
   generatedAt: string,
-  parks: ParkStore,
+  questions: QuestionStore,
   sort?: SortKey,
 ): NeedsYouGroup[] {
   return projects
@@ -401,7 +387,7 @@ function needsYouGroups(
       projectId: project.id,
       rows: issuesOf(project)
         .filter((issue) => isYours(issue.classification))
-        .map((issue) => needsYouRow(issue, parkOf(parks[project.id], issue), generatedAt))
+        .map((issue) => needsYouRow(issue, questions[project.id]?.[issue.id], generatedAt))
         .sort(sortedBy(sort, byParkThenPriority)),
     }))
     .filter((group) => group.rows.length > 0)
@@ -415,7 +401,7 @@ function parkedReasonOf(issue: Issue): ParkedReason | undefined {
   return issue.classification.slice("parked:".length) as ParkedReason;
 }
 
-function parkedRowsOf(project: Project, generatedAt: string, parks: ParkStore): ParkedRow[] {
+function parkedRowsOf(project: Project, generatedAt: string): ParkedRow[] {
   return issuesOf(project).flatMap((issue) => {
     const reason = parkedReasonOf(issue);
     if (reason === undefined) {
@@ -429,7 +415,7 @@ function parkedRowsOf(project: Project, generatedAt: string, parks: ParkStore): 
         reporter: issue.reporter,
         reason,
         title: issue.title,
-        park: parkAgeOf(parkOf(parks[project.id], issue), generatedAt),
+        park: parkAgeOf(issue.stopped, generatedAt),
         verdict: verdictOf(issue),
         checkedAt: issue.staleness?.checkedAt,
       },
@@ -448,11 +434,11 @@ function parkedGroupsOf(
     .sort((a, b) => byCountThenName({ count: a.rows.length, name: a.project }, { count: b.rows.length, name: b.project }));
 }
 
-function parkedGroups(projects: Project[], generatedAt: string, parks: ParkStore, sort?: SortKey): ParkedRows {
+function parkedGroups(projects: Project[], generatedAt: string, sort?: SortKey): ParkedRows {
   const rows = projects.map((project) => ({
     project: project.name,
     projectId: project.id,
-    rows: parkedRowsOf(project, generatedAt, parks),
+    rows: parkedRowsOf(project, generatedAt),
   }));
   return {
     suspect: parkedGroupsOf(rows, (row) => row.park.suspect, sort),
@@ -732,14 +718,14 @@ function boardTotals(projects: Project[], generatedAt: string, running: RunningR
 export function buildBoard(
   snapshot: Snapshot,
   filter: FilterState = {},
-  parks: ParkStore = {},
+  questions: QuestionStore = {},
   sort?: SortKey,
 ): Board {
   const projects = snapshot.projects ?? [];
   const generatedAt = snapshot.generatedAt;
   const shown = filteredProjects(projects, filter);
   const filtered = isFiltered(filter);
-  const needsYou = needsYouGroups(shown, generatedAt, parks, sort);
+  const needsYou = needsYouGroups(shown, generatedAt, questions, sort);
   const everyRunning = runningRows(projects, generatedAt);
   const running = filtered ? withRunningTotals(runningRows(shown, generatedAt), everyRunning) : everyRunning;
   const ready = readyRows(shown, sort);
@@ -756,7 +742,7 @@ export function buildBoard(
     readyCount: ready.length,
     readyShown: Math.min(ready.length, READY_LIMIT),
     parked,
-    parkedRows: parkedGroups(shown, generatedAt, parks, sort),
+    parkedRows: parkedGroups(shown, generatedAt, sort),
     problems: shownProblems(problemRows(snapshot), generatedAt),
     filter,
     filtered,
@@ -795,7 +781,8 @@ export interface IssueBody {
   classification?: ClassificationValue;
   reason: ClassificationReason;
   staleness: Staleness;
-  park?: ParkEntry;
+  stopped?: Stopped;
+  question?: string;
 }
 
 export interface IssuePayload {
@@ -862,23 +849,21 @@ function stalenessView(staleness: Staleness | undefined, errors: readonly Collec
 }
 
 function parkView(
-  issue: { classification?: ClassificationValue | undefined; labels: string[] },
-  entry: ParkEntry | undefined,
+  issue: { classification?: ClassificationValue | undefined; labels: string[]; stopped?: Stopped },
+  question: string | undefined,
   generatedAt: string,
 ): { park?: ParkAge; question?: string } {
-  const label = parkLabelOf(issue);
-  if (label === undefined) {
+  if (parkLabelOf(issue) === undefined) {
     return {};
   }
-  const matched = entry !== undefined && entry.label === label ? entry : undefined;
-  return { park: parkAgeOf(matched, generatedAt), question: matched?.question };
+  return { park: parkAgeOf(issue.stopped, generatedAt), question };
 }
 
 export function previewIssue(
   snapshot: Snapshot,
   project: string,
   id: string,
-  parks: ParkStore = {},
+  questions: QuestionStore = {},
 ): IssuePreview | undefined {
   const found = (snapshot.projects ?? []).find((entry) => entry.id === project);
   const issue = found === undefined ? undefined : issuesOf(found).find((entry) => entry.id === id);
@@ -886,7 +871,7 @@ export function previewIssue(
     return undefined;
   }
   return {
-    ...parkView(issue, parks[found.id]?.[issue.id], snapshot.generatedAt),
+    ...parkView(issue, questions[found.id]?.[issue.id], snapshot.generatedAt),
     id: issue.id,
     title: issue.title,
     status: issue.status,
@@ -916,7 +901,7 @@ export interface IssueView {
 
 export function buildIssueView(payload: IssuePayload): IssueView {
   return {
-    ...parkView(payload.issue, payload.issue.park, payload.snapshot?.generatedAt ?? payload.readAt),
+    ...parkView(payload.issue, payload.issue.question, payload.snapshot?.generatedAt ?? payload.readAt),
     issue: payload.issue,
     readAt: payload.readAt,
     snapshot: payload.snapshot,

@@ -14,7 +14,7 @@ import {
   DEFAULT_PORT,
   HOST,
   NOTHING_READ,
-  PARKS_ROUTE,
+  QUESTIONS_ROUTE,
   createConsoleServer,
   listen,
   parseServeArgs,
@@ -505,60 +505,75 @@ test("an issue that is not there is a 404, told apart from one that could not be
 
 const PARKED_SINCE = "2026-08-28T10:00:00.000Z";
 
-test("the park the collection placed is served on its own route and again on the issue, from one store", async (t) => {
-  const entry = { label: "needs-decision", parkedSince: PARKED_SINCE, basis: "first-seen" as const, question: "Honour the paid checkout?" };
+test("the park age is served in the document and again on the issue, and the question from one store", async (t) => {
+  const stopped = { since: PARKED_SINCE, basis: "first-seen" };
   const server = trackerServer(
     "ok",
-    [indexed("mw-3", "open", "yours:decision", { labels: ["needs-decision"] }), indexed("mw-1", "open", "parked:umbrella")],
+    [
+      indexed("mw-3", "open", "yours:decision", { labels: ["needs-decision"], stopped }),
+      indexed("mw-1", "open", "parked:umbrella"),
+    ],
     [],
     {},
-    { parks: { mw: { "mw-3": entry } } },
+    { questions: { mw: { "mw-3": "Honour the paid checkout?" } } },
   );
   t.after(() => server.close());
   const { origin } = await started(server);
 
   const board = (await (await fetch(`${origin}/api/snapshot`)).json()) as Record<string, unknown>;
-  assert.equal("console" in board || "parks" in board, false, "the snapshot body is the document and nothing else");
-  assert.equal(
-    (board.projects as Array<{ issues: Array<Record<string, unknown>> }>)[0]?.issues.some(
-      (issue) => "park" in issue || "parkedSince" in issue,
-    ),
-    false,
-    "the document itself is unchanged",
-  );
+  assert.equal("console" in board || "parks" in board || "questions" in board, false, "the snapshot body is the document and nothing else");
+  const served = (board.projects as Array<{ issues: Array<Record<string, unknown>> }>)[0]?.issues ?? [];
+  assert.deepEqual(served.find((issue) => issue.id === "mw-3")?.stopped, stopped, "the document carries the age");
+  assert.equal(served.some((issue) => "park" in issue || "parkedSince" in issue || "question" in issue), false);
 
-  const parks = await fetch(`${origin}${PARKS_ROUTE}`);
-  assert.equal(parks.status, 200);
-  assert.deepEqual(await parks.json(), { parks: { mw: { "mw-3": entry } } });
+  const questions = await fetch(`${origin}${QUESTIONS_ROUTE}`);
+  assert.equal(questions.status, 200);
+  assert.deepEqual(await questions.json(), { questions: { mw: { "mw-3": "Honour the paid checkout?" } } });
 
-  const issue = (await (await fetch(`${origin}/api/issue/mw/mw-3`)).json()) as { issue: { park?: unknown } };
-  assert.deepEqual(issue.issue.park, entry, "the page reads the same store as the board and recomputes nothing");
+  const issue = (await (await fetch(`${origin}/api/issue/mw/mw-3`)).json()) as {
+    issue: { stopped?: unknown; question?: unknown; park?: unknown };
+  };
+  assert.deepEqual(issue.issue.stopped, stopped, "the page reads the age the document carries and recomputes nothing");
+  assert.equal(issue.issue.question, "Honour the paid checkout?", "the page reads the same store as the board");
+  assert.equal("park" in issue.issue, false, "the sidecar entry is no longer served");
 
-  const umbrella = (await (await fetch(`${origin}/api/issue/mw/mw-1`)).json()) as { issue: { park?: unknown } };
-  assert.equal(umbrella.issue.park, undefined, "a structural park has no label and so no age");
+  const umbrella = (await (await fetch(`${origin}/api/issue/mw/mw-1`)).json()) as {
+    issue: { stopped?: unknown; question?: unknown };
+  };
+  assert.equal(umbrella.issue.stopped, undefined, "a structural park has no label and so no age");
+  assert.equal(umbrella.issue.question, undefined);
 });
 
-test("the park route answers with an empty store before any collection has placed a park", async (t) => {
+test("the question route answers with an empty store before any collection has asked one", async (t) => {
   const server = trackerServer("ok", [indexed("mw-3", "open", "yours:decision", { labels: ["needs-decision"] })]);
   t.after(() => server.close());
   const { origin } = await started(server);
-  const response = await fetch(`${origin}${PARKS_ROUTE}`);
+  const response = await fetch(`${origin}${QUESTIONS_ROUTE}`);
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), { parks: {} });
+  assert.deepEqual(await response.json(), { questions: {} });
 });
 
-test("a park the store holds under a label the issue no longer carries is not served against it", async (t) => {
+test("an age the snapshot placed under a label the issue no longer carries is not served against it", async (t) => {
   const server = trackerServer(
     "ok",
-    [indexed("mw-3", "open", "yours:decision", { labels: ["needs-decision"] })],
+    [
+      indexed("mw-3", "open", "yours:access", {
+        labels: ["needs-access"],
+        stopped: { since: PARKED_SINCE, basis: "carried" },
+      }),
+    ],
     [],
     {},
-    { parks: { mw: { "mw-3": { label: "needs-access", parkedSince: PARKED_SINCE, basis: "carried" as const } } } },
+    { questions: { mw: { "mw-3": "Still this?" } } },
   );
   t.after(() => server.close());
   const { origin } = await started(server);
-  const issue = (await (await fetch(`${origin}/api/issue/mw/mw-3`)).json()) as { issue: { park?: unknown } };
-  assert.equal(issue.issue.park, undefined);
+  const issue = (await (await fetch(`${origin}/api/issue/mw/mw-3`)).json()) as {
+    issue: { labels: string[]; stopped?: unknown; question?: unknown };
+  };
+  assert.deepEqual(issue.issue.labels, ["needs-decision"]);
+  assert.equal(issue.issue.stopped, undefined);
+  assert.equal(issue.issue.question, undefined, "nor is the question that was asked under it");
 });
 
 test("an issue closed since the snapshot reports both the reading and the snapshot", async (t) => {

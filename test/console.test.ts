@@ -20,7 +20,7 @@ import {
   problemKey,
   snapshotAge,
 } from "../ui/model.ts";
-import type { Board, BuildState, FilterState, IssuePayload, IssuePreview, ParkStore } from "../ui/model.ts";
+import type { Board, BuildState, FilterState, IssuePayload, IssuePreview, QuestionStore } from "../ui/model.ts";
 import { strings } from "../ui/strings.ts";
 import { countLabel } from "../ui/format.ts";
 import { boardHref, filterOf, filterQuery, issueHref, routeOf, sortOf } from "../ui/routes.ts";
@@ -167,44 +167,35 @@ test("every needs-you row carries a staleness verdict, unchecked by default", ()
 
 const DAY = 24 * 60 * 60_000;
 
-function parkedAt(ms: number, label: string, question?: string) {
-  return {
-    label,
-    parkedSince: new Date(Date.parse(GENERATED_AT) - ms).toISOString(),
-    basis: "carried" as const,
-    ...(question === undefined ? {} : { question }),
-  };
+function stoppedAt(ms: number) {
+  return { since: new Date(Date.parse(GENERATED_AT) - ms).toISOString(), basis: "carried" };
 }
 
-const AGED_PARKS: ParkStore = {
+const AGED_QUESTIONS: QuestionStore = {
   pitwall: {
-    "pitwall-old": parkedAt(11 * DAY, "needs-decision", "Which one?"),
-    "pitwall-week": parkedAt(PARK_SUSPECT_AFTER_MS, "needs-access"),
-    "pitwall-almost": parkedAt(PARK_SUSPECT_AFTER_MS - 60_000, "needs-decision", "Keep it?"),
-    "pitwall-mute": parkedAt(3 * DAY, "needs-decision"),
-    "pitwall-p0": parkedAt(3 * DAY, "needs-decision", "Ship?"),
-    "pitwall-p2": parkedAt(3 * DAY, "needs-decision", "Ship?"),
-    "pitwall-t1": parkedAt(9 * DAY, "blocked-tooling"),
-    "pitwall-t2": parkedAt(2 * DAY, "watch"),
-    "pitwall-t3": parkedAt(8 * DAY, "roadmap"),
-    "pitwall-relabelled": parkedAt(20 * DAY, "needs-access"),
+    "pitwall-old": "Which one?",
+    "pitwall-almost": "Keep it?",
+    "pitwall-p0": "Ship?",
+    "pitwall-p2": "Ship?",
   },
 };
 
 const AGED = snapshotOf([
   project("pitwall", {
     issues: [
-      issue("pitwall-p2", "yours:decision", { labels: ["needs-decision"], priority: 2 }),
-      issue("pitwall-p0", "yours:decision", { labels: ["needs-decision"], priority: 0 }),
-      issue("pitwall-mute", "yours:decision", { labels: ["needs-decision"], priority: 0 }),
-      issue("pitwall-almost", "yours:decision", { labels: ["needs-decision"] }),
-      issue("pitwall-week", "yours:access", { labels: ["needs-access"] }),
-      issue("pitwall-old", "yours:decision", { labels: ["needs-decision"] }),
+      issue("pitwall-p2", "yours:decision", { labels: ["needs-decision"], priority: 2, stopped: stoppedAt(3 * DAY) }),
+      issue("pitwall-p0", "yours:decision", { labels: ["needs-decision"], priority: 0, stopped: stoppedAt(3 * DAY) }),
+      issue("pitwall-mute", "yours:decision", { labels: ["needs-decision"], priority: 0, stopped: stoppedAt(3 * DAY) }),
+      issue("pitwall-almost", "yours:decision", {
+        labels: ["needs-decision"],
+        stopped: stoppedAt(PARK_SUSPECT_AFTER_MS - 60_000),
+      }),
+      issue("pitwall-week", "yours:access", { labels: ["needs-access"], stopped: stoppedAt(PARK_SUSPECT_AFTER_MS) }),
+      issue("pitwall-old", "yours:decision", { labels: ["needs-decision"], stopped: stoppedAt(11 * DAY) }),
       issue("pitwall-new", "yours:access", { labels: ["needs-access"], priority: 0 }),
-      issue("pitwall-relabelled", "yours:decision", { labels: ["needs-decision"] }),
-      issue("pitwall-t2", "parked:watch", { labels: ["watch"] }),
-      issue("pitwall-t1", "parked:tooling", { labels: ["blocked-tooling"] }),
-      issue("pitwall-t3", "parked:roadmap", { labels: ["roadmap"] }),
+      issue("pitwall-t2", "parked:watch", { labels: ["watch"], stopped: stoppedAt(2 * DAY) }),
+      issue("pitwall-t1", "parked:tooling", { labels: ["blocked-tooling"], stopped: stoppedAt(9 * DAY) }),
+      issue("pitwall-t3", "parked:roadmap", { labels: ["roadmap"], stopped: stoppedAt(8 * DAY) }),
       issue("pitwall-t4", "parked:umbrella", { labels: ["umbrella"] }),
       issue("pitwall-epic", "parked:umbrella", { issueType: "epic" }),
       issue("pitwall-dep", "blocked"),
@@ -213,20 +204,11 @@ const AGED = snapshotOf([
 ]);
 
 test("the owner's queue is sorted oldest park first, unknown after known, misfiled last, then priority, then id", () => {
-  const board = buildBoard(AGED, {}, AGED_PARKS);
+  const board = buildBoard(AGED, {}, AGED_QUESTIONS);
   const rows = board.needsYou.flatMap((group) => group.rows);
   assert.deepEqual(
     rows.map((row) => row.id),
-    [
-      "pitwall-old",
-      "pitwall-week",
-      "pitwall-almost",
-      "pitwall-p0",
-      "pitwall-p2",
-      "pitwall-mute",
-      "pitwall-new",
-      "pitwall-relabelled",
-    ],
+    ["pitwall-old", "pitwall-week", "pitwall-almost", "pitwall-p0", "pitwall-p2", "pitwall-mute", "pitwall-new"],
   );
   const byId = new Map(rows.map((row) => [row.id, row]));
   assert.equal(byId.get("pitwall-old")?.park.ms, 11 * DAY);
@@ -237,19 +219,14 @@ test("the owner's queue is sorted oldest park first, unknown after known, misfil
   assert.equal(byId.get("pitwall-almost")?.park.suspect, false, "a minute under the threshold is not");
   assert.equal(byId.get("pitwall-mute")?.misfiled, true, "a decision with no stated question is misfiled");
   assert.equal(byId.get("pitwall-mute")?.kind, "decision", "misfiled is rendering, not classification");
-  assert.deepEqual(byId.get("pitwall-new")?.park, { suspect: false }, "a park the store has not placed is unknown");
+  assert.deepEqual(byId.get("pitwall-new")?.park, { suspect: false }, "a park the document has not dated is unknown");
   assert.equal(byId.get("pitwall-new")?.misfiled, false, "an unplaced park cannot be judged misfiled");
-  assert.deepEqual(
-    byId.get("pitwall-relabelled")?.park,
-    { suspect: false },
-    "an entry carried under another label does not date this park",
-  );
   assert.equal(board.needsYouCount, rows.length, "a misfiled row still counts: the count is the classification's");
-  assert.equal(board.totals.needsYou, 8);
+  assert.equal(board.totals.needsYou, 7);
 });
 
 test("only a park a label put on is aged, and a structural one is neither aged nor listed", () => {
-  const board = buildBoard(AGED, {}, AGED_PARKS);
+  const board = buildBoard(AGED, {}, AGED_QUESTIONS);
   const listed = [...board.parkedRows.suspect, ...board.parkedRows.rest].flatMap((group) => group.rows);
   assert.deepEqual(
     listed.map((row) => row.id),
@@ -280,9 +257,14 @@ test("only a park a label put on is aged, and a structural one is neither aged n
     false,
   );
   const blocked = buildBoard(
-    snapshotOf([project("maas", { issues: [issue("maas-b1", "blocked"), issue("maas-e", "parked:umbrella", { issueType: "epic" })] })]),
-    {},
-    { maas: { "maas-b1": parkedAt(30 * DAY, "blocked"), "maas-e": parkedAt(30 * DAY, "umbrella") } },
+    snapshotOf([
+      project("maas", {
+        issues: [
+          issue("maas-b1", "blocked", { stopped: stoppedAt(30 * DAY) }),
+          issue("maas-e", "parked:umbrella", { issueType: "epic", stopped: stoppedAt(30 * DAY) }),
+        ],
+      }),
+    ]),
   );
   assert.deepEqual(blocked.parkedRows, { suspect: [], rest: [] });
   assert.deepEqual(blocked.needsYou, []);
@@ -292,28 +274,24 @@ test("only a park a label put on is aged, and a structural one is neither aged n
 
 test("the parked tables follow the shown projects like every band, and the summary keeps its counts", () => {
   const two = snapshotOf([
-    project("pitwall", { issues: [issue("pitwall-t1", "parked:tooling", { labels: ["blocked-tooling"] })] }),
-    project("maas", { issues: [issue("maas-t1", "parked:tooling", { labels: ["blocked-tooling"] })] }),
+    project("pitwall", { issues: [issue("pitwall-t1", "parked:tooling", { labels: ["blocked-tooling"], stopped: stoppedAt(9 * DAY) })] }),
+    project("maas", { issues: [issue("maas-t1", "parked:tooling", { labels: ["blocked-tooling"], stopped: stoppedAt(9 * DAY) })] }),
   ]);
-  const parks: ParkStore = {
-    pitwall: { "pitwall-t1": parkedAt(9 * DAY, "blocked-tooling") },
-    maas: { "maas-t1": parkedAt(9 * DAY, "blocked-tooling") },
-  };
-  const board = buildBoard(two, { project: "maas" }, parks);
+  const board = buildBoard(two, { project: "maas" });
   assert.deepEqual(board.parkedRows.suspect.map((group) => group.projectId), ["maas"]);
   assert.deepEqual(board.parked, [{ reason: "tooling", count: 1 }]);
   assert.deepEqual(board.totals.parked, [{ reason: "tooling", count: 2 }]);
 });
 
-test("the issue preview carries the park age and the question the store recorded", () => {
-  const preview = previewIssue(AGED, "pitwall", "pitwall-old", AGED_PARKS);
+test("the issue preview carries the park age the document dates and the question the store recorded", () => {
+  const preview = previewIssue(AGED, "pitwall", "pitwall-old", AGED_QUESTIONS);
   assert.equal(preview?.park?.ms, 11 * DAY);
   assert.equal(preview?.park?.suspect, true);
   assert.equal(preview?.question, "Which one?");
-  const unplaced = previewIssue(AGED, "pitwall", "pitwall-new", AGED_PARKS);
+  const unplaced = previewIssue(AGED, "pitwall", "pitwall-new", AGED_QUESTIONS);
   assert.deepEqual(unplaced?.park, { suspect: false });
-  assert.equal(previewIssue(AGED, "pitwall", "pitwall-epic", AGED_PARKS)?.park, undefined, "no label, no age");
-  assert.equal(previewIssue(AGED, "pitwall", "pitwall-dep", AGED_PARKS)?.park, undefined);
+  assert.equal(previewIssue(AGED, "pitwall", "pitwall-epic", AGED_QUESTIONS)?.park, undefined, "no label, no age");
+  assert.equal(previewIssue(AGED, "pitwall", "pitwall-dep", AGED_QUESTIONS)?.park, undefined);
 });
 
 test("parked is counted per reason and never summed", () => {
@@ -1204,7 +1182,7 @@ test("a park age leads with the number, flags a suspect one in words, and never 
 });
 
 test("the needs-you band shows how long each park has waited between the title and the verdict", () => {
-  const board = buildBoard(AGED, {}, AGED_PARKS);
+  const board = buildBoard(AGED, {}, AGED_QUESTIONS);
   const markup = renderToStaticMarkup(createElement(NeedsYouBand, { groups: board.needsYou }));
   assert.match(markup, /<th scope="col">Title<\/th><th scope="col">Parked<\/th><th scope="col">Staleness<\/th>/);
   assert.match(markup, /<th colSpan="8" scope="rowgroup">pitwall<\/th>/);
@@ -1219,7 +1197,7 @@ test("the needs-you band shows how long each park has waited between the title a
 });
 
 test("the parked band lists the suspect parks in the open and the rest behind a disclosure, never a summed count", () => {
-  const board = buildBoard(AGED, {}, AGED_PARKS);
+  const board = buildBoard(AGED, {}, AGED_QUESTIONS);
   const markup = renderToStaticMarkup(
     createElement(ParkedBand, { entries: board.parked, rows: board.parkedRows }),
   );
@@ -1323,7 +1301,8 @@ test("the ticket page places the park under the classification and states the qu
 
   const view = buildIssueView(
     payload({
-      park: { label: "needs-decision", parkedSince: "2026-08-28T14:11:00Z", basis: "carried", question: "Honour paid checkout?" },
+      stopped: { since: "2026-08-28T14:11:00Z", basis: "carried" },
+      question: "Honour paid checkout?",
       labels: ["needs-decision"],
     }, { generatedAt: GENERATED_AT, status: "open" }),
   );
