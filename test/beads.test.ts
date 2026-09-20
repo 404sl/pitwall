@@ -44,6 +44,18 @@ test("every issue the tracker reports is one the contract accepts", async () => 
   }
 });
 
+test("an error recorded elsewhere in the project does not make the list the tracker just returned untrustworthy", async () => {
+  const lanes = { source: join(TRACKER, ".autofix-run", "locks"), message: "EACCES: permission denied", at: "2026-09-08T13:02:00Z" };
+  const clean = await readIssues(TRACKER, { env: env("ok"), errors: [] });
+  const withLaneError = await readIssues(TRACKER, { env: env("ok"), errors: [lanes] });
+  assert.deepEqual(
+    withLaneError.issues.map((issue) => [issue.id, issue.classification]),
+    clean.issues.map((issue) => [issue.id, issue.classification]),
+  );
+  assert.ok(clean.issues.some((issue) => issue.classification === "ready"));
+  assert.equal(withLaneError.issues.some((issue) => issue.classification === "unknown"), false);
+});
+
 test("closed issues are kept for the metrics and never carried in issues", async () => {
   const collected = await readIssues(TRACKER, { env: env("ok"), errors: [] });
   assert.deepEqual(
@@ -157,7 +169,7 @@ test("an edge onto an open blocker is blocked and one onto a closed blocker is n
 });
 
 const ALREADY_FAILED: CollectionError[] = [
-  { source: "/workspace/.autofix.json", message: "lanes could not be read", at: "2026-09-08T14:00:00Z" },
+  { source: join(TRACKER, ".beads"), message: "bd list --all --limit 0 --json: timed out", at: "2026-09-08T14:00:00Z" },
 ];
 
 test("a blocker missing from a clean collection still reads as closed", async () => {
@@ -179,12 +191,16 @@ test("a blocker missing from an incomplete collection is blocking, not closed", 
     }),
   );
   assert.equal(byId.get("mw-6")?.classification, "blocked");
-  assert.equal(byId.get("mw-5")?.classification, "ready");
+  assert.equal(
+    byId.get("mw-5")?.classification,
+    "unknown",
+    "a list that did not collect cannot say mw-5 has no open child, so it is not ready either",
+  );
 });
 
 test("an incomplete collection does not block an edge onto a blocker it did carry as closed", async () => {
   const byId = byIdOf(await readIssues(TRACKER, { env: env("ok"), errors: ALREADY_FAILED }));
-  assert.equal(byId.get("mw-6")?.classification, "ready");
+  assert.equal(byId.get("mw-6")?.classification, "unknown");
 });
 
 test("classification runs over the collected issues", async () => {
@@ -559,10 +575,10 @@ test("a board that could not be collected does not overrule what the tracker sai
   if (closed.kind !== "found") return;
   assert.equal(
     closed.issue.classification,
-    "ready",
-    "show named mw-9 closed, so an unreadable board has nothing left to say about it",
+    "unknown",
+    "show named mw-9 closed, so it is not blocked, and the board behind it could not be read, so it is not ready",
   );
-  assert.deepEqual(closed.issue.reason, { rule: "default" });
+  assert.deepEqual(closed.issue.reason, { rule: "uncollected" });
 
   const open = await readIssue(TRACKER, "mw-6", {
     env: env("ok"),

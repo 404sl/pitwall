@@ -529,14 +529,17 @@ export function parkedReasons(): string[] {
   const parked = Classification.options
     .filter((option) => option.startsWith("parked:"))
     .map((option) => option.slice("parked:".length));
-  return [...parked, "blocked"];
+  return [...parked, "blocked", "unknown"];
 }
 
 function parkedEntries(projects: Project[]): ParkedEntry[] {
   const counts = new Map<string, number>();
   for (const project of projects) {
     for (const issue of issuesOf(project)) {
-      const reason = issue.classification === "blocked" ? "blocked" : undefined;
+      const reason =
+        issue.classification === "blocked" || issue.classification === "unknown"
+          ? issue.classification
+          : undefined;
       const parked = issue.classification.startsWith("parked:")
         ? issue.classification.slice("parked:".length)
         : reason;

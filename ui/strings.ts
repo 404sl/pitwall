@@ -353,6 +353,7 @@ export const strings = {
       "blocked-unreadable-many": "{ids} could not be read",
       "blocked-parent-in-progress": "its parent {parentId} is in progress",
       "stored-status": "the tracker records its status as {status}",
+      uncollected: "the board behind it could not be read, so what parks or blocks it is unknown",
       default: "nothing parks, blocks or claims it",
       separator: ", ",
     },

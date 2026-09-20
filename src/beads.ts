@@ -341,13 +341,14 @@ async function collect(reader: Reader): Promise<Collection> {
 }
 
 function contextFor(
+  root: string,
   collection: Collection,
   options: ReadIssuesOptions,
 ): ClassifyContext {
   return {
     issues: collection.all,
     lanes: options.lanes ?? [],
-    collectionComplete: options.errors.length === 0,
+    collectionComplete: !collectionFailed(root, options.errors),
     stored: collection.parked,
   };
 }
@@ -362,7 +363,7 @@ export async function readIssues(
     const active = collection.all.filter((issue) => issue.status !== "closed");
     const closed = collection.all.filter((issue) => issue.status === "closed");
     const byId = new Map(collection.all.map((issue) => [issue.id, issue]));
-    const context = contextFor(collection, options);
+    const context = contextFor(root, collection, options);
     const issues = active.map((issue) =>
       Issue.parse({
         ...issue,
