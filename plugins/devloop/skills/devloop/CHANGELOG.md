@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.122
+
+A scan no longer reports a finished hand-off as a dead lane in three cases it previously always got wrong, and no longer drops a real one in three cases the first of those fixes would have introduced.
+
+The handed-off check now asks each repository inside the directory the workspace config names for it, instead of assuming the config key is the directory. In a workspace whose keys and paths differ - `site` keyed to the `cli` checkout, for instance - it was reading one wrong checkout, skipping the rest, and never asking about the repositories where lanes actually run, so every genuine hand-off there could report as a stale claim.
+
+An issue whose notes quote the number of an open pull request carrying the handoff label is now recognised as handed off even when its branch name says nothing about the issue - that fallback was documented but had never actually run. It now requires the reference to be the repository's own: the number must be followed by a non-digit, and preceded by a word the repository answers to (its checkout directory, its slug, or the name half of its slug), so `cli #77` and a pull request url count while another repository's `schema #77` does not, and `#16` no longer matches inside `#1627`. A bare `#77` with no repository beside it no longer silences a finding - when recording a hand-off in an issue's notes, quote the pull request url or put the repository word in front of the number.
+
+Branches under `autofix/`, cut before the devloop rename, are now recognised everywhere `devloop/` is, both in the handed-off set and in the orphaned-pull-request check, so a merged `autofix/` branch no longer leaves its issue reading as a stale claim. An open unlabelled one now shows up in the orphan check as well: on a project still carrying old `autofix/` refs the first scan after this lands can be both noisy and slow, because each such pull request costs one `bd show` with a 15-second timeout, up to the 50 the check lists per repository.
+
 ## 0.1.121
 
 WRITING-TICKETS.md now says where a blocker belongs: in the dependency graph with `bd dep add`, with the prose explaining why. A ticket that merely mentions another is not blocked by it, a pull request number is not a blocker, and an edge must never be added to make the graph look complete, because a wrong edge hides an issue from the ready queue.
