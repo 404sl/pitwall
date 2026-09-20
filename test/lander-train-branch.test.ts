@@ -6,6 +6,7 @@ import { runScript, type Call } from "./support/workflow.js";
 const ARGS = {
   skillDir: "/skill",
   root: "/root",
+  lockToken: "land-train-1788964650-29574",
   repos: {
     site: { path: "cli", slug: "404sl/pitwall", deploy: ["staging"] },
     docs: { path: "site", slug: "404sl/pitwall-site" },
@@ -51,6 +52,7 @@ function train(included: number[], survey: unknown) {
     if (call.label.startsWith("verify:")) return { status: "green", failingSpecs: [] };
     if (call.label.startsWith("version:")) return NO_PLUGIN;
     if (call.label.startsWith("merge:")) return { status: "merged", mergeSha: SHA, masterGreen: true, notes: "" };
+    if (call.label === "deploy") return { status: "deployed", notes: "", environments: [{ environment: "staging", revision: SHA }] };
     if (call.label === "branch-survey") return survey;
     if (call.label === "left-behind") return LEFT_BEHIND;
     return { status: "released" };
