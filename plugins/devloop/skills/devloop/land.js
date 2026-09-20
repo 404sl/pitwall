@@ -370,6 +370,16 @@ const CLOSED = {
   }
 }
 
+const HELD = {
+  type: 'object',
+  required: ['status', 'noted'],
+  properties: {
+    status: { enum: ['noted', 'partial', 'none'] },
+    noted: { type: 'array', items: { type: 'string' }, description: 'the tracker ids whose bd-note.sh exited 0, one per issue - an empty array when none did' },
+    notes: { type: 'string' }
+  }
+}
+
 const BRANCHES = {
   type: 'object',
   required: ['status', 'asked', 'prs'],
@@ -1581,6 +1591,49 @@ way, so name them - and do not name one you did not close.
 ${LAW()}`
 }
 
+function heldNote(h, merged) {
+  const what = merged.map((l) => `${keyOf(l)} at ${l.mergeSha || '(sha not recorded)'}${DEPLOYS.has(l.repo) ? ', deployed' : ' (this repository has no deploy)'}`).join(' and ')
+  return `Merged as ${what}. NOT closed: ${h.why}. Held open by the lander on purpose - this is not a dead lane. Close it when what is still open on this ticket's branch has landed.`
+}
+
+function heldPrompt(held) {
+  return `Record on each of these tracker issues why this run did NOT close it, and do nothing else to them.
+
+What landed for each is merged and stays merged; the ticket stays exactly where it is - in_progress,
+assigned to whoever holds it, labelled as it was. Without this note a person arriving at the ticket
+sees a claim older than an hour and reads it as a lane that died. The note is what tells them the
+lander held it deliberately, and why.
+
+For each issue below, write the text between the markers to a file VERBATIM - a file rather than an
+argument, so a backtick or a $( in it cannot be evaluated by the shell before bd sees it - then
+append it with exactly this, one run per issue, from ${ROOT} - the tracker is at the root, not
+inside any repository:
+
+${held.map(({ h, merged }) => `  ${h.issue}:
+    ---
+    ${heldNote(h, merged)}
+    ---
+    cd ${ROOT} && BEADS_DIR=${ROOT}/.beads PITWALL_SESSION=lander bash ${SKILL_DIR}/bd-note.sh ${h.issue} --note-file <that file>`).join('\n\n')}
+
+ONE NOTE PER ISSUE, THROUGH bd-note.sh. Never 'bd update --notes': it replaces every note already
+on the issue and has already destroyed a decision somebody recorded. Never a bare append by hand
+either - the script is the only writer that takes the write lock, stamps the note and reads it
+back, and two overlapping bare appends silently become one.
+
+DO NOT CLOSE, REOPEN, REASSIGN OR RELABEL ANYTHING. Not a close, not a status change, not an
+assignee change, not a label. The hold is the outcome of this run and the ticket is somebody
+else's until the rest of its branch lands; a note is the only thing this step is allowed to write.
+
+THAT LIST IS THE WHOLE JOB. Do not read the tracker for other issues and do not read pull requests
+this run did not land.
+
+REPORT THE IDS YOU ACTUALLY WROTE ON, one per bd-note.sh that exited 0, and an empty list if none
+did. A non-zero exit means the note did NOT land and its text is on stderr - name that id in 'notes'
+with what the script printed, not in the list. An id you wrote on and did not name comes back as a
+hold nobody recorded, so name them - and do not name one you did not write on.
+${LAW()}`
+}
+
 phase('Survey')
 
 for (const name of DEPLOYS) {
@@ -1963,6 +2016,17 @@ try {
       for (const h of heldOpen) {
         log(`NOT CLOSED ${h.issue} - ${h.why}. What landed for it is merged and deployed and stays that way; the ticket is left open because something on its branch has not.`)
       }
+    }
+    if (heldOpen.length) {
+      phase('Deploy')
+      const held = heldOpen.map((h) => ({ h, merged: closable.filter((l) => l.issue === h.issue) }))
+      const n = await agent(heldPrompt(held), { label: 'held', phase: 'Deploy', model: 'sonnet', effort: 'low', schema: HELD })
+      const noted = new Set((n && n.noted) || [])
+      const unnoted = heldOpen.map((h) => h.issue).filter((issue) => !noted.has(issue))
+      if (unnoted.length) {
+        log(`HOLD NOT RECORDED ${unnoted.join(' ')} - ${n ? `the note step answered '${n.status}'` : 'the note step reported nothing'}, so these sit in_progress with nothing on them saying the lander held them, and queue.sh will read the claim as a dead lane.${n && n.notes ? `\n    ${n.notes}` : ''}`)
+      }
+      for (const issue of heldOpen.map((h) => h.issue).filter((issue) => noted.has(issue))) log(`noted the hold on ${issue}`)
     }
     const heldIssues = new Set(heldOpen.map((h) => h.issue))
     const clear = closable.filter((l) => !l.issue || !heldIssues.has(l.issue))

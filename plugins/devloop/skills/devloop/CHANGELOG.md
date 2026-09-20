@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.127
+
+A ticket the lander or the train holds open now carries a note saying which pull request (or which survey gap) held the close, what did merge for it, and that the hold was deliberate. Read that note before treating a claim older than an hour as a dead lane; a held ticket is not one. A hold the note step could not record is logged as such in the run.
+
 ## 0.1.126
 
 The lander now holds a ticket's close when a pull request on the ticket's branch was put in this run's skipped list - labelled after the pre-flight, unconfigured slug, or outlasting the rounds - and names that pull request and the skip reason in the held-open line. A labelled pull request that the run neither landed nor skipped still holds nothing.
