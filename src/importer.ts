@@ -7,7 +7,7 @@ import type { Candidate, CollectionError } from "@404sl/pitwall-schema";
 import { WORKSPACE_FILES, readWorkspace, workspaceFile } from "./autofix.js";
 import { issueCreator, readIssues, type NewIssue } from "./beads.js";
 import { readCandidates } from "./candidates.js";
-import { collectionError, failureOf } from "./errors.js";
+import { collectionError, failureOf, hard } from "./errors.js";
 import { planningSession } from "./intake.js";
 import { upstreamIssueOf } from "./upstream.js";
 
@@ -291,13 +291,13 @@ export function renderImport(result: ImportResult): { out: string; err: string; 
     for (const entry of result.imported) {
       out.push(`  ${shortRef(entry.candidate)} -> ${entry.id}  ${byline(entry.candidate, result.trusted)}`);
     }
-  } else if (result.errors.length === 0 && result.failed.length === 0) {
+  } else if (!result.errors.some(hard) && result.failed.length === 0) {
     out.push("0 issues imported: every open issue is already linked to a tracker item.");
   }
   for (const entry of result.failed) {
     err.push(`${shortRef(entry.candidate)} was not imported: ${entry.reason}`);
   }
-  const code = result.errors.length > 0 || result.failed.length > 0 ? 1 : 0;
+  const code = result.errors.some(hard) || result.failed.length > 0 ? 1 : 0;
   return {
     out: out.length === 0 ? "" : `${out.join("\n")}\n`,
     err: err.map((line) => `pitwall import: ${line}\n`).join(""),
