@@ -48,6 +48,28 @@ Only three things, and each is worth many paragraphs:
 If a ticket has two halves that fix independently, file two. A run will do the tractable half
 and the other half's acceptance goes quietly unmet - that has happened here twice.
 
+## A blocker is an edge, not a sentence
+
+If a ticket cannot start until another one finishes, record that in the dependency graph:
+
+```
+bd dep add <issue> <blocker>
+```
+
+The prose says WHY it waits. The edge is what anything else reads - the ready queue, the
+console, the staleness check. A blocker written only as English is invisible to all three, and
+the ticket sits in the ready queue looking dispatchable while a lane picks it up and cannot
+start.
+
+"Mentions pitwall-xyz" is not "blocked by pitwall-xyz". A ticket cites a sibling for evidence
+or context far more often than it waits on one. A pull request number is not a blocker either:
+find the ticket that pull request belongs to and depend on that; if there is none, there is no
+edge to record, and the prose is all there is.
+
+Do not add an edge to make the graph look complete. A wrong edge hides an issue from the ready
+queue, and nobody goes looking for work the tracker says is blocked. A missing edge costs one
+lane bouncing; a wrong one costs the ticket.
+
 ## When there is a source of truth elsewhere
 
 Say so and stop:
