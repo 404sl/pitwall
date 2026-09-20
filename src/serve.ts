@@ -15,7 +15,7 @@ import {
 } from "./beads.js";
 import { createBuildCheck, type BuildCheck } from "./build.js";
 import { LIFTABLE_PARK_LABELS, liftableParkOf, parkLabelOf } from "./classify.js";
-import { collectionError } from "./errors.js";
+import { collectionError, hard } from "./errors.js";
 import {
   INTAKE_LABEL,
   INTAKE_ROUTE,
@@ -162,7 +162,7 @@ interface Outage {
 }
 
 function causeOf(errors: readonly CollectionError[]): string {
-  const first = errors[0];
+  const first = errors.find(hard) ?? errors[0];
   return first === undefined ? "" : `${first.source}: ${first.message}`;
 }
 
