@@ -240,6 +240,29 @@ test("a repository whose configured checkout is missing is skipped rather than f
   const out = scan(space);
   assert.equal(out.status, 0, out.stderr);
   assert.match(out.stdout, /^CLEAN/);
+  assert.match(out.stderr, /^warning: extension checkout missing at .*\/not-a-checkout - handed-off check did not read it$/m);
+});
+
+test("a directory named after a repo key that is nobody's configured path is never consulted", () => {
+  const space = workspace({
+    idPrefix: "pitwall",
+    inProgress: ["pitwall-dead"],
+    liveTranscript: TRANSCRIPT,
+    pullRequests: { integration: { openLabelledRefs: ["devloop/pitwall-dead"] } },
+    repos: REPOS,
+  });
+  const out = scan(space);
+  assert.equal(out.status, 1, out.stderr);
+  assert.match(out.stdout, /^\[E stale claim\] pitwall-dead P2/m);
+  assert.match(out.stderr, /^warning: integration checkout missing at .*\/schema - handed-off check did not read it$/m);
+});
+
+test("a config that names no repositories says the handed-off check read nothing rather than staying silent", () => {
+  const space = workspace({ idPrefix: "pitwall", inProgress: ["pitwall-dead"], liveTranscript: TRANSCRIPT });
+  const out = scan(space);
+  assert.equal(out.status, 1, out.stderr);
+  assert.match(out.stdout, /^\[E stale claim\] pitwall-dead P2/m);
+  assert.match(out.stderr, /^warning: the workspace config names no repositories - handed-off check read no checkout/m);
 });
 
 test("a queued pull request number appearing only inside a longer number is not a hand-off", () => {
