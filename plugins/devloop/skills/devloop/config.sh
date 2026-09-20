@@ -107,8 +107,16 @@ resolve_repos() {
 import json, os, shlex, subprocess, sys
 cfg = json.load(open(sys.argv[1]))
 repos = cfg.get("repos") or {}
-only = sys.argv[2:]
+argv = sys.argv[2:]
+every = bool(argv) and argv[0] == "--all"
+only = argv[1:] if every else argv
 gh_timeout = float(os.environ.get("DEVLOOP_GH_TIMEOUT") or 30)
+problems = []
+def refuse(msg):
+    problems.append(msg)
+    if not every:
+        sys.stderr.write(msg)
+        sys.exit(1)
 out = {}
 for name, r in repos.items():
     r = dict(r or {})
@@ -117,10 +125,10 @@ for name, r in repos.items():
         r["defaultBranch"] = "master"
     elif not isinstance(declared, str) or not declared.strip() or any(c.isspace() for c in declared) \
             or declared.startswith("origin/") or declared.startswith("refs/"):
-        sys.stderr.write("config.sh: repos.%s.defaultBranch is %s, which is not a branch name - it is the\n"
-                         "           bare name GitHub reports, 'master' or 'main', never 'origin/...'.\n"
-                         % (name, json.dumps(declared)))
-        sys.exit(1)
+        refuse("config.sh: repos.%s.defaultBranch is %s, which is not a branch name - it is the\n"
+               "           bare name GitHub reports, 'master' or 'main', never 'origin/...'.\n"
+               % (name, json.dumps(declared)))
+        continue
     for entry in (r.get("deploy") or []):
         if not isinstance(entry, str) or "deploy-one.sh" not in entry:
             continue
@@ -136,13 +144,12 @@ for name, r in repos.items():
             if w == "--label" and i + 1 < len(words):
                 label = words[i + 1]
         if base != r["defaultBranch"]:
-            sys.stderr.write("config.sh: repos.%s.deploy entry '%s' would deploy origin/%s (%s), but the repository's\n"
-                             "           default branch is '%s'. Refusing: deploy-one.sh cuts its worktree from the\n"
-                             "           base it is handed and ships whatever that ref holds, so a stale origin/%s\n"
-                             "           would reach %s. Add --base %s to that deploy entry.\n"
-                             % (name, label, base, "--base " + base if "--base" in words else "no --base, so master",
-                                r["defaultBranch"], base, label, r["defaultBranch"]))
-            sys.exit(1)
+            refuse("config.sh: repos.%s.deploy entry '%s' would deploy origin/%s (%s), but the repository's\n"
+                   "           default branch is '%s'. Refusing: deploy-one.sh cuts its worktree from the\n"
+                   "           base it is handed and ships whatever that ref holds, so a stale origin/%s\n"
+                   "           would reach %s. Add --base %s to that deploy entry.\n"
+                   % (name, label, base, "--base " + base if "--base" in words else "no --base, so master",
+                      r["defaultBranch"], base, label, r["defaultBranch"]))
     out[name] = r
 for name, r in out.items():
     if only and name not in only:
@@ -168,19 +175,21 @@ for name, r in out.items():
             got = None
     if not got:
         said = (stderr or stdout).strip().splitlines()
-        sys.stderr.write("config.sh: could not read the default branch of %s (repo %s) - '%s' exited %d and\n"
-                         "           said: %s\n"
-                         "           Nothing is known about whether '%s' is its default, which is not the\n"
-                         "           same as knowing it is. Nothing was dispatched.\n"
-                         % (slug, name, " ".join(cmd), code, said[0] if said else "nothing", want))
-        sys.exit(1)
+        refuse("config.sh: could not read the default branch of %s (repo %s) - '%s' exited %d and\n"
+               "           said: %s\n"
+               "           Nothing is known about whether '%s' is its default, which is not the\n"
+               "           same as knowing it is. Nothing was dispatched.\n"
+               % (slug, name, " ".join(cmd), code, said[0] if said else "nothing", want))
+        continue
     if got != want:
-        sys.stderr.write("config.sh: repo %s (%s) has default branch '%s' %s, but GitHub says its\n"
-                         "           default branch is '%s'. Refusing: every worktree, rebase and pull request\n"
-                         "           would be measured against the wrong base. Set repos.%s.defaultBranch to\n"
-                         "           '%s' in %s, or rename the branch on GitHub, then run this again.\n"
-                         % (name, slug, want, how, got, name, got, sys.argv[1]))
-        sys.exit(1)
+        refuse("config.sh: repo %s (%s) has default branch '%s' %s, but GitHub says its\n"
+               "           default branch is '%s'. Refusing: every worktree, rebase and pull request\n"
+               "           would be measured against the wrong base. Set repos.%s.defaultBranch to\n"
+               "           '%s' in %s, or rename the branch on GitHub, then run this again.\n"
+               % (name, slug, want, how, got, name, got, sys.argv[1]))
+if problems:
+    sys.stderr.write("".join(problems))
+    sys.exit(1)
 print(json.dumps(out))
 PY
 }
@@ -245,7 +254,7 @@ PY
 case "${1:-}" in
   --check)
     BRANCH_ERR="$(mktemp "${TMPDIR:-/tmp}/config-check.XXXXXX")"
-    resolve_repos >/dev/null 2>"$BRANCH_ERR"
+    resolve_repos --all >/dev/null 2>"$BRANCH_ERR"
     python3 - "$CONFIG" "$BRANCH_ERR" <<'PY'
 import json, os, sys
 cfg = json.load(open(sys.argv[1]))

@@ -256,6 +256,35 @@ test("a defaultBranch written as a ref rather than a branch name is refused", ()
   }
 });
 
+test("--check names every repository that is wrong, while a dispatch still refuses on the first with empty stdout", () => {
+  const box = workspace(
+    {
+      site: { path: "repo", test: "npm test", slug: "acme/site" },
+      docs: { path: "repo", test: "npm test", slug: "acme/docs", defaultBranch: "main", deploy: ["bash deploy-one.sh --label production --repo-path repo --deploy 'echo ship' --revision 'echo abc'"] },
+      api: { path: "repo", test: "npm test", slug: "acme/api", defaultBranch: "origin/main" },
+    },
+    { "acme/site": says("main"), "acme/docs": says("main"), "acme/api": says("main") },
+  );
+  try {
+    const check = config(box, "--check");
+    assert.notEqual(check.status, 0, "--check passed a config with three wrong repositories");
+    assert.match(check.stdout, /repo site \(acme\/site\) has default branch 'master'.*GitHub says its\s+default branch is 'main'/s, `--check does not name the branch GitHub disagrees with:\n${check.stdout}`);
+    assert.match(check.stdout, /repos\.docs\.deploy entry 'production' would deploy origin\/master/, `--check does not name the deploy entry:\n${check.stdout}`);
+    assert.match(check.stdout, /repos\.api\.defaultBranch is "origin\/main"/, `--check does not name the rejected branch name:\n${check.stdout}`);
+    assert.equal(check.stdout.includes("repo api (acme/api)"), false, `--check compared a rejected branch name with GitHub:\n${check.stdout}`);
+
+    for (const mode of [["--args", "zz-aaa1"], ["--rework", "zz-aaa1", "7", "site"], ["--land"], ["--train", "site"]]) {
+      const ran = config(box, ...mode);
+      assert.notEqual(ran.status, 0, `${mode.join(" ")} dispatched a config --check refuses:\n${ran.stdout}`);
+      assert.equal(ran.stdout, "", `${mode.join(" ")} printed an args object alongside its refusal`);
+      assert.match(ran.stderr, /config\.sh: /, `${mode.join(" ")} refused without saying why:\n${ran.stderr}`);
+    }
+    assert.equal(existsSync(slotsPath(box.prefix)), false, "a refused dispatch left a lane reserved");
+  } finally {
+    clean(box);
+  }
+});
+
 function git(cwd: string, ...argv: string[]): string {
   const run = spawnGit(["-c", `user.name=${AUTHOR.name}`, "-c", `user.email=${AUTHOR.email}`, ...argv], { cwd });
   assert.equal(run.status, 0, `git ${argv.join(" ")} in ${cwd} failed: ${run.stderr}`);
