@@ -269,6 +269,7 @@ export const strings = {
       ready: "Nothing for you — it is waiting for a lane to pick it up.",
       parked: "Nothing for you — it is parked: {reason}.",
       blocked: "Nothing for you — something else has to close first.",
+      unknown: "Nothing for you yet — its tracker could not be read, so nothing can say what holds it.",
       closed: "Nothing for you — this issue is closed.",
       latestNote: "Latest note",
     },

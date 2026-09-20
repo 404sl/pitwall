@@ -1173,6 +1173,11 @@ test("a call is a sentence about what to do, one per classification and verdict"
   }
   assert.equal(callFor("ready", "unchecked", false).text, strings.issue.call.ready);
   assert.equal(callFor("blocked", "unchecked", false).text, strings.issue.call.blocked);
+  assert.deepEqual(callFor("unknown", "unchecked", false), {
+    text: "Nothing for you yet — its tracker could not be read, so nothing can say what holds it.",
+    tone: "waiting",
+  });
+  assert.doesNotMatch(callFor("unknown", "unchecked", false).text, /parked|ready/);
   assert.equal(callFor(undefined, "unchecked", true).text, strings.issue.call.closed);
   assert.equal(callFor("yours:decision", "still-blocking", true).tone, "waiting");
   for (const classification of Classification.options) {
