@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.116
+
+When the configured repositories do not share a default branch, the rules block a split step receives lists each repository beside the remote branch it lands on and phrases every ref and branch flag as `<base>` and `<branch>` taken from that list, instead of rendering a placeholder that names a branch nobody has. Prompts for a single repository, and every prompt when the repositories share one default, are unchanged.
+
+Refs pitwall-gp1x.
+
 ## 0.1.115
 
 A rework whose release step answers nothing, dies, or is not permitted to run now retries with two plain commands - the slot file first, then the lane lock through its owner file, each removed only when it names this run - and a release refused twice is recorded as REFUSED in the lane and slot fields with the plain command that releases each one, instead of LEAKED pointing at files the release never touched.
