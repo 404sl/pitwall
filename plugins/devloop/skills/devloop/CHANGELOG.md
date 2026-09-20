@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.123
+
+The lander no longer closes a ticket on the label alone. Before the close step runs it surveys the branch: every configured repository is asked for its open pull requests whose head is the ticket's branch, with their labels, and a ticket whose branch still carries a pull request that is open and unlabelled **anywhere** is held open rather than closed. The run names the pull request that held it, and the final line says `HELD OPEN`.
+
+What a session should do differently now:
+
+- A two-repository ticket whose second pull request never got labelled no longer closes on the half that landed. If a run reports `HELD OPEN`, the work that merged is merged and deployed and stays that way — what is missing is the other repository's pull request, so look there rather than at the tracker.
+- `heldOpen` is not `unclosed`. `unclosed` still means merged, deployed, and nobody confirmed the close, which wants `bd show`. `heldOpen` means the lander deliberately declined to close, which wants a look at the sibling repository.
+- A survey that could not be read, or that does not report asking every configured repository about every branch, holds the close too. That is the safe direction — a survey trusted over a failed command closes a ticket wrongly and invisibly — but a hold is not a retry. The close step only ever considers what merged in the same run, so no later run revisits a held ticket: it stays `in_progress` until a sibling pull request lands on the same branch and that run finds the branch clear, or somebody closes it by hand. The `NOT CLOSED` line naming what held it and the `HELD OPEN` line at the end of the run are the only signal it leaves, so a single-repository ticket held by an unreadable survey waits for a person.
+- An open pull request that *is* labelled holds nothing — it is already in the queue.
+
 ## 0.1.122
 
 A scan no longer reports a finished hand-off as a dead lane in three cases it previously always got wrong, and no longer drops a real one in three cases the first of those fixes would have introduced.
