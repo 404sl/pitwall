@@ -49,6 +49,19 @@ function train(reply: Reply, args: Record<string, unknown> = {}) {
   });
 }
 
+function branchSurvey(included: number[]) {
+  const branches = included.map((n) => ({ number: n, branch: `devloop/pitwall-${n}` }));
+  return {
+    status: "read",
+    branches,
+    asked: branches.flatMap(({ branch }) => [
+      { slug: "404sl/pitwall", branch },
+      { slug: "404sl/pitwall-site", branch },
+    ]),
+    open: [],
+  };
+}
+
 function oneLandedInSite(survey: unknown, included: number[] = [1287]): Reply {
   return (call: Call) => {
     if (call.label.startsWith("build:")) {
@@ -66,6 +79,7 @@ function oneLandedInSite(survey: unknown, included: number[] = [1287]): Reply {
     }
     if (call.label.startsWith("merge:")) return { status: "merged", mergeSha: SHA, masterGreen: true, notes: "" };
     if (call.label === "deploy") return { status: "deployed", environments: [{ environment: "staging", revision: SHA }], notes: "" };
+    if (call.label === "branch-survey") return branchSurvey(included);
     if (call.label === "close") return { status: "closed", closed: included.map((pr) => ({ pr, issue: `pitwall-${pr}` })), notes: "" };
     if (call.label === "left-behind") return survey;
     return { status: "released" };
@@ -171,6 +185,7 @@ test("a pull request labelled in the other repo while this train ran is still re
       merged = true;
       return { status: "merged", mergeSha: SHA, masterGreen: true, notes: "" };
     }
+    if (call.label === "branch-survey") return branchSurvey([1287]);
     if (call.label === "left-behind") {
       return {
         repos: [

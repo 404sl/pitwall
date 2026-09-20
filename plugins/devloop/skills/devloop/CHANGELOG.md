@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.124
+
+A release train no longer closes a ticket on the label alone. Before closing, it reads the branch of everything it merged and asks every configured repository what is open on those branches. A pull request that is open on one of them without the handoff label holds that ticket open, and the run says which one held it under `heldOpen`. A survey it could not read, or a repository it cannot show it asked, holds the close too — silence from a repository is not read as nothing there. Only the affected tickets are held; the rest of the train closes as before.
+
 ## 0.1.123
 
 The lander no longer closes a ticket on the label alone. Before the close step runs it surveys the branch: every configured repository is asked for its open pull requests whose head is the ticket's branch, with their labels, and a ticket whose branch still carries a pull request that is open and unlabelled **anywhere** is held open rather than closed. The run names the pull request that held it, and the final line says `HELD OPEN`.
