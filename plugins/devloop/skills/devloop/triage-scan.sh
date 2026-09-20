@@ -571,9 +571,16 @@ def _quotes_queued_pr(notes):
 
 def _handed_off_ids():
     ids = set()
+    if not REPO_PATHS:
+        print("warning: the workspace config names no repositories - handed-off check read no "
+              "checkout, so every in_progress issue without a worktree will read as a stale claim",
+              file=sys.stderr)
+        return ids
     for key, rel in REPO_PATHS:
         path = os.path.join(ROOT, rel)
         if not os.path.isdir(path):
+            print(f"warning: {key} checkout missing at {path} - handed-off check did not read it",
+                  file=sys.stderr)
             continue
         # TWO STATES, NOT ONE. A labelled open PR is waiting for the lander; a MERGED one has
         # already landed and is waiting only for the deploy that closes its issue. Both leave the
