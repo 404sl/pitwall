@@ -148,9 +148,19 @@ const LANE_BACK = {
   type: 'object',
   required: ['lane', 'slot'],
   properties: {
-    lane: { enum: ['released', 'not_mine', 'already_gone', 'still_held'], description: 'the word release-lane.sh printed after lane:, lowercased - it reports its own outcome and you are not asked to judge it' },
-    slot: { enum: ['released', 'not_mine', 'already_gone', 'still_held'], description: 'the word it printed after slot:, lowercased' },
-    notes: { type: 'string', description: 'everything it printed, verbatim' },
+    lane: { enum: ['released', 'not_mine', 'already_gone', 'still_held', 'refused'], description: 'the word release-lane.sh printed after lane:, lowercased - it reports its own outcome and you are not asked to judge it. refused means the command was not permitted to run at all, so nothing was printed' },
+    slot: { enum: ['released', 'not_mine', 'already_gone', 'still_held', 'refused'], description: 'the word it printed after slot:, lowercased, or refused when the command was not permitted to run' },
+    notes: { type: 'string', description: 'everything it printed, verbatim - or what refused the command, in its own words' },
+  },
+}
+
+const LANE_PLAIN = {
+  type: 'object',
+  required: ['lane', 'slot'],
+  properties: {
+    lane: { enum: ['released', 'not_mine', 'already_gone', 'still_held', 'refused'], description: 'the word printed after lane:, lowercased, or refused when the command was not permitted to run' },
+    slot: { enum: ['released', 'not_mine', 'already_gone', 'still_held', 'refused'], description: 'the word printed after slot:, lowercased, or refused when the command was not permitted to run' },
+    notes: { type: 'string', description: 'everything printed, verbatim - or what refused a command, in its own words' },
   },
 }
 
@@ -167,13 +177,50 @@ this shape was told to supply a value it had already been given, went looking fo
 and declined to touch the lock at all, which left every other lane waiting on it.
 
 Report the word after 'lane:' as 'lane', the word after 'slot:' as 'slot', lowercased, and
-everything it printed as 'notes'. Remove nothing by hand, run no other command, and never use
-2>&1.`
+everything it printed as 'notes'. If the command is not permitted to run at all, report 'refused'
+for both and say what refused it in 'notes' - that answer is acted on, and it is worth more than a
+guess at what the script would have printed. Remove nothing by hand, run no other command, and
+never use 2>&1.`
 }
 
-function settle(path, answer) {
+const PLAIN_SLOT = `if [ ! -e ${SLOT_FILE} ]; then echo "slot: ALREADY_GONE"; elif [ "$(head -n 1 ${SLOT_FILE})" = "${OWNER}" ]; then rm -f ${SLOT_FILE} && echo "slot: RELEASED" || echo "slot: STILL_HELD"; else echo "slot: NOT_MINE - $(head -n 1 ${SLOT_FILE})"; fi`
+const PLAIN_LANE = `if [ -e ${LANE_LOCK} ] && [ ! -d ${LANE_LOCK} ]; then echo "lane: STILL_HELD - a regular file, not a lock"; elif [ ! -d ${LANE_LOCK} ]; then echo "lane: ALREADY_GONE"; elif [ "$(awk 'NR == 1 { print $1 }' ${OWNER_FILE} 2>/dev/null)" = "${OWNER}" ]; then rm -f ${OWNER_FILE} && rmdir ${LANE_LOCK} && echo "lane: RELEASED" || echo "lane: STILL_HELD"; else echo "lane: NOT_MINE - $(head -n 1 ${OWNER_FILE} 2>/dev/null)"; fi`
+
+function plainReleasePrompt() {
+  return `The release step for lane ${LANE} and slot ${SLOT} did not answer, so give them back with plain
+commands instead. Each reads one file under /tmp that this run wrote and removes it only when it
+names this run. Run these two commands once each, exactly as they stand, in this order, and report
+what they printed:
+
+  ${PLAIN_SLOT}
+
+  ${PLAIN_LANE}
+
+The slot goes first because a slot left behind is the silent one: nothing refuses a dispatch over
+it, the pool is simply one lane smaller. A lane lock left behind refuses the next run out loud.
+
+Report the word after 'slot:' as 'slot' and the word after 'lane:' as 'lane', lowercased, and
+everything printed as 'notes'. If a command is not permitted to run, report 'refused' for it and say
+what refused it in 'notes'. Run no other command, remove nothing by hand, and never use 2>&1.`
+}
+
+function unanswered(answer) {
+  return !answer || answer.lane === 'refused' || answer.slot === 'refused'
+}
+
+async function giveBack(prompt, label, schema) {
+  try {
+    return await agent(prompt, { label, phase: 'Handoff', schema, model: 'haiku', effort: 'low' })
+  } catch (e) {
+    log(`${label}: the release step died before answering - ${e && e.message ? e.message : String(e)}`)
+    return null
+  }
+}
+
+function settle(path, answer, refused, record, byHand) {
   if (GIVEN_BACK.has(answer)) return answer
   if (answer === 'not_mine') return `not_mine - ${path} does not record ${OWNER}, so nothing was removed and nothing should be`
+  if (answer === 'refused' || (refused && !answer)) return `REFUSED - no release step was permitted to give ${path} back, so it is leaked if ${record} still names ${OWNER}. Release it on reading this with the command below: it reads ${record} on its own, removes ${path} only if that names this run, and says ALREADY_GONE when there is nothing left to do: ${byHand}`
   return `LEAKED - ${path} was not given back, or the release step answered nothing. Read it before removing anything: clear it if it records this run, and leave it alone if it records another.`
 }
 
@@ -745,11 +792,19 @@ result = {
 }
 
 } finally {
-  const back = await agent(releaseLanePrompt(), { label: ID ? `release:${ID}#${PR}` : `release:#${PR}`, phase: 'Handoff', schema: LANE_BACK, model: 'haiku', effort: 'low' })
-  laneLock = settle(LANE_LOCK, back && back.lane)
-  slotClaim = settle(SLOT_FILE, back && back.slot)
+  const tag = ID ? `${ID}#${PR}` : `#${PR}`
+  const first = await giveBack(releaseLanePrompt(), `release:${tag}`, LANE_BACK)
+  let back = first
+  if (unanswered(first)) {
+    log(`release:${tag}: release-lane.sh was ${first ? 'refused' : 'not answered'}, retrying as plain commands${first && first.notes ? ` - ${first.notes}` : ''}`)
+    back = await giveBack(plainReleasePrompt(), `release-retry:${tag}`, LANE_PLAIN)
+  }
+  const refused = unanswered(back)
+  laneLock = settle(LANE_LOCK, back && back.lane, refused, OWNER_FILE, PLAIN_LANE)
+  slotClaim = settle(SLOT_FILE, back && back.slot, refused, SLOT_FILE, PLAIN_SLOT)
   if (!GIVEN_BACK.has(back && back.lane) || !GIVEN_BACK.has(back && back.slot)) {
-    log(`lane ${LANE}: ${laneLock}\n    slot ${SLOT}: ${slotClaim}${back && back.notes ? `\n    ${back.notes}` : ''}`)
+    const notes = (back && back.notes) || (first && first.notes)
+    log(`lane ${LANE}: ${laneLock}\n    slot ${SLOT}: ${slotClaim}${notes ? `\n    ${notes}` : ''}`)
   }
 }
 
