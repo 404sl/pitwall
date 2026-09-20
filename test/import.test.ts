@@ -271,7 +271,7 @@ test("an imported issue is parked for the planning session with its external ref
   }
   assert.equal(result.assignee, `${where.root.split("/").at(-1) ?? ""}-planning-session`);
   assert.match(written[1] ?? "", new RegExp(`--external-ref https://github.com/${SLUG}/issues/8 `));
-  assert.match(written[1] ?? "", /create Console shows a stale board after the tracker moves --type/);
+  assert.match(written[1] ?? "", /create --title=Console shows a stale board after the tracker moves --type/);
 
   const stranger = description(where, 2);
   assert.match(stranger, new RegExp(`^Imported from https://github.com/${SLUG}/issues/8\n`));
@@ -337,6 +337,25 @@ test("an imported issue cannot reach the dispatcher until a person removes the p
   assert.doesNotMatch(gateOn, /mw-new2/, "the planning session's queue was offered to the devloop");
   const reassigned = dispatchable(where.root, where.bin, [{ ...promoted, assignee: "mw-devloop" }]);
   assert.match(reassigned, /mw-new2/, "a promoted issue - label removed, assignee moved - is not dispatchable");
+});
+
+test("a title that looks like a flag is still a title, because anybody can file one on a public repository", async () => {
+  const where = place({ [ACTOR_FIELD]: "mw-devloop" }, [
+    { number: 9, title: "--db=/nowhere --help", author: "stranger", body: "", createdAt: "2026-09-06T09:00:00Z" },
+  ]);
+  const result = await imported(where);
+  assert.deepEqual(result.errors, []);
+  assert.deepEqual(
+    result.imported.map((entry) => [entry.candidate.title, entry.id]),
+    [["--db=/nowhere --help", "mw-new1"]],
+  );
+  assert.equal(creates(where).length, 1);
+  assert.match(
+    creates(where)[0] ?? "",
+    new RegExp(
+      `^--actor mw-devloop create --title=--db=/nowhere --help --type task --assignee \\S+-planning-session --labels ${IMPORT_LABEL} --external-ref https://github.com/${SLUG}/issues/9 --body-file \\S+ --metadata @\\S+ --silent$`,
+    ),
+  );
 });
 
 test("running the import again files nothing: an issue is deduplicated on its external reference, not its title", async () => {
@@ -429,7 +448,8 @@ test("the create arguments carry the reference and the actor only when given", (
     labels: [IMPORT_LABEL],
     issueType: "task",
   };
-  assert.deepEqual(createArgs(base).slice(0, 2), ["create", "t"]);
+  assert.deepEqual(createArgs(base).slice(0, 2), ["create", "--title=t"]);
+  assert.equal(createArgs({ ...base, title: "--db=/nowhere --help" })[1], "--title=--db=/nowhere --help");
   assert.ok(!createArgs(base).includes("--external-ref"));
   const full = createArgs({ ...base, externalRef: "https://github.com/acme/site/issues/8", actor: "mw-devloop" });
   assert.deepEqual(full.slice(0, 3), ["--actor", "mw-devloop", "create"]);

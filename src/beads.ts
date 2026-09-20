@@ -713,7 +713,7 @@ export function createArgs(issue: NewIssue): string[] {
   return [
     ...(issue.actor === undefined ? [] : ["--actor", issue.actor]),
     "create",
-    issue.title,
+    `--title=${issue.title}`,
     "--type",
     issue.issueType,
     "--assignee",
