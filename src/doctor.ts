@@ -19,6 +19,7 @@ const MAX_OUTPUT = 1024 * 1024;
 const GH_COST = "pull request state and staleness stay unchecked";
 const BD_COST = "no issue can be read and every project reads as empty";
 const NO_ORIGIN_HEAD = "no origin/HEAD";
+const REMOTE_COST = "its pull requests and imported issues go unread";
 
 export type Severity = "ok" | "warn" | "fail";
 
@@ -237,6 +238,9 @@ function repoCheck(id: string, dir: string, file: string, name: string, value: u
     return { severity: "fail", name: label, tried, result: `${repo} is not a git checkout` };
   }
   const remote = remoteOf(repo);
+  if (remote.failure !== undefined) {
+    return { severity: "fail", name: label, tried, result: `${remote.failure} - ${REMOTE_COST}` };
+  }
   const slug = remote.slug ?? "no origin remote";
   const branch = configured ?? defaultBranchOf(repo);
   if (branch !== undefined) {
