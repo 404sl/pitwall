@@ -50,7 +50,7 @@ function tracker(dir: string): void {
 function checkout(dir: string, name: string, git = true): void {
   mkdirSync(join(dir, name), { recursive: true });
   if (git) {
-    mkdirSync(join(dir, name, ".git"), { recursive: true });
+    init(join(dir, name));
   }
 }
 
@@ -67,6 +67,15 @@ function cloneOf(dir: string, name: string, remote: string, branch?: string): vo
   if (branch !== undefined) {
     git(repo, "symbolic-ref", "refs/remotes/origin/HEAD", `refs/remotes/origin/${branch}`);
   }
+}
+
+function init(dir: string): void {
+  git(dir, "init", "--quiet");
+}
+
+function unreadable(dir: string, name: string): void {
+  mkdirSync(join(dir, name), { recursive: true });
+  writeFileSync(join(dir, name, ".git"), `gitdir: ${join(dir, "nowhere")}\n`);
 }
 
 function describe(dir: string, workspace: Record<string, unknown>): void {
@@ -167,6 +176,31 @@ test("a repo path that is not a git checkout fails", async () => {
   assert.equal(check.severity, "fail");
   assert.match(check.result, /is not a git checkout/);
   assert.equal(diagnosis.code, 1);
+});
+
+test("a checkout git refuses to read fails with git's words, not as a checkout with no origin", async () => {
+  const dir = root();
+  tracker(dir);
+  unreadable(dir, "cli");
+  describe(dir, { root: dir, idPrefix: "doc", lockPrefix: "doctor", repos: { site: { path: "cli" } } });
+  const diagnosis = await diagnose(options([dir]));
+  const check = named(diagnosis, `${basename(dir)} repo site`);
+  assert.equal(check.severity, "fail");
+  assert.match(check.result, /not a git repository|gitdir/i);
+  assert.doesNotMatch(check.result, /no origin remote/);
+  assert.equal(diagnosis.code, 1);
+});
+
+test("a checkout with no origin remote still passes and says so", async () => {
+  const dir = root();
+  tracker(dir);
+  checkout(dir, "cli");
+  describe(dir, { root: dir, idPrefix: "doc", lockPrefix: "doctor", repos: { site: { path: "cli" } } });
+  const diagnosis = await diagnose(options([dir]));
+  const check = named(diagnosis, `${basename(dir)} repo site`);
+  assert.equal(check.severity, "ok");
+  assert.equal(check.result, "no origin remote · no origin/HEAD");
+  assert.equal(diagnosis.code, 0);
 });
 
 test("a repo path that is not there at all fails with the path it tried", async () => {
