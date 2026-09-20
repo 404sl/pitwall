@@ -59,6 +59,7 @@ Early, and honest about it. Working today:
 pitwall snapshot     collect every project and print the snapshot as JSON
 pitwall status       print the latest snapshot as one screen
 pitwall doctor       check every source a snapshot reads and say what is wrong
+pitwall import       file every open GitHub issue of this workspace as a parked tracker item
 pitwall serve        serve the console on http://127.0.0.1:7373/
 ```
 
@@ -245,33 +246,72 @@ Where there is nothing to deliver through, the notice is not dropped quietly: wh
 and why nobody was told becomes a row on the board against `pitwall serve: outbound notice`,
 beside everything else the console could not do.
 
-## Closing the issue a bead came from
+## Importing an issue, behind a gate
 
-An issue filed on a public repository becomes a tracker item carrying an external reference
-back to it. Nothing in the tracker closes the public issue when that item closes, so a
-repository keeps advertising work that shipped days ago. Pitwall closes it, from the same two
-consecutive snapshots the notices are computed from: a bead that was open at the previous
-collection and closed at this one.
+`pitwall import` reads every open issue on the GitHub repositories of the workspace it is run
+in — the nearest directory above the current one carrying a `.pitwall.json` or `.autofix.json`
+— and files each one that no tracker item yet links as a tracker item of its own. It is the
+bridge from a signal to the authority, and the bridge is where the danger is: the repositories
+are public, the pipeline takes ready work and lands it unattended, so a path from "somebody opens
+an issue" to "a lane merges it" must not exist. Promotion is therefore two steps that this command
+never collapses:
+
+```
+IMPORT    pitwall import files the item parked, with needs-decision, assigned to the
+          planning session, carrying an external reference to the issue
+PROMOTE   a person removes the label and moves the assignee; only then is it work
+```
+
+`needs-decision` is already in the set the dispatcher skips, and the item classifies as a
+decision of yours, which is what it is: whether somebody else's report is work for this project.
+The item records the source URL, who reported it and whether they are an outside contributor —
+anybody not listed in the workspace's `trustedIssueAuthors` — the body as reported, quoted as the
+reporter's own words rather than as a specification, and that nothing in it has been verified. A
+configured author's issue is parked all the same.
+
+Deduplication is on the external reference and never on the title: two unrelated items can carry
+the same one with no tell. Re-running the import files nothing, and an item that has since
+closed still holds its reference, so the issue it came from is not imported a second time. That
+is also why a tracker that cannot be read imports nothing at all — with no list to deduplicate
+against, every open issue would be filed again.
+
+Every write to the tracker carries `--actor`, taken from the workspace file's `"actor"` or from
+`--actor <name>` on the command line, and the import refuses to run with neither: a write without
+one is stamped with whoever happened to run it, and that is how a queue quietly shrinks. Nothing
+is written to GitHub. The command runs where somebody chooses to run it — by hand, or on a
+schedule beside the other watchers — and is wired into no collection and no lander.
+
+## Telling the issue a bead came from what shipped
+
+An imported item closing is the moment its reporter should hear about it. Nothing else tells
+them: they cannot see the tracker, and a repository that leaves reports unanswered stops
+receiving them. Pitwall comments on the issue, from the same two consecutive snapshots the
+notices are computed from: a bead that was open at the previous collection and closed at this
+one.
+
+It comments and it does not close. The reporter decides whether their problem is solved; a bot
+insisting otherwise is worse than silence. So the comment names what shipped and says the issue
+is left open for them to close if that fixes what they reported.
 
 The link is the bead's recorded external reference and nothing else. A title is not a link —
 two unrelated items can carry the same one with no tell — so a bead that records no reference
-closes nothing, however well its title matches. Only a `https://github.com/<owner>/<repo>/issues/<n>`
-reference is acted on, and only where `<owner>/<repo>` is the origin of one of the workspace's
-own checkouts: a reference to somebody else's tracker, or to a pull request, is read and left
-alone.
+tells nobody anything, however well its title matches. Only a
+`https://github.com/<owner>/<repo>/issues/<n>` reference is acted on, and only where
+`<owner>/<repo>` is the origin of one of the workspace's own checkouts: a reference to somebody
+else's tracker, or to a pull request, is read and left alone.
 
 What the comment may say is decided by the close reason alone, because that is the only thing
 the tracker holds that records something having shipped. The reason has to OPEN by naming a
 pull request or a revision — "Landed in cli #91", "Merged as 404sl/pitwall#94 (44cc687)" — and
 the comment quotes its first sentence, no further than that reference and never more than 120
 characters, so a remark meant for the tracker does not travel with it. Anything that opens some
-other way leaves the issue open however it goes on: "Will not do — out of scope. Related work
-landed in cli #77" reports nothing, because what shipped there is not what this bead did. So
-does a reason whose reference arrives only in a later sentence, and so does no reason at all —
-a pull request being open for that bead at the previous collection is not evidence that anything
-merged, and is never read as any. A bead closed as superseded, a duplicate, won't-do or not
-planned is not reported to its issue as shipped at all: what to do with somebody else's report
-is a person's decision, and the issue is left open with a line saying so.
+other way says nothing however it goes on: "Will not do — out of scope. Related work landed in
+cli #77" reports nothing, because what shipped there is not what this bead did. So does a reason
+whose reference arrives only in a later sentence, and so does no reason at all — a pull request
+being open for that bead at the previous collection is not evidence that anything merged, and is
+never read as any. A bead closed as superseded, a duplicate, won't-do or not planned is not
+reported to its issue as shipped at all: what to do with somebody else's report is a person's
+decision, and the run prints a line saying the issue was told nothing.
 
 A number only becomes a link where two facts agree. `#91` in a comment on a public repository
 addresses that repository, which is the wrong one as often as the right one, so an unqualified
@@ -279,10 +319,10 @@ number travels as literal text unless a pull request of that same bead carries t
 number — then the comment names the pull request in full. A reference that already names its
 repository is left exactly as the reason wrote it.
 
-One direction only. The one thing this asks GitHub to do is close an issue with a comment;
-nothing reopens a bead, promotes anything into the tracker, or reads issue comments. It runs
-for a workspace you have listed in `roots`, on the same terms as a notice, and a workspace
-found by scanning closes nothing.
+One direction only. The one thing this asks GitHub to do is add a comment; nothing closes an
+issue, reopens a bead, promotes anything into the tracker, or reads issue comments. It runs for
+a workspace you have listed in `roots`, on the same terms as a notice, and a workspace found by
+scanning comments on nothing.
 
 Whether a reference is one of ours is answered by asking each checkout for its `origin`, and a
 checkout that will not answer is not the same as one that has nothing to say. A path that is no
@@ -292,14 +332,14 @@ path — cannot be distinguished from one that does not own the reference, so fo
 is true the run says so for every reference it could not place, naming the checkout and what git
 said. Turning the feature off quietly is the one outcome that is not allowed.
 
-A close that fails — no permission, no network, an issue since deleted — lands in three places:
-standard error, the bead, and the problems the board shows, as an error against `gh issue close`
-beside the project whose bead it was. It is not retried: the bead closes once, so the attempt
-happens once, and what did not happen is readable on the bead rather than lost. The row belongs
-to the snapshot that collection wrote and is gone from the next one, so the board is where
-somebody notices and the bead is where it stays.
+A comment that fails — no permission, no network, an issue since deleted — lands in three
+places: standard error, the bead, and the problems the board shows, as an error against `gh
+issue comment` beside the project whose bead it was. It is not retried: the bead closes once, so
+the attempt happens once, and what did not happen is readable on the bead rather than lost. The
+row belongs to the snapshot that collection wrote and is gone from the next one, so the board is
+where somebody notices and the bead is where it stays.
 
-An issue deliberately LEFT open — nothing shipped, a veto, a checkout that would not answer —
+An issue deliberately told nothing — nothing shipped, a veto, a checkout that would not answer —
 is written to standard error with the reason and is not appended to the bead, because the bead's
 own close reason already says what happened to it and the run is the thing that needs telling.
 

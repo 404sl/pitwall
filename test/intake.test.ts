@@ -111,7 +111,7 @@ test("bd is asked to create the issue the ticket describes, and its id is read b
 
   assert.deepEqual(args, [
     "create",
-    "a title",
+    "--title=a title",
     "--type",
     INTAKE_TYPE,
     "--assignee",
