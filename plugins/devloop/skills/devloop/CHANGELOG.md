@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.125
+
+The triage scan's handed-off check now says on stderr which repo checkout it could not read, naming the key and the path, and says when the workspace config named no repositories at all. A stale-claim finding that follows one of those warnings should be read as "a checkout was never consulted", not as a dead lane.
+
 ## 0.1.124
 
 A release train no longer closes a ticket on the label alone. Before closing, it reads the branch of everything it merged and asks every configured repository what is open on those branches. A pull request that is open on one of them without the handoff label holds that ticket open, and the run says which one held it under `heldOpen`. A survey it could not read, or a repository it cannot show it asked, holds the close too — silence from a repository is not read as nothing there. Only the affected tickets are held; the rest of the train closes as before.
