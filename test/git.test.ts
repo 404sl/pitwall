@@ -63,7 +63,7 @@ test("a checkout with no origin reports nothing rather than a branch it did not 
   assert.deepEqual(project.errors, []);
 });
 
-test("a checkout with an origin but no origin/HEAD leaves the branch absent rather than guessing", () => {
+test("a checkout with an origin but no origin/HEAD leaves the branch absent and records a field-scope error naming both remedies", () => {
   const root = workspace();
   const dir = checkout(root, "site");
   git(dir, "remote", "add", "origin", "https://github.com/acme/site.git");
@@ -73,6 +73,32 @@ test("a checkout with an origin but no origin/HEAD leaves the branch absent rath
   const project = readWorkspace(root);
   assert.equal(project.repos[0]?.defaultBranch, undefined);
   assert.equal("defaultBranch" in (project.repos[0] ?? {}), false);
+  assert.equal(project.errors.length, 1);
+  assert.equal(project.errors[0]?.source, dir);
+  assert.equal(project.errors[0]?.scope, "field");
+  assert.match(project.errors[0]?.message ?? "", /set defaultBranch in \.pitwall\.json/);
+  assert.match(project.errors[0]?.message ?? "", /git remote set-head origin -a/);
+});
+
+test("a checkout whose origin/HEAD is set records no error about its default branch", () => {
+  const root = workspace();
+  const dir = checkout(root, "site", "master");
+  git(dir, "remote", "add", "origin", "https://github.com/acme/site.git");
+
+  describe(root, "site");
+  const project = readWorkspace(root);
+  assert.equal(project.repos[0]?.defaultBranch, "master");
+  assert.deepEqual(project.errors, []);
+});
+
+test("a configured defaultBranch silences the error for a checkout with no origin/HEAD", () => {
+  const root = workspace();
+  const dir = checkout(root, "site");
+  git(dir, "remote", "add", "origin", "https://github.com/acme/site.git");
+
+  describeWith(root, { site: { path: "site", defaultBranch: "main" } });
+  const project = readWorkspace(root);
+  assert.equal(project.repos[0]?.defaultBranch, "main");
   assert.deepEqual(project.errors, []);
 });
 

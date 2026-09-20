@@ -931,6 +931,35 @@ test("a re-collection that read nothing names the source that could not be read"
   assert.equal(errors[0]?.message, `${NOTHING_READ} bd list: bd: command not found`);
 });
 
+test("a re-collection that read nothing names the tracker, not a field a checkout could not read", async (t) => {
+  const { env } = stateWith(JSON.stringify(SNAPSHOT));
+  const { collect, calls } = collector([
+    () =>
+      Promise.resolve({
+        read: false,
+        errors: [
+          {
+            source: "/x/cli",
+            message: "no origin/HEAD, so the default branch could not be read",
+            at: SNAPSHOT.generatedAt,
+            scope: "field",
+          },
+          { source: "bd list", message: "bd: command not found", at: SNAPSHOT.generatedAt },
+        ],
+      }),
+  ]);
+  const server = createConsoleServer({ env, uiDir: builtConsole(), collect });
+  t.after(() => server.close());
+  const { origin } = await started(server);
+
+  await fetch(`${origin}/api/snapshot`);
+  await (calls[0] as Promise<Collection>);
+  await settle();
+
+  const errors = errorsOf(await (await fetch(`${origin}/api/snapshot`)).json());
+  assert.equal(errors[0]?.message, `${NOTHING_READ} bd list: bd: command not found`);
+});
+
 test("a collector that throws where it stands leaves the console able to try again", async (t) => {
   const { env } = stateWith(JSON.stringify(SNAPSHOT));
   let calls = 0;

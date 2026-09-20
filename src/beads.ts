@@ -11,7 +11,7 @@ import {
   type Origin,
 } from "@404sl/pitwall-schema";
 import { workspaceFile } from "./autofix.js";
-import { collectionError, failureOf } from "./errors.js";
+import { collectionError, failureOf, hard } from "./errors.js";
 import { LOCK_ROOT } from "./lanes.js";
 import { NOTE_STAMP } from "./staleness.js";
 import {
@@ -831,7 +831,7 @@ function linksOf(value: unknown, categories: ReadonlyMap<string, string>): Depen
 
 export function collectionFailed(root: string, errors: readonly CollectionError[]): boolean {
   const beadsDir = join(resolve(root), BEADS_DIR);
-  return errors.some((error) => error.source === beadsDir);
+  return errors.some((error) => error.source === beadsDir && hard(error));
 }
 
 const NO_ISSUE_REPORTED = /no issues? found/i;

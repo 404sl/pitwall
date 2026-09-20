@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { CollectionError } from "@404sl/pitwall-schema";
 import { WORKSPACE_FILE } from "../src/autofix.ts";
 import { createArgs } from "../src/beads.ts";
 import { parseImportArgs, run as runCli } from "../src/cli.ts";
@@ -19,6 +20,7 @@ import {
   workspaceRootOf,
   type ImportResult,
 } from "../src/importer.ts";
+import { hard } from "../src/errors.ts";
 import { GIT_ENV, nullGlobalGitConfig, spawnGit } from "./support/git.js";
 
 nullGlobalGitConfig();
@@ -184,6 +186,10 @@ function place(
   };
 }
 
+function hardErrors(result: ImportResult): CollectionError[] {
+  return result.errors.filter(hard);
+}
+
 function lines(path: string): string[] {
   return readFileSync(path, "utf8").split("\n").filter((line) => line !== "");
 }
@@ -250,7 +256,7 @@ function createdRow(where: Place, nth: number, id: string): TrackerRow {
 test("an imported issue is parked for the planning session with its external reference and the reporter's words", async () => {
   const where = place({ [ACTOR_FIELD]: "mw-devloop", [TRUSTED_FIELD]: ["elik-ru"] });
   const result = await imported(where);
-  assert.deepEqual(result.errors, []);
+  assert.deepEqual(hardErrors(result), []);
   assert.deepEqual(result.failed, []);
   assert.deepEqual(
     result.imported.map((entry) => [entry.candidate.ref, entry.id]),
@@ -302,7 +308,6 @@ test("an imported issue is parked for the planning session with its external ref
 
   const rendered = renderImport(result);
   assert.equal(rendered.code, 0);
-  assert.equal(rendered.err, "");
   assert.equal(
     rendered.out,
     [
@@ -312,6 +317,37 @@ test("an imported issue is parked for the planning session with its external ref
       "",
     ].join("\n"),
   );
+});
+
+test("a checkout whose default branch could not be read is reported on stderr and does not fail the import", async () => {
+  const where = place({ [ACTOR_FIELD]: "mw-devloop" });
+  const result = await imported(where);
+  assert.deepEqual(
+    result.errors.map((error) => [error.source, error.scope]),
+    [[join(where.root, "site"), "field"]],
+  );
+  assert.equal(result.imported.length, 2);
+  const rendered = renderImport(result);
+  assert.equal(rendered.code, 0, "a field-scope error is not a failed import");
+  assert.equal(
+    rendered.err,
+    `pitwall import: ${join(where.root, "site")}: no origin/HEAD, so the default branch could not be read - set defaultBranch in ${WORKSPACE_FILE} or run git remote set-head origin -a\n`,
+  );
+  assert.match(rendered.out, /^2 issues imported/);
+
+  const nothing = place({ [ACTOR_FIELD]: "mw-devloop" }, OPEN_ISSUES, [
+    { id: "mw-1", status: "open", external_ref: `https://github.com/${SLUG}/issues/7`, labels: [IMPORT_LABEL] },
+    { id: "mw-2", status: "open", external_ref: `https://github.com/${SLUG}/issues/8`, labels: [IMPORT_LABEL] },
+  ]);
+  const idle = renderImport(await imported(nothing));
+  assert.equal(idle.code, 0);
+  assert.equal(idle.out, "0 issues imported: every open issue is already linked to a tracker item.\n");
+
+  const read = place({ [ACTOR_FIELD]: "mw-devloop" });
+  git(join(read.root, "site"), "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/master");
+  const clean = renderImport(await imported(read));
+  assert.equal(clean.code, 0);
+  assert.equal(clean.err, "");
 });
 
 test("an imported issue cannot reach the dispatcher until a person removes the park label", async () => {
@@ -344,7 +380,7 @@ test("a title that looks like a flag is still a title, because anybody can file 
     { number: 9, title: "--db=/nowhere --help", author: "stranger", body: "", createdAt: "2026-09-06T09:00:00Z" },
   ]);
   const result = await imported(where);
-  assert.deepEqual(result.errors, []);
+  assert.deepEqual(hardErrors(result), []);
   assert.deepEqual(
     result.imported.map((entry) => [entry.candidate.title, entry.id]),
     [["--db=/nowhere --help", "mw-new1"]],
@@ -365,7 +401,7 @@ test("running the import again files nothing: an issue is deduplicated on its ex
   ];
   const where = place({ [ACTOR_FIELD]: "mw-devloop" }, OPEN_ISSUES, linked);
   const result = await imported(where);
-  assert.deepEqual(result.errors, []);
+  assert.deepEqual(hardErrors(result), []);
   assert.deepEqual(result.imported, []);
   assert.deepEqual(creates(where), [], "a re-run created a duplicate of an issue already imported");
   assert.equal(renderImport(result).out, "0 issues imported: every open issue is already linked to a tracker item.\n");
@@ -408,18 +444,18 @@ test("a listing that fails or an issue whose body cannot be read is reported, an
   const unlisted = place({ [ACTOR_FIELD]: "mw-devloop" }, OPEN_ISSUES, [], { listFails: true });
   const none = await imported(unlisted);
   assert.deepEqual(creates(unlisted), []);
-  assert.equal(none.errors.length, 1);
-  assert.match(none.errors[0]?.message ?? "", /gh: not logged in/);
+  assert.equal(hardErrors(none).length, 1);
+  assert.match(hardErrors(none)[0]?.message ?? "", /gh: not logged in/);
 
   const unread = place({ [ACTOR_FIELD]: "mw-devloop" }, OPEN_ISSUES, [], { viewFails: 8 });
   const some = await imported(unread);
-  assert.deepEqual(some.errors, []);
+  assert.deepEqual(hardErrors(some), []);
   assert.equal(some.imported.length, 1);
   assert.equal(some.failed.length, 1);
   assert.match(some.failed[0]?.reason ?? "", /gh issue view https:\/\/github\.com\/acme\/site\/issues\/8 --json body: HTTP 404/);
   const rendered = renderImport(some);
   assert.equal(rendered.code, 1);
-  assert.match(rendered.err, /^pitwall import: acme\/site#8 was not imported: gh issue view/);
+  assert.match(rendered.err, /^pitwall import: acme\/site#8 was not imported: gh issue view/m);
   assert.match(rendered.out, /^1 issue imported/);
 });
 

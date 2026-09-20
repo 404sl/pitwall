@@ -659,12 +659,77 @@ function pipelineRoot(remote: string, where?: string): string {
   );
   const dir = join(root, "site");
   mkdirSync(dir, { recursive: true });
-  for (const args of [["init", "--quiet"], ["remote", "add", "origin", remote]]) {
+  for (const args of [
+    ["init", "--quiet"],
+    ["remote", "add", "origin", remote],
+    ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/master"],
+  ]) {
     const ran = spawnGit(args, { cwd: dir });
     assert.equal(ran.status, 0, ran.stderr);
   }
   return root;
 }
+
+function unreadBranchRoot(): string {
+  const root = mkdtempSync(join(tmpdir(), "pitwall-unread-branch-"));
+  cpSync(join(TRACKER, "bd-output"), join(root, "bd-output"), { recursive: true });
+  writeFileSync(
+    join(root, ".pitwall.json"),
+    JSON.stringify({ idPrefix: "mw", repos: { site: { path: "site" } } }),
+  );
+  const dir = join(root, "site");
+  mkdirSync(dir, { recursive: true });
+  for (const args of [["init", "--quiet"], ["remote", "add", "origin", "git@github.com:acme/site.git"]]) {
+    const ran = spawnGit(args, { cwd: dir });
+    assert.equal(ran.status, 0, ran.stderr);
+  }
+  return root;
+}
+
+test("a default branch that could not be read is a soft error: the list is still trusted and landedToday is still counted", async () => {
+  const root = unreadBranchRoot();
+  const place = workspace([root]);
+  const result = await emitSnapshot({
+    ...options(place, new Date("2026-09-08T18:00:00Z")),
+    env: { ...place.env, PATH: PATH_WITH_GH, GH_OUTPUT: RECORDED, BD_LIST_FIXTURE: "merged" },
+  });
+  assert.equal(result.code, 0);
+  const project = result.snapshot.projects[0];
+  assert.deepEqual(
+    project?.errors.map((error) => [error.source, error.scope]),
+    [[join(root, "site"), "field"]],
+  );
+  assert.match(project?.errors[0]?.message ?? "", /set defaultBranch in \.pitwall\.json/);
+  assert.match(project?.errors[0]?.message ?? "", /git remote set-head origin -a/);
+  assert.equal(project?.repos[0]?.defaultBranch, undefined);
+  assert.equal(project?.metrics.landedToday, 2);
+
+  const listed = await collectSnapshot({
+    ...options(place),
+    env: { ...place.env, PATH: PATH_WITH_GH, GH_OUTPUT: RECORDED, BD_LIST_FIXTURE: "partial" },
+  });
+  const byId = new Map((listed.projects[0]?.issues ?? []).map((issue) => [issue.id, issue]));
+  assert.deepEqual(byId.get("mw-6")?.blockedBy, ["mw-9"]);
+  assert.equal(byId.get("mw-6")?.classification, "ready", "a blocker absent from a complete list has closed");
+});
+
+test("a tracker that could not be read stays a hard error beside a soft one", async () => {
+  const root = unreadBranchRoot();
+  rmSync(join(root, "bd-output"), { recursive: true });
+  const place = workspace([root]);
+  const result = await emitSnapshot({
+    ...options(place, new Date("2026-09-08T18:00:00Z")),
+    env: { ...place.env, PATH: PATH_WITH_GH, GH_OUTPUT: RECORDED },
+  });
+  assert.equal(result.code, 1);
+  const project = result.snapshot.projects[0];
+  assert.equal(project?.errors[0]?.source, join(root, "site"));
+  assert.equal(project?.errors[0]?.scope, "field");
+  const tracker = project?.errors.find((error) => error.source === join(root, ".beads"));
+  assert.equal(tracker?.scope, undefined, "a tracker that could not be read is read as source-scope");
+  assert.deepEqual(project?.issues, []);
+  assert.equal(project?.metrics.landedToday, undefined);
+});
 
 test("the open pull requests of a project reach the snapshot alongside its issues", async () => {
   const place = workspace([pipelineRoot("git@github.com:acme/site.git")]);

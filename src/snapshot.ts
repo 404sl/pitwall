@@ -12,7 +12,7 @@ import {
 import { collectionFailed, noteAppender, readIssues, type ClosedIssue, type IssueText } from "./beads.js";
 import { KEPT_SOURCE, PARTIAL_SOURCE, type ProjectQuestions, type QuestionStore } from "./board.js";
 import { readCandidates } from "./candidates.js";
-import { collectionError, recordOnce } from "./errors.js";
+import { collectionError, hard, recordOnce } from "./errors.js";
 import { hasLiveStructuralBlocker, type ClassifyContext } from "./classify.js";
 import {
   collectProjects,
@@ -211,7 +211,7 @@ async function gather(
     timeoutMs: options.timeoutMs,
     linked: collected.errors.length === 0 ? collected.linked : undefined,
   });
-  const unreadable = project.errors.length > 0 || collected.errors.length > 0;
+  const unreadable = [...project.errors, ...collected.errors].some(hard);
   return {
     closed: collected.closed,
     project: Project.parse({
