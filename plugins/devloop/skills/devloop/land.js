@@ -1453,7 +1453,7 @@ holds the close rather than guessing which one it got: 'unreadable' costs a tick
 cycle, and 'read' over a failed command closes it wrongly and invisibly.
 
 Change nothing. Do not label, do not merge, do not close, do not comment.
-${LAW}`
+${LAW()}`
 }
 
 function heldByBranch(closable, read) {

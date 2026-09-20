@@ -22,8 +22,6 @@ const ARGS = {
 const LATER = "4c7b2f1099aa33e1b0d7e4c5a6b8d90123456789";
 const OTHER = "0123456789abcdef0123456789abcdef01234567";
 
-const ASKED = ["devloop/pitwall-7b1", "devloop/pitwall-7b2"].map((branch) => ({ slug: "owner/site", branch }));
-
 const PR = { slug: "owner/site", number: 16, title: "Rewrite the headline", branch: "devloop/pitwall-7b1", issue: "pitwall-7b1" };
 const SECOND = { slug: "owner/site", number: 17, title: "Rewrite the subhead", branch: "devloop/pitwall-7b2", issue: "pitwall-7b2" };
 
@@ -58,15 +56,23 @@ const NO_PLUGIN = {
   notes: "this repository carries no devloop plugin manifest on master",
 };
 
+function askedAbout(args: unknown, queue: unknown[]) {
+  const slugs = Object.values((args as { repos: Record<string, { slug: string }> }).repos).map((r) => r.slug);
+  const branches = (queue as { branch: string }[]).map((pr) => pr.branch);
+  return slugs.flatMap((slug) => branches.map((branch) => ({ slug, branch })));
+}
+
 function landOnce(replies: Replies) {
   const queue = replies.prs || [PR];
+  const args = replies.args || ARGS;
+  const asked = askedAbout(args, queue);
   const shas: Record<string, string> = { "owner/site#16": SHA, "owner/site#17": LATER };
-  return runScript("land.js", replies.args || ARGS, (call: Call, n: number) => {
+  return runScript("land.js", args, (call: Call, n: number) => {
     if (n === 1) return { status: "taken", token: "lander-1788964650-29574", holder: "lander-1788964650-29574" };
     if (call.label.startsWith("survey")) return n === 2 ? { prs: queue } : { prs: [] };
     if (call.label.startsWith("version:")) return NO_PLUGIN;
     if (call.label.startsWith("land:")) return { status: "merged", mergeSha: shas[call.label.slice(5)] || SHA, masterGreen: true, notes: "" };
-    if (call.label === "branch-survey") return { status: "read", asked: ASKED, prs: [] };
+    if (call.label === "branch-survey") return { status: "read", asked, prs: [] };
     if (call.label === "deploy") {
       if (replies.deployThrows) throw replies.deployThrows;
       return replies.deploy;

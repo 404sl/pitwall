@@ -32,6 +32,7 @@ function repos(site: string | undefined, docs: string | undefined) {
 
 const MERGED = { slug: "acme/site", number: 16, title: "Rewrite the headline", branch: "devloop/pitwall-7b1", issue: "pitwall-7b1" };
 const DEAD = { slug: "acme/app", number: 9, title: "Rename the console", branch: "devloop/pitwall-7b2", issue: "pitwall-7b2" };
+const ASKED = ["acme/app", "acme/site"].flatMap((slug) => [MERGED, DEAD].map((pr) => ({ slug, branch: pr.branch })));
 
 function lander(site: string | undefined, docs: string | undefined) {
   return runScript("land.js", { skillDir: "/skill", root: "/root", lockToken: TOKEN, repos: repos(site, docs) }, (call: Call, n: number) => {
@@ -42,13 +43,14 @@ function lander(site: string | undefined, docs: string | undefined) {
     if (call.label.startsWith("land:")) return { status: "conflict", notes: "superseded on master" };
     if (call.label === "deploy") return { status: "deployed", hosts: [], notes: "" };
     if (call.label === "deploy-check") return { status: "read", hosts: [{ repo: "docs", environment: "only", revision: SHA }], notes: "" };
+    if (call.label === "branch-survey") return { status: "read", asked: ASKED, prs: [] };
     if (call.label === "close") return { closed: ["pitwall-7b1"], notes: "" };
     if (call.label.startsWith("retire:")) return { status: "retired", retired: ["pitwall-7b2"] };
     return { status: "released" };
   });
 }
 
-const EVERY_STEP = ["lock", "survey", "survey#2", "retire:1", "deploy", "deploy-check", "close", "release"];
+const EVERY_STEP = ["lock", "survey", "survey#2", "retire:1", "deploy", "deploy-check", "branch-survey", "close", "release"];
 
 function acrossRepos(calls: Call[]) {
   const steps = calls.filter((c) => !c.label.startsWith("land:") && !c.label.startsWith("version:"));
