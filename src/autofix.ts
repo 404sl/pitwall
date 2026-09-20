@@ -108,7 +108,13 @@ export function readWorkspace(root: string, options: WorkspaceOptions = {}): Pro
   const found = workspaceFile(dir);
   const name = found?.name ?? WORKSPACE_FILE;
   const file = found?.path ?? join(dir, WORKSPACE_FILE);
-  const skeleton = { id: basename(dir), name: basename(dir), root: dir, metrics: {} };
+  const skeleton = {
+    id: basename(dir),
+    name: basename(dir),
+    root: dir,
+    metrics: {},
+    ...(found && { workspaceFile: found.name }),
+  };
   try {
     const workspace = asRecord(JSON.parse(readFileSync(file, "utf8")), name);
     const lockPrefix = lockPrefixOf(workspace);

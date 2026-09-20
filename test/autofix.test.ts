@@ -145,3 +145,26 @@ test("the filename actually used is reported, so a reader can say which one is l
   assert.equal(workspaceFile(join(NAMES, "both"))?.name, ".pitwall.json");
   assert.equal(workspaceFile(join(FIXTURES, "empty")), undefined);
 });
+
+test("the snapshot names the workspace file it was read from", () => {
+  const newOnly = readWorkspace(join(NAMES, "newonly"), NO_REGISTRY);
+  const oldOnly = readWorkspace(join(NAMES, "oldonly"), NO_REGISTRY);
+  assert.equal(newOnly.workspaceFile, ".pitwall.json");
+  assert.equal(oldOnly.workspaceFile, ".autofix.json");
+  assert.notEqual(newOnly.workspaceFile, oldOnly.workspaceFile);
+  assert.equal(readWorkspace(join(NAMES, "both"), NO_REGISTRY).workspaceFile, ".pitwall.json");
+});
+
+test("a file that was found but could not be read is still named", () => {
+  const project = readWorkspace(join(FIXTURES, "broken"), NO_REGISTRY);
+  assert.equal(project.workspaceFile, ".autofix.json");
+  assert.equal(project.errors.length, 1);
+});
+
+test("a root holding neither workspace file carries no workspaceFile at all", () => {
+  for (const root of [join(FIXTURES, "empty"), join(FIXTURES, "no-such-workspace")]) {
+    const project = readWorkspace(root, NO_REGISTRY);
+    assert.equal(Object.hasOwn(project, "workspaceFile"), false, root);
+    assert.equal(project.errors.length, 1);
+  }
+});
