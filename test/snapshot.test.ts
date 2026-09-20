@@ -627,10 +627,10 @@ test("a closure the upstream refused is a row on the board the collection writes
     env: { ...env, BD_LIST_FIXTURE: "shipped" },
     sender: () => Promise.resolve({ delivered: true as const }),
     note: () => Promise.resolve(),
-    closer: () => Promise.resolve({ closed: false as const, reason: "HTTP 403: Resource not accessible" }),
+    closer: () => Promise.resolve({ commented: false as const, reason: "HTTP 403: Resource not accessible" }),
   });
   const stored = writtenBoard(place);
-  const refused = problemsOf(stored, /was not commented and not closed/);
+  const refused = problemsOf(stored, /was not commented/);
   assert.deepEqual(
     refused.map((row) => [row.scope, row.source]),
     [["project", CLOSE_SOURCE]],
@@ -808,7 +808,7 @@ test("a tracker that could not be read leaves the candidates unread and says so 
   assert.match(unread?.message ?? "", /tracker could not be/);
 });
 
-test("a bead that closed carrying an external-ref closes the issue it came from", async () => {
+test("a bead that closed carrying an external-ref comments on the issue it came from", async () => {
   const place = workspace([pipelineRoot("https://github.com/acme/site.git")]);
   const env = { ...place.env, PATH: PATH_WITH_GH, GH_OUTPUT: RECORDED };
   await emitSnapshot({ ...options(place), env });
@@ -820,17 +820,17 @@ test("a bead that closed carrying an external-ref closes the issue it came from"
     note: () => Promise.reject(new Error("no note should be needed")),
     closer: (closure: Closure) => {
       asked.push(closure);
-      return Promise.resolve({ closed: true as const });
+      return Promise.resolve({ commented: true as const });
     },
   });
   assert.deepEqual(
     asked.map((closure) => [closure.issueId, closure.issue.url]),
     [["mw-1", "https://github.com/acme/site/issues/7"]],
   );
-  assert.equal(asked[0]?.comment, "Landed in site `#101`. Tracked as mw-1.");
+  assert.match(asked[0]?.comment ?? "", /^Landed in site `#101`\. Tracked as mw-1\. This issue is left open for you to close/);
   assert.deepEqual(result.upstream.left, []);
   assert.deepEqual(
-    result.upstream.reported.map((entry) => entry.result.closed),
+    result.upstream.reported.map((entry) => entry.result.commented),
     [true],
   );
   assert.deepEqual(upstreamReport(result.upstream), []);
@@ -873,7 +873,7 @@ test("a run killed while it is closing upstream leaves the closure for the next 
     note: () => Promise.reject(new Error("no note should be needed")),
     closer: (closure: Closure) => {
       asked.push(closure);
-      return Promise.resolve({ closed: true as const });
+      return Promise.resolve({ commented: true as const });
     },
   });
   assert.deepEqual(
@@ -882,7 +882,7 @@ test("a run killed while it is closing upstream leaves the closure for the next 
   );
 });
 
-test("a workspace found by scanning closes nothing on GitHub", async () => {
+test("a workspace found by scanning comments on nothing on GitHub", async () => {
   const place = withConfig("{}");
   rmSync(place.configPath);
   pipelineRoot("https://github.com/acme/site.git", join(place.home, "work", "scanned"));
@@ -913,7 +913,7 @@ test("a checkout that will not say what its origin is turns nothing off quietly"
   assert.equal(result.upstream.left.length, 1);
   assert.match(result.upstream.left[0]?.reason ?? "", /could not tell whether acme\/site/);
   assert.match(result.upstream.left[0]?.reason ?? "", /site would not say what its origin is/);
-  assert.match(upstreamReport(result.upstream)[0] ?? "", /was left open because/);
+  assert.match(upstreamReport(result.upstream)[0] ?? "", /was told nothing because/);
 });
 
 test("an issue that could not be closed is recorded on the bead and collected as an error", async () => {
@@ -924,11 +924,11 @@ test("an issue that could not be closed is recorded on the bead and collected as
     ...options(place),
     env: { ...env, BD_LIST_FIXTURE: "shipped", BD_NOTES_LOG: join(place.home, "notes.log") },
     closer: () =>
-      Promise.resolve({ closed: false as const, reason: "HTTP 403: Resource not accessible" }),
+      Promise.resolve({ commented: false as const, reason: "HTTP 403: Resource not accessible" }),
   })();
   const refused = errors.filter((error) => error.source === CLOSE_SOURCE);
   assert.equal(refused.length, 1);
-  assert.match(refused[0]?.message ?? "", /acme\/site\/issues\/7 was not commented and not closed/);
+  assert.match(refused[0]?.message ?? "", /acme\/site\/issues\/7 was not commented/);
   assert.match(refused[0]?.message ?? "", /HTTP 403: Resource not accessible/);
   assert.match(readFileSync(join(place.home, "notes.log"), "utf8"), /^mw-1 \n\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z \S+\n.*HTTP 403/m);
 });

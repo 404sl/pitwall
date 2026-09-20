@@ -685,6 +685,8 @@ export interface NewIssue {
   assignee: string;
   labels: readonly string[];
   issueType: string;
+  externalRef?: string;
+  actor?: string;
 }
 
 export type IssueCreator = (issue: NewIssue) => Promise<string>;
@@ -709,6 +711,7 @@ export function setMetadataArgs(id: string, file: string): string[] {
 
 export function createArgs(issue: NewIssue): string[] {
   return [
+    ...(issue.actor === undefined ? [] : ["--actor", issue.actor]),
     "create",
     issue.title,
     "--type",
@@ -716,6 +719,7 @@ export function createArgs(issue: NewIssue): string[] {
     "--assignee",
     issue.assignee,
     ...issue.labels.flatMap((label) => ["--labels", label]),
+    ...(issue.externalRef === undefined ? [] : ["--external-ref", issue.externalRef]),
     "--body-file",
     issue.bodyFile,
     "--metadata",

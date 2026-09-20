@@ -6,6 +6,7 @@ import { diagnose, renderDoctor } from "./doctor.js";
 import { CLOSE_GRACE_MS, CONSIDER_EVERY_MS, createRestarter, type Launch } from "./handover.js";
 import { DEFAULT_PORT, HOST, consoleAnnouncer, consoleCollector, createConsoleServer, listen, parseServeArgs } from "./serve.js";
 import { undeliveredReport } from "./notify.js";
+import { importCandidates, renderImport } from "./importer.js";
 import { emitSnapshot } from "./snapshot.js";
 import { readSnapshot, readSnapshotFrom, snapshotPath } from "./state.js";
 import { upstreamReport } from "./upstream.js";
@@ -18,6 +19,9 @@ const USAGE = `pitwall ${VERSION}
     --from <path>      read the snapshot from this file instead of the state path
   pitwall snapshot     collect every project and print the snapshot as JSON
   pitwall doctor       check every source a snapshot reads and say what is wrong
+  pitwall import       file every open GitHub issue of this workspace's repositories as a
+                       parked tracker item for the planning session; a re-run files nothing
+    --actor <name>     the name every tracker write carries, instead of the workspace's "actor"
   pitwall serve        serve the console on http://${HOST}:${DEFAULT_PORT}/
     --port <n>         listen on another port
   pitwall --version    print the agent and contract versions
@@ -33,6 +37,25 @@ export interface CommandResult {
   doctor?: true;
   snapshot?: true;
   status?: { from?: string };
+  import?: { actor?: string };
+}
+
+export function parseImportArgs(args: readonly string[]): { actor?: string } | { error: string } {
+  const parsed: { actor?: string } = {};
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg === "--actor") {
+      const actor = args[i + 1];
+      if (actor === undefined || actor === "" || actor.startsWith("--")) {
+        return { error: "--actor needs a name" };
+      }
+      parsed.actor = actor;
+      i += 1;
+      continue;
+    }
+    return { error: `unknown argument ${arg ?? ""}` };
+  }
+  return parsed;
 }
 
 export function run(argv: string[]): CommandResult {
@@ -61,6 +84,13 @@ export function run(argv: string[]): CommandResult {
       return { code: 2, out: `pitwall snapshot: unknown argument ${rest[0]}\n\n${USAGE}` };
     }
     return { code: 0, out: "", snapshot: true };
+  }
+  if (arg === "import") {
+    const parsed = parseImportArgs(rest);
+    if ("error" in parsed) {
+      return { code: 2, out: `pitwall import: ${parsed.error}\n\n${USAGE}` };
+    }
+    return { code: 0, out: "", import: parsed };
   }
   if (arg === "serve") {
     const parsed = parseServeArgs(rest);
@@ -148,7 +178,7 @@ const isEntry = process.argv[1] !== undefined
 if (isEntry) {
   quitQuietlyOnBrokenPipe(process.stdout);
   quitQuietlyOnBrokenPipe(process.stderr);
-  const { code, doctor, out, serve, snapshot, status } = run(process.argv.slice(2));
+  const { code, doctor, out, serve, snapshot, status, import: importing } = run(process.argv.slice(2));
   process.stdout.write(out);
   if (doctor !== undefined) {
     diagnose().then(
@@ -185,6 +215,19 @@ if (isEntry) {
       },
       (cause: Error) => {
         process.stderr.write(`pitwall snapshot: ${cause.message}\n`);
+        process.exitCode = 1;
+      },
+    );
+  } else if (importing !== undefined) {
+    importCandidates({ actor: importing.actor }).then(
+      (result) => {
+        const rendered = renderImport(result);
+        process.stdout.write(rendered.out);
+        process.stderr.write(rendered.err);
+        process.exitCode = rendered.code;
+      },
+      (cause: Error) => {
+        process.stderr.write(`pitwall import: ${cause.message}\n`);
         process.exitCode = 1;
       },
     );

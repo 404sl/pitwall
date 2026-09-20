@@ -4,7 +4,8 @@ import { Issue, Project } from "@404sl/pitwall-schema";
 import type { ClosedIssue } from "../src/beads.ts";
 import {
   CLOSE_SOURCE,
-  closeArgs,
+  commentArgs,
+  LEFT_TO_REPORTER,
   closeUpstream,
   closuresFor,
   failedClosures,
@@ -66,7 +67,7 @@ function before(issues: readonly Issue[], pipeline: readonly unknown[] = []): Pr
   });
 }
 
-function closer(result: Closed = { closed: true }): { asked: Closure[]; close: (c: Closure) => Promise<Closed> } {
+function closer(result: Closed = { commented: true }): { asked: Closure[]; close: (c: Closure) => Promise<Closed> } {
   const asked: Closure[] = [];
   return {
     asked,
@@ -92,7 +93,7 @@ function run(reported: UpstreamRun["reported"], left: UpstreamRun["left"] = []):
   return { reported, left };
 }
 
-test("a bead closing closes the issue it came from, naming what the close reason says shipped", async () => {
+test("a bead closing comments on the issue it came from, naming what the close reason says shipped", async () => {
   const work = closuresFor({
     previous: before([open("pw-1wh")], [PULL]),
     closed: [
@@ -108,7 +109,7 @@ test("a bead closing closes the issue it came from, naming what the close reason
   assert.equal(work.closures[0]?.issue.number, 39);
   assert.equal(
     work.closures[0]?.comment,
-    "Landed in cli https://github.com/404sl/pitwall/pull/92. Tracked as pw-1wh.",
+    `Landed in cli https://github.com/404sl/pitwall/pull/92. Tracked as pw-1wh. ${LEFT_TO_REPORTER}`,
   );
   const { asked, close } = closer();
   const reported = await closeUpstream(work.closures, { closer: close, note: noteRecorder().note });
@@ -116,7 +117,7 @@ test("a bead closing closes the issue it came from, naming what the close reason
     asked.map((closure) => closure.issue.url),
     ["https://github.com/404sl/pitwall/issues/39"],
   );
-  assert.equal(reported[0]?.result.closed, true);
+  assert.equal(reported[0]?.result.commented, true);
   assert.deepEqual(upstreamReport(run(reported)), []);
   assert.deepEqual(failedClosures(run(reported)), []);
 });
@@ -132,7 +133,7 @@ test("the close reason names what shipped when no pull request was open at the l
     ],
     slugs: [OURS],
   });
-  assert.equal(work.closures[0]?.comment, "Landed in cli `#91`. Tracked as pw-cpn.");
+  assert.equal(work.closures[0]?.comment, `Landed in cli \`#91\`. Tracked as pw-cpn. ${LEFT_TO_REPORTER}`);
 });
 
 test("a close reason carrying no pull request or revision leaves the issue open", () => {
@@ -151,11 +152,11 @@ test("a close reason carrying no pull request or revision leaves the issue open"
   assert.match(work.left[0]?.reason ?? "", /opens by naming a pull request or a revision/);
   assert.match(
     upstreamReport(run([], work.left))[0] ?? "",
-    /pw-jam closed, and https:\/\/github\.com\/404sl\/pitwall\/issues\/59 was left open/,
+    /pw-jam closed, and https:\/\/github\.com\/404sl\/pitwall\/issues\/59 was told nothing/,
   );
 });
 
-test("a bead closed with no reason at all, with an open pull request in the pipeline, closes nothing", () => {
+test("a bead closed with no reason at all, with an open pull request in the pipeline, comments on nothing", () => {
   const work = closuresFor({
     previous: before([open("pw-1wh")], [PULL]),
     closed: [closed("pw-1wh", { externalRef: `https://github.com/${OURS}/issues/39` })],
@@ -201,7 +202,7 @@ test("a number no open pull request of this bead corroborates is not turned into
     ],
     slugs: [OURS],
   });
-  assert.equal(work.closures[0]?.comment, "Landed in cli `#55`. Tracked as pw-1wh.");
+  assert.equal(work.closures[0]?.comment, `Landed in cli \`#55\`. Tracked as pw-1wh. ${LEFT_TO_REPORTER}`);
 });
 
 test("a reference written against its repository without a space is replaced whole, not spliced", () => {
@@ -218,9 +219,9 @@ test("a reference written against its repository without a space is replaced who
     }).closures[0]?.comment;
   assert.equal(
     shipped([{ ...PULL, number: 23, url: "https://github.com/404sl/pitwall-site/pull/23" }]),
-    "Merged as https://github.com/404sl/pitwall-site/pull/23. Tracked as pw-1wh.",
+    `Merged as https://github.com/404sl/pitwall-site/pull/23. Tracked as pw-1wh. ${LEFT_TO_REPORTER}`,
   );
-  assert.equal(shipped([PULL]), "Merged as `pitwall-site#23`. Tracked as pw-1wh.");
+  assert.equal(shipped([PULL]), `Merged as \`pitwall-site#23\`. Tracked as pw-1wh. ${LEFT_TO_REPORTER}`);
 });
 
 test("a reference that already names its repository travels unchanged", () => {
@@ -234,7 +235,7 @@ test("a reference that already names its repository travels unchanged", () => {
     ],
     slugs: [OURS],
   });
-  assert.equal(work.closures[0]?.comment, "Merged as 404sl/pitwall#90. Tracked as pw-1wh.");
+  assert.equal(work.closures[0]?.comment, `Merged as 404sl/pitwall#90. Tracked as pw-1wh. ${LEFT_TO_REPORTER}`);
 });
 
 test("a shared title is never the link - only the recorded external-ref is", () => {
@@ -373,7 +374,7 @@ test("an external-ref outside this workspace's repositories is left alone", () =
   }
 });
 
-test("the first collection of all closes nothing, and a bead already closed is not closed again", () => {
+test("the first collection of all comments on nothing, and a bead already closed is not told again", () => {
   const issue = closed("pw-1wh", {
     externalRef: `https://github.com/${OURS}/issues/39`,
     closeReason: "Merged as 404sl/pitwall#92",
@@ -396,12 +397,12 @@ test("a close that fails is recorded on the bead and reported as a collection er
     ],
     slugs: [OURS],
   });
-  const { close } = closer({ closed: false, reason: "HTTP 403: Resource not accessible" });
+  const { close } = closer({ commented: false, reason: "HTTP 403: Resource not accessible" });
   const { notes, note } = noteRecorder();
   const reported = await closeUpstream(work.closures, { closer: close, note });
   assert.equal(notes.length, 1);
   assert.equal(notes[0]?.id, "pw-1wh");
-  assert.match(notes[0]?.text ?? "", /was not commented and not closed: HTTP 403/);
+  assert.match(notes[0]?.text ?? "", /was not commented: HTTP 403/);
   assert.match(notes[0]?.text ?? "", /nothing retries it/);
   const lines = upstreamReport(run(reported));
   assert.equal(lines.length, 1);
@@ -428,13 +429,13 @@ test("a failure that cannot even be recorded on the bead is reported, not swallo
     closer: () => Promise.reject(new Error("gh: command not found")),
     note: () => Promise.reject(new Error("bd update pw-1wh --append-notes: no beads database")),
   });
-  assert.deepEqual(reported[0]?.result, { closed: false, reason: "gh: command not found" });
+  assert.deepEqual(reported[0]?.result, { commented: false, reason: "gh: command not found" });
   const lines = upstreamReport(run(reported));
   assert.match(lines[0] ?? "", /gh: command not found/);
   assert.match(lines[0] ?? "", /could not be recorded on the issue either: bd update pw-1wh/);
 });
 
-test("the only thing this ever asks GitHub to do is close an issue", () => {
+test("the only thing this ever asks GitHub to do is comment; the issue is the reporter's to close", () => {
   const work = closuresFor({
     previous: before([open("pw-1wh")], [PULL]),
     closed: [
@@ -446,15 +447,16 @@ test("the only thing this ever asks GitHub to do is close an issue", () => {
     slugs: [OURS],
   });
   const closure = work.closures[0] as Closure;
-  assert.deepEqual(closeArgs(closure), [
+  const args = commentArgs(closure);
+  assert.deepEqual(args, [
     "issue",
-    "close",
+    "comment",
     "https://github.com/404sl/pitwall/issues/39",
-    "--reason",
-    "completed",
-    "--comment",
-    "Landed in cli https://github.com/404sl/pitwall/pull/92. Tracked as pw-1wh.",
+    "--body",
+    `Landed in cli https://github.com/404sl/pitwall/pull/92. Tracked as pw-1wh. ${LEFT_TO_REPORTER}`,
   ]);
+  assert.ok(!args.includes("close"), "a tracker close must never close the reporter's issue");
+  assert.match(closure.comment, /left open for you to close/);
 });
 
 test("the quoted close reason starts at the reason and stops at the reference it names", () => {
