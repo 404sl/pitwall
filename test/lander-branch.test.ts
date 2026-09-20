@@ -38,7 +38,7 @@ function asked(...branches: string[]) {
   ]);
 }
 
-type Replies = { prs?: unknown[]; branch?: unknown; close?: unknown };
+type Replies = { prs?: unknown[]; branch?: unknown; close?: unknown; preflighted?: string[] };
 type Held = { issue: string; why: string };
 type Result = {
   landed: { slug?: string; number?: number }[];
@@ -49,7 +49,8 @@ type Result = {
 
 function landOnce(replies: Replies) {
   const queue = replies.prs || [LABELLED];
-  return runScript("land.js", ARGS, (call: Call, n: number) => {
+  const args = replies.preflighted ? { ...ARGS, preflighted: replies.preflighted } : ARGS;
+  return runScript("land.js", args, (call: Call, n: number) => {
     if (n === 1) return { status: "taken", token: "lander-1788964650-29574", holder: "lander-1788964650-29574" };
     if (call.label.startsWith("survey")) return n === 2 ? { prs: queue } : { prs: [] };
     if (call.label.startsWith("version:")) return NO_PLUGIN;
@@ -127,6 +128,60 @@ test("an open pull request that does carry the label holds nothing", async () =>
     "a labelled pull request held the close. A labelled one is in the queue above - landed in " +
       "this run or reported in skipped - so gating on it would hold every ticket whose second " +
       "half simply has not reached the front yet.",
+  );
+  assert.deepEqual(result.heldOpen, []);
+});
+
+test("a labelled sibling this run put in skipped holds the close, and is named as the reason", async () => {
+  const late = { slug: ORPHAN.slug, number: ORPHAN.number, title: ORPHAN.title, branch: BRANCH };
+  const { calls, logs, done } = landOnce({
+    preflighted: ["owner/cli#31"],
+    prs: [LABELLED, late],
+    branch: { status: "read", asked: asked(BRANCH), prs: [{ ...LABELLED, labelled: true }, { ...ORPHAN, labelled: true }] },
+    close: { status: "closed", closed: ["pitwall-t2v"] },
+  });
+  const result = (await done) as unknown as Result;
+
+  assert.deepEqual(
+    result.landed.map((l) => `${l.slug}#${l.number}`),
+    ["owner/cli#31"],
+    "the pre-flighted half was not merged, so this test is not exercising the window it is about",
+  );
+  assert.equal(
+    closeCall(calls),
+    undefined,
+    "the ticket was handed to the close step while owner/site#12 sat in this run's own skipped " +
+      "list. It was labelled after the supervisor's pre-flight, so the queue reported it as not " +
+      "pre-flighted and did not merge it - and a labelled pull request that this run itself " +
+      "declined to land is not one the queue took care of. Same half-landed ticket as an " +
+      "unlabelled orphan, reached from a labelled one.",
+  );
+  assert.deepEqual(
+    result.heldOpen.map((h) => h.issue),
+    ["pitwall-t2v"],
+  );
+  assert.match(
+    result.heldOpen.map((h) => h.why).join("\n"),
+    /owner\/site#12 .*not in the pre-flighted list/,
+    "the run does not name the skipped pull request that held the close, so a person has to " +
+      "read the skipped list against the branch to find out what the run already knew",
+  );
+  assert.match(logs.join("\n"), /NOT CLOSED pitwall-t2v - owner\/site#12/);
+});
+
+test("a labelled sibling this run neither landed nor skipped still holds nothing", async () => {
+  const { calls, done } = landOnce({
+    preflighted: ["owner/cli#31"],
+    branch: { status: "read", asked: asked(BRANCH), prs: [{ ...LABELLED, labelled: true }, { ...ORPHAN, labelled: true }] },
+    close: { status: "closed", closed: ["pitwall-t2v"] },
+  });
+  const result = (await done) as unknown as Result;
+
+  assert.ok(
+    closeCall(calls),
+    "a labelled pull request that never appeared in this run's queue held the close. Gating on " +
+      "labelled-and-open in general holds every ticket whose second half simply has not reached " +
+      "the front of a queue yet; the narrow case is a pull request THIS run put in skipped.",
   );
   assert.deepEqual(result.heldOpen, []);
 });

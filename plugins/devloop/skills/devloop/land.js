@@ -1456,17 +1456,25 @@ Change nothing. Do not label, do not merge, do not close, do not comment.
 ${LAW()}`
 }
 
-function heldByBranch(closable, read) {
+function heldByBranch(closable, read, notLanded = []) {
   const held = new Map()
   const branches = new Set(branchesToSurvey(closable))
   if (!branches.size) return held
   const hold = (branch, why) => {
     for (const l of closable) if (l.issue && trimmed(l.branch) === branch) held.set(l.issue, why)
   }
+  const heldBySkipped = () => {
+    for (const s of notLanded) {
+      const branch = trimmed((s || {}).branch)
+      if (!branches.has(branch)) continue
+      hold(branch, `${keyOf(s)} is on ${branch} and this run put it in skipped rather than landing it (${trimmed(s.why) || 'no reason recorded'}), so half of this ticket has not landed`)
+    }
+    return held
+  }
   if (!read || read.status !== 'read') {
     const why = `the branch survey ${read ? `answered '${read.status}'` : 'reported nothing'}, so whether a pull request on this branch is open and unlabelled in some other repository was never established${read && read.notes ? ` - ${read.notes}` : ''}`
     for (const b of branches) hold(b, why)
-    return held
+    return heldBySkipped()
   }
   const asked = new Set()
   for (const a of (read.asked || [])) {
@@ -1491,7 +1499,7 @@ function heldByBranch(closable, read) {
       ? `${keyOf(p)} is open on ${branch} and does not carry ${LABEL}, so this run's queue never saw it and half of this ticket has not landed`
       : `${keyOf(p)} is open on ${branch} and the survey did not report whether it carries ${LABEL}`)
   }
-  return held
+  return heldBySkipped()
 }
 
 function closePrompt(landed, deployed) {
@@ -1951,7 +1959,7 @@ try {
     if (toSurvey.length) {
       phase('Deploy')
       const onBranch = await agent(branchesPrompt(toSurvey), { label: 'branch-survey', phase: 'Deploy', model: 'haiku', effort: 'low', schema: BRANCHES })
-      heldOpen = [...heldByBranch(closable, onBranch).entries()].map(([issue, why]) => ({ issue, why }))
+      heldOpen = [...heldByBranch(closable, onBranch, skipped).entries()].map(([issue, why]) => ({ issue, why }))
       for (const h of heldOpen) {
         log(`NOT CLOSED ${h.issue} - ${h.why}. What landed for it is merged and deployed and stays that way; the ticket is left open because something on its branch has not.`)
       }
