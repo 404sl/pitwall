@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.126
+
+The lander now holds a ticket's close when a pull request on the ticket's branch was put in this run's skipped list - labelled after the pre-flight, unconfigured slug, or outlasting the rounds - and names that pull request and the skip reason in the held-open line. A labelled pull request that the run neither landed nor skipped still holds nothing.
+
 ## 0.1.125
 
 The triage scan's handed-off check now says on stderr which repo checkout it could not read, naming the key and the path, and says when the workspace config named no repositories at all. A stale-claim finding that follows one of those warnings should be read as "a checkout was never consulted", not as a dead lane.
