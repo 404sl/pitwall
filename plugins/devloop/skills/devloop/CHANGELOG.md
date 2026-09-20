@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.117
+
+`precheck.sh <id>` now works from anywhere inside a workspace: it resolves the root and lock prefix through `config.sh`, refuses rather than reading the nearest tracker when it finds no config, and its worktree check actually fires. It is a hand check for an id you are about to dispatch outside `queue.sh --next`, or one that keeps bouncing - not a gate, and nothing in the loop calls it.
+
 ## 0.1.116
 
 When the configured repositories do not share a default branch, the rules block a split step receives lists each repository beside the remote branch it lands on and phrases every ref and branch flag as `<base>` and `<branch>` taken from that list, instead of rendering a placeholder that names a branch nobody has. Prompts for a single repository, and every prompt when the repositories share one default, are unchanged.

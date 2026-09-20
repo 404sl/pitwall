@@ -907,6 +907,14 @@ agent cannot relay what it has not been shown.
 - `git worktree list` in each repo - lanes clean up after themselves, leftovers mean a
   handover or a crash
 - issues left `in_progress` are claims from a lane that died; reset them to `open`
+- `precheck.sh <id>` - a hand check before dispatching an issue outside `--next`, or when one
+  keeps bouncing. It prints `GO` or `STOP` with the mechanical reason triage would give -
+  closed, an epic, a parking label, an open dependency, a worktree still on disk, text that
+  says it was handed back, resemblance to a closed issue - read from this workspace's tracker,
+  resolved through `config.sh` from wherever you run it. Nothing in the loop calls it and it is
+  not a gate: `queue.sh --next` and `dispatchable.sh` already refuse what must be refused, and
+  `config.sh --args` refuses the rest. Run it by hand, read the reason, and dispatch anyway if
+  the reason is wrong.
 
 ## Notes that will bite
 

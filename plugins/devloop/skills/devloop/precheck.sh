@@ -13,7 +13,14 @@
 # mechanical refusals, which are the ones that are pure waste.
 ID="$1"
 [ -z "$ID" ] && { echo "usage: precheck.sh <issue-id>" >&2; exit 2; }
-ROOT=the workspace root
+CFG="$(dirname "${BASH_SOURCE[0]}")/config.sh"
+ROOT="${DEVLOOP_ROOT:-$(bash "$CFG" root 2>/dev/null)}"
+if [ -z "$ROOT" ] || [ ! -d "$ROOT" ]; then
+  echo "precheck.sh: no .pitwall.json or .autofix.json found from $PWD, and DEVLOOP_ROOT is unset." >&2
+  echo "             refusing to guess - a GO or STOP read off the nearest tracker would be a confident" >&2
+  echo "             answer about the wrong workspace. Run from inside the workspace." >&2
+  exit 6
+fi
 
 # /tmp is shared across every project on this machine, so the lock paths are namespaced by the
 # workspace's lockPrefix rather than fixed. Read it here rather than hardcoding: two projects
@@ -22,6 +29,7 @@ ROOT=the workspace root
 PFX="$(bash "$CFG" lockPrefix 2>/dev/null || echo devloop)"
 
 export BEADS_DIR="$ROOT/.beads"
+export ROOT PFX
 
 J=$(cd "$ROOT" && bd show "$ID" --json 2>/dev/null)
 [ -z "$J" ] && { echo "STOP  $ID: bd returned nothing - check the id"; exit 1; }
@@ -45,7 +53,7 @@ for l in ("needs-decision","needs-access","needs-feedback","blocked-tooling","wa
 # an OPEN issue it depends on (the tracker is the only record - there is no park file)
 if int(d.get("dependency_count") or 0) > 0:
     out=subprocess.run(["bd","show",iid],capture_output=True,text=True,
-                       cwd="the workspace root").stdout
+                       cwd=os.environ["ROOT"]).stdout
     blk=[]
     inblock=False
     for line in out.splitlines():
@@ -56,7 +64,7 @@ if int(d.get("dependency_count") or 0) > 0:
     if blk: reasons.append("blocked by open: "+"; ".join(blk))
 
 # work sitting only in a worktree, with no branch pushed
-wt="/private/tmp/${PFX}-worktrees/"+iid
+wt="/private/tmp/"+os.environ["PFX"]+"-worktrees/"+iid
 if os.path.isdir(wt):
     dirty=subprocess.run(["git","-C",wt,"status","--porcelain"],capture_output=True,text=True).stdout.strip()
     if dirty:
