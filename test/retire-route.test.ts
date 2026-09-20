@@ -341,3 +341,52 @@ for (const [ending, repair] of [
     );
   });
 }
+
+const VERIFIED = { status: "verified", ciConclusion: "SUCCESS", notes: "green" };
+const UNSET = "cd /root && bd update zz-aaa1 --unset-metadata rework";
+
+test("a rework that ends green takes the route off the issue once the label is on, so a later reopen is not a rework against a merged pull request", async () => {
+  const { calls: made, done } = runScript("rework.js", REWORK_ARGS, (_call, n) => {
+    if (n === 1) return RESOLVED;
+    if (n === 2) return VERIFIED;
+    return RELEASED;
+  });
+  const result = await done;
+  assert.equal(result["outcome"], "verified");
+
+  const handoff = made.find((c) => c.label === "handoff:zz-aaa1#186");
+  assert.ok(handoff, "the handoff step never ran");
+  const lines = handoff.prompt.split("\n").filter((line) => /--unset-metadata rework/.test(line));
+  assert.deepEqual(
+    lines,
+    [`  ${UNSET}`],
+    "the green handoff brief does not render exactly one command that takes the rework route off the issue. " +
+      "The lander closes the issue with the route still on it, and a reopen for follow-up work is then " +
+      "handed out as a rework against a pull request that is already merged",
+  );
+  assert.ok(!handoff.prompt.includes(HAND_BACK), "the green handoff brief parks the issue for a person");
+
+  const gate = handoff.prompt.indexOf("exited 0 or 5");
+  const unset = handoff.prompt.indexOf(UNSET);
+  assert.ok(gate !== -1, "the handoff brief lost its exit gate");
+  assert.ok(
+    gate < unset,
+    "the unset is not gated on lane-handoff.sh having labelled the pull request - taken off before the " +
+      "label is on, a refused handoff leaves an issue that the queue can only offer to task.js, which " +
+      "bounces a pull request that is done",
+  );
+});
+
+test("a rework with no tracker issue renders no unset command in its green handoff", async () => {
+  const { id: _id, ...noIssue } = REWORK_ARGS;
+  const { calls: made, done } = runScript("rework.js", noIssue, (_call, n) => {
+    if (n === 1) return RESOLVED;
+    if (n === 2) return VERIFIED;
+    return RELEASED;
+  });
+  await done;
+  const handoff = made.find((c) => c.label === "handoff:#186");
+  assert.ok(handoff, "the handoff step never ran");
+  assert.ok(!handoff.prompt.includes("--unset-metadata"), "an id-less rework is told to unset metadata on an issue it does not have");
+  assert.ok(!handoff.prompt.includes("bd update undefined"), "an id-less rework renders a bd command against 'undefined'");
+});
