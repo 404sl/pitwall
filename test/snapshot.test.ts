@@ -697,6 +697,12 @@ test("the open pull requests of a project reach the snapshot alongside its issue
   assert.doesNotThrow(() => parseSnapshot(snapshot));
 });
 
+function ghSources(project: Snapshot["projects"][number] | undefined): string[] {
+  return (project?.errors ?? []).map((error) => error.source.replace(/ --state open.*$/, ""));
+}
+
+const GH_LISTINGS = ["gh pr list --repo acme/site", "gh issue list --repo acme/site"];
+
 test("a pipeline that could not be read is an error beside the issues, which still load", async () => {
   const place = workspace([pipelineRoot("https://github.com/acme/site.git")]);
   const snapshot = await collectSnapshot({
@@ -705,8 +711,8 @@ test("a pipeline that could not be read is an error beside the issues, which sti
   });
   const project = snapshot.projects[0];
   assert.deepEqual(project?.pipeline, []);
-  assert.equal(project?.errors.length, 1);
-  assert.match(project?.errors[0]?.source ?? "", /^gh pr list --repo acme\/site/);
+  assert.deepEqual(project?.candidates, []);
+  assert.deepEqual(ghSources(project), GH_LISTINGS);
   assert.equal(project?.issues.length, 15);
 });
 
@@ -717,8 +723,7 @@ test("gh that cannot authenticate leaves the run exiting zero on a tracker that 
     env: { ...place.env, PATH: PATH_WITH_UNAUTH_GH },
   });
   const project = result.snapshot.projects[0];
-  assert.equal(project?.errors.length, 1);
-  assert.match(project?.errors[0]?.source ?? "", /^gh pr list --repo acme\/site/);
+  assert.deepEqual(ghSources(project), GH_LISTINGS);
   assert.equal(project?.issues.length, 15);
   assert.equal(result.code, 0);
 });
@@ -730,11 +735,76 @@ test("gh that is not installed at all leaves the run exiting zero", async () => 
     env: { ...place.env, PATH: pathWithoutGh() },
   });
   const project = result.snapshot.projects[0];
-  assert.equal(project?.errors.length, 1);
-  assert.match(project?.errors[0]?.source ?? "", /^gh pr list --repo acme\/site/);
-  assert.match(project?.errors[0]?.message ?? "", /ENOENT/);
+  assert.deepEqual(ghSources(project), GH_LISTINGS);
+  for (const error of project?.errors ?? []) {
+    assert.match(error.message, /ENOENT/);
+  }
   assert.equal(project?.issues.length, 15);
   assert.equal(result.code, 0);
+});
+
+test("the open issues of a project's repos are candidates on the project, never issues", async () => {
+  const place = workspace([pipelineRoot("git@github.com:acme/site.git")]);
+  const snapshot = await collectSnapshot({
+    ...options(place),
+    env: { ...place.env, PATH: PATH_WITH_GH, GH_OUTPUT: RECORDED },
+  });
+  const project = snapshot.projects[0];
+  assert.deepEqual(project?.errors, []);
+  assert.deepEqual(project?.signals, [
+    { kind: "github", name: "acme/site", location: "https://github.com/acme/site/issues" },
+  ]);
+  assert.deepEqual(
+    project?.candidates.map((candidate) => [candidate.ref, candidate.author, candidate.createdAt]),
+    [
+      ["https://github.com/acme/site/issues/7", "elik-ru", "2026-09-01T08:15:00Z"],
+      ["https://github.com/acme/site/issues/8", "stranger", "2026-09-05T17:40:00Z"],
+      ["https://github.com/acme/site/issues/9", "app/dependabot", "2026-09-07T03:00:00Z"],
+    ],
+  );
+  assert.ok(project?.candidates.every((candidate) => candidate.source === "acme/site"));
+  assert.equal(project?.issues.length, 15);
+  assert.ok(
+    project?.issues.every((issue) => !/^https:\/\/github\.com/.test(issue.id)),
+    "a GitHub issue was admitted as work",
+  );
+  assert.doesNotThrow(() => parseSnapshot(snapshot));
+});
+
+test("an issue a tracker item links by external-ref is excluded whether that item is open or closed", async () => {
+  const place = workspace([pipelineRoot("https://github.com/acme/site.git")]);
+  const open = await collectSnapshot({
+    ...options(place),
+    env: { ...place.env, PATH: PATH_WITH_GH, GH_OUTPUT: RECORDED, BD_LIST_FIXTURE: "linked" },
+  });
+  assert.deepEqual(open.projects[0]?.errors, []);
+  assert.deepEqual(
+    open.projects[0]?.candidates.map((candidate) => candidate.ref),
+    ["https://github.com/acme/site/issues/7", "https://github.com/acme/site/issues/9"],
+  );
+  const closed = await collectSnapshot({
+    ...options(place),
+    env: { ...place.env, PATH: PATH_WITH_GH, GH_OUTPUT: RECORDED, BD_LIST_FIXTURE: "shipped" },
+  });
+  assert.deepEqual(closed.projects[0]?.errors, []);
+  assert.deepEqual(
+    closed.projects[0]?.candidates.map((candidate) => candidate.ref),
+    ["https://github.com/acme/site/issues/8", "https://github.com/acme/site/issues/9"],
+  );
+});
+
+test("a tracker that could not be read leaves the candidates unread and says so beside it", async () => {
+  const place = workspace([pipelineRoot("https://github.com/acme/site.git")]);
+  const snapshot = await collectSnapshot({
+    ...options(place),
+    env: { ...place.env, PATH: PATH_WITH_GH, GH_OUTPUT: RECORDED, BD_LIST_FIXTURE: "absent" },
+  });
+  const project = snapshot.projects[0];
+  assert.deepEqual(project?.issues, []);
+  assert.deepEqual(project?.candidates, []);
+  assert.deepEqual(project?.signals.map((signal) => signal.name), ["acme/site"]);
+  const unread = project?.errors.find((error) => error.source === "acme/site");
+  assert.match(unread?.message ?? "", /tracker could not be/);
 });
 
 test("a bead that closed carrying an external-ref closes the issue it came from", async () => {

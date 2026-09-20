@@ -100,6 +100,7 @@ export interface IssueText {
 export interface CollectedIssues {
   issues: Issue[];
   closed: ClosedIssue[];
+  linked: string[];
   texts: Map<string, IssueText>;
   errors: CollectionError[];
 }
@@ -369,11 +370,15 @@ export async function readIssues(
         classification: classify(issue, context).classification,
       }),
     );
-    return { issues, closed, texts: collection.texts, errors: [] };
+    const linked = collection.all
+      .map((issue) => issue.externalRef)
+      .filter((reference): reference is string => reference !== undefined);
+    return { issues, closed, linked, texts: collection.texts, errors: [] };
   } catch (cause) {
     return {
       issues: [],
       closed: [],
+      linked: [],
       texts: new Map(),
       errors: [collectionError(reader.beadsDir, cause)],
     };
