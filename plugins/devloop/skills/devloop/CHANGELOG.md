@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.119
+
+A rework that ends green now takes its rework route off the tracker issue once the handoff label is on, so reopening that issue later hands it to the task path rather than to a rework against a pull request that has already merged.
+
 ## 0.1.118
 
 `config.sh --check` now reports every repository whose default branch, deploy entry or branch-name field is wrong, in one run. Fix them all, then run it once to confirm, instead of fixing one and re-running to discover the next. The dispatch modes still refuse on the first problem they meet and print nothing on stdout when they do.
