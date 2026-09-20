@@ -2,7 +2,8 @@
 # State of the devloop queue, in one screen.
 #
 #   queue.sh            print the summary
-#   queue.sh --next 3   print the summary, then claim and print the next 3 issue ids
+#   queue.sh --next 3   print the summary, then claim and print the next 3 issue ids, each as
+#                       <id> <slot>, <id> <slot> rework <pr> <repo>, or <id> <slot> refine
 #
 # Reads through the bd CLI. It used to query .beads/beads.db with sqlite3, which stopped
 # working at bd 1.0: issues now live in an embedded Dolt database and the JSONL is only a
@@ -84,6 +85,7 @@ import json, sys, os, datetime, subprocess
 PFX = sys.argv[2] if len(sys.argv) > 2 else "devloop"
 
 PARKED = {"needs-decision", "needs-access", "needs-feedback", "blocked-tooling", "watch", "umbrella", "roadmap"}
+UNREFINED = "unrefined"
 
 def load(p):
     try:
@@ -116,6 +118,9 @@ running_ids = {i["id"] for i in running}
 def parked(i):
     return PARKED & set(i.get("labels") or [])
 
+def unrefined(i):
+    return UNREFINED in set(i.get("labels") or [])
+
 def parent_of(issue_id):
     # app-a8d9.2 -> app-a8d9 ; app-a8d9 -> None
     return issue_id.rsplit(".", 1)[0] if "." in issue_id else None
@@ -144,11 +149,20 @@ def eligible(i):
     # id prefix is the fact; the label is only documentation of it.
     if i["id"] in live_children_of:
         return False
+    if unrefined(i):
+        return False
     if ACTOR and (i.get("assignee") or "") != ACTOR:
         return False
     return (i.get("issue_type") != "epic"
             and not parked(i)
             and i["id"] not in blocked_ids)
+
+def refinable(i):
+    return (bool(ACTOR)
+            and unrefined(i)
+            and not parked(i)
+            and i["id"] not in blocked_ids
+            and parent_of(i["id"]) not in running_ids)
 
 def rework_of(i):
     meta = i.get("metadata")
@@ -168,8 +182,17 @@ def rework_of(i):
     repo = r.get("repo")
     return (pr, repo if isinstance(repo, str) and repo else "-")
 
-ready = sorted([i for i in open_ if eligible(i)],
-               key=lambda i: (i.get("priority", 9), 0 if rework_of(i) else 1, i.get("created_at", "")))
+def kind_of(i):
+    if rework_of(i):
+        return 0
+    if unrefined(i):
+        return 1
+    return 2
+
+ready = sorted([i for i in open_ if eligible(i) or refinable(i)],
+               key=lambda i: (i.get("priority", 9), kind_of(i), i.get("created_at", "")))
+requests = [i for i in ready if unrefined(i)]
+undispatchable_requests = [] if ACTOR else [i for i in open_ if unrefined(i) and not parked(i) and i["id"] not in blocked_ids]
 waiting = sorted([i for i in open_ if parked(i)], key=lambda i: i.get("priority", 9))
 today = datetime.date.today().isoformat()
 closed_today = [i for i in closed if (i.get("updated_at") or "")[:10] == today]
@@ -199,6 +222,9 @@ print(bar)
 # lane dead.
 _working = []
 for _i in running:
+    if unrefined(_i):
+        _working.append(_i)
+        continue
     _wts = [d for d in (f"/tmp/{PFX}-worktrees/" + _i["id"], f"/tmp/{PFX}-worktrees/" + _i["id"] + "-rework")
             if os.path.isdir(d)]
     if not _wts:
@@ -213,7 +239,12 @@ _handed_off = len(running) - len(_working)
 print(f" running now      {len(_working)}")
 if _handed_off:
     print(f" awaiting lander  {_handed_off}  claimed and green, not yet live")
-print(f" ready to start   {len(ready)}" + (f"  assigned to {ACTOR}" if ACTOR else ""))
+print(f" ready to start   {len(ready) - len(requests)}" + (f"  assigned to {ACTOR}" if ACTOR else ""))
+if requests:
+    print(f" to refine        {len(requests)}  requests recorded as typed, not yet tickets")
+if undispatchable_requests:
+    print(f" to refine        {len(undispatchable_requests)}  requests recorded as typed - nothing can refine them until this "
+          f"workspace declares \"actor\"")
 
 # Report the parked issues BY REASON, never as one total.
 #
@@ -278,7 +309,7 @@ if running:
 print(" NEXT UP")
 for i in ready[:8]:
     rw = rework_of(i)
-    tag = f"  rework #{rw[0]} {rw[1]}" if rw else ""
+    tag = f"  rework #{rw[0]} {rw[1]}" if rw else ("  refine" if unrefined(i) else "")
     print(f"   {i['id']:<10} P{i.get('priority','?')}  {i.get('issue_type',''):<7} {i['title'][:55]}{tag}")
 if not ready:
     if ACTOR:
@@ -344,8 +375,8 @@ if want > 0:
     for i in ready:
         if len(handed) >= want:
             break
-        r = subprocess.run(BD + ["update", i["id"], "--claim"],
-                           capture_output=True, text=True)
+        claim = ["update", i["id"], "-s", "in_progress"] if unrefined(i) else ["update", i["id"], "--claim"]
+        r = subprocess.run(BD + claim, capture_output=True, text=True)
         if r.returncode != 0:
             continue
         slot = free_slot(set(taken))
@@ -357,8 +388,13 @@ if want > 0:
         taken[slot] = i["id"]
         with open(os.path.join(SLOTDIR, str(slot)), "w") as f:
             f.write(i["id"])
-        handed.append((i["id"], slot, rework_of(i)))
+        handed.append((i["id"], slot, rework_of(i), unrefined(i)))
 
-    for issue_id, slot, rw in handed:
-        print(f"{issue_id} {slot} rework {rw[0]} {rw[1]}" if rw else f"{issue_id} {slot}")
+    for issue_id, slot, rw, request in handed:
+        if rw:
+            print(f"{issue_id} {slot} rework {rw[0]} {rw[1]}")
+        elif request:
+            print(f"{issue_id} {slot} refine")
+        else:
+            print(f"{issue_id} {slot}")
 PY
