@@ -5,7 +5,7 @@ import { cpSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { basename, dirname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { WORKSPACE_FILE } from "../src/autofix.ts";
+import { LEGACY_WORKSPACE_FILE, WORKSPACE_FILE } from "../src/autofix.ts";
 import { diagnose, renderDoctor, type Check, type Diagnosis } from "../src/doctor.ts";
 import { slotsPath } from "../src/lanes.ts";
 import { nullGlobalGitConfig, spawnGit } from "./support/git.js";
@@ -190,6 +190,22 @@ test("a checkout with an origin but no origin/HEAD warns and names both remedies
   assert.match(check.result, /^acme\/site · no origin\/HEAD/);
   assert.match(check.result, /set defaultBranch in \.pitwall\.json/);
   assert.match(check.result, /git remote set-head origin -a/);
+  assert.equal(diagnosis.code, 0);
+});
+
+test("a legacy workspace names its own file in the default-branch remedy", async () => {
+  const dir = root();
+  tracker(dir);
+  cloneOf(dir, "cli", "https://github.com/acme/site.git");
+  writeFileSync(
+    join(dir, LEGACY_WORKSPACE_FILE),
+    JSON.stringify({ root: dir, idPrefix: "doc", lockPrefix: "doctor", repos: { site: { path: "cli" } } }),
+  );
+  const diagnosis = await diagnose(options([dir]));
+  const check = named(diagnosis, `${basename(dir)} repo site`);
+  assert.equal(check.severity, "warn");
+  assert.match(check.result, /set defaultBranch in \.autofix\.json/);
+  assert.doesNotMatch(check.result, /\.pitwall\.json/);
   assert.equal(diagnosis.code, 0);
 });
 

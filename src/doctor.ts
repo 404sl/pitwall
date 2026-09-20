@@ -19,7 +19,6 @@ const MAX_OUTPUT = 1024 * 1024;
 const GH_COST = "pull request state and staleness stay unchecked";
 const BD_COST = "no issue can be read and every project reads as empty";
 const NO_ORIGIN_HEAD = "no origin/HEAD";
-const BRANCH_REMEDY = `${NO_ORIGIN_HEAD} - set defaultBranch in ${WORKSPACE_FILE} or run git remote set-head origin -a`;
 
 export type Severity = "ok" | "warn" | "fail";
 
@@ -208,7 +207,7 @@ function repoEntries(workspace: Record<string, unknown>): [string, unknown][] {
   return Object.entries(asRecord(repos, "repos")).filter(([name]) => !name.startsWith("_"));
 }
 
-function repoCheck(id: string, dir: string, name: string, value: unknown): Check {
+function repoCheck(id: string, dir: string, file: string, name: string, value: unknown): Check {
   const label = `${id} repo ${name}`;
   let declared: Record<string, unknown>;
   try {
@@ -246,7 +245,12 @@ function repoCheck(id: string, dir: string, name: string, value: unknown): Check
   if (remote.slug === undefined) {
     return { severity: "ok", name: label, tried, result: `${slug} · ${NO_ORIGIN_HEAD}` };
   }
-  return { severity: "warn", name: label, tried, result: `${slug} · ${BRANCH_REMEDY}` };
+  return {
+    severity: "warn",
+    name: label,
+    tried,
+    result: `${slug} · ${NO_ORIGIN_HEAD} - set defaultBranch in ${file} or run git remote set-head origin -a`,
+  };
 }
 
 function rootCheck(id: string, dir: string, file: string, declared: unknown): Check {
@@ -389,7 +393,7 @@ async function workspaceChecks(
   });
   checks.push(await bdCheck(id, beadsDir, env, timeoutMs));
   for (const [name, value] of repos) {
-    checks.push(repoCheck(id, dir, name, value));
+    checks.push(repoCheck(id, dir, found.name, name, value));
   }
   const lanes = lanesCheck(id, found.name, workspace, options.lockRoot);
   checks.push(lanes.check);
