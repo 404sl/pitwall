@@ -5,10 +5,10 @@ import { cpSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { basename, dirname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { WORKSPACE_FILE } from "../src/autofix.ts";
+import { LEGACY_WORKSPACE_FILE, WORKSPACE_FILE } from "../src/autofix.ts";
 import { diagnose, renderDoctor, type Check, type Diagnosis } from "../src/doctor.ts";
 import { slotsPath } from "../src/lanes.ts";
-import { nullGlobalGitConfig } from "./support/git.js";
+import { nullGlobalGitConfig, spawnGit } from "./support/git.js";
 
 nullGlobalGitConfig();
 
@@ -51,6 +51,21 @@ function checkout(dir: string, name: string, git = true): void {
   mkdirSync(join(dir, name), { recursive: true });
   if (git) {
     mkdirSync(join(dir, name, ".git"), { recursive: true });
+  }
+}
+
+function git(dir: string, ...args: string[]): void {
+  const ran = spawnGit(args, { cwd: dir });
+  assert.equal(ran.status, 0, ran.stderr);
+}
+
+function cloneOf(dir: string, name: string, remote: string, branch?: string): void {
+  const repo = join(dir, name);
+  mkdirSync(repo, { recursive: true });
+  git(repo, "init", "--quiet");
+  git(repo, "remote", "add", "origin", remote);
+  if (branch !== undefined) {
+    git(repo, "symbolic-ref", "refs/remotes/origin/HEAD", `refs/remotes/origin/${branch}`);
   }
 }
 
@@ -162,6 +177,92 @@ test("a repo path that is not there at all fails with the path it tried", async 
   const check = named(diagnosis, `${basename(dir)} repo site`);
   assert.equal(check.severity, "fail");
   assert.match(check.result, new RegExp(`no directory at ${join(dir, "cli")}`));
+});
+
+test("a checkout with an origin but no origin/HEAD warns and names both remedies", async () => {
+  const dir = root();
+  tracker(dir);
+  cloneOf(dir, "cli", "https://github.com/acme/site.git");
+  describe(dir, { root: dir, idPrefix: "doc", lockPrefix: "doctor", repos: { site: { path: "cli" } } });
+  const diagnosis = await diagnose(options([dir]));
+  const check = named(diagnosis, `${basename(dir)} repo site`);
+  assert.equal(check.severity, "warn");
+  assert.match(check.result, /^acme\/site · no origin\/HEAD/);
+  assert.match(check.result, /set defaultBranch in \.pitwall\.json/);
+  assert.match(check.result, /git remote set-head origin -a/);
+  assert.equal(diagnosis.code, 0);
+});
+
+test("a legacy workspace names its own file in the default-branch remedy", async () => {
+  const dir = root();
+  tracker(dir);
+  cloneOf(dir, "cli", "https://github.com/acme/site.git");
+  writeFileSync(
+    join(dir, LEGACY_WORKSPACE_FILE),
+    JSON.stringify({ root: dir, idPrefix: "doc", lockPrefix: "doctor", repos: { site: { path: "cli" } } }),
+  );
+  const diagnosis = await diagnose(options([dir]));
+  const check = named(diagnosis, `${basename(dir)} repo site`);
+  assert.equal(check.severity, "warn");
+  assert.match(check.result, /set defaultBranch in \.autofix\.json/);
+  assert.doesNotMatch(check.result, /\.pitwall\.json/);
+  assert.equal(diagnosis.code, 0);
+});
+
+test("a checkout whose origin/HEAD is set reports that branch and passes", async () => {
+  const dir = root();
+  tracker(dir);
+  cloneOf(dir, "cli", "https://github.com/acme/site.git", "master");
+  describe(dir, { root: dir, idPrefix: "doc", lockPrefix: "doctor", repos: { site: { path: "cli" } } });
+  const diagnosis = await diagnose(options([dir]));
+  const check = named(diagnosis, `${basename(dir)} repo site`);
+  assert.equal(check.severity, "ok");
+  assert.equal(check.result, "acme/site · master");
+});
+
+test("a configured defaultBranch is reported and needs no origin/HEAD", async () => {
+  const dir = root();
+  tracker(dir);
+  cloneOf(dir, "cli", "https://github.com/acme/site.git");
+  describe(dir, {
+    root: dir,
+    idPrefix: "doc",
+    lockPrefix: "doctor",
+    repos: { site: { path: "cli", defaultBranch: "release/2026" } },
+  });
+  const diagnosis = await diagnose(options([dir]));
+  const check = named(diagnosis, `${basename(dir)} repo site`);
+  assert.equal(check.severity, "ok");
+  assert.equal(check.result, "acme/site · release/2026");
+});
+
+test("a configured defaultBranch that is not a branch name fails", async () => {
+  const dir = root();
+  tracker(dir);
+  cloneOf(dir, "cli", "https://github.com/acme/site.git", "master");
+  describe(dir, {
+    root: dir,
+    idPrefix: "doc",
+    lockPrefix: "doctor",
+    repos: { site: { path: "cli", defaultBranch: 7 } },
+  });
+  const diagnosis = await diagnose(options([dir]));
+  const check = named(diagnosis, `${basename(dir)} repo site`);
+  assert.equal(check.severity, "fail");
+  assert.match(check.result, /defaultBranch is not a branch name/);
+  assert.equal(diagnosis.code, 1);
+});
+
+test("a checkout with no origin at all is not told to set-head a remote it does not have", async () => {
+  const dir = root();
+  tracker(dir);
+  mkdirSync(join(dir, "cli"), { recursive: true });
+  git(join(dir, "cli"), "init", "--quiet");
+  describe(dir, { root: dir, idPrefix: "doc", lockPrefix: "doctor", repos: { site: { path: "cli" } } });
+  const diagnosis = await diagnose(options([dir]));
+  const check = named(diagnosis, `${basename(dir)} repo site`);
+  assert.equal(check.severity, "ok");
+  assert.equal(check.result, "no origin remote · no origin/HEAD");
 });
 
 test("a workspace whose root names another directory fails", async () => {

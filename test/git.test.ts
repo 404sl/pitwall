@@ -63,6 +63,19 @@ test("a checkout with no origin reports nothing rather than a branch it did not 
   assert.deepEqual(project.errors, []);
 });
 
+test("a checkout with an origin but no origin/HEAD leaves the branch absent rather than guessing", () => {
+  const root = workspace();
+  const dir = checkout(root, "site");
+  git(dir, "remote", "add", "origin", "https://github.com/acme/site.git");
+  assert.equal(defaultBranchOf(dir), undefined);
+
+  describe(root, "site");
+  const project = readWorkspace(root);
+  assert.equal(project.repos[0]?.defaultBranch, undefined);
+  assert.equal("defaultBranch" in (project.repos[0] ?? {}), false);
+  assert.deepEqual(project.errors, []);
+});
+
 test("a directory that is not a checkout is not answered by the repository above it", () => {
   const root = workspace();
   checkout(root, ".", "master");
