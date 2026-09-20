@@ -507,7 +507,8 @@ let repairs = 0
 let repaired = null
 let handed = null
 
-const HAND_BACK_CMD = `cd ${ROOT} && bd update ${ID} --unset-metadata rework --add-label needs-decision --status open`
+const UNSET_ROUTE_CMD = `cd ${ROOT} && bd update ${ID} --unset-metadata rework`
+const HAND_BACK_CMD = `${UNSET_ROUTE_CMD} --add-label needs-decision --status open`
 const HAND_BACK_NOTE = ID
   ? `\n\nIf the issue still carries its rework route, hand it to a person before reopening it, in one command:\n  ${HAND_BACK_CMD}`
   : ''
@@ -630,7 +631,20 @@ It matches on the 'branch refs/heads/...' line of 'git worktree list --porcelain
 else: never a path guess, never the main checkout, and never this run's own worktree, which is
 detached and has no branch line. On exit 2, 4, 7 or 8 LEAVE IT WHERE IT IS and report: until the
 label is on, that worktree is the only copy of the lane's own state a person can still inspect.
+${ID ? `
+THEN, ON THE SAME EXITS AND NO OTHER, TAKE THE REWORK ROUTE OFF THE ISSUE, exactly as written:
 
+  ${UNSET_ROUTE_CMD}
+
+The rework metadata is what sent this issue here instead of to task.js, and with the label on it
+has done its job: the lander lands and closes the issue without reading it. Left on, it outlives
+the pull request - a later 'bd update ${ID} -s open' for follow-up work would hand the issue out as
+a rework against a pull request that is already merged, and config.sh --args would refuse to
+build task.js arguments for it. Before the label is on, leave it: a refused handoff leaves the
+route as the only thing keeping the issue away from task.js's triage, which bounces a pull request
+that is done. --unset-metadata on an absent key is a no-op that exits 0, so it is safe to run
+whether or not the key is still there.
+` : ''}
 Report the CI conclusion, whether the label is on, and what the removal printed.`
 }
 
