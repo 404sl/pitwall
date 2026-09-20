@@ -342,7 +342,7 @@ test("parked reasons come from the contract enum rather than a local list", () =
   const fromContract = Classification.options
     .filter((option) => option.startsWith("parked:"))
     .map((option) => option.slice("parked:".length));
-  assert.deepEqual(parkedReasons(), [...fromContract, "blocked"]);
+  assert.deepEqual(parkedReasons(), [...fromContract, "blocked", "unknown"]);
 });
 
 test("blocked is counted with the parked reasons and appears in no other band", () => {
@@ -354,6 +354,27 @@ test("blocked is counted with the parked reasons and appears in no other band", 
   assert.deepEqual(board.running, []);
   assert.deepEqual(board.ready, []);
   assert.deepEqual(board.problems, []);
+});
+
+test("unknown is counted with the parked reasons rather than dropped from the board", () => {
+  const board = buildBoard(
+    snapshotOf([
+      project("maas", {
+        issues: [issue("maas-u1", "unknown"), issue("maas-u2", "unknown"), issue("maas-b1", "blocked"), issue("maas-r1", "ready")],
+        errors: [{ source: "/maas/.beads", message: "bd list --all --limit 0 --json: timed out", at: "2026-09-08T14:09:00Z" }],
+      }),
+    ]),
+  );
+  assert.deepEqual(board.parked, [
+    { reason: "blocked", count: 1 },
+    { reason: "unknown", count: 2 },
+  ]);
+  assert.equal(board.readyCount, 1);
+  assert.equal(board.needsYou.length, 0);
+  assert.deepEqual(board.running, []);
+  assert.equal(board.issueCount, 4);
+  assert.equal(parkedSummary(board.parked), "unknown 2");
+  assert.equal(blockedSummary(board.parked), "blocked 1");
 });
 
 test("a project that could not be read renders in problems and in no other band", () => {
@@ -1152,6 +1173,11 @@ test("a call is a sentence about what to do, one per classification and verdict"
   }
   assert.equal(callFor("ready", "unchecked", false).text, strings.issue.call.ready);
   assert.equal(callFor("blocked", "unchecked", false).text, strings.issue.call.blocked);
+  assert.deepEqual(callFor("unknown", "unchecked", false), {
+    text: "Nothing for you yet — its tracker could not be read, so nothing can say what holds it.",
+    tone: "waiting",
+  });
+  assert.doesNotMatch(callFor("unknown", "unchecked", false).text, /parked|ready/);
   assert.equal(callFor(undefined, "unchecked", true).text, strings.issue.call.closed);
   assert.equal(callFor("yours:decision", "still-blocking", true).tone, "waiting");
   for (const classification of Classification.options) {
@@ -1354,6 +1380,7 @@ test("a blocked sentence agrees in number with the blockers it names", () => {
     { rule: "umbrella-open-child", childId: "pitwall-a.1" },
     { rule: "blocked-parent-in-progress", parentId: "pitwall-a" },
     { rule: "stored-status", status: "blocked" },
+    { rule: "uncollected" },
     { rule: "default" },
   ];
   for (const reason of others) {

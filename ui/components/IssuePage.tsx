@@ -266,6 +266,8 @@ export function callFor(
       return { text: strings.issue.call.ready, tone: "waiting" };
     case "blocked":
       return { text: strings.issue.call.blocked, tone: "waiting" };
+    case "unknown":
+      return { text: strings.issue.call.unknown, tone: "waiting" };
     default: {
       const reason = classification.slice("parked:".length);
       if (age !== undefined) {

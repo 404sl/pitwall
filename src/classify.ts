@@ -28,6 +28,7 @@ export type ClassificationReason =
   | { rule: "blocked-unreadable"; ids: string[] }
   | { rule: "blocked-parent-in-progress"; parentId: string }
   | { rule: "stored-status"; status: string }
+  | { rule: "uncollected" }
   | { rule: "default" }
   | { rule: "closed" };
 
@@ -94,7 +95,7 @@ function umbrellaReason(
   for (const [childId, status] of childStatusOf(issue, context)) {
     if (status !== "closed") return { rule: "umbrella-open-child", childId };
   }
-  return undefined;
+  return context.collectionComplete ? undefined : { rule: "uncollected" };
 }
 
 export function isUmbrella(issue: UnclassifiedIssue, context: ClassifyContext): boolean {
@@ -126,7 +127,9 @@ function blockedReason(
   const parentId = parentIdOf(issue.id);
   if (parentId === undefined) return undefined;
   const parentStatus = context.parentStatus ?? byId.get(parentId)?.status;
-  return parentStatus === "in_progress" ? { rule: "blocked-parent-in-progress", parentId } : undefined;
+  if (parentStatus === "in_progress") return { rule: "blocked-parent-in-progress", parentId };
+  if (parentStatus === undefined && !context.collectionComplete) return { rule: "uncollected" };
+  return undefined;
 }
 
 export function isBlocked(issue: UnclassifiedIssue, context: ClassifyContext): boolean {
@@ -162,11 +165,11 @@ export function classify(issue: UnclassifiedIssue, context: ClassifyContext): Cl
     }
   }
   const umbrella = umbrellaReason(issue, context);
-  if (umbrella !== undefined) {
+  if (umbrella !== undefined && umbrella.rule !== "uncollected") {
     return { classification: "parked:umbrella", reason: umbrella };
   }
   const blocked = blockedReason(issue, context);
-  if (blocked !== undefined) {
+  if (blocked !== undefined && blocked.rule !== "uncollected") {
     return { classification: "blocked", reason: blocked };
   }
   const stored = context.stored?.get(issue.id);
@@ -175,6 +178,10 @@ export function classify(issue: UnclassifiedIssue, context: ClassifyContext): Cl
       classification: stored.classification,
       reason: { rule: "stored-status", status: stored.status },
     };
+  }
+  const uncollected = umbrella ?? blocked;
+  if (uncollected !== undefined) {
+    return { classification: "unknown", reason: uncollected };
   }
   return { classification: "ready", reason: { rule: "default" } };
 }

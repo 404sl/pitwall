@@ -707,6 +707,38 @@ test("the verdict one ticket reports agrees with the blocker status beside it", 
   );
 });
 
+test("a ticket whose only path to ready runs through a list that did not collect is unknown, not ready", async (t) => {
+  const unread = { source: join(TRACKER, ".beads"), message: "bd list --all --limit 0 --json: timed out", at: "2026-09-08T13:02:00Z" };
+  const blind = trackerServer("ok", [], [unread]);
+  t.after(() => blind.close());
+  const { origin } = await started(blind);
+  const read = async (id: string) =>
+    (await (await fetch(`${origin}/api/issue/mw/${id}`)).json()) as {
+      issue: { classification: string; reason: { rule: string; parentId?: string; childId?: string } };
+    };
+
+  const plain = await read("mw-13");
+  assert.equal(plain.issue.classification, "unknown");
+  assert.deepEqual(
+    plain.issue.reason,
+    { rule: "uncollected" },
+    "an empty list that failed to collect must not assert that nothing parks it",
+  );
+  const orphan = await read("mw-1");
+  assert.equal(orphan.issue.classification, "unknown", "a child with no parent-child edge is only visible in the list");
+
+  const parented = await read("mw-4.2");
+  assert.equal(parented.issue.classification, "blocked");
+  assert.deepEqual(parented.issue.reason, { rule: "blocked-parent-in-progress", parentId: "mw-4" });
+  const umbrella = await read("mw-5");
+  assert.equal(umbrella.issue.classification, "parked:umbrella");
+  assert.deepEqual(umbrella.issue.reason, { rule: "umbrella-open-child", childId: "mw-5.1" });
+  const labelled = await read("mw-16");
+  assert.equal(labelled.issue.classification, "parked:watch");
+  const stored = await read("mw-10");
+  assert.equal(stored.issue.classification, "parked:roadmap");
+});
+
 test("a project the snapshot does not name is a read failure, not a missing issue", async (t) => {
   const server = trackerServer("ok", [indexed("mw-1", "open", "parked:umbrella")]);
   t.after(() => server.close());

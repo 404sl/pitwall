@@ -216,7 +216,7 @@ test("a tracker that could not be read reports no landedToday rather than nothin
   assert.equal(metrics?.landedToday, undefined);
 });
 
-test("a project that failed to collect blocks an issue whose blocker it never saw", async () => {
+test("a workspace file that could not be read does not make the list the tracker returned untrustworthy", async () => {
   const place = workspace([degradedRoot()]);
   const snapshot = await collectSnapshot({
     ...options(place),
@@ -225,10 +225,11 @@ test("a project that failed to collect blocks an issue whose blocker it never sa
   const project = snapshot.projects[0];
   const collection = (project?.errors ?? []).filter((error) => !error.source.startsWith("staleness"));
   assert.equal(collection.length, 1);
+  assert.equal(collection[0]?.source.endsWith(".autofix.json"), true);
   const byId = new Map((project?.issues ?? []).map((issue) => [issue.id, issue]));
   assert.deepEqual(byId.get("mw-6")?.blockedBy, ["mw-9"]);
-  assert.equal(byId.get("mw-6")?.classification, "blocked");
-  assert.equal(byId.get("mw-5")?.classification, "ready");
+  assert.equal(byId.get("mw-6")?.classification, "ready", "a blocker absent from the list the tracker answered with has closed");
+  assert.equal(byId.get("mw-5")?.classification, "ready", "an error elsewhere in the project is not a list that failed to collect");
 });
 
 test("a config that could not be read is carried by the snapshot itself", async () => {
@@ -1471,8 +1472,8 @@ test("a project whose issues were read keeps them even though the rest of it fai
     "a lane that could not be read is not a collection that could not be read",
   );
   assert.deepEqual(
-    board.ready.filter((row) => row.projectId === id).map((row) => row.id),
-    ["mw-5"],
+    board.ready.filter((row) => row.projectId === id).map((row) => row.id).sort(),
+    ["mw-5", "mw-6"],
     "the issues the tracker answered with are on the board as read now",
   );
 });

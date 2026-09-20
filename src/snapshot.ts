@@ -9,7 +9,7 @@ import {
   type Snapshot,
   type Stopped,
 } from "@404sl/pitwall-schema";
-import { noteAppender, readIssues, type ClosedIssue, type IssueText } from "./beads.js";
+import { collectionFailed, noteAppender, readIssues, type ClosedIssue, type IssueText } from "./beads.js";
 import { KEPT_SOURCE, PARTIAL_SOURCE, type ProjectQuestions, type QuestionStore } from "./board.js";
 import { readCandidates } from "./candidates.js";
 import { collectionError, recordOnce } from "./errors.js";
@@ -188,7 +188,7 @@ async function gather(
   const structure: ClassifyContext = {
     issues: [...collected.issues, ...collected.closed],
     lanes: project.lanes,
-    collectionComplete: project.errors.length === 0,
+    collectionComplete: !collectionFailed(project.root, project.errors),
   };
   const dated = withStopped(collected.issues, previous?.issues, day.toISOString());
   const assessments = await Promise.all(
