@@ -164,6 +164,7 @@ function place(
   mkdirSync(site);
   git(site, "init", "--quiet");
   git(site, "remote", "add", "origin", REMOTE);
+  git(site, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/master");
   writeFileSync(join(root, WORKSPACE_FILE), JSON.stringify({ idPrefix: "mw", repos: { site: { path: "site" } }, ...config }));
   const logs = join(root, "logs");
   mkdirSync(logs);
