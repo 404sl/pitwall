@@ -43,7 +43,7 @@ function asked(branches: string[]) {
   ]);
 }
 
-function train(included: number[], survey: unknown) {
+function train(included: number[], survey: unknown, heldReply: unknown = { status: "noted", noted: [] }) {
   return runScript("land-train.js", { ...ARGS, repo: "site" }, (call: Call, n: number) => {
     if (n === 1) return { status: "taken", token: TOKEN, holder: TOKEN };
     if (call.label.startsWith("build:")) {
@@ -54,6 +54,7 @@ function train(included: number[], survey: unknown) {
     if (call.label.startsWith("merge:")) return { status: "merged", mergeSha: SHA, masterGreen: true, notes: "" };
     if (call.label === "deploy") return { status: "deployed", notes: "", environments: [{ environment: "staging", revision: SHA }] };
     if (call.label === "branch-survey") return survey;
+    if (call.label === "held") return heldReply;
     if (call.label === "left-behind") return LEFT_BEHIND;
     return { status: "released" };
   });
@@ -197,5 +198,89 @@ test("the branch survey runs after the merge and before the close", async () => 
     close > survey,
     `the close ran before anything had looked at the branch: ${order.join(", ")}. The label alone is ` +
       "what it used to run on, and that is the defect.",
+  );
+});
+
+test("a held pull request gets one appended note on its ticket naming what held it, and the ticket is neither closed nor reassigned", async () => {
+  const { calls, logs, done } = train(
+    [1287],
+    { ...CLEAN, open: [{ slug: "404sl/pitwall-site", number: 44, branch: BRANCH, labelled: false }] },
+    { status: "noted", noted: [{ pr: 1287, issue: "pitwall-abc" }] },
+  );
+  const out = (await done) as Result;
+
+  assert.deepEqual(held(out).map((h) => h.number), [1287]);
+  assert.ok(!calls.some((c) => c.label === "close"));
+  const noteSteps = calls.filter((c) => c.label === "held");
+  assert.equal(
+    noteSteps.length,
+    1,
+    "the train held 404sl/pitwall#1287 and wrote nothing on its ticket, so it sits in_progress with " +
+      "no record of why and reads as a dead lane to whoever finds it. Steps seen: " +
+      `${calls.map((c) => c.label).join(", ")}.`,
+  );
+  const prompt = noteSteps[0]?.prompt || "";
+  assert.equal(
+    prompt.split("\n").filter((line) => line.includes("bash ") && line.includes("bd-note.sh")).length,
+    1,
+    "the note step was not told to append through exactly one bd-note.sh command",
+  );
+  assert.match(prompt, /404sl\/pitwall-site#44/, "the note does not name the pull request that held the close");
+  assert.match(prompt, /404sl\/pitwall#1287/, "the note does not say which pull request landed");
+  assert.match(prompt, new RegExp(SHA), "the note does not carry the merge sha");
+  assert.match(prompt, /--repo 404sl\/pitwall/, "the step resolves the ticket from a pull request number without naming the repository");
+  assert.ok(!/bd close/.test(prompt), "the note step was told to close the ticket it is holding");
+  assert.ok(!/--notes /.test(prompt), "the note step was pointed at --notes, which replaces every note already on the issue");
+  assert.ok(!/--append-notes/.test(prompt), "the note step was told to append by hand rather than through bd-note.sh");
+  assert.ok(!/(^|\s)-a |--assignee|--status |--claim/.test(prompt), "the note step was handed a command that moves the ticket");
+  assert.match(logs.join("\n"), /noted the hold on 404sl\/pitwall#1287 pitwall-abc/);
+});
+
+test("a pull request that closes gets no hold note", async () => {
+  const { calls, done } = train([1287], CLEAN);
+  await done;
+
+  assert.ok(calls.some((c) => c.label === "close"));
+  assert.ok(!calls.some((c) => c.label === "held"), "a note saying the ticket was held was written for a pull request that closed");
+});
+
+test("with one pull request held and one clear, the hold note names only the held one", async () => {
+  const { calls, done } = train(
+    [1287, 1300],
+    {
+      status: "read",
+      branches: [
+        { number: 1287, branch: BRANCH },
+        { number: 1300, branch: OTHER_BRANCH },
+      ],
+      asked: asked([BRANCH, OTHER_BRANCH]),
+      open: [{ slug: "404sl/pitwall-site", number: 44, branch: OTHER_BRANCH, labelled: false }],
+    },
+    { status: "noted", noted: [{ pr: 1300, issue: "pitwall-def" }] },
+  );
+  await done;
+
+  const note = calls.find((c) => c.label === "held");
+  assert.ok(note);
+  assert.match(note.prompt, /404sl\/pitwall#1300/);
+  assert.doesNotMatch(note.prompt, /404sl\/pitwall#1287/, "a pull request that closed was given a note saying it was held");
+  const close = calls.find((c) => c.label === "close");
+  assert.ok(close);
+  assert.doesNotMatch(close.prompt, /404sl\/pitwall#1300/);
+});
+
+test("a hold note the step did not confirm is reported", async () => {
+  const { logs, done } = train(
+    [1287],
+    { ...CLEAN, open: [{ slug: "404sl/pitwall-site", number: 44, branch: BRANCH, labelled: false }] },
+    null,
+  );
+  await done;
+
+  assert.match(
+    logs.join("\n"),
+    /HOLD NOT RECORDED 404sl\/pitwall#1287/,
+    "the note step reported nothing and the run said nothing about it, so the ticket is in the " +
+      "state this change exists to prevent and nothing reports it",
   );
 });

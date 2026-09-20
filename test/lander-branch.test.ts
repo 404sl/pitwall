@@ -38,7 +38,7 @@ function asked(...branches: string[]) {
   ]);
 }
 
-type Replies = { prs?: unknown[]; branch?: unknown; close?: unknown; preflighted?: string[] };
+type Replies = { prs?: unknown[]; branch?: unknown; close?: unknown; preflighted?: string[]; held?: unknown };
 type Held = { issue: string; why: string };
 type Result = {
   landed: { slug?: string; number?: number }[];
@@ -57,12 +57,21 @@ function landOnce(replies: Replies) {
     if (call.label.startsWith("land:")) return { status: "merged", mergeSha: SHA, masterGreen: true, notes: "" };
     if (call.label === "branch-survey") return replies.branch;
     if (call.label === "close") return replies.close;
+    if (call.label === "held") return replies.held;
     return { status: "released" };
   });
 }
 
 function closeCall(calls: Call[]) {
   return calls.find((c) => c.label === "close");
+}
+
+function heldCalls(calls: Call[]) {
+  return calls.filter((c) => c.label === "held");
+}
+
+function noteLines(prompt: string, issue: string) {
+  return prompt.split("\n").filter((line) => line.includes("bd-note.sh") && line.includes(issue));
 }
 
 test("a ticket whose branch still carries an open unlabelled pull request is not closed", async () => {
@@ -317,5 +326,86 @@ test("a repository asked about one branch is not credited with the other", async
   assert.deepEqual(
     result.heldOpen.map((h) => h.issue),
     ["pitwall-9aa"],
+  );
+});
+
+test("a held ticket gets one appended note naming the pull request that held it, and is neither closed nor reassigned", async () => {
+  const { calls, logs, done } = landOnce({
+    branch: { status: "read", asked: asked(BRANCH), prs: [{ ...LABELLED, labelled: true }, ORPHAN] },
+    held: { status: "noted", noted: ["pitwall-t2v"] },
+  });
+  const result = (await done) as unknown as Result;
+
+  assert.deepEqual(result.heldOpen.map((h) => h.issue), ["pitwall-t2v"]);
+  assert.equal(closeCall(calls), undefined, "the held ticket reached the close step");
+  const held = heldCalls(calls);
+  assert.equal(
+    held.length,
+    1,
+    "the run held pitwall-t2v and wrote nothing on it, so the ticket sits in_progress with no " +
+      "record of why: queue.sh flags a claim older than an hour as STALE, which reads as a dead " +
+      `lane rather than a deliberate hold. Steps seen: ${calls.map((c) => c.label).join(", ")}.`,
+  );
+  const prompt = held[0]?.prompt || "";
+  assert.equal(
+    noteLines(prompt, "pitwall-t2v").length,
+    1,
+    "the note step was not told to append exactly one note to the held issue through bd-note.sh",
+  );
+  assert.match(prompt, /owner\/site#12/, "the note does not name the pull request that held the close");
+  assert.match(prompt, /owner\/cli#31/, "the note does not say what did land for the ticket");
+  assert.match(prompt, new RegExp(SHA), "the note does not carry the merge sha");
+  assert.ok(!/bd close/.test(prompt), "the note step was told to close the ticket it is holding");
+  assert.ok(!/--notes /.test(prompt), "the note step was pointed at --notes, which replaces every note already on the issue");
+  assert.ok(!/--append-notes/.test(prompt), "the note step was told to append by hand rather than through bd-note.sh, which is the only writer that takes the lock");
+  assert.ok(!/(^|\s)-a |--assignee|--status |--claim/.test(prompt), "the note step was handed a command that moves the ticket");
+  assert.match(logs.join("\n"), /noted the hold on pitwall-t2v/);
+});
+
+test("a ticket that closes gets no hold note", async () => {
+  const { calls, done } = landOnce({
+    branch: { status: "read", asked: asked(BRANCH), prs: [] },
+    close: { status: "closed", closed: ["pitwall-t2v"] },
+  });
+  await done;
+
+  assert.ok(closeCall(calls), "the clear ticket was not closed");
+  assert.deepEqual(heldCalls(calls), [], "a note saying the ticket was held was written on a ticket that closed");
+});
+
+test("with one ticket held and one clear, the hold note names only the held one", async () => {
+  const second = { slug: "owner/cli", number: 32, title: "Name the build a board was cut from", branch: OTHER_BRANCH, issue: "pitwall-9aa" };
+  const { calls, done } = landOnce({
+    prs: [LABELLED, second],
+    branch: { status: "read", asked: asked(BRANCH, OTHER_BRANCH), prs: [{ ...LABELLED, labelled: true }, ORPHAN] },
+    held: { status: "noted", noted: ["pitwall-t2v"] },
+    close: { status: "closed", closed: ["pitwall-9aa"] },
+  });
+  await done;
+
+  const held = heldCalls(calls);
+  assert.equal(held.length, 1);
+  const prompt = held[0]?.prompt || "";
+  assert.equal(noteLines(prompt, "pitwall-t2v").length, 1);
+  assert.equal(noteLines(prompt, "pitwall-9aa").length, 0, "a ticket that closed was given a note saying it was held");
+  const close = closeCall(calls);
+  assert.ok(close);
+  assert.ok(!close.prompt.includes("pitwall-t2v"), "the held ticket was handed to the close step");
+});
+
+test("a hold note the step did not confirm is reported, and the ticket is still held", async () => {
+  const { calls, logs, done } = landOnce({
+    branch: { status: "read", asked: asked(BRANCH), prs: [{ ...LABELLED, labelled: true }, ORPHAN] },
+    held: null,
+  });
+  const result = (await done) as unknown as Result;
+
+  assert.equal(heldCalls(calls).length, 1);
+  assert.deepEqual(result.heldOpen.map((h) => h.issue), ["pitwall-t2v"]);
+  assert.match(
+    logs.join("\n"),
+    /HOLD NOT RECORDED pitwall-t2v/,
+    "the note step reported nothing and the run said nothing about it, so the ticket is in the " +
+      "state this change exists to prevent and nothing reports it",
   );
 });

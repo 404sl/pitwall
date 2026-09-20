@@ -260,6 +260,27 @@ const CLOSED = {
   },
 }
 
+const HELD = {
+  type: 'object',
+  required: ['status', 'noted'],
+  properties: {
+    status: { type: 'string', enum: ['noted', 'partial', 'none'] },
+    noted: {
+      type: 'array',
+      description: 'one entry per bd-note.sh that exited 0, and an empty array when none did - keyed by pull request because that is the list you were given',
+      items: {
+        type: 'object',
+        required: ['pr', 'issue'],
+        properties: {
+          pr: { type: 'number', description: 'the pull request number from the list you were given' },
+          issue: { type: 'string', description: 'the tracker id you appended the note to' },
+        },
+      },
+    },
+    notes: { type: 'string' },
+  },
+}
+
 const ON_BRANCH = {
   type: 'object',
   required: ['status', 'branches', 'asked', 'open'],
@@ -926,6 +947,58 @@ that looks nothing like devloop/<id> means you read another repository's pull re
 answer is to retry with --repo, not to report the issue as unidentifiable.`
 }
 
+function heldPrompt(held, mergeSha, where) {
+  return `Record on the tracker issue behind each of these pull requests why this train did NOT close it,
+and do nothing else to it. Each is on master at ${mergeSha} - ${where} - and stays there; the ticket
+stays exactly where it is, in_progress and assigned to whoever holds it. Without a note a person
+arriving at the ticket sees a claim older than an hour and reads it as a lane that died. The note is
+what tells them the train held it deliberately, and why.
+
+${held.map((h) => `  ${SLUG}#${h.number}
+    ---
+    Merged as ${SLUG}#${h.number} at ${mergeSha}, ${where}. NOT closed: ${h.why}. Held open by the train on purpose - this is not a dead lane. Close it when what is still open on this ticket's branch has landed.
+    ---`).join('\n\n')}
+
+EVERY gh CALL NEEDS --repo ${SLUG}. Pull request numbers are per repository and this project has
+several, so a bare number silently resolves against whatever repository the working directory
+belongs to and hands you a different project's pull request with the same number.
+
+For each pull request, find its issue - the branch is devloop/<issue-id>, and the issue is also named
+in the pull request body:
+
+  gh pr view <n> --repo ${SLUG} --json headRefName,body,title
+
+Then write the text between that pull request's markers to a file VERBATIM - a file rather than an
+argument, so a backtick or a $( in it cannot be evaluated by the shell before bd sees it - and
+append it with exactly this, one run per issue, from the workspace root and not from inside a
+repository:
+
+  cd ${ROOT} && PITWALL_SESSION=land-train bash ${SKILL_DIR}/bd-note.sh <id> --note-file <that file>
+
+ONE NOTE PER ISSUE, THROUGH bd-note.sh. Never 'bd update --notes': it replaces every note already
+on the issue and has already destroyed a decision somebody recorded. Never a bare append by hand
+either - the script is the only writer that takes the write lock, stamps the note and reads it
+back, and two overlapping bare appends silently become one.
+
+DO NOT CLOSE, REOPEN, REASSIGN OR RELABEL ANYTHING. Not a close, not a status change, not an
+assignee change, not a label. The hold is the outcome of this run and the ticket is somebody
+else's until the rest of its branch lands; a note is the only thing this step is allowed to write.
+
+THAT LIST IS THE WHOLE JOB. Do not survey the tracker for other issues and do not read pull
+requests this train did not land. Before writing on an issue, CHECK YOU READ THE RIGHT PULL
+REQUEST: the branch name should start with devloop/, and the issue id in it should exist in bd. A
+branch that looks nothing like devloop/<id> means you read another repository's pull request, and
+the answer is to retry with --repo, not to write on whatever issue that one names.
+
+REPORT ONE ENTRY PER bd-note.sh THAT EXITED 0, carrying the pull request number it came from and
+the tracker id you wrote on - and an empty list when none did. A non-zero exit means the note did
+NOT land and its text is on stderr - name that pull request in 'notes' with what the script
+printed, not in the list. A pull request you leave out comes back as a hold nobody recorded, so
+name them - and do not name one you did not write on.
+
+Never use 2>&1 - it makes some commands fail outright. Use absolute paths, never relative ones.`
+}
+
 function leftBehindPrompt() {
   const lines = Object.entries(REPOS)
     .filter(([, r]) => r.slug)
@@ -1178,6 +1251,18 @@ if (landed.length && lastSha && !masterIsRed) {
     heldOpen = [...heldByBranch(landed, onBranch).entries()].map(([number, why]) => ({ number, slug: SLUG, why }))
     for (const h of heldOpen) {
       log(`NOT CLOSED ${SLUG}#${h.number} - ${h.why}. What it carried is merged and deployed and stays that way; the ticket is left open because something on its branch has not landed.`)
+    }
+    if (heldOpen.length) {
+      const where = deployed === 'not_needed'
+        ? `${REPO_KEY} has no deploy to be live in`
+        : `deployed${servingText ? ` - ${servingText}` : ''}`
+      const n = await agent(heldPrompt(heldOpen, lastSha, where), { model: 'sonnet', phase: 'Close', label: 'held', schema: HELD })
+      const noted = ((n && n.noted) || []).filter((e) => e && Number.isInteger(Number(e.pr)))
+      const unnoted = heldOpen.map((h) => h.number).filter((num) => !noted.some((e) => Number(e.pr) === num))
+      if (unnoted.length) {
+        log(`HOLD NOT RECORDED ${unnoted.map((num) => `${SLUG}#${num}`).join(' ')} - ${n ? `the note step answered '${trimmed(n.status) || 'nothing'}'` : 'the note step reported nothing'}, so the tickets behind these sit in_progress with nothing on them saying the train held them, and queue.sh will read the claim as a dead lane.${n && trimmed(n.notes) ? `\n    ${trimmed(n.notes)}` : ''}`)
+      }
+      for (const e of noted) if (heldOpen.some((h) => h.number === Number(e.pr))) log(`noted the hold on ${SLUG}#${e.pr} ${trimmed(e.issue) || '(no id reported)'}`)
     }
     const clear = landed.filter((n) => !heldOpen.some((h) => h.number === n))
     if (clear.length) {
