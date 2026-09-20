@@ -11,6 +11,7 @@ import {
 } from "@404sl/pitwall-schema";
 import { noteAppender, readIssues, type ClosedIssue, type IssueText } from "./beads.js";
 import { KEPT_SOURCE, PARTIAL_SOURCE, type ProjectQuestions, type QuestionStore } from "./board.js";
+import { readCandidates } from "./candidates.js";
 import { collectionError, recordOnce } from "./errors.js";
 import { hasLiveStructuralBlocker, type ClassifyContext } from "./classify.js";
 import {
@@ -205,11 +206,18 @@ async function gather(
     timeoutMs: options.timeoutMs,
     knownIds: context.knownIds,
   });
+  const found = await readCandidates(project, {
+    env: options.env,
+    timeoutMs: options.timeoutMs,
+    linked: collected.errors.length === 0 ? collected.linked : undefined,
+  });
   const unreadable = project.errors.length > 0 || collected.errors.length > 0;
   return {
     closed: collected.closed,
     project: Project.parse({
       ...project,
+      signals: found.signals,
+      candidates: found.candidates,
       issues,
       pipeline: pipeline.pipeline,
       metrics: metricsOf(issues, collected.closed, day, !unreadable),
@@ -217,6 +225,7 @@ async function gather(
         ...project.errors,
         ...collected.errors,
         ...pipeline.errors,
+        ...found.errors,
         ...unchecked,
         ...unassessable,
       ],

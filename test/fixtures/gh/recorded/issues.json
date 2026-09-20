@@ -1,0 +1,23 @@
+[
+  {
+    "number": 7,
+    "title": "Snapshot reports zero lanes when the slot registry is missing",
+    "url": "https://github.com/acme/site/issues/7",
+    "author": { "id": "U_1", "is_bot": false, "login": "elik-ru", "name": "Vladimir" },
+    "createdAt": "2026-09-01T08:15:00Z"
+  },
+  {
+    "number": 8,
+    "title": "Console shows a stale board after the tracker moves",
+    "url": "https://github.com/acme/site/issues/8",
+    "author": { "id": "U_2", "is_bot": false, "login": "stranger", "name": "" },
+    "createdAt": "2026-09-05T17:40:00Z"
+  },
+  {
+    "number": 9,
+    "title": "Bump actions/checkout from 4 to 5",
+    "url": "https://github.com/acme/site/issues/9",
+    "author": { "id": "B_1", "is_bot": true, "login": "app/dependabot" },
+    "createdAt": "2026-09-07T03:00:00Z"
+  }
+]
