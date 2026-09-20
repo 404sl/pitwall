@@ -125,6 +125,7 @@ ${lines.join('\n')}${notes ? `\n\nWorth knowing about this repository:\n${notes}
 }
 const MAX_ATTEMPTS = input.maxAttempts || 3
 const MAX_REWORKS = input.maxReworks || 2
+const RETRY_FAILED = input.retryFailed === true
 const ID = input.id
 const SLOT = input.slot || 1
 const DISPATCH = /^[A-Za-z0-9._-]+$/.test(String(input.dispatch || '')) ? String(input.dispatch) : null
@@ -1913,6 +1914,27 @@ async function design(task) {
   return brief
 }
 
+function failedStep(answer) {
+  return !!answer && (answer.status === 'blocked' || answer.status === 'needs_feedback')
+}
+
+function retryNote(why) {
+  return `
+
+THIS STEP IS BEING RE-RUN. An earlier attempt of this same step ended with '${why}' and the run was
+resumed with retryFailed set, so it is issued once more. Whatever is already in the worktree and on
+the branch is this run's own earlier work: read what is there before acting and continue from it
+rather than starting over, and do not treat the earlier stop as still true without checking.`
+}
+
+async function step(prompt, opts) {
+  const first = await agent(prompt, opts)
+  if (!RETRY_FAILED || !failedStep(first)) return first
+  const why = `${first.status}${first.summary || first.question ? `: ${first.summary || first.question}` : ''}`
+  log(`${opts.label}: ended '${why}' and retryFailed is set - re-running that step once`)
+  return await agent(`${prompt}${retryNote(why)}`, opts)
+}
+
 const GIVEN_BACK = new Set(['released', 'already_gone'])
 
 function releaseLanePrompt() {
@@ -2414,7 +2436,7 @@ let reworks = 0
 
 if (isWorkspace(task.repo)) {
   phase('Fix')
-  const work = await agent(workspacePrompt(task), { label: `apply:${task.id}`, phase: 'Fix', schema: WORK })
+  const work = await step(workspacePrompt(task), { label: `apply:${task.id}`, phase: 'Fix', schema: WORK })
   if (!work) result = { outcome: 'agent_error', at: 'fix', attempts: 1 }
   else if (work.status === 'applied') {
     if (closedProperly(work.verification)) {
@@ -2438,7 +2460,7 @@ let rework = null
 
 for (let attempt = 1; attempt <= MAX_ATTEMPTS && !result && !rework; attempt++) {
   phase('Fix')
-  const work = await agent(fixPrompt(task, attempt, feedback, SLOT - 1, brief), {
+  const work = await step(fixPrompt(task, attempt, feedback, SLOT - 1, brief), {
     label: `fix:${task.id}${attempt > 1 ? `#${attempt}` : ''}`, phase: 'Fix', schema: WORK
   })
 
@@ -2464,7 +2486,7 @@ for (let attempt = 1; attempt <= MAX_ATTEMPTS && !result && !rework; attempt++) 
 
   if (review && review.approved) {
     phase('Handoff')
-    const ship = await agent(handoffPrompt(task, work), { label: `handoff:${task.id}`, phase: 'Handoff', schema: SHIP, model: 'sonnet', effort: 'low' })
+    const ship = await step(handoffPrompt(task, work), { label: `handoff:${task.id}`, phase: 'Handoff', schema: SHIP, model: 'sonnet', effort: 'low' })
 
     // Master moved and the rebase left this red. Somebody else's change broke it, so the
     // review budget is restored and it goes back to Fix knowing what failed.

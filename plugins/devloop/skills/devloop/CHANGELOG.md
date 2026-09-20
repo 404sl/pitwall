@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.114
+
+A run that stopped on a cached `blocked` or `needs_feedback` can now be continued: resume it with `retryFailed: true` added to the args object it was launched with, and that step is issued once more while everything that succeeded replays from cache. SKILL.md says plainly that a resume replays cached failures, and that a resume must never be built from a fresh `config.sh --args`.
+
 ## 0.1.113
 
 A lane kills what it launched by the pid it recorded at launch, never with a pattern kill on a path or flag substring. Without a recorded pid it lists matches first, prints them, and kills only those whose command starts with the intended binary; if it cannot identify the process that way it leaves it running and says so. A permission failure that appears right after a cleanup step is to be reported as self-inflicted, not as an environment fault.
