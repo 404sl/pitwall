@@ -3,7 +3,7 @@ import type { CollectionError } from "@404sl/pitwall-schema";
 import mark from "../brand/logo/pitwall-mark.svg";
 import { BuildToken } from "./Build.js";
 import { fill, stamp } from "../format.js";
-import { PARTIAL_SOURCE, snapshotAge, type BuildState, type SnapshotAge } from "../model.js";
+import { PARTIAL_SOURCE, snapshotAge, type BuildState, type ProjectAge, type SnapshotAge } from "../model.js";
 import { strings } from "../strings.js";
 
 const TICK_MS = 30_000;
@@ -15,6 +15,7 @@ interface HeaderProps {
   update?: string;
   build?: BuildState;
   refreshFailure?: CollectionError;
+  projectAges?: ProjectAge[];
 }
 
 interface Flag {
@@ -44,7 +45,37 @@ function useNow(): number {
   return now;
 }
 
-export function Header({ projectCount, generatedAt, version, update, build, refreshFailure }: HeaderProps) {
+function ProjectAgeItem({ entry, now }: { entry: ProjectAge; now: number }) {
+  const age = entry.readAt === undefined ? undefined : snapshotAge(entry.readAt, now);
+  if (entry.readAt === undefined || age === undefined || !age.valid) {
+    return (
+      <span className="pw-age" title={strings.header.readAtUnknown}>
+        {strings.issue.facts.none}
+      </span>
+    );
+  }
+  const at = stamp(entry.readAt);
+  return (
+    <>
+      <span className="pw-age" title={at}>
+        {age.label}
+      </span>
+      <time className="pw-sr" dateTime={entry.readAt}>
+        {fill(strings.header.readAt, { project: entry.project, at })}
+      </time>
+    </>
+  );
+}
+
+export function Header({
+  projectCount,
+  generatedAt,
+  version,
+  update,
+  build,
+  refreshFailure,
+  projectAges = [],
+}: HeaderProps) {
   const noun = projectCount === 1 ? strings.header.project : strings.header.projects;
   const now = useNow();
   const age = snapshotAge(generatedAt, now);
@@ -89,6 +120,17 @@ export function Header({ projectCount, generatedAt, version, update, build, refr
           )}
         </span>
       </p>
+      {projectAges.length === 0 ? null : (
+        <ul className="pw-header__ages" aria-label={strings.header.agesLabel}>
+          {projectAges.map((entry, index) => (
+            <li key={entry.projectId} className="pw-header__project">
+              {index === 0 ? null : <span aria-hidden="true">{strings.filters.separator}</span>}
+              <span className="pw-header__project-name">{entry.project}</span>{" "}
+              <ProjectAgeItem entry={entry} now={now} />
+            </li>
+          ))}
+        </ul>
+      )}
     </header>
   );
 }

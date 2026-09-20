@@ -1276,8 +1276,15 @@ test("a project that could not be read keeps the issues the last snapshot held f
     "2026-09-08T09:00:00.000Z",
     "the kept issues are dated when they were last read, not when the run happened",
   );
+  assert.equal(
+    kept?.issuesReadAt,
+    "2026-09-08T09:00:00.000Z",
+    "the kept project carries the instant its issues were last read",
+  );
   const fresh = stored.projects.find((project) => project.id === "tracker");
   assert.deepEqual(fresh?.errors, []);
+  assert.equal(fresh?.issuesReadAt, stored.generatedAt, "a project read this run is dated to the run");
+  assert.equal(stored.generatedAt, "2026-09-08T09:30:00.000Z");
 
   const board = buildBoard(stored);
   assert.equal(board.refreshFailure?.source, PARTIAL_SOURCE, "the board must not read as current");
@@ -1307,6 +1314,7 @@ test("a project that could not be read keeps the issues the last snapshot held f
     "2026-09-08T09:00:00.000Z",
     "a second failed run must not re-date issues it did not read either",
   );
+  assert.equal(again?.issuesReadAt, "2026-09-08T09:00:00.000Z", "nor re-date when they were read");
 });
 
 test("every park the collection sees is dated once and carried through later collections", async () => {

@@ -309,6 +309,7 @@ export function App() {
             update={update}
             build={build}
             refreshFailure={board.refreshFailure}
+            projectAges={board.projectAges}
           />
         )}
         <main className="pw-console">
@@ -348,6 +349,7 @@ export function App() {
         update={update}
         build={build}
         refreshFailure={board.refreshFailure}
+        projectAges={board.projectAges}
       />
       <main
         className={dropping ? "pw-console pw-console--dropping" : "pw-console"}
