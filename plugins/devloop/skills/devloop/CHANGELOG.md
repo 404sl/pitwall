@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.115
+
+A rework whose release step answers nothing, dies, or is not permitted to run now retries with two plain commands - the slot file first, then the lane lock through its owner file, each removed only when it names this run - and a release refused twice is recorded as REFUSED in the lane and slot fields with the plain command that releases each one, instead of LEAKED pointing at files the release never touched.
+
+Refs pitwall-vaqi
+
 ## 0.1.114
 
 A run that stopped on a cached `blocked` or `needs_feedback` can now be continued: resume it with `retryFailed: true` added to the args object it was launched with, and that step is issued once more while everything that succeeded replays from cache. SKILL.md says plainly that a resume replays cached failures, and that a resume must never be built from a fresh `config.sh --args`.
