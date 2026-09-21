@@ -25,7 +25,7 @@ function write(dir: string, name: string, body: string) {
 
 const MASTER_GREEN = `echo '[{"status":"completed","conclusion":"success"}]'`;
 
-function stubs(root: string, view: string, checks: string, runList = MASTER_GREEN): string {
+function stubs(root: string, checkRuns: string, pull: string, runList = MASTER_GREEN): string {
   const bin = join(root, "bin");
   mkdirSync(bin);
   write(
@@ -35,12 +35,8 @@ function stubs(root: string, view: string, checks: string, runList = MASTER_GREE
 case "$1 $2" in
   "repo view") echo '{"defaultBranchRef":{"name":"master"}}' ;;
   "run list")  ${runList} ;;
-  "pr view")
-    case "$*" in
-      *baseRefName*) echo '{"baseRefName":"master"}' ;;
-      *) ${view} ;;
-    esac ;;
-  "pr checks") ${checks} ;;
+  "api "*/check-runs) ${checkRuns} ;;
+  "api "*/pulls/*) ${pull} ;;
   *)           exit 0 ;;
 esac
 `,
@@ -59,6 +55,14 @@ exec "$@"
   chmodSync(join(bin, "gh"), 0o755);
   chmodSync(join(bin, "git-guard"), 0o755);
   return bin;
+}
+
+function pull(head: string, labels = '[{"name":"lane-verified"}]'): string {
+  return `echo '{"base":{"ref":"master"},"labels":${labels},"head":{"sha":"${head}"}}'`;
+}
+
+function checkRuns(runs: string): string {
+  return `echo '{"total_count":1,"check_runs":${runs}}'`;
 }
 
 function workspace() {
@@ -98,6 +102,8 @@ function run(root: string, repo: string, bin: string) {
       "devloop/zz-aaa1",
       "--prefix",
       `landrollup-${process.pid}`,
+      "--checks-wait",
+      "0",
     ],
     {
       cwd: root,
@@ -107,6 +113,7 @@ function run(root: string, repo: string, bin: string) {
         PATH: `${bin}:${process.env.PATH}`,
         ...GIT_ENV,
         HOME: root,
+        LAND_ONE_REST_BACKOFF: "0",
       },
     },
   );
@@ -115,10 +122,11 @@ function run(root: string, repo: string, bin: string) {
 
 test("a rollup read that fails is reported as unread, not as a red pull request", () => {
   const box = workspace();
+  const head = git(box.repo, "rev-parse", "refs/remotes/origin/devloop/zz-aaa1");
   const bin = stubs(
     box.root,
-    "echo 'HTTP 403: API rate limit exceeded for installation (https://api.github.com/graphql)' >&2; exit 1",
-    "exit 0",
+    "echo 'HTTP 403: API rate limit exceeded for installation (https://api.github.com/repos)' >&2; exit 1",
+    pull(head),
   );
 
   const ran = run(box.root, box.repo, bin);
@@ -136,22 +144,46 @@ test("a rollup read that fails is reported as unread, not as a red pull request"
   );
   assert.match(
     ran.out,
-    /gh pr view 101 --repo acme\/site/,
+    new RegExp(`gh api repos/acme/site/commits/${head}/check-runs`),
     `the output does not name the read that was attempted:\n${ran.out}`,
   );
   assert.match(ran.out, /rate limit/, `the reason the read failed is nowhere in the output:\n${ran.out}`);
   assert.equal(ran.code, 9, `an unread rollup does not have its own exit status:\n${ran.out}\n${ran.err}`);
+  assert.match(ran.err, /gh api repos\/acme\/site\/commits\/[0-9a-f]{40}\/check-runs .* was rate limited on attempt 1 of 5/, `a rate-limited read was not retried:\n${ran.err}`);
+  assert.doesNotMatch(ran.err, /waiting [1-9]/, `the retry did not honour the configured backoff:\n${ran.err}`);
 });
 
 test("a rollup that is not the JSON it should be is reported as unread, not as a red pull request", () => {
   const box = workspace();
-  const bin = stubs(box.root, "echo 'Gateway Timeout'", "exit 0");
+  const head = git(box.repo, "rev-parse", "refs/remotes/origin/devloop/zz-aaa1");
+  const bin = stubs(box.root, "echo 'Gateway Timeout'", pull(head));
 
   const ran = run(box.root, box.repo, bin);
 
   assert.doesNotMatch(ran.out, /^red:/m, `a rollup that did not parse is reported as red:\n${ran.out}`);
   assert.match(ran.out, /^unreadable:/m, `the output does not say the rollup could not be read:\n${ran.out}`);
+  assert.match(ran.out, /check-runs/, `the output does not name the read that was attempted:\n${ran.out}`);
   assert.equal(ran.code, 9, `a rollup that did not parse does not exit 9:\n${ran.out}\n${ran.err}`);
+});
+
+test("a pull request read that fails after a green rollup is reported as unread, naming that read", () => {
+  const box = workspace();
+  const head = git(box.repo, "rev-parse", "refs/remotes/origin/devloop/zz-aaa1");
+  const once = join(box.root, "pulled-once");
+  const bin = stubs(
+    box.root,
+    checkRuns('[{"name":"CI","status":"completed","conclusion":"success"}]'),
+    `if [ -f ${JSON.stringify(once)} ]; then echo 'HTTP 403: API rate limit exceeded for installation (https://api.github.com/repos)' >&2; exit 1; fi; touch ${JSON.stringify(once)}; ${pull(head)}`,
+  );
+
+  const ran = run(box.root, box.repo, bin);
+
+  assert.doesNotMatch(ran.out, /^ready:/m, `a pull request whose label could not be read was handed over for merging:\n${ran.out}`);
+  assert.doesNotMatch(ran.out, /^red:/m, `an unreadable pull request is reported as red:\n${ran.out}`);
+  assert.match(ran.out, /^unreadable:/m, `the output does not say the pull request could not be read:\n${ran.out}`);
+  assert.match(ran.out, /gh api repos\/acme\/site\/pulls\/101/, `the output does not name the read that was attempted:\n${ran.out}`);
+  assert.match(ran.out, /rate limit/, `the reason the read failed is nowhere in the output:\n${ran.out}`);
+  assert.equal(ran.code, 9, `an unread pull request does not exit 9:\n${ran.out}\n${ran.err}`);
 });
 
 test("a check that genuinely failed is still red, named, and not merged", () => {
@@ -159,8 +191,8 @@ test("a check that genuinely failed is still red, named, and not merged", () => 
   const head = git(box.repo, "rev-parse", "refs/remotes/origin/devloop/zz-aaa1");
   const bin = stubs(
     box.root,
-    `echo '{"labels":[{"name":"lane-verified"}],"statusCheckRollup":[{"name":"CI","conclusion":"FAILURE"}],"headRefOid":"${head}"}'`,
-    "exit 1",
+    checkRuns('[{"name":"CI","status":"completed","conclusion":"failure"}]'),
+    pull(head),
   );
 
   const ran = run(box.root, box.repo, bin);
@@ -171,152 +203,115 @@ test("a check that genuinely failed is still red, named, and not merged", () => 
 });
 
 test("a check still in flight is not ready rather than red", () => {
+  for (const run_ of ['{"name":"CI","status":"in_progress","conclusion":null}', '{"name":"CI","status":"queued","conclusion":""}']) {
+    const box = workspace();
+    const head = git(box.repo, "rev-parse", "refs/remotes/origin/devloop/zz-aaa1");
+    const bin = stubs(box.root, checkRuns(`[${run_}]`), pull(head));
+
+    const ran = run(box.root, box.repo, bin);
+
+    assert.doesNotMatch(ran.out, /^red:/m, `a check that has not concluded is reported as red:\n${ran.out}`);
+    assert.match(ran.out, /^not_ready: CI on 101 has not concluded/m, `a check that has not concluded is not reported as pending by name:\n${ran.out}`);
+    assert.equal(ran.code, 7, `a pending check does not exit 7:\n${ran.out}\n${ran.err}`);
+  }
+});
+
+test("an empty check-runs array is not ready, not green", () => {
   const box = workspace();
   const head = git(box.repo, "rev-parse", "refs/remotes/origin/devloop/zz-aaa1");
-  const bin = stubs(
-    box.root,
-    `echo '{"labels":[{"name":"lane-verified"}],"statusCheckRollup":[{"name":"CI","conclusion":""}],"headRefOid":"${head}"}'`,
-    "exit 8",
-  );
+  const bin = stubs(box.root, `echo '{"total_count":0,"check_runs":[]}'`, pull(head));
 
   const ran = run(box.root, box.repo, bin);
 
-  assert.doesNotMatch(ran.out, /^red:/m, `a check that has not concluded is reported as red:\n${ran.out}`);
-  assert.match(ran.out, /^not_ready:/m, `a check that has not concluded is not reported as pending:\n${ran.out}`);
-  assert.equal(ran.code, 7, `a pending check does not exit 7:\n${ran.out}\n${ran.err}`);
+  assert.doesNotMatch(ran.out, /^ready:/m, `no checks at all was read as every check green:\n${ran.out}`);
+  assert.match(ran.out, /^not_ready: rollup is empty on 101/m, `an empty rollup is not reported as empty:\n${ran.out}`);
+  assert.equal(ran.code, 7, `an empty rollup does not exit 7:\n${ran.out}\n${ran.err}`);
 });
 
-function rollupView(head: string, rollup: string): string {
-  return `echo '{"labels":[{"name":"lane-verified"}],"statusCheckRollup":${rollup},"headRefOid":"${head}"}'`;
-}
-
-test("a rollup of commit statuses that all succeeded is green and ready to merge", () => {
+test("check runs that all concluded success, neutral or skipped are green and ready to merge", () => {
   const box = workspace();
   const head = git(box.repo, "rev-parse", "refs/remotes/origin/devloop/zz-aaa1");
   const bin = stubs(
     box.root,
-    rollupView(
-      head,
-      '[{"__typename":"StatusContext","context":"codecov/project","state":"SUCCESS"},' +
-        '{"__typename":"StatusContext","context":"vercel","state":"SUCCESS"}]',
+    checkRuns(
+      '[{"name":"CI","status":"completed","conclusion":"success"},' +
+        '{"name":"lint","status":"completed","conclusion":"neutral"},' +
+        '{"name":"docs","status":"completed","conclusion":"skipped"}]',
     ),
-    "exit 0",
+    pull(head),
   );
 
   const ran = run(box.root, box.repo, bin);
 
-  assert.doesNotMatch(
-    ran.out,
-    /^unreadable:/m,
-    `a commit status is reported as a rollup that did not parse:\n${ran.out}`,
-  );
-  assert.match(ran.out, /^ready:/m, `green commit statuses are not read as ready:\n${ran.out}`);
-  assert.equal(ran.code, 0, `green commit statuses do not exit 0:\n${ran.out}\n${ran.err}`);
+  assert.doesNotMatch(ran.out, /^unreadable:/m, `a REST check run is reported as a rollup that did not parse:\n${ran.out}`);
+  assert.match(ran.out, /^ready:/m, `green check runs are not read as ready:\n${ran.out}`);
+  assert.equal(ran.code, 0, `green check runs do not exit 0:\n${ran.out}\n${ran.err}`);
 });
 
-test("a commit status that failed is red and names the context", () => {
-  const box = workspace();
-  const head = git(box.repo, "rev-parse", "refs/remotes/origin/devloop/zz-aaa1");
-  const bin = stubs(
-    box.root,
-    rollupView(
-      head,
-      '[{"__typename":"StatusContext","context":"vercel","state":"SUCCESS"},' +
-        '{"__typename":"StatusContext","context":"codecov/project","state":"FAILURE"}]',
-    ),
-    "exit 1",
-  );
-
-  const ran = run(box.root, box.repo, bin);
-
-  assert.doesNotMatch(ran.out, /^not_ready:/m, `a failed commit status is deferred as pending:\n${ran.out}`);
-  assert.match(ran.out, /^red: codecov\/project failed/m, `a failed commit status is not red, or does not name the context:\n${ran.out}`);
-  assert.equal(ran.code, 4, `a failed commit status does not exit 4:\n${ran.out}\n${ran.err}`);
-});
-
-test("a commit status in error is red, not pending", () => {
-  const box = workspace();
-  const head = git(box.repo, "rev-parse", "refs/remotes/origin/devloop/zz-aaa1");
-  const bin = stubs(
-    box.root,
-    rollupView(head, '[{"__typename":"StatusContext","context":"codecov/patch","state":"ERROR"}]'),
-    "exit 1",
-  );
-
-  const ran = run(box.root, box.repo, bin);
-
-  assert.match(ran.out, /^red: codecov\/patch failed/m, `an errored commit status is not red:\n${ran.out}`);
-  assert.equal(ran.code, 4, `an errored commit status does not exit 4:\n${ran.out}\n${ran.err}`);
-});
-
-test("a commit status still pending or expected is not ready rather than red or unreadable", () => {
-  for (const state of ["PENDING", "EXPECTED"]) {
+test("a check run that was cancelled or timed out is red and names the run", () => {
+  for (const conclusion of ["cancelled", "timed_out", "action_required"]) {
     const box = workspace();
     const head = git(box.repo, "rev-parse", "refs/remotes/origin/devloop/zz-aaa1");
     const bin = stubs(
       box.root,
-      rollupView(head, `[{"__typename":"StatusContext","context":"codecov/project","state":"${state}"}]`),
-      "exit 8",
+      checkRuns(
+        '[{"name":"CI","status":"completed","conclusion":"success"},' +
+          `{"name":"e2e","status":"completed","conclusion":"${conclusion}"}]`,
+      ),
+      pull(head),
     );
 
     const ran = run(box.root, box.repo, bin);
 
-    assert.doesNotMatch(ran.out, /^red:/m, `a ${state} commit status is reported as red:\n${ran.out}`);
-    assert.match(
-      ran.out,
-      /^not_ready: codecov\/project on 101 has not concluded/m,
-      `a ${state} commit status is not reported as pending by context:\n${ran.out}`,
-    );
-    assert.equal(ran.code, 7, `a ${state} commit status does not exit 7:\n${ran.out}\n${ran.err}`);
+    assert.doesNotMatch(ran.out, /^not_ready:/m, `a ${conclusion} check run is deferred as pending:\n${ran.out}`);
+    assert.match(ran.out, /^red: e2e failed/m, `a ${conclusion} check run is not red, or does not name the run:\n${ran.out}`);
+    assert.equal(ran.code, 4, `a ${conclusion} check run does not exit 4:\n${ran.out}\n${ran.err}`);
   }
 });
 
-test("a rollup mixing check runs and commit statuses reads both kinds", () => {
+test("a rollup paged by gh is read across every page", () => {
   const box = workspace();
   const head = git(box.repo, "rev-parse", "refs/remotes/origin/devloop/zz-aaa1");
-
-  const redStatus = stubs(
+  const bin = stubs(
     box.root,
-    rollupView(
-      head,
-      '[{"__typename":"CheckRun","name":"CI","conclusion":"SUCCESS","status":"COMPLETED"},' +
-        '{"__typename":"StatusContext","context":"codecov/project","state":"FAILURE"}]',
-    ),
-    "exit 1",
+    `echo '[{"total_count":2,"check_runs":[{"name":"CI","status":"completed","conclusion":"success"}]},` +
+      `{"total_count":2,"check_runs":[{"name":"e2e","status":"completed","conclusion":"failure"}]}]'`,
+    pull(head),
   );
-  const ranRed = run(box.root, box.repo, redStatus);
-  assert.match(ranRed.out, /^red: codecov\/project failed/m, `a failed status beside a green check run is not red:\n${ranRed.out}`);
-  assert.equal(ranRed.code, 4, ranRed.out + ranRed.err);
 
-  const other = workspace();
-  const otherHead = git(other.repo, "rev-parse", "refs/remotes/origin/devloop/zz-aaa1");
-  const pendingRun = stubs(
-    other.root,
-    rollupView(
-      otherHead,
-      '[{"__typename":"CheckRun","name":"CI","conclusion":"","status":"IN_PROGRESS"},' +
-        '{"__typename":"StatusContext","context":"codecov/project","state":"SUCCESS"}]',
-    ),
-    "exit 8",
-  );
-  const ranPending = run(other.root, other.repo, pendingRun);
-  assert.match(ranPending.out, /^not_ready: CI on 101/m, `a running check run beside a green status is not pending:\n${ranPending.out}`);
-  assert.equal(ranPending.code, 7, ranPending.out + ranPending.err);
+  const ran = run(box.root, box.repo, bin);
 
-  const third = workspace();
-  const thirdHead = git(third.repo, "rev-parse", "refs/remotes/origin/devloop/zz-aaa1");
-  const allGreen = stubs(
-    third.root,
-    rollupView(
-      thirdHead,
-      '[{"__typename":"CheckRun","name":"CI","conclusion":"SUCCESS","status":"COMPLETED"},' +
-        '{"__typename":"StatusContext","context":"codecov/project","state":"SUCCESS"}]',
-    ),
-    "exit 0",
+  assert.match(ran.out, /^red: e2e failed/m, `a failure on the second page was not read:\n${ran.out}`);
+  assert.equal(ran.code, 4, `${ran.out}\n${ran.err}`);
+});
+
+test("a pull request that no longer carries the label is not ready, even when the checks are green", () => {
+  const box = workspace();
+  const head = git(box.repo, "rev-parse", "refs/remotes/origin/devloop/zz-aaa1");
+  const bin = stubs(
+    box.root,
+    checkRuns('[{"name":"CI","status":"completed","conclusion":"success"}]'),
+    pull(head, '[{"name":"tooling"}]'),
   );
-  const ranGreen = run(third.root, third.repo, allGreen);
-  assert.match(ranGreen.out, /^ready:/m, `a green check run beside a green status is not ready:\n${ranGreen.out}`);
-  assert.equal(ranGreen.code, 0, ranGreen.out + ranGreen.err);
+
+  const ran = run(box.root, box.repo, bin);
+
+  assert.match(ran.out, /^not_ready: 101 no longer carries lane-verified - labels are: tooling/m, ran.out);
+  assert.equal(ran.code, 7, `${ran.out}\n${ran.err}`);
+});
+
+test("a pull request whose head is not the branch head is not ready", () => {
+  const box = workspace();
+  const bin = stubs(
+    box.root,
+    checkRuns('[{"name":"CI","status":"completed","conclusion":"success"}]'),
+    pull("0123456789abcdef0123456789abcdef01234567"),
+  );
+
+  const ran = run(box.root, box.repo, bin);
+
+  assert.match(ran.out, /^not_ready: rollup describes 0123456789abcdef0123456789abcdef01234567 but the branch head is/m, ran.out);
+  assert.equal(ran.code, 7, `${ran.out}\n${ran.err}`);
 });
 
 test("a master run list gh cannot answer is reported as unread, not as a red master", () => {
@@ -324,7 +319,7 @@ test("a master run list gh cannot answer is reported as unread, not as a red mas
   const bin = stubs(
     box.root,
     "exit 0",
-    "exit 0",
+    pull("unread"),
     "echo 'HTTP 403: API rate limit exceeded for installation (https://api.github.com/graphql)' >&2; exit 1",
   );
 
@@ -348,7 +343,7 @@ test("a master run list gh cannot answer is reported as unread, not as a red mas
 
 test("a master run list that is not the JSON it should be is reported as unread, not as a red master", () => {
   const box = workspace();
-  const bin = stubs(box.root, "exit 0", "exit 0", "echo 'Gateway Timeout'");
+  const bin = stubs(box.root, "exit 0", pull("unread"), "echo 'Gateway Timeout'");
 
   const ran = run(box.root, box.repo, bin);
 
@@ -359,7 +354,7 @@ test("a master run list that is not the JSON it should be is reported as unread,
 
 test("a master run that was read and failed is still a red master", () => {
   const box = workspace();
-  const bin = stubs(box.root, "exit 0", "exit 0", `echo '[{"status":"completed","conclusion":"failure"}]'`);
+  const bin = stubs(box.root, "exit 0", pull("unread"), `echo '[{"status":"completed","conclusion":"failure"}]'`);
 
   const ran = run(box.root, box.repo, bin);
 

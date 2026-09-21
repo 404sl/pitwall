@@ -35,13 +35,8 @@ function stubs(root: string, bare: string, base: string): string {
 case "$1 $2" in
   "repo view") echo '{"defaultBranchRef":{"name":"master"}}' ;;
   "run list")  echo '[{"status":"completed","conclusion":"success"}]' ;;
-  "pr checks") exit 0 ;;
-  "api repos/"*) echo '{"total_count":1,"check_runs":[{"name":"CI"}]}' ;;
-  "pr view")
-    case "$*" in
-      *baseRefName*) ${base} ;;
-      *) echo '{"labels":[{"name":"lane-verified"}],"statusCheckRollup":[{"name":"CI","conclusion":"SUCCESS"}],"headRefOid":"'"$(git --git-dir=${JSON.stringify(bare)} rev-parse "refs/heads/$BRANCH_UNDER_TEST" 2>/dev/null)"'"}' ;;
-    esac ;;
+  "api "*/check-runs) echo '{"total_count":1,"check_runs":[{"name":"CI","status":"completed","conclusion":"success"}]}' ;;
+  "api "*/pulls/*) ${base} ;;
   *) exit 0 ;;
 esac
 `,
@@ -61,7 +56,11 @@ exec "$@"
   return bin;
 }
 
-function workspace(base: string) {
+function opensAgainst(bare: string, ref: string): string {
+  return `echo '{"base":{"ref":"${ref}"},"labels":[{"name":"lane-verified"}],"head":{"sha":"'"$(git --git-dir=${JSON.stringify(bare)} rev-parse "refs/heads/$BRANCH_UNDER_TEST" 2>/dev/null)"'"}}'`;
+}
+
+function workspace(base: string | ((bare: string) => string)) {
   const root = mkdtempSync(join(tmpdir(), "lander-pr-base-"));
   const bare = join(root, "origin.git");
   const repo = join(root, "repo");
@@ -86,7 +85,7 @@ function workspace(base: string) {
   git(repo, "commit", "-m", "master moves under the branch");
   git(repo, "push", "--quiet", "origin", "master");
 
-  return { root, bare, repo, prefix, bin: stubs(root, bare, base) };
+  return { root, bare, repo, prefix, bin: stubs(root, bare, typeof base === "function" ? base(bare) : base) };
 }
 
 function landOne(box: { root: string; repo: string; bin: string; prefix: string }, pr: string) {
@@ -106,6 +105,7 @@ function landOne(box: { root: string; repo: string; bin: string; prefix: string 
         ...GIT_ENV,
         BRANCH_UNDER_TEST: "devloop/zz-base",
         HOME: box.root,
+        LAND_ONE_REST_BACKOFF: "0",
       },
     },
   );
@@ -118,7 +118,7 @@ function clean(box: { root: string; prefix: string }): void {
 }
 
 test("land-one.sh refuses a pull request open against a branch other than its base, naming both, before cutting a worktree", () => {
-  const box = workspace(`echo '{"baseRefName":"main"}'`);
+  const box = workspace((bare) => opensAgainst(bare, "main"));
   try {
     const before = git(box.bare, "rev-parse", "refs/heads/devloop/zz-base");
 
@@ -143,7 +143,7 @@ test("land-one.sh refuses a pull request open against a branch other than its ba
 });
 
 test("land-one.sh lands a pull request whose base agrees with the one it was handed", () => {
-  const box = workspace(`echo '{"baseRefName":"master"}'`);
+  const box = workspace((bare) => opensAgainst(bare, "master"));
   try {
     const before = git(box.bare, "rev-parse", "refs/heads/devloop/zz-base");
 
@@ -169,7 +169,8 @@ test("land-one.sh refuses a pull request whose base gh cannot report rather than
 
     assert.equal(ran.code, 6, `an unreadable base was read as agreeing:\n${ran.out}\n${ran.err}`);
     assert.match(ran.out, /^usage: could not read the base branch of acme\/site#503/m, ran.out);
-    assert.match(ran.out, /gh pr view 503 --repo acme\/site --json baseRefName/, `the refusal does not name the read that was attempted:\n${ran.out}`);
+    assert.match(ran.out, /gh api repos\/acme\/site\/pulls\/503/, `the refusal does not name the read that was attempted:\n${ran.out}`);
+    assert.match(ran.out, /rate limit/, `the reason gh gave is nowhere in the refusal:\n${ran.out}`);
     assert.equal(git(box.bare, "rev-parse", "refs/heads/devloop/zz-base"), before, "the branch head was moved");
     assert.equal(existsSync(join("/tmp", `${box.prefix}-worktrees`, "land-503")), false, "a worktree was cut before the refusal");
   } finally {

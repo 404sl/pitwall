@@ -67,15 +67,11 @@ function stubs(root: string, bare: string, body: string | null, perPr = false, q
 case "$1 $2" in
   "repo view") echo '{"defaultBranchRef":{"name":"master"}}' ;;
   "run list")  echo '[{"status":"completed","conclusion":"success"}]' ;;
-  "pr checks") exit 0 ;;
-  "api repos/"*) echo '{"total_count":1,"check_runs":[{"name":"CI"}]}' ;;
+  "api "*/check-runs) echo '{"total_count":1,"check_runs":[{"name":"CI","status":"completed","conclusion":"success"}]}' ;;
+  "api "*/pulls/*) echo '{"base":{"ref":"master"},"labels":[{"name":"lane-verified"}],"head":{"sha":"'"$(git --git-dir=${JSON.stringify(bare)} rev-parse "refs/heads/$BRANCH_UNDER_TEST" 2>/dev/null)"'"}}' ;;
   "pr list")   printf '%s\\n' ${JSON.stringify(queue)} ;;
   "pr create") echo "https://github.com/acme/site/pull/200" ;;
-  "pr view")
-    case "$*" in
-      *"title,body"*) ${titleBody} ;;
-      *) echo '{"baseRefName":"master","labels":[{"name":"lane-verified"}],"statusCheckRollup":[{"name":"CI","conclusion":"SUCCESS"}],"headRefOid":"'"$(git --git-dir=${JSON.stringify(bare)} rev-parse "refs/heads/$BRANCH_UNDER_TEST" 2>/dev/null)"'"}' ;;
-    esac ;;
+  "pr view")   ${titleBody} ;;
   *) exit 0 ;;
 esac
 `,

@@ -19,7 +19,7 @@ function ghStub(bin: string, answers: Record<string, string>, prBase?: string): 
   const cases = Object.entries(answers)
     .map(([slug, body]) => `  "repo view ${slug}") ${body} ;;`)
     .join("\n");
-  const view = prBase ? `  "pr view "*) echo '{"baseRefName":"${prBase}"}' ;;\n` : "";
+  const view = prBase ? `  "api repos/"*"/pulls/"*) echo '{"base":{"ref":"${prBase}"},"labels":[{"name":"lane-verified"}],"head":{"sha":""}}' ;;\n` : "";
   writeFileSync(
     join(bin, "gh"),
     `#!/bin/bash
