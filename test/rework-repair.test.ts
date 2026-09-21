@@ -28,7 +28,7 @@ function labelled(calls: Call[], label: string): Call[] {
   return calls.filter((c) => c.label === label);
 }
 
-test("a rework whose rebased head is red gets one repair step, briefed from the failures, then hands off again", async () => {
+test("a rework whose merged head is red gets one repair step, briefed from the failures, then hands off again", async () => {
   const { calls, done } = runScript("rework.js", ARGS, (_call, n) => {
     if (n === 1) return RESOLVED;
     if (n === 2) return RED;
@@ -50,9 +50,10 @@ test("a rework whose rebased head is red gets one repair step, briefed from the 
   assert.ok(repair.prompt.includes("tests:  npm test"), "the repair step is not told how this repository runs its tests");
   assert.ok(repair.prompt.includes("lint:   npm run lint"), "the repair step is not told how this repository lints");
   assert.ok(repair.prompt.includes("git diff aaaaaaa...origin/master"), "the repair step is not pointed at what master changed since the branch forked");
-  assert.ok(repair.prompt.includes("--force-with-lease="), "the repair step pushes without a lease");
-  assert.ok(repair.prompt.includes("origin HEAD:refs/heads/<the branch>"), "the repair step pushes a bare HEAD from a detached worktree, which git refuses as an unqualified destination");
-  assert.equal(/\bgit push --force\b(?!-with-lease)/.test(repair.prompt), false, "the repair step is offered a plain force push");
+  assert.equal(/git push[^\n]*--force/.test(repair.prompt), false, "the repair step forces its push - one commit on top of the head the remote holds is a plain fast-forward, and a force-push is what the session refuses");
+  assert.ok(repair.prompt.includes(`git push origin HEAD:refs/heads/devloop/${ID}`), "the repair step does not push a plain fast-forward with both ends named - a bare HEAD from a detached worktree is refused as an unqualified destination");
+  assert.ok(repair.prompt.includes(`--pre-push --branch devloop/${ID} --base master`), "the repair step's pre-push check is not told the branch, and HEAD is detached, so the check cannot ask the remote what is published");
+  assert.equal(repair.prompt.includes("--rebased"), false, "the repair step tells the pre-push check the range was rebased, and nothing was");
   assert.ok(/DO NOT REDESIGN, REBUILD OR "IMPROVE"/.test(repair.prompt), "the repair step is not told to leave the feature alone");
   assert.ok(repair.prompt.includes("ONE attempt"), "the repair step is not told it gets one attempt");
   assert.equal(repair.prompt.includes("`"), false, "a backtick in the repair brief closes its template literal early");

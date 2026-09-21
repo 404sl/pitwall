@@ -532,7 +532,7 @@ test("land-train.js and rework.js name the configured base rather than master", 
   await rework.done;
   const resolve = rework.calls[0];
   assert.ok(resolve, "no resolve step ran");
-  assert.match(resolve.prompt, /rebase origin\/blueprint-pro-master/);
-  assert.match(resolve.prompt, /lane-handoff\.sh [^\n]*--pre-push --rebased --base blueprint-pro-master/);
+  assert.match(resolve.prompt, /merge --no-edit origin\/blueprint-pro-master/);
+  assert.match(resolve.prompt, /lane-handoff\.sh [^\n]*--pre-push --branch <the branch> --base blueprint-pro-master/);
   assert.equal(resolve.prompt.includes("origin/master"), false, `the resolve brief still names origin/master:\n${resolve.prompt.split("\n").filter((l) => l.includes("origin/master")).join("\n")}`);
 });

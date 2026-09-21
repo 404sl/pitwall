@@ -414,31 +414,34 @@ test("the rules never call a commit-message hit unfixable without saying it is p
   }
 });
 
-test("the rework briefs read the commit messages back before every force-push", () => {
+test("the rework briefs read the commit messages back before every push, and never force one", () => {
   const source = readFileSync(join(SKILL, "rework.js"), "utf8");
-  const pushes = [...source.matchAll(/--force-with-lease/g)].map((m) => m.index ?? -1);
+  const pushes = [...source.matchAll(/\bgit push\b/g)].map((m) => m.index ?? -1);
 
   assert.ok(
     pushes.length >= 2,
     "rework.js no longer pushes where this test expects it to - update the test rather than " +
       "deleting it",
   );
+  assert.equal(
+    source.includes("force-with-lease"),
+    false,
+    "rework.js renders a lease. A rework rewrites nothing - it merges master in and pushes the " +
+      "fast-forward that leaves - and a force-push, leased or not, is what the session refuses, " +
+      "so every rework that asks for one ends on a person's board with a one-line command.",
+  );
+  assert.equal(source.includes("--rebased"), false, "rework.js tells the pre-push check the range was rebased, and it is not");
 
   let from = 0;
   for (const at of pushes) {
     const segment = source.slice(from, at);
     assert.ok(
-      segment.includes("--pre-push"),
-      "a force-push in rework.js is reached with nothing having read the commit messages first. " +
-        "A rebase path force-pushes anyway, so the check is free there, and the commit the step " +
-        "writes on top is the one nothing has graded - a hit found after that push is a pull " +
-        "request that is green, correct and waiting on a person.",
-    );
-    assert.ok(
-      segment.includes("--pre-push --rebased"),
-      "the check before a force-push in rework.js is not told the range was rebased. A rebase " +
-        "gives every commit a new sha, so the plain mode reads the replayed commits as never " +
-        "pushed and offers to squash reviewed history away.",
+      segment.includes("--pre-push --branch"),
+      "a push in rework.js is reached with nothing having read the commit messages first, or with " +
+        "a check that cannot tell which commits are published: the worktree is detached, so the " +
+        "check needs --branch to ask the remote. The commit the step writes on top is the one " +
+        "nothing has graded - a hit found after the push is a pull request that is green, " +
+        "correct and waiting on a person.",
     );
     from = at;
   }

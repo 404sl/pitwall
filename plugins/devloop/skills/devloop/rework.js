@@ -2,8 +2,8 @@ export const meta = {
   name: 'devloop-rework',
   description: 'Bring a pull request that the release train dropped back onto current master, and hand it back green',
   phases: [
-    { title: 'Resolve', detail: 'rebase the branch onto master, resolve conflicts keeping both sides, push' },
-    { title: 'Repair', detail: 'if CI is red on the rebased head, mend what master changed underneath it - once' },
+    { title: 'Resolve', detail: 'merge master into the branch, resolve conflicts keeping both sides, push' },
+    { title: 'Repair', detail: 'if CI is red on the merged head, mend what master changed underneath it - once' },
     { title: 'Handoff', detail: 'wait for CI on the new head, then re-label lane-verified' },
   ],
 }
@@ -22,7 +22,7 @@ export const meta = {
 // gets quietly rewritten into a different one.
 //
 // So: no design, no review. Resolve, then hand back - with one repair in between when the
-// rebased head is red, because a branch whose diff is unchanged and whose tests now fail has
+// merged head is red, because a branch whose diff is unchanged and whose tests now fail has
 // been broken by master, not by its author.
 
 const input = (typeof args === 'string' ? JSON.parse(args) : args) || {}
@@ -236,15 +236,16 @@ const resolved = await agent(
   `Bring pull request #${PR} on ${SLUG} back onto current master. It arrives here one of two ways,
 and neither is a rejection - its own work is fine and shipped green:
 
-  DROPPED by the release train for CONFLICTING. The branch is behind master and a rebase stops
-  on textual conflicts. Your job is bringing it up to master, and nothing else.
+  DROPPED by the release train for CONFLICTING. The branch is behind master and bringing master
+  in stops on textual conflicts. Your job is bringing it up to master, and nothing else.
 
   RETIRED by the lander as RED AFTER REBASE. land-one.sh already rebased the branch onto master
   and PUSHED the rebased head before it waited on CI, so the branch ALREADY SITS ON TOP OF
-  MASTER when you get it. The rebase below replays nothing, HEAD after it equals the head you
-  record before it, there is nothing to push, and the answer is status 'already_clean' - with
-  both heads reported, the same sha. What is wrong with it is SEMANTIC and is not your job: a
-  later step in this run repairs it from what CI says. Do not go looking for the break here.
+  MASTER when you get it. The merge below has nothing to bring in - git says 'Already up to
+  date' - HEAD after it equals the head you record before it, there is nothing to push, and the
+  answer is status 'already_clean' - with both heads reported, the same sha. What is wrong with
+  it is SEMANTIC and is not your job: a later step in this run repairs it from what CI says. Do
+  not go looking for the break here.
 
 Check which one you have as soon as the worktree below exists, before you touch anything:
 
@@ -294,10 +295,11 @@ needs the branch name until the push, and the push names it in full.
 
 IF 'git worktree list' SHOWS ANOTHER WORKTREE WITH THE BRANCH CHECKED OUT, that is the task lane's
 worktree, and its local ref is the SUPERSEDED head: the one this round is about to replace, or the
-one an earlier round already did. Never rebase in it and never push from it. A rebase there replays
-the stale head over master, and a push from it under a lease read from the freshly fetched remote
-replaces the newer head with the stale one. Leave it alone. The handoff step removes it once the
-label is on, and not before.
+one an earlier round already did. Never merge in it and never push from it. A merge there builds on
+the stale head, and a push from it is refused as a non-fast-forward once a round has moved the
+remote - or, on the first round, moves the branch from a checkout this run does not hold and the
+repair step never sees. Leave it alone. The handoff step removes it once the label is on, and not
+before.
 
 Record the branch head BEFORE you touch it - you will need to prove it moved:
   git -C ${WT_PATH} rev-parse HEAD
@@ -311,40 +313,50 @@ put it back once CI is green on the new head:
 A retired pull request has already had it removed by the lander; the command succeeds on a label
 that is not there, and its absence is expected rather than a sign something else is going on.
 
-REBASE ONTO MASTER. Do not merge master in.
+MERGE MASTER INTO THE BRANCH. Do not rebase.
 
-  cd ${WT_PATH} && git -c user.name="$(git log -1 --format=%an origin/${BASE})" -c user.email="$(git log -1 --format=%ae origin/${BASE})" rebase origin/${BASE}
+  cd ${WT_PATH} && git -c user.name="$(git log -1 --format=%an origin/${BASE})" -c user.email="$(git log -1 --format=%ae origin/${BASE})" merge --no-edit origin/${BASE}
 
-The rebase stops at each commit that conflicts. Resolve inside the conflict regions, stage what
-you resolved, and continue:
+A clean merge commits on its own with git's own message, and that is the message it keeps. A merge
+that conflicts stops once, with every conflict in the tree at the same time. Resolve inside the
+conflict regions, stage what you resolved, and finish it:
 
   cd ${WT_PATH} && git add <the files you resolved>
-  cd ${WT_PATH} && git -c user.name="$(git log -1 --format=%an origin/${BASE})" -c user.email="$(git log -1 --format=%ae origin/${BASE})" -c core.editor=true rebase --continue
+  cd ${WT_PATH} && git -c user.name="$(git log -1 --format=%an origin/${BASE})" -c user.email="$(git log -1 --format=%ae origin/${BASE})" -c core.editor=true merge --continue
 
 THE IDENTITY GOES ON '--continue' TOO, not only on the first command. Continuing is what writes
-the replayed commit, so without it the rebase stops again with 'unable to auto-detect email
-address' and leaves the branch mid-rebase.
+the merge commit, so without it git stops again with 'unable to auto-detect email address' and
+leaves the branch mid-merge.
 
 AND SO DOES AN EDITOR IT CAN RUN, for the same reason and on the same line. '--continue' opens an
-editor on the replayed commit's message, and the exports take core.editor away with the rest of
-the home config, so git falls back to vi - which with no terminal prints 'Vim: Error reading
-input, exiting...', exits 1 and leaves the branch mid-rebase exactly as a missing identity does.
+editor on the merge message, and the exports take core.editor away with the rest of the home
+config, so git falls back to vi - which with no terminal prints 'Vim: Error reading input,
+exiting...', exits 1 and leaves the branch mid-merge exactly as a missing identity does.
 '-c core.editor=true' accepts the message unchanged. Do not reach for 'git commit' with a message
-of your own instead: that REPLACES the message the replayed commit already carries.
+of your own instead: git already wrote one, and it says what the commit is.
 
-REBASE, NOT MERGE, AND THE REASON IS THE LANDER. land-one.sh runs a plain rebase onto
-origin/${BASE} on whatever branch it is handed, and a rebase replays the branch's OWN commits - a
-resolution that exists only inside a merge commit is not one of them, so it is dropped. That is
-not theoretical: the pitwall-qku6 branch was merged up to master, master moved, and the lander's
-rebase lost a line from a test file and left a version line unmerged. The rebase exited non-zero,
-which the lander reads as a branch that cannot land - the issue is retired rather than deferred,
-and the work is thrown away. A branch that is already linear replays to nothing and survives that
-step untouched.
+MERGE, NOT REBASE, AND THE REASON IS THE PUSH. A rebase rewrites every commit on the branch, and
+a rewritten branch can only be published with a force-push. The session this runs in refuses a
+force-push as destructive - correctly, for the general case - and a run neither retries nor routes
+around a refusal, so every rebased rework used to end as a one-line command waiting on a person.
+A merge moves the branch forward and rewrites nothing: the push is a plain fast-forward, nothing
+is refused, nobody is asked. The lander squash-merges, which discards the merge commit along with
+every other commit on the branch, so master's history is byte-for-byte what a rebase would have
+left. CI runs on the merged tree, which is the same tree. The pull request's diff stays the
+branch's own changes, because GitHub diffs against the merge-base and the merge-base moves with
+the merge.
 
-IF THE BRANCH ALREADY CARRIES A MERGE COMMIT from an earlier round of this shape, the rebase drops
-it and the conflicts it resolved come back, one commit at a time. That is expected rather than a
-sign something is wrong. Resolve them again; this time the resolutions live inside the replayed
-commits, where the lander's rebase cannot lose them.
+THE LANDER READS A MERGED BRANCH AS CURRENT, AND ONLY AS LONG AS MASTER STAYS PUT. land-one.sh
+counts how far the branch is behind origin/${BASE}, and a branch that has just merged it is 0
+behind, which is the path that rebases nothing and pushes nothing. It refuses a branch that
+carries a merge commit AND is behind - it exits 8 merge_shaped, and land.js then logs NEEDS
+REWORK, leaves the label on, leaves the issue as it is, writes no rework metadata and retires
+nothing, so no run picks that branch up again until the lander learns to merge master into it
+itself (pitwall-uoxk). Master moves every time the lander merges the pull request ahead of this
+one, so a reworked branch that is not first in the lander's queue is behind by the time its turn
+comes. Until pitwall-uoxk lands, a person moves such a branch by hand. A branch from an earlier
+round of this shape already carries a merge commit; merging again on top of it is fine, and its
+earlier resolutions stay where they are.
 
 RESOLVING. Most conflicts here are one shape: master added entries and this branch added
 different ones, in the same region. KEEP BOTH SIDES. Taking one side wholesale - --ours, --theirs,
@@ -401,9 +413,9 @@ equivalent check is that
 'git -C ${WT_PATH} status' reports no unmerged paths and 'git -C ${WT_PATH} merge-base --is-ancestor origin/${BASE} HEAD'
 succeeds.
 
-AND THE BRANCH MUST BE LINEAR. 'git -C ${WT_PATH} rev-list --merges origin/${BASE}..HEAD' prints
-NOTHING. A line there is a merge commit, and a merge commit is what the lander's rebase drops -
-along with every resolution that only exists inside it.
+AND THE BRANCH MUST CONTAIN MASTER. 'git -C ${WT_PATH} rev-list --count HEAD..origin/${BASE}'
+prints 0. That is the count the lander reads as 'behind', and anything above 0 means the merge
+did not happen or master moved after you fetched it - fetch and merge again before pushing.
 
 RUN THE TESTS THAT COVER THE CONFLICTED FILES, not the whole suite - the full suite is CI's job
 and takes ten minutes locally against about two and a half in CI. If a conflicted file is a spec,
@@ -411,42 +423,44 @@ run that spec. If it is a script with its own check, run that check. Say which y
 ${repo.test ? `  tests:  ${repo.test}` : ''}
 ${repo.lint ? `  lint:   ${repo.lint}` : ''}
 
-BEFORE YOU PUSH, READ BACK THE MESSAGES THE REBASE REPLAYED. There is no message for you to
-write here, but a resolution that amended one, or a message graded only against an older
-compliance pattern, reaches master otherwise:
+BEFORE YOU PUSH, READ BACK THE MESSAGES THE BRANCH NOW CARRIES. There is no message for you to
+write here, but a message graded only against an older compliance pattern reaches master
+otherwise:
 
-  bash ${SKILL_DIR}/lane-handoff.sh --repo-path ${WT_PATH} --pre-push --rebased --base ${BASE}
+  bash ${SKILL_DIR}/lane-handoff.sh --repo-path ${WT_PATH} --pre-push --branch <the branch> --base ${BASE}
 
-Exit 0 means push. Exit 2 prints the offending lines and names the commit each one is in.
---rebased is not optional here and it is what makes the answer usable: a rebase gives every
-commit a new sha, so without it the check reads the replayed commits as never pushed and offers
-to squash the reviewed history away. With it, the only remedy offered is an amend of the top
-commit, and a hit underneath is status "blocked" with the commit named. Skip this step only when
-the rebase replayed nothing and you are reporting "already_clean", because then there is no push.
+--branch is not optional here: the worktree is detached, and the check asks the remote whether
+that branch is published so it knows which commits a plain push still reaches. The remote holds
+the branch at the head you recorded, a merge keeps that head underneath HEAD, so the only commit
+it reads as unpushed is the merge commit and the only remedy it offers is an amend of that one.
+Exit 0 means push. Exit 2 prints the offending lines and names the commit each one is in - a hit
+in a commit the remote already holds is status "blocked" with that commit named. Exit 10 says HEAD
+does not contain the head the remote holds, which a merge cannot produce: something else moved
+the branch, so stop and report "blocked" with what it printed. Skip this step only when the merge
+brought nothing in and you are reporting "already_clean", because then there is no push.
 
-PUSH to the same branch. A rebase rewrites the commits, so a plain push is refused and the push
-has to be forced - force it WITH A LEASE, against the head you recorded before you started:
+PUSH to the same branch. A merge rewrites nothing, so this is a plain fast-forward push:
 
-  cd ${WT_PATH} && git push --force-with-lease=refs/heads/<the branch>:<the head you recorded> origin HEAD:refs/heads/<the branch>
+  cd ${WT_PATH} && git push origin HEAD:refs/heads/<the branch>
 
 BOTH ENDS ARE NAMED IN FULL because HEAD is detached: a bare 'origin HEAD' has no branch to
-resolve its destination from and git refuses it as an unqualified destination. The lease is the
-whole safety of this step: it refuses if the branch moved after you read it, which is exactly the
-case where forcing would destroy somebody else's work. If the lease is refused, STOP and report
-status "blocked" with what git said. Never fall back to a plain --force, and never widen the lease
-to the bare branch name.
+resolve its destination from and git refuses it as an unqualified destination. No --force and no
+lease, ever: nothing here needs one, and a push that git refuses as a non-fast-forward means the
+branch moved after you fetched it - STOP and report status "blocked" with what git said.
 
-COMMIT MESSAGE RULES. A rebase composes no message of its own: the replayed commits keep the ones
-the branch already carried, so there is nothing here for you to write. If a resolution makes one of
-those messages wrong and you amend it, it is outward-facing text - say what the code does in the
-words a person would use, never mention the pipeline, lanes, labels, trains, worktrees, temporary
-paths, or any tooling or assistance, and read it back from git afterwards and check it yourself.
+COMMIT MESSAGE RULES. The branch keeps the commits it already carried, untouched - the remote
+holds them, and rewording one rewrites published history that a plain push can no longer reach.
+The merge commit is the one commit this step writes, and git's own message on it is the right
+one. If you ever do write a message here, it is outward-facing text - say what the code does in
+the words a person would use, never mention the pipeline, lanes, labels, trains, worktrees,
+temporary paths, or any tooling or assistance, and read it back from git afterwards and check it
+yourself.
 
 REPORT: status, the branch name, the old head, the new head, and the files you resolved. If the
-rebase replays nothing - because the lander already pushed the rebased head before retiring it,
-or because something else landed in the meantime - HEAD after the rebase equals the head you
-recorded, nothing was pushed, and that is status "already_clean" with oldHead and newHead both
-set to that sha and an empty files list. Say so rather than inventing a change, and never call it
+merge brings nothing in - because the lander already pushed the rebased head before retiring it,
+or because something else brought the branch up to master in the meantime - HEAD after the merge
+equals the head you recorded, nothing was pushed, and that is status "already_clean" with oldHead
+and newHead both set to that sha and an empty files list. Say so rather than inventing a change, and never call it
 "resolved": resolved with a head that did not move is read as a resolution that was never
 pushed.`,
   { schema: RESOLVE, phase: 'Resolve', label: ID ? `resolve:${ID}#${PR}` : `resolve:#${PR}` },
@@ -520,8 +534,8 @@ the field:
 
   cd ${ROOT} && export BEADS_DIR=${ROOT}/.beads && PITWALL_SESSION='rework-${OWNER}' bash ${SKILL_DIR}/bd-note.sh ${ID} --note-file <that file>
 
-Say that the branch was rebased onto master and is red on the new head for a reason a rebase
-cannot see, name each failure with its file and assertion, say what master changed that it
+Say that the branch was brought up to master and is red on the new head for a reason no merge
+can see, name each failure with its file and assertion, say what master changed that it
 collides with, and what was tried. Leave the pull request open and unlabelled.
 
 THEN HAND THE ISSUE TO A PERSON, in one command, exactly as written:
@@ -536,7 +550,7 @@ it in a person's queue with the diagnosis you just wrote, and open keeps it visi
 no tracker issue for this run to write on.`
 
 function handoffPrompt(head, afterRepair) {
-  return `Pull request #${PR} on ${SLUG} has been rebased onto current master and pushed${afterRepair ? ', and a repair step has since pushed a fix for the failures CI found on the rebased head' : ''}. Wait for CI on
+  return `Pull request #${PR} on ${SLUG} has been brought up to current master and pushed${afterRepair ? ', and a repair step has since pushed a fix for the failures CI found on the merged head' : ''}. Wait for CI on
 the NEW head${head ? ` - ${head} -` : ''} and hand it back to the lander.
 
 ${SHELL_FIRST}
@@ -612,8 +626,8 @@ Exit 8 means labelling began and stopped part-way, and it prints which pull requ
 label and which do not. Adding a label is idempotent and it stops before the worktree and the
 note, so re-run it once the cause it quotes is gone. Never remove a label to tidy that up.
 
-THE TRACKER NOTE must say the branch was rebased onto master, name the files that were resolved,
-and say what was kept from each side.${afterRepair ? ` It must also say that CI was red on the rebased head, name
+THE TRACKER NOTE must say master was merged into the branch, name the files that were resolved,
+and say what was kept from each side.${afterRepair ? ` It must also say that CI was red on the merged head, name
 the files the repair step changed and what it changed in them - that is the only record of a
 fix that was never reviewed as part of the branch.` : ''} Append it, never replace: the notes field has no history and
 an overwrite is simply gone.
@@ -649,11 +663,11 @@ Report the CI conclusion, whether the label is on, and what the removal printed.
 }
 
 function repairPrompt(failures) {
-  return `Pull request #${PR} on ${SLUG} was rebased onto current master, the rebase was clean or was
+  return `Pull request #${PR} on ${SLUG} was brought up to current master, the merge was clean or was
 resolved, it was pushed, and CI is RED on the new head. This is a SEMANTIC conflict: the diff this
 branch carries is the same one that was green before, and master moved underneath it - something
 merged since changed a file, a symbol, a path or a rule that this branch's code or tests assumed.
-Nothing in a rebase can see that, which is why the branch is here rather than merged.
+Nothing in a merge can see that, which is why the branch is here rather than landed.
 
 YOUR JOB IS TO MEND THAT BREAK AND NOTHING ELSE. You get ONE attempt, and the next step waits
 for CI once more. If it is red again the run ends and a person takes it, so a narrow fix that is
@@ -670,8 +684,8 @@ ${failures || '(the handoff step reported red and recorded no failures - read th
 ${SHELL_FIRST}
 
 THE WORKTREE IS ${WT_PATH}, on the branch as pushed. The lane lock is already held for this run;
-do not take or release it. Record the head before you touch anything - the push at the end is
-leased against it:
+do not take or release it. Record the head before you touch anything - the head you push is
+reported against it:
 
   cd ${WT_PATH} && git fetch origin && git status --short && git rev-parse HEAD
 ${railsSetup}
@@ -715,26 +729,25 @@ WHEN IT IS GREEN LOCALLY, commit, read the message you just wrote back, and push
 
   cd ${WT_PATH} && git add <the files you changed>
   cd ${WT_PATH} && git -c user.name="$(git log -1 --format=%an origin/${BASE})" -c user.email="$(git log -1 --format=%ae origin/${BASE})" commit -F <a message file>
-  bash ${SKILL_DIR}/lane-handoff.sh --repo-path ${WT_PATH} --pre-push --rebased --base ${BASE}
-  cd ${WT_PATH} && git push --force-with-lease=refs/heads/<the branch>:<the head you recorded> origin HEAD:refs/heads/<the branch>
+  bash ${SKILL_DIR}/lane-handoff.sh --repo-path ${WT_PATH} --pre-push --branch ${BRANCH} --base ${BASE}
+  cd ${WT_PATH} && git push origin HEAD:refs/heads/${BRANCH}
 
 THE CHECK SITS BETWEEN THE COMMIT AND THE PUSH BECAUSE THAT IS THE ONLY PLACE IT HELPS. It greps
 the commit messages for the authorship and tooling language the handoff gate refuses a pull
 request for, and the message you have just written is the one nothing has graded. Exit 0 means
 push. Exit 2 prints the offending lines, and the one remedy it offers is an amend of the commit
 you just wrote - not pushed, read by nobody, free to change. A hit in a commit UNDERNEATH yours
-is status "blocked" with that commit named, never a squash, and --rebased is what makes the check
-refuse to offer one: without it every replayed commit reads as never pushed and collapsing them
-looks free.
+is status "blocked" with that commit named, never a squash: the remote holds every commit under
+yours, --branch is how the check asks it so, and a reset past one of them is a push git refuses.
 
 ONE COMMIT ON TOP, not an amend: the commits underneath were reviewed and their messages are
 theirs. That is about where the repair goes, not about the check above - rewording the commit you
 wrote a moment ago is an amend of your own commit and is the intended answer to an exit 2.
 BOTH ENDS OF THE PUSH ARE NAMED IN FULL because the worktree is detached - a bare 'origin
-HEAD' has no branch to resolve its destination from and git refuses it. The lease is the safety
-of the push - it refuses if the branch moved after you read it, which is exactly the case where
-pushing would destroy somebody else's work. If it is refused, STOP and report "blocked" with what
-git said. Never fall back to a plain --force.
+HEAD' has no branch to resolve its destination from and git refuses it. The push is a plain
+fast-forward and needs no force and no lease: one commit on top of the head the remote holds. If
+git refuses it as a non-fast-forward, the branch moved after you fetched it - STOP and report
+"blocked" with what git said. Never add --force or a lease to get past that.
 
 THE COMMIT MESSAGE is outward-facing text: say what the code now does and what on master it
 follows, in the words a person would use. Never mention the pipeline, lanes, labels, trains,
@@ -762,7 +775,7 @@ handed = await agent(
 while (handed && handed.status === 'red' && repairs < MAX_REPAIRS) {
   repairs += 1
   phase('Repair')
-  log(`${OWNER}: CI red on the rebased head - one repair attempt, then a person (repair ${repairs} of ${MAX_REPAIRS})`)
+  log(`${OWNER}: CI red on the merged head - one repair attempt, then a person (repair ${repairs} of ${MAX_REPAIRS})`)
   repaired = await agent(
     repairPrompt(handed.failures || handed.notes),
     { schema: REPAIR, phase: 'Repair', label: ID ? `repair:${ID}#${PR}` : `repair:#${PR}` },
@@ -770,14 +783,14 @@ while (handed && handed.status === 'red' && repairs < MAX_REPAIRS) {
   if (!repaired || repaired.status !== 'repaired') {
     handed = {
       ...handed,
-      notes: `${handed.notes || 'CI red on the rebased head'}\n\nrepair: ${repaired ? (repaired.notes || 'blocked with no reason given') : 'the repair step returned nothing'}${HAND_BACK_NOTE}`,
+      notes: `${handed.notes || 'CI red on the merged head'}\n\nrepair: ${repaired ? (repaired.notes || 'blocked with no reason given') : 'the repair step returned nothing'}${HAND_BACK_NOTE}`,
     }
     break
   }
   if (repaired.head && resolved.newHead && repaired.head === resolved.newHead) {
     handed = {
       ...handed,
-      notes: `${handed.notes || 'CI red on the rebased head'}\n\nrepair reported success but the branch head did not move (${repaired.head}). Nothing was pushed, so CI would answer the same way.${HAND_BACK_NOTE}`,
+      notes: `${handed.notes || 'CI red on the merged head'}\n\nrepair reported success but the branch head did not move (${repaired.head}). Nothing was pushed, so CI would answer the same way.${HAND_BACK_NOTE}`,
     }
     break
   }
