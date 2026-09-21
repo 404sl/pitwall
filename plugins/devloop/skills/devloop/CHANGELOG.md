@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.128
+
+The lander's close step is handed a per-issue verdict as data - the config key each landed pull request was pre-flighted under, whether that key has a deploy array in the run's config, what the deploy step returned for it, and the exact `bd close` with its reason - instead of a list of deploying keys to map slugs onto. A repository with no deploy closes on the merge whatever any notes file says about which key is which; a deploying repository whose deploy did not succeed is still held.
+
 ## 0.1.127
 
 A ticket the lander or the train holds open now carries a note saying which pull request (or which survey gap) held the close, what did merge for it, and that the hold was deliberate. Read that note before treating a claim older than an hour as a dead lane; a held ticket is not one. A hold the note step could not record is logged as such in the run.
