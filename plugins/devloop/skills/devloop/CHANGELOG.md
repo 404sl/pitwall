@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.129
+
+The lander no longer refuses a branch that carries a merge commit of its own and has fallen behind master. It merges master into the branch, pushes the fast-forward and waits for checks on it, exactly as it rebases a linear branch; only a merge that conflicts comes back, as the same conflict the rebase path reports. A reworked branch that is merge-shaped by design therefore lands on its own once master has moved under it, and there is no merge-shaped status for the landing step to return. A version commit an earlier round wrote that sits under the branch's merge commit is dropped by restoring its files from master before the merge, and the number is assigned again from master as it is now.
+
 ## 0.1.128
 
 The lander's close step is handed a per-issue verdict as data - the config key each landed pull request was pre-flighted under, whether that key has a deploy array in the run's config, what the deploy step returned for it, and the exact `bd close` with its reason - instead of a list of deploying keys to map slugs onto. A repository with no deploy closes on the merge whatever any notes file says about which key is which; a deploying repository whose deploy did not succeed is still held.
