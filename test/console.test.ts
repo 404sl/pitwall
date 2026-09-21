@@ -1275,6 +1275,14 @@ test("a call is a sentence about what to do, one per classification and verdict"
     tone: "yours",
   });
   assert.equal(callFor("parked:tooling", "unchecked", false).text, "Nothing for you — it is parked: tooling.");
+  assert.deepEqual(callFor("parked:call", "unchecked", false), {
+    text: "Nothing for you — it is waiting on a call: a decision, but not yours.",
+    tone: "waiting",
+  });
+  assert.deepEqual(callFor("parked:call", "still-blocking", false), {
+    text: strings.issue.call.parkedCall,
+    tone: "waiting",
+  });
   assert.equal(callFor("in-flight", "unchecked", false).text, strings.issue.call.inFlight);
   assert.equal(callFor("landing", "unchecked", false).text, strings.issue.call.landing);
   for (const verdict of ["still-blocking", "likely-stale", "resolved"] as const) {
@@ -1410,6 +1418,13 @@ test("the call names the age once a park is suspect, and a decision with no ques
     "a fresh park is not a call to lift it",
   );
   assert.equal(callFor("blocked", "unchecked", false, { park: suspect }).text, strings.issue.call.blocked);
+  for (const context of [{ park: suspect }, { park: suspect, liftable: false }, { park: fresh }]) {
+    assert.deepEqual(
+      callFor("parked:call", "unchecked", false, context),
+      { text: strings.issue.call.parkedCall, tone: "waiting" },
+      "a call never ages into the owner's queue",
+    );
+  }
   assert.equal(callFor("yours:decision", "unchecked", true, { park: suspect }).text, strings.issue.call.closed);
 });
 
@@ -2534,6 +2549,26 @@ test("an aged park the console can lift says so in the call, and the control sit
   );
   assert.match(umbrella, /remove the park in the tracker\./, "an umbrella is still lifted in the tracker");
   assert.doesNotMatch(umbrella, /<section class="pw-actions"/);
+});
+
+test("a parked:call issue page says a decision is needed but not the owner's, in grey, with nothing to press", () => {
+  const suspect = { since: "2026-08-28T14:11:00Z", ms: 11 * DAY, suspect: true };
+  const markup = pageMarkup(
+    aPreview({ classification: "parked:call", labels: ["needs-call"], park: suspect, question: undefined }),
+  );
+  assert.match(markup, /class="pw-call pw-call--waiting">Nothing for you — it is waiting on a call: a decision, but not yours\.</);
+  assert.doesNotMatch(markup, /pw-call--yours/);
+  assert.doesNotMatch(markup, /pw-actions/);
+  assert.doesNotMatch(markup, /pw-call__ask/);
+  assert.doesNotMatch(markup, /it is parked: call/);
+  assert.doesNotMatch(markup, /Read this/);
+  assert.match(markup, /parked:call/);
+  assert.match(markup, /11d0h/);
+  assert.equal(
+    actionsMarkup({ classification: "parked:call", labels: ["needs-call"], park: suspect }),
+    "",
+    "a call is not lifted from the console",
+  );
 });
 
 test("a ticket parked on a question arrives with the box open; one parked on access does not", () => {
