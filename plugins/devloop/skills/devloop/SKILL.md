@@ -164,11 +164,11 @@ queue could not read the first time.
 gh pr list --state open --label lane-verified --json number   # in each repo
 
 # Then, FOR EVERY PR that listed - not just the first, not just the ones you doubt:
-gh pr view <n> --repo 404sl/<slug> --json labels,statusCheckRollup
+gh pr view <n> --repo <org>/<name> --json labels,statusCheckRollup
 
 # Then hand it the list you just looked at. It merges those and nothing else.
 args=$(bash ${CLAUDE_PLUGIN_ROOT}/skills/devloop/config.sh --land \
-         404sl/pitwall#588 404sl/pitwall-schema#111)
+         <org>/<name>#588 <org>/<other-name>#111)
 
 Workflow({ scriptPath: <the scriptPath that object carries>,
            args: <the object config.sh printed> })
@@ -210,6 +210,20 @@ request number requesting `labels` and `statusCheckRollup`". A subagent running 
 own transcript does not appear to satisfy that - on 2026-08-25/26 six merges were refused in a
 row for exactly this, each naming the PR number whose query was missing. The one clean drain
 of that night was eight PRs queried here first and then landed with zero refusals.
+
+**That same allow rule is scoped by organisation, and the scope is not written anywhere a run
+can read it.** Unattended merge and deploy depend on the merge and deploy exceptions in the
+machine's `autoMode` allow rules naming, as `--repo <org>/`, the org of EVERY slug configured
+under `repos` - a rule written for one org covers nothing in another, however green and however
+carefully pre-flighted the pull request is. A refusal reading `[Merge Without Review]` on a pull
+request that was queried in this transcript and is labelled and green means exactly that and
+nothing else: the org is missing from the rule. Do not retry it, do not re-query and relaunch,
+and do not rebase it - none of those change the answer, and one pass spent 22 runs and a
+million tokens reaching a refusal that was decidable before the first lane was dispatched. Tell
+the owner which org is missing and stop; the rule is a permission setting on their machine and
+only they edit it.
+`config.sh --check` prints the set of orgs the configured slugs live under and, when it can read
+the settings file, warns on any org the rules do not name.
 
 The ordering matters as much as the doing. A PR that gains its label AFTER a lander run has
 started will be refused however carefully it was checked, because the check has to precede the

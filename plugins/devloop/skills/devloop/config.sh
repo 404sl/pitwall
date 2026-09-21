@@ -39,7 +39,13 @@
 #                                   scriptPath to dispatch and the merge-lock token that train
 #                                   writes into the holder file.
 #   config.sh --check               validate the file and report what is missing, including a
-#                                   repository whose default branch is not what GitHub says it is
+#                                   repository whose default branch is not what GitHub says it is,
+#                                   and print the orgs the configured slugs live under - the
+#                                   harness's merge and deploy allow rules must name each one.
+#                                   $PITWALL_HARNESS_SETTINGS names the harness settings file to
+#                                   check those rules in; without it $CLAUDE_CONFIG_DIR and then
+#                                   $HOME/.claude are tried. The check is read-only and a miss
+#                                   is a warning, never a refusal.
 #
 # WHERE IT LOOKS, in order: $DEVLOOP_CONFIG, then .autofix.json walking up from the cwd. Walking
 # up rather than demanding an absolute path means it works from inside any repo of the workspace,
@@ -343,6 +349,42 @@ if cfg.get("lockPrefix") == "devloop":
           "      Namespace it per APPLICATION, not per pipeline: two pipelines over DIFFERENT apps\n"
           "      need different prefixes, and two over the SAME app must share one, or the lane\n"
           "      lock silently stops guarding that app's test databases.")
+orgs = sorted({r["slug"].split("/")[0] for r in (cfg.get("repos") or {}).values()
+               if isinstance(r, dict) and r.get("role") != "workspace"
+               and isinstance(r.get("slug"), str) and "/" in r["slug"]})
+if orgs:
+    print("  orgs: " + ", ".join(orgs) + " - the merge and deploy exceptions in the harness's autoMode allow\n"
+          "        rules must name each one as '--repo <org>/', or unattended merge and deploy of that\n"
+          "        org's pull requests are refused as [Merge Without Review].")
+    override = os.environ.get("PITWALL_HARNESS_SETTINGS")
+    if override:
+        candidates = [override]
+    else:
+        candidates = [os.path.join(d, "settings.json") for d in
+                      [os.environ.get("CLAUDE_CONFIG_DIR"), os.path.join(os.environ.get("HOME") or "", ".claude")] if d]
+    settings, text = None, None
+    for c in candidates:
+        try:
+            with open(c) as fh:
+                text = fh.read()
+        except OSError:
+            continue
+        settings = c
+        break
+    if settings is None:
+        print("  harness settings: not checked - no readable file at " + ", ".join(candidates) + ".\n"
+              "        Confirm yourself that the merge and deploy exceptions name every org above; set\n"
+              "        PITWALL_HARNESS_SETTINGS to the file's path to have this check read it.")
+    else:
+        missing = [o for o in orgs if "--repo %s/" % o not in text]
+        print("  harness settings: read " + settings + " - checked only for the substring '--repo <org>/'"
+              " per org, nothing else.")
+        for o in missing:
+            print("  WARN: no allow rule in " + settings + " mentions '--repo " + o + "/'. Unattended merge and\n"
+                  "        deploy of " + o + "/* will be refused as [Merge Without Review] however green the pull\n"
+                  "        request is. Nothing here changes that file; tell the owner the org is missing.")
+        if not missing:
+            print("  harness settings: every configured org is named.")
 if bad:
     print("\n".join("  " + b for b in bad)); sys.exit(1)
 print(f"  config OK: {len(cfg.get('repos') or {})} repos, idPrefix '{cfg.get('idPrefix')}', "
