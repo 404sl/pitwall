@@ -125,6 +125,7 @@ ${lines.join('\n')}${notes ? `\n\nWorth knowing about this repository:\n${notes}
 }
 const MAX_ATTEMPTS = input.maxAttempts || 3
 const MAX_REWORKS = input.maxReworks || 2
+const RETRY_FAILED = input.retryFailed === true
 const ID = input.id
 const SLOT = input.slot || 1
 const DISPATCH = /^[A-Za-z0-9._-]+$/.test(String(input.dispatch || '')) ? String(input.dispatch) : null
@@ -284,6 +285,11 @@ const LANE_PLAIN = {
   }
 }
 
+const IDENTITY = (ref) => '  git -c user.name="$(git log -1 --format=%an ' + ref + ')" -c user.email="$(git log -1 --format=%ae ' + ref + ')" commit -F <message file>'
+const BASE_OF_EACH = () => CHECKOUT_KEYS.map((k) => `  ${k} (${repoPath(k)})  origin/${baseOf(k)}`).join('\n')
+const REF = (base) => base ? `origin/${base}` : '<base>'
+const IDENTITY_FROM = (base) => base ? IDENTITY(`origin/${base}`) : IDENTITY('<base>') + '\n\nwhere <base> is the remote-tracking ref listed beside the repository the commit is in - the\nrepositories here do not share a default branch, so take it from this list rather than assuming:\n' + BASE_OF_EACH()
+
 const SHELL_FIRST = (base) => `EVERY COMMAND THAT RUNS git OR bundle STARTS WITH THESE TWO EXPORTS, and so does every
 command that runs a script which does:
 
@@ -308,7 +314,7 @@ COMMIT IDENTITY IS THE ONE THING THAT DOES NOT SURVIVE THEM, and every command t
 commit needs it - commit, rebase, merge, cherry-pick. Pass it on the command, taken from the
 branch being built on:
 
-  git -c user.name="$(git log -1 --format=%an origin/${base})" -c user.email="$(git log -1 --format=%ae origin/${base})" commit -F <message file>
+${IDENTITY_FROM(base)}
 
 Without it git either refuses outright, 'unable to auto-detect email address', or writes the
 wrong author - and nothing downstream notices the second. On this machine the credential helper
@@ -317,9 +323,15 @@ machine, not a rule: a workspace set up by 'gh auth setup-git' has the helper in
 config, and these exports drop it. If a push asks for a password, say so rather than putting the
 home config back.`
 
-const LAW = (base = WORKSPACE_BASE) => `
+const MIXED_BASES = () => `
+The repositories here do not share a default branch. Wherever <base> appears below it is the
+remote-tracking ref listed beside the repository the command runs in, and <branch> is that
+branch's name without the origin/ prefix - take both from this list rather than assuming:
+${BASE_OF_EACH()}
+`
+const LAW = (base = SHARED_BASE.length === 1 ? SHARED_BASE[0] : null) => `
 NON-NEGOTIABLE RULES. They outrank speed, and they outrank finishing the task.
-
+${base ? '' : MIXED_BASES()}
 0. WRITE bd TEXT THROUGH A FILE OR A QUOTED HEREDOC, never as an inline double-quoted
    argument containing backticks or $(...). The shell evaluates them before bd ever sees
    the string, and the failure is SILENT: the substitution's output replaces the text, so
@@ -346,11 +358,11 @@ NON-NEGOTIABLE RULES. They outrank speed, and they outrank finishing the task.
    succeeds, and notes come back null. Create first, then write the note with a separate
    run of bd-note.sh (rule 9), and read the field back.
 
-   BEFORE FILING THAT SOMETHING IS MISSING FROM ${base}, ASK origin/${base} - NOT YOUR WORKTREE.
-   Your checkout was cut from whatever origin/${base} was when this lane started, and other lanes
+   BEFORE FILING THAT SOMETHING IS MISSING FROM ${base || 'the default branch'}, ASK ${REF(base)} - NOT YOUR WORKTREE.
+   Your checkout was cut from whatever ${REF(base)} was when this lane started, and other lanes
    have been landing work since. Fetch, then look at the ref:
-     git fetch origin --quiet && git ls-tree --name-only origin/${base} <path>
-     git show origin/${base}:<file> | head
+     git fetch origin --quiet && git ls-tree --name-only ${REF(base)} <path>
+     git show ${REF(base)}:<file> | head
    And check whether a sibling already has it in flight, because an open pull request is not a
    gap in the product:
      gh pr list --state open --search "<the file or symbol>"
@@ -391,8 +403,8 @@ NON-NEGOTIABLE RULES. They outrank speed, and they outrank finishing the task.
    THAT VERDICT IS ONLY CORRECT AFTER A PUSH. While the branch is still local an amend needs no
    force-push at all, so a hit found before the push is ordinary work and 'blocked' is the
    wrong answer to it. SO CHECK BEFORE YOU PUSH, while the fix still costs nothing:
-     bash ${SKILL_DIR}/lane-handoff.sh --repo-path <your worktree> --pre-push --base ${base}
-   It runs the same grep the handoff gate runs, over origin/${base}..HEAD, and needs no pull
+     bash ${SKILL_DIR}/lane-handoff.sh --repo-path <your worktree> --pre-push --base ${base || '<branch>'}
+   It runs the same grep the handoff gate runs, over ${REF(base)}..HEAD, and needs no pull
    request. It ASKS THE REMOTE whether your branch exists there rather than inferring it from
    shas, so a branch that was pushed and then rebased is not mistaken for a local one.
    Clean exits 0. A hit exits 2 and names the commit it is in, because that is what decides the
@@ -416,8 +428,8 @@ NON-NEGOTIABLE RULES. They outrank speed, and they outrank finishing the task.
    first time. It is pure loss now that the answer is written here.
 2. Never commit to, push to, or force-push a default branch. Work only on your own branch.
 3. Guard pushes:
-   bash ${SKILL_DIR}/git-guard.sh --dir=<absolute worktree path> --branch=<your branch> --default=${base} -- git <command>
-   It refuses ${base} as well as master and main, whether named as --branch or as the destination of
+   bash ${SKILL_DIR}/git-guard.sh --dir=<absolute worktree path> --branch=<your branch> --default=${base || '<branch>'} -- git <command>
+   It refuses ${base || 'the default branch'} as well as master and main, whether named as --branch or as the destination of
    the push, a directory that is not the root of its own worktree, and a checkout whose HEAD is not
    the branch you named, and it runs nothing when it refuses.
 4. Never deploy production. Staging only, and only in the Ship step.
@@ -1913,6 +1925,27 @@ async function design(task) {
   return brief
 }
 
+function failedStep(answer) {
+  return !!answer && (answer.status === 'blocked' || answer.status === 'needs_feedback')
+}
+
+function retryNote(why) {
+  return `
+
+THIS STEP IS BEING RE-RUN. An earlier attempt of this same step ended with '${why}' and the run was
+resumed with retryFailed set, so it is issued once more. Whatever is already in the worktree and on
+the branch is this run's own earlier work: read what is there before acting and continue from it
+rather than starting over, and do not treat the earlier stop as still true without checking.`
+}
+
+async function step(prompt, opts) {
+  const first = await agent(prompt, opts)
+  if (!RETRY_FAILED || !failedStep(first)) return first
+  const why = `${first.status}${first.summary || first.question ? `: ${first.summary || first.question}` : ''}`
+  log(`${opts.label}: ended '${why}' and retryFailed is set - re-running that step once`)
+  return await agent(`${prompt}${retryNote(why)}`, opts)
+}
+
 const GIVEN_BACK = new Set(['released', 'already_gone'])
 
 function releaseLanePrompt() {
@@ -2414,7 +2447,7 @@ let reworks = 0
 
 if (isWorkspace(task.repo)) {
   phase('Fix')
-  const work = await agent(workspacePrompt(task), { label: `apply:${task.id}`, phase: 'Fix', schema: WORK })
+  const work = await step(workspacePrompt(task), { label: `apply:${task.id}`, phase: 'Fix', schema: WORK })
   if (!work) result = { outcome: 'agent_error', at: 'fix', attempts: 1 }
   else if (work.status === 'applied') {
     if (closedProperly(work.verification)) {
@@ -2438,7 +2471,7 @@ let rework = null
 
 for (let attempt = 1; attempt <= MAX_ATTEMPTS && !result && !rework; attempt++) {
   phase('Fix')
-  const work = await agent(fixPrompt(task, attempt, feedback, SLOT - 1, brief), {
+  const work = await step(fixPrompt(task, attempt, feedback, SLOT - 1, brief), {
     label: `fix:${task.id}${attempt > 1 ? `#${attempt}` : ''}`, phase: 'Fix', schema: WORK
   })
 
@@ -2464,7 +2497,7 @@ for (let attempt = 1; attempt <= MAX_ATTEMPTS && !result && !rework; attempt++) 
 
   if (review && review.approved) {
     phase('Handoff')
-    const ship = await agent(handoffPrompt(task, work), { label: `handoff:${task.id}`, phase: 'Handoff', schema: SHIP, model: 'sonnet', effort: 'low' })
+    const ship = await step(handoffPrompt(task, work), { label: `handoff:${task.id}`, phase: 'Handoff', schema: SHIP, model: 'sonnet', effort: 'low' })
 
     // Master moved and the rebase left this red. Somebody else's change broke it, so the
     // review budget is restored and it goes back to Fix knowing what failed.

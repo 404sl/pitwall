@@ -18,17 +18,14 @@
 #               [--base master] [--register-wait 180] [--register-interval 15]
 #
 # Exit codes, which are the interface - stdout is for a human, the code is for the caller:
-#   0  ready      rebased if needed, pushed, CI green on the pushed head. Merge it.
-#   3  conflict   rebase hit a conflict. Aborted, worktree removed. A person decides.
+#   0  ready      rebased or merged if needed, pushed, CI green on the pushed head. Merge it.
+#   3  conflict   the rebase, or the merge of master into a branch that carries a merge commit of
+#                 its own, hit a conflict. Aborted, worktree removed. A person decides.
 #   4  red        CI FAILED on the rebased head. A real failure; the PR is not landable as is.
 #   7  not_ready  the rollup is empty, has a check that has not concluded, or describes an older
 #                 head - CI has not finished registering. NOT a failure and NOT the same as 4:
 #                 the caller must retry this one in a later round rather than retiring it, which
 #                 is what the separate verify agent used to be for.
-#   8  merge_shaped the branch carries a merge commit of its own and master has moved under it, so
-#                 a rebase would replay only its own commits and drop whatever exists solely in
-#                 that merge's resolution. Nothing was touched. Like 7 this is not a failure of
-#                 the work: it needs rework, not retiring.
 #   9  unreadable the rollup, or master's latest run before it, could not be read AT ALL - a
 #                 throttled or failing gh, or output that did not parse. Nothing is known about
 #                 the checks or about master, which is not the same as knowing they failed.
@@ -202,20 +199,19 @@ case "$master_state" in
   *) say "master_red: ${BASE} is $master_state - nothing touched"; exit 5 ;;
 esac
 
-# 2. Is there anything to do to the branch before it merges? Two things can be: a rebase when
-#    master has moved under it, and the plugin version when the branch changes a file the
-#    marketplace serves. A branch needing neither is not pushed, and re-pushing an unchanged
-#    head would start a second CI run for no reason.
+# 2. Is there anything to do to the branch before it merges? Two things can be: bringing master
+#    in when it has moved under the branch - a rebase for a linear branch, a merge for one that
+#    carries a merge commit of its own, because a rebase would replay only the branch's commits
+#    and drop whatever exists solely in that merge's resolution - and the plugin version when the
+#    branch changes a file the marketplace serves. A branch needing neither is not pushed, and
+#    re-pushing an unchanged head would start a second CI run for no reason.
 behind=$(git rev-list --count "origin/${BRANCH}..origin/${BASE}" 2>/dev/null || echo unknown)
 case "$behind" in ''|*[!0-9]*) say "usage: no such branch origin/${BRANCH}"; exit 6 ;; esac
 
+merges=0
 if [ "$behind" != "0" ]; then
   merges=$(git rev-list --merges --count "origin/${BASE}..origin/${BRANCH}" 2>/dev/null || echo unknown)
   case "$merges" in ''|*[!0-9]*) say "usage: could not count merge commits on origin/${BRANCH}"; exit 6 ;; esac
-  if [ "$merges" != "0" ]; then
-    say "merge_shaped: ${BRANCH} carries ${merges} merge commit(s) of its own and is ${behind} behind ${BASE} - a rebase would keep none of them and drop whatever exists only in the resolution, so nothing was touched. Rework it onto ${BASE}."
-    exit 8
-  fi
 fi
 
 plugin_paths=$(git diff --name-only "origin/${BASE}...origin/${BRANCH}" 2>/dev/null \
@@ -254,7 +250,49 @@ else
   done
   [ "$dropped" = "0" ] || say "dropped: ${dropped} version commit(s) an earlier round wrote onto ${BRANCH} - the number is counted again from ${BASE} as it is now"
 
-  if [ "$behind" != "0" ] && ! git_with_identity rebase "origin/${BASE}" >/dev/null 2>/dev/null; then
+  buried=0
+  if [ "$(git rev-list --merges --count "origin/${BASE}..HEAD" 2>/dev/null || echo 0)" != "0" ]; then
+    for sha in $(git rev-list --no-merges "origin/${BASE}..HEAD" 2>/dev/null); do
+      case "$(git log -1 --format=%s "$sha" 2>/dev/null)" in
+        "Set the plugin version "*|"Set devloop plugin version "*) ;;
+        *) continue ;;
+      esac
+      changed=$(git diff-tree --no-commit-id --name-only -r "$sha" 2>/dev/null)
+      [ -n "$changed" ] || continue
+      printf '%s\n' "$changed" \
+        | grep -qvE '^(\.claude-plugin/marketplace\.json|plugins/devloop/\.claude-plugin/plugin\.json|plugins/devloop/skills/devloop/CHANGELOG\.md)$' \
+        && continue
+      buried=$((buried + 1))
+    done
+  fi
+  if [ "$buried" != "0" ]; then
+    for path in .claude-plugin/marketplace.json plugins/devloop/.claude-plugin/plugin.json plugins/devloop/skills/devloop/CHANGELOG.md; do
+      git cat-file -e "origin/${BASE}:${path}" 2>/dev/null || continue
+      git checkout "origin/${BASE}" -- "$path" >/dev/null 2>/dev/null
+    done
+    if ! git diff --cached --quiet 2>/dev/null; then
+      git_with_identity commit -q -m "Drop the plugin version an earlier round wrote under a merge commit" >/dev/null 2>/dev/null || {
+        cd "$REPO_PATH" || true; cleanup
+        say "usage: could not drop the version an earlier round wrote under a merge commit on ${BRANCH}"; exit 6; }
+    fi
+    say "dropped: ${buried} version commit(s) an earlier round wrote sit under a merge commit on ${BRANCH} and cannot be removed without rewriting it, so their files were restored from ${BASE} - the number is counted again from ${BASE} as it is now"
+  fi
+
+  if [ "$behind" != "0" ] && [ "$merges" != "0" ]; then
+    if ! git_with_identity merge --no-edit "origin/${BASE}" >/dev/null 2>"$gh_err"; then
+      files=$(git diff --name-only --diff-filter=U 2>/dev/null | tr '\n' ' ')
+      said=$(grep -v '^[[:space:]]*$' "$gh_err" 2>/dev/null | tail -1)
+      git merge --abort >/dev/null 2>/dev/null
+      cd "$REPO_PATH" || true
+      cleanup
+      if [ -n "$files" ]; then
+        say "conflict: ${BRANCH} conflicts with ${BASE} in: ${files}"
+        exit 3
+      fi
+      say "usage: could not merge ${BASE} into ${BRANCH}, which carries ${merges} merge commit(s) of its own - git said: ${said:-nothing on stderr}"
+      exit 6
+    fi
+  elif [ "$behind" != "0" ] && ! git_with_identity rebase "origin/${BASE}" >/dev/null 2>/dev/null; then
     # A conflict is a decision, not a task. Report WHAT disagrees and hand it back; guessing
     # here is how a merge that is green on both sides breaks the product.
     files=$(git diff --name-only --diff-filter=U 2>/dev/null | tr '\n' ' ')
@@ -304,7 +342,11 @@ else
     cd "$REPO_PATH" || true
     cleanup
     pushed_sha="$head_after"
-    say "pushed: ${BRANCH} was ${behind} behind ${BASE}, rebased where it had to be, and pushed"
+    if [ "$behind" != "0" ] && [ "$merges" != "0" ]; then
+      say "pushed: ${BRANCH} was ${behind} behind ${BASE} and carries ${merges} merge commit(s) of its own, so ${BASE} was merged in rather than rebased onto, and pushed"
+    else
+      say "pushed: ${BRANCH} was ${behind} behind ${BASE}, rebased where it had to be, and pushed"
+    fi
     [ -n "$version_note" ] && say "version: ${version_note}"
   fi
 fi

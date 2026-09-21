@@ -4,7 +4,7 @@ set -u
 
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-RUN_SCRIPTS="task.js land.js rework.js land-train.js"
+RUN_SCRIPTS="task.js land.js rework.js land-train.js refine.js"
 STAGE_NAME=".autofix-run"
 RECORD_NAME="staged-from"
 

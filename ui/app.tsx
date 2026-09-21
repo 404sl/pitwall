@@ -7,8 +7,8 @@ import {
   previewIssue,
   type BuildState,
   type FilterState,
-  type ParkStore,
   type ProblemRow,
+  type QuestionStore,
   type RunningVersion,
   type SortKey,
 } from "./model.js";
@@ -32,7 +32,7 @@ import { strings } from "./strings.js";
 
 const SNAPSHOT_URL = "/api/snapshot";
 const VERSION_URL = "/api/version";
-const PARKS_URL = "/api/parks";
+const QUESTIONS_URL = "/api/questions";
 const POLL_MS = 30_000;
 
 class SnapshotFailure extends Error {
@@ -46,21 +46,21 @@ class SnapshotFailure extends Error {
 
 interface Taken {
   snapshot: Snapshot;
-  parks: ParkStore;
+  questions: QuestionStore;
 }
 
-function parksOf(body: unknown): ParkStore {
+function questionsOf(body: unknown): QuestionStore {
   if (typeof body !== "object" || body === null) {
     return {};
   }
-  const parks = (body as { parks?: unknown }).parks;
-  return typeof parks === "object" && parks !== null ? (parks as ParkStore) : {};
+  const questions = (body as { questions?: unknown }).questions;
+  return typeof questions === "object" && questions !== null ? (questions as QuestionStore) : {};
 }
 
-async function readParks(signal: AbortSignal): Promise<ParkStore> {
+async function readQuestions(signal: AbortSignal): Promise<QuestionStore> {
   try {
-    const response = await fetch(PARKS_URL, { signal, headers: { accept: "application/json" } });
-    return response.ok ? parksOf(await response.json()) : {};
+    const response = await fetch(QUESTIONS_URL, { signal, headers: { accept: "application/json" } });
+    return response.ok ? questionsOf(await response.json()) : {};
   } catch {
     return {};
   }
@@ -207,10 +207,10 @@ export function App() {
   const dragging = useRef(0);
 
   const load = useCallback(async (signal: AbortSignal) => {
-    const [snapshot, running, parks] = await Promise.allSettled([
+    const [snapshot, running, questions] = await Promise.allSettled([
       readSnapshot(signal),
       readVersion(signal),
-      readParks(signal),
+      readQuestions(signal),
     ]);
     if (signal.aborted) {
       return;
@@ -224,7 +224,10 @@ export function App() {
       setBuild(buildState(answered === undefined ? { kind: "unanswered" } : { kind: "read", version: answered }));
     }
     if (snapshot.status === "fulfilled") {
-      const read = { snapshot: snapshot.value, parks: parks.status === "fulfilled" ? parks.value : {} };
+      const read = {
+        snapshot: snapshot.value,
+        questions: questions.status === "fulfilled" ? questions.value : {},
+      };
       held.current = read;
       setTaken(read);
       setFailure(undefined);
@@ -260,7 +263,7 @@ export function App() {
   }, [load]);
 
   const board = useMemo(
-    () => (taken === undefined ? undefined : buildBoard(taken.snapshot, filter, taken.parks, sort)),
+    () => (taken === undefined ? undefined : buildBoard(taken.snapshot, filter, taken.questions, sort)),
     [taken, filter, sort],
   );
 
@@ -307,6 +310,7 @@ export function App() {
             update={update}
             build={build}
             refreshFailure={board.refreshFailure}
+            projectAges={board.projectAges}
           />
         )}
         <main className="pw-console">
@@ -316,7 +320,7 @@ export function App() {
             filter={filter}
             sort={sort}
             preview={
-              taken === undefined ? undefined : previewIssue(taken.snapshot, route.project, route.id, taken.parks)
+              taken === undefined ? undefined : previewIssue(taken.snapshot, route.project, route.id, taken.questions)
             }
           />
         </main>
@@ -346,6 +350,7 @@ export function App() {
         update={update}
         build={build}
         refreshFailure={board.refreshFailure}
+        projectAges={board.projectAges}
       />
       <main
         className={dropping ? "pw-console pw-console--dropping" : "pw-console"}

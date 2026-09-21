@@ -8,6 +8,10 @@ export function collectionError(source: string, cause: unknown): CollectionError
   };
 }
 
+export function hard(error: CollectionError): boolean {
+  return (error.scope ?? "source") === "source";
+}
+
 export function failureOf(cause: unknown, timeoutMs: number): string {
   const failed = cause as { killed?: unknown; stderr?: unknown } | null;
   if (failed?.killed === true) {

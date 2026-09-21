@@ -11,7 +11,7 @@ import {
   type Origin,
 } from "@404sl/pitwall-schema";
 import { workspaceFile } from "./autofix.js";
-import { collectionError, failureOf } from "./errors.js";
+import { collectionError, failureOf, hard } from "./errors.js";
 import { LOCK_ROOT } from "./lanes.js";
 import { NOTE_STAMP } from "./staleness.js";
 import {
@@ -100,6 +100,7 @@ export interface IssueText {
 export interface CollectedIssues {
   issues: Issue[];
   closed: ClosedIssue[];
+  linked: string[];
   texts: Map<string, IssueText>;
   errors: CollectionError[];
 }
@@ -340,13 +341,14 @@ async function collect(reader: Reader): Promise<Collection> {
 }
 
 function contextFor(
+  root: string,
   collection: Collection,
   options: ReadIssuesOptions,
 ): ClassifyContext {
   return {
     issues: collection.all,
     lanes: options.lanes ?? [],
-    collectionComplete: options.errors.length === 0,
+    collectionComplete: !collectionFailed(root, options.errors),
     stored: collection.parked,
   };
 }
@@ -361,7 +363,7 @@ export async function readIssues(
     const active = collection.all.filter((issue) => issue.status !== "closed");
     const closed = collection.all.filter((issue) => issue.status === "closed");
     const byId = new Map(collection.all.map((issue) => [issue.id, issue]));
-    const context = contextFor(collection, options);
+    const context = contextFor(root, collection, options);
     const issues = active.map((issue) =>
       Issue.parse({
         ...issue,
@@ -369,11 +371,15 @@ export async function readIssues(
         classification: classify(issue, context).classification,
       }),
     );
-    return { issues, closed, texts: collection.texts, errors: [] };
+    const linked = collection.all
+      .map((issue) => issue.externalRef)
+      .filter((reference): reference is string => reference !== undefined);
+    return { issues, closed, linked, texts: collection.texts, errors: [] };
   } catch (cause) {
     return {
       issues: [],
       closed: [],
+      linked: [],
       texts: new Map(),
       errors: [collectionError(reader.beadsDir, cause)],
     };
@@ -679,6 +685,8 @@ export interface NewIssue {
   assignee: string;
   labels: readonly string[];
   issueType: string;
+  externalRef?: string;
+  actor?: string;
 }
 
 export type IssueCreator = (issue: NewIssue) => Promise<string>;
@@ -703,13 +711,15 @@ export function setMetadataArgs(id: string, file: string): string[] {
 
 export function createArgs(issue: NewIssue): string[] {
   return [
+    ...(issue.actor === undefined ? [] : ["--actor", issue.actor]),
     "create",
-    issue.title,
+    `--title=${issue.title}`,
     "--type",
     issue.issueType,
     "--assignee",
     issue.assignee,
     ...issue.labels.flatMap((label) => ["--labels", label]),
+    ...(issue.externalRef === undefined ? [] : ["--external-ref", issue.externalRef]),
     "--body-file",
     issue.bodyFile,
     "--metadata",
@@ -821,7 +831,7 @@ function linksOf(value: unknown, categories: ReadonlyMap<string, string>): Depen
 
 export function collectionFailed(root: string, errors: readonly CollectionError[]): boolean {
   const beadsDir = join(resolve(root), BEADS_DIR);
-  return errors.some((error) => error.source === beadsDir);
+  return errors.some((error) => error.source === beadsDir && hard(error));
 }
 
 const NO_ISSUE_REPORTED = /no issues? found/i;

@@ -216,7 +216,7 @@ test("a tracker that could not be read reports no landedToday rather than nothin
   assert.equal(metrics?.landedToday, undefined);
 });
 
-test("a project that failed to collect blocks an issue whose blocker it never saw", async () => {
+test("a workspace file that could not be read does not make the list the tracker returned untrustworthy", async () => {
   const place = workspace([degradedRoot()]);
   const snapshot = await collectSnapshot({
     ...options(place),
@@ -225,10 +225,11 @@ test("a project that failed to collect blocks an issue whose blocker it never sa
   const project = snapshot.projects[0];
   const collection = (project?.errors ?? []).filter((error) => !error.source.startsWith("staleness"));
   assert.equal(collection.length, 1);
+  assert.equal(collection[0]?.source.endsWith(".autofix.json"), true);
   const byId = new Map((project?.issues ?? []).map((issue) => [issue.id, issue]));
   assert.deepEqual(byId.get("mw-6")?.blockedBy, ["mw-9"]);
-  assert.equal(byId.get("mw-6")?.classification, "blocked");
-  assert.equal(byId.get("mw-5")?.classification, "ready");
+  assert.equal(byId.get("mw-6")?.classification, "ready", "a blocker absent from the list the tracker answered with has closed");
+  assert.equal(byId.get("mw-5")?.classification, "ready", "an error elsewhere in the project is not a list that failed to collect");
 });
 
 test("a config that could not be read is carried by the snapshot itself", async () => {
@@ -626,10 +627,10 @@ test("a closure the upstream refused is a row on the board the collection writes
     env: { ...env, BD_LIST_FIXTURE: "shipped" },
     sender: () => Promise.resolve({ delivered: true as const }),
     note: () => Promise.resolve(),
-    closer: () => Promise.resolve({ closed: false as const, reason: "HTTP 403: Resource not accessible" }),
+    closer: () => Promise.resolve({ commented: false as const, reason: "HTTP 403: Resource not accessible" }),
   });
   const stored = writtenBoard(place);
-  const refused = problemsOf(stored, /was not commented and not closed/);
+  const refused = problemsOf(stored, /was not commented/);
   assert.deepEqual(
     refused.map((row) => [row.scope, row.source]),
     [["project", CLOSE_SOURCE]],
@@ -658,12 +659,77 @@ function pipelineRoot(remote: string, where?: string): string {
   );
   const dir = join(root, "site");
   mkdirSync(dir, { recursive: true });
-  for (const args of [["init", "--quiet"], ["remote", "add", "origin", remote]]) {
+  for (const args of [
+    ["init", "--quiet"],
+    ["remote", "add", "origin", remote],
+    ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/master"],
+  ]) {
     const ran = spawnGit(args, { cwd: dir });
     assert.equal(ran.status, 0, ran.stderr);
   }
   return root;
 }
+
+function unreadBranchRoot(): string {
+  const root = mkdtempSync(join(tmpdir(), "pitwall-unread-branch-"));
+  cpSync(join(TRACKER, "bd-output"), join(root, "bd-output"), { recursive: true });
+  writeFileSync(
+    join(root, ".pitwall.json"),
+    JSON.stringify({ idPrefix: "mw", repos: { site: { path: "site" } } }),
+  );
+  const dir = join(root, "site");
+  mkdirSync(dir, { recursive: true });
+  for (const args of [["init", "--quiet"], ["remote", "add", "origin", "git@github.com:acme/site.git"]]) {
+    const ran = spawnGit(args, { cwd: dir });
+    assert.equal(ran.status, 0, ran.stderr);
+  }
+  return root;
+}
+
+test("a default branch that could not be read is a soft error: the list is still trusted and landedToday is still counted", async () => {
+  const root = unreadBranchRoot();
+  const place = workspace([root]);
+  const result = await emitSnapshot({
+    ...options(place, new Date("2026-09-08T18:00:00Z")),
+    env: { ...place.env, PATH: PATH_WITH_GH, GH_OUTPUT: RECORDED, BD_LIST_FIXTURE: "merged" },
+  });
+  assert.equal(result.code, 0);
+  const project = result.snapshot.projects[0];
+  assert.deepEqual(
+    project?.errors.map((error) => [error.source, error.scope]),
+    [[join(root, "site"), "field"]],
+  );
+  assert.match(project?.errors[0]?.message ?? "", /set defaultBranch in \.pitwall\.json/);
+  assert.match(project?.errors[0]?.message ?? "", /git remote set-head origin -a/);
+  assert.equal(project?.repos[0]?.defaultBranch, undefined);
+  assert.equal(project?.metrics.landedToday, 2);
+
+  const listed = await collectSnapshot({
+    ...options(place),
+    env: { ...place.env, PATH: PATH_WITH_GH, GH_OUTPUT: RECORDED, BD_LIST_FIXTURE: "partial" },
+  });
+  const byId = new Map((listed.projects[0]?.issues ?? []).map((issue) => [issue.id, issue]));
+  assert.deepEqual(byId.get("mw-6")?.blockedBy, ["mw-9"]);
+  assert.equal(byId.get("mw-6")?.classification, "ready", "a blocker absent from a complete list has closed");
+});
+
+test("a tracker that could not be read stays a hard error beside a soft one", async () => {
+  const root = unreadBranchRoot();
+  rmSync(join(root, "bd-output"), { recursive: true });
+  const place = workspace([root]);
+  const result = await emitSnapshot({
+    ...options(place, new Date("2026-09-08T18:00:00Z")),
+    env: { ...place.env, PATH: PATH_WITH_GH, GH_OUTPUT: RECORDED },
+  });
+  assert.equal(result.code, 1);
+  const project = result.snapshot.projects[0];
+  assert.equal(project?.errors[0]?.source, join(root, "site"));
+  assert.equal(project?.errors[0]?.scope, "field");
+  const tracker = project?.errors.find((error) => error.source === join(root, ".beads"));
+  assert.equal(tracker?.scope, undefined, "a tracker that could not be read is read as source-scope");
+  assert.deepEqual(project?.issues, []);
+  assert.equal(project?.metrics.landedToday, undefined);
+});
 
 test("the open pull requests of a project reach the snapshot alongside its issues", async () => {
   const place = workspace([pipelineRoot("git@github.com:acme/site.git")]);
@@ -697,6 +763,12 @@ test("the open pull requests of a project reach the snapshot alongside its issue
   assert.doesNotThrow(() => parseSnapshot(snapshot));
 });
 
+function ghSources(project: Snapshot["projects"][number] | undefined): string[] {
+  return (project?.errors ?? []).map((error) => error.source.replace(/ --state open.*$/, ""));
+}
+
+const GH_LISTINGS = ["gh pr list --repo acme/site", "gh issue list --repo acme/site"];
+
 test("a pipeline that could not be read is an error beside the issues, which still load", async () => {
   const place = workspace([pipelineRoot("https://github.com/acme/site.git")]);
   const snapshot = await collectSnapshot({
@@ -705,8 +777,8 @@ test("a pipeline that could not be read is an error beside the issues, which sti
   });
   const project = snapshot.projects[0];
   assert.deepEqual(project?.pipeline, []);
-  assert.equal(project?.errors.length, 1);
-  assert.match(project?.errors[0]?.source ?? "", /^gh pr list --repo acme\/site/);
+  assert.deepEqual(project?.candidates, []);
+  assert.deepEqual(ghSources(project), GH_LISTINGS);
   assert.equal(project?.issues.length, 15);
 });
 
@@ -717,8 +789,7 @@ test("gh that cannot authenticate leaves the run exiting zero on a tracker that 
     env: { ...place.env, PATH: PATH_WITH_UNAUTH_GH },
   });
   const project = result.snapshot.projects[0];
-  assert.equal(project?.errors.length, 1);
-  assert.match(project?.errors[0]?.source ?? "", /^gh pr list --repo acme\/site/);
+  assert.deepEqual(ghSources(project), GH_LISTINGS);
   assert.equal(project?.issues.length, 15);
   assert.equal(result.code, 0);
 });
@@ -730,14 +801,79 @@ test("gh that is not installed at all leaves the run exiting zero", async () => 
     env: { ...place.env, PATH: pathWithoutGh() },
   });
   const project = result.snapshot.projects[0];
-  assert.equal(project?.errors.length, 1);
-  assert.match(project?.errors[0]?.source ?? "", /^gh pr list --repo acme\/site/);
-  assert.match(project?.errors[0]?.message ?? "", /ENOENT/);
+  assert.deepEqual(ghSources(project), GH_LISTINGS);
+  for (const error of project?.errors ?? []) {
+    assert.match(error.message, /ENOENT/);
+  }
   assert.equal(project?.issues.length, 15);
   assert.equal(result.code, 0);
 });
 
-test("a bead that closed carrying an external-ref closes the issue it came from", async () => {
+test("the open issues of a project's repos are candidates on the project, never issues", async () => {
+  const place = workspace([pipelineRoot("git@github.com:acme/site.git")]);
+  const snapshot = await collectSnapshot({
+    ...options(place),
+    env: { ...place.env, PATH: PATH_WITH_GH, GH_OUTPUT: RECORDED },
+  });
+  const project = snapshot.projects[0];
+  assert.deepEqual(project?.errors, []);
+  assert.deepEqual(project?.signals, [
+    { kind: "github", name: "acme/site", location: "https://github.com/acme/site/issues" },
+  ]);
+  assert.deepEqual(
+    project?.candidates.map((candidate) => [candidate.ref, candidate.author, candidate.createdAt]),
+    [
+      ["https://github.com/acme/site/issues/7", "elik-ru", "2026-09-01T08:15:00Z"],
+      ["https://github.com/acme/site/issues/8", "stranger", "2026-09-05T17:40:00Z"],
+      ["https://github.com/acme/site/issues/9", "app/dependabot", "2026-09-07T03:00:00Z"],
+    ],
+  );
+  assert.ok(project?.candidates.every((candidate) => candidate.source === "acme/site"));
+  assert.equal(project?.issues.length, 15);
+  assert.ok(
+    project?.issues.every((issue) => !/^https:\/\/github\.com/.test(issue.id)),
+    "a GitHub issue was admitted as work",
+  );
+  assert.doesNotThrow(() => parseSnapshot(snapshot));
+});
+
+test("an issue a tracker item links by external-ref is excluded whether that item is open or closed", async () => {
+  const place = workspace([pipelineRoot("https://github.com/acme/site.git")]);
+  const open = await collectSnapshot({
+    ...options(place),
+    env: { ...place.env, PATH: PATH_WITH_GH, GH_OUTPUT: RECORDED, BD_LIST_FIXTURE: "linked" },
+  });
+  assert.deepEqual(open.projects[0]?.errors, []);
+  assert.deepEqual(
+    open.projects[0]?.candidates.map((candidate) => candidate.ref),
+    ["https://github.com/acme/site/issues/7", "https://github.com/acme/site/issues/9"],
+  );
+  const closed = await collectSnapshot({
+    ...options(place),
+    env: { ...place.env, PATH: PATH_WITH_GH, GH_OUTPUT: RECORDED, BD_LIST_FIXTURE: "shipped" },
+  });
+  assert.deepEqual(closed.projects[0]?.errors, []);
+  assert.deepEqual(
+    closed.projects[0]?.candidates.map((candidate) => candidate.ref),
+    ["https://github.com/acme/site/issues/8", "https://github.com/acme/site/issues/9"],
+  );
+});
+
+test("a tracker that could not be read leaves the candidates unread and says so beside it", async () => {
+  const place = workspace([pipelineRoot("https://github.com/acme/site.git")]);
+  const snapshot = await collectSnapshot({
+    ...options(place),
+    env: { ...place.env, PATH: PATH_WITH_GH, GH_OUTPUT: RECORDED, BD_LIST_FIXTURE: "absent" },
+  });
+  const project = snapshot.projects[0];
+  assert.deepEqual(project?.issues, []);
+  assert.deepEqual(project?.candidates, []);
+  assert.deepEqual(project?.signals.map((signal) => signal.name), ["acme/site"]);
+  const unread = project?.errors.find((error) => error.source === "acme/site");
+  assert.match(unread?.message ?? "", /tracker could not be/);
+});
+
+test("a bead that closed carrying an external-ref comments on the issue it came from", async () => {
   const place = workspace([pipelineRoot("https://github.com/acme/site.git")]);
   const env = { ...place.env, PATH: PATH_WITH_GH, GH_OUTPUT: RECORDED };
   await emitSnapshot({ ...options(place), env });
@@ -749,17 +885,17 @@ test("a bead that closed carrying an external-ref closes the issue it came from"
     note: () => Promise.reject(new Error("no note should be needed")),
     closer: (closure: Closure) => {
       asked.push(closure);
-      return Promise.resolve({ closed: true as const });
+      return Promise.resolve({ commented: true as const });
     },
   });
   assert.deepEqual(
     asked.map((closure) => [closure.issueId, closure.issue.url]),
     [["mw-1", "https://github.com/acme/site/issues/7"]],
   );
-  assert.equal(asked[0]?.comment, "Landed in site `#101`. Tracked as mw-1.");
+  assert.match(asked[0]?.comment ?? "", /^Landed in site `#101`\. Tracked as mw-1\. This issue is left open for you to close/);
   assert.deepEqual(result.upstream.left, []);
   assert.deepEqual(
-    result.upstream.reported.map((entry) => entry.result.closed),
+    result.upstream.reported.map((entry) => entry.result.commented),
     [true],
   );
   assert.deepEqual(upstreamReport(result.upstream), []);
@@ -802,7 +938,7 @@ test("a run killed while it is closing upstream leaves the closure for the next 
     note: () => Promise.reject(new Error("no note should be needed")),
     closer: (closure: Closure) => {
       asked.push(closure);
-      return Promise.resolve({ closed: true as const });
+      return Promise.resolve({ commented: true as const });
     },
   });
   assert.deepEqual(
@@ -811,7 +947,7 @@ test("a run killed while it is closing upstream leaves the closure for the next 
   );
 });
 
-test("a workspace found by scanning closes nothing on GitHub", async () => {
+test("a workspace found by scanning comments on nothing on GitHub", async () => {
   const place = withConfig("{}");
   rmSync(place.configPath);
   pipelineRoot("https://github.com/acme/site.git", join(place.home, "work", "scanned"));
@@ -842,7 +978,7 @@ test("a checkout that will not say what its origin is turns nothing off quietly"
   assert.equal(result.upstream.left.length, 1);
   assert.match(result.upstream.left[0]?.reason ?? "", /could not tell whether acme\/site/);
   assert.match(result.upstream.left[0]?.reason ?? "", /site would not say what its origin is/);
-  assert.match(upstreamReport(result.upstream)[0] ?? "", /was left open because/);
+  assert.match(upstreamReport(result.upstream)[0] ?? "", /was told nothing because/);
 });
 
 test("an issue that could not be closed is recorded on the bead and collected as an error", async () => {
@@ -853,11 +989,11 @@ test("an issue that could not be closed is recorded on the bead and collected as
     ...options(place),
     env: { ...env, BD_LIST_FIXTURE: "shipped", BD_NOTES_LOG: join(place.home, "notes.log") },
     closer: () =>
-      Promise.resolve({ closed: false as const, reason: "HTTP 403: Resource not accessible" }),
+      Promise.resolve({ commented: false as const, reason: "HTTP 403: Resource not accessible" }),
   })();
   const refused = errors.filter((error) => error.source === CLOSE_SOURCE);
   assert.equal(refused.length, 1);
-  assert.match(refused[0]?.message ?? "", /acme\/site\/issues\/7 was not commented and not closed/);
+  assert.match(refused[0]?.message ?? "", /acme\/site\/issues\/7 was not commented/);
   assert.match(refused[0]?.message ?? "", /HTTP 403: Resource not accessible/);
   assert.match(readFileSync(join(place.home, "notes.log"), "utf8"), /^mw-1 \n\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z \S+\n.*HTTP 403/m);
 });
@@ -1205,8 +1341,15 @@ test("a project that could not be read keeps the issues the last snapshot held f
     "2026-09-08T09:00:00.000Z",
     "the kept issues are dated when they were last read, not when the run happened",
   );
+  assert.equal(
+    kept?.issuesReadAt,
+    "2026-09-08T09:00:00.000Z",
+    "the kept project carries the instant its issues were last read",
+  );
   const fresh = stored.projects.find((project) => project.id === "tracker");
   assert.deepEqual(fresh?.errors, []);
+  assert.equal(fresh?.issuesReadAt, stored.generatedAt, "a project read this run is dated to the run");
+  assert.equal(stored.generatedAt, "2026-09-08T09:30:00.000Z");
 
   const board = buildBoard(stored);
   assert.equal(board.refreshFailure?.source, PARTIAL_SOURCE, "the board must not read as current");
@@ -1236,6 +1379,7 @@ test("a project that could not be read keeps the issues the last snapshot held f
     "2026-09-08T09:00:00.000Z",
     "a second failed run must not re-date issues it did not read either",
   );
+  assert.equal(again?.issuesReadAt, "2026-09-08T09:00:00.000Z", "nor re-date when they were read");
 });
 
 test("every park the collection sees is dated once and carried through later collections", async () => {
@@ -1244,29 +1388,33 @@ test("every park the collection sees is dated once and carried through later col
   const state = { env: place.env, home: place.home };
   const first = await emitSnapshot({ ...options(place, new Date("2026-09-08T09:00:00Z")), env, probe: async () => true });
   assert.equal(first.read, true);
-  const firstSeen = readConsoleState(state).state.parks["tracker"];
+  const stoppedOf = (snapshot: Snapshot) =>
+    Object.fromEntries(
+      (snapshot.projects.find((project) => project.id === "tracker")?.issues ?? [])
+        .filter((issue) => issue.stopped !== undefined)
+        .map((issue) => [issue.id, issue.stopped]),
+    );
+  const firstSeen = stoppedOf(first.snapshot);
   assert.deepEqual(firstSeen, {
-    "mw-20": { label: "blocked-tooling", parkedSince: "2026-09-08T09:00:00.000Z", basis: "first-seen" },
-    "mw-21": { label: "needs-access", parkedSince: "2026-09-08T09:00:00.000Z", basis: "first-seen" },
-    "mw-22": {
-      label: "needs-decision",
-      parkedSince: "2026-09-08T09:00:00.000Z",
-      basis: "first-seen",
-      question: "Honour the paid checkout?",
-    },
-    "mw-24": { label: "roadmap", parkedSince: "2026-09-08T09:00:00.000Z", basis: "first-seen" },
-    "mw-25": { label: "blocked-tooling", parkedSince: "2026-09-08T09:00:00.000Z", basis: "first-seen" },
+    "mw-20": { since: "2026-09-08T09:00:00.000Z", basis: "first-seen" },
+    "mw-21": { since: "2026-09-08T09:00:00.000Z", basis: "first-seen" },
+    "mw-22": { since: "2026-09-08T09:00:00.000Z", basis: "first-seen" },
+    "mw-24": { since: "2026-09-08T09:00:00.000Z", basis: "first-seen" },
+    "mw-25": { since: "2026-09-08T09:00:00.000Z", basis: "first-seen" },
   });
-  await emitSnapshot({ ...options(place, new Date("2026-09-09T09:00:00Z")), env, probe: async () => true });
-  const carried = readConsoleState(state).state.parks["tracker"];
-  assert.equal(carried?.["mw-22"]?.parkedSince, "2026-09-08T09:00:00.000Z", "the park is still dated from first sight");
-  assert.equal(carried?.["mw-22"]?.basis, "carried");
-  assert.equal(carried?.["mw-22"]?.question, "Honour the paid checkout?");
-  assert.deepEqual(Object.keys(carried ?? {}).sort(), Object.keys(firstSeen ?? {}).sort());
-  const board = buildBoard(readSnapshot(state).snapshot!, {}, readConsoleState(state).state.parks);
+  assert.deepEqual(stoppedOf(readSnapshot(state).snapshot!), firstSeen, "the written document carries the dates");
+  assert.deepEqual(readConsoleState(state).state, { questions: { tracker: { "mw-22": "Honour the paid checkout?" } } });
+  const second = await emitSnapshot({ ...options(place, new Date("2026-09-09T09:00:00Z")), env, probe: async () => true });
+  const carried = stoppedOf(second.snapshot);
+  assert.equal(carried["mw-22"]?.since, "2026-09-08T09:00:00.000Z", "the park is still dated from first sight");
+  assert.equal(carried["mw-22"]?.basis, "carried");
+  assert.deepEqual(Object.keys(carried).sort(), Object.keys(firstSeen).sort());
+  assert.equal(readConsoleState(state).state.questions["tracker"]?.["mw-22"], "Honour the paid checkout?");
+  const board = buildBoard(readSnapshot(state).snapshot!, {}, readConsoleState(state).state.questions);
   const row = board.needsYou.flatMap((group) => group.rows).find((entry) => entry.id === "mw-22");
   assert.equal(row?.park.ms, 24 * 60 * 60_000);
   assert.equal(row?.park.suspect, false);
+  assert.equal(row?.question, "Honour the paid checkout?");
   assert.equal(row?.misfiled, false);
 });
 
@@ -1276,20 +1424,32 @@ test("a project that could not be read keeps the park ages the last collection p
   const place = workspace([root, TRACKER]);
   const env = { ...place.env, BD_LIST_FIXTURE: "stale" };
   const state = { env: place.env, home: place.home };
+  const stoppedIn = (snapshot: Snapshot | undefined, project: string) =>
+    Object.fromEntries(
+      (snapshot?.projects.find((entry) => entry.id === project)?.issues ?? [])
+        .filter((issue) => issue.stopped !== undefined)
+        .map((issue) => [issue.id, issue.stopped]),
+    );
   await emitSnapshot({ ...options(place, new Date("2026-09-08T09:00:00Z")), env, probe: async () => true });
-  const before = readConsoleState(state).state.parks[id];
-  assert.equal(before?.["mw-22"]?.basis, "first-seen");
+  const before = stoppedIn(readSnapshot(state).snapshot, id);
+  assert.equal(before["mw-22"]?.basis, "first-seen");
+  const asked = readConsoleState(state).state.questions[id];
+  assert.deepEqual(asked, { "mw-22": "Honour the paid checkout?" });
 
   rmSync(join(root, "bd-output"), { recursive: true });
   await emitSnapshot({ ...options(place, new Date("2026-09-08T09:30:00Z")), env, probe: async () => true });
-  const after = readConsoleState(state).state.parks;
-  assert.deepEqual(after[id], before, "an unreadable project must not lose the ages it had");
-  assert.equal(after["tracker"]?.["mw-22"]?.basis, "carried", "the project that was read moves on");
   const stored = readSnapshot(state).snapshot;
   assert.ok(stored);
+  assert.deepEqual(stoppedIn(stored, id), before, "an unreadable project must not lose the ages it had");
+  const after = readConsoleState(state).state.questions;
+  assert.deepEqual(after[id], asked, "an unreadable project must not lose the questions it had");
+  assert.equal(stoppedIn(stored, "tracker")["mw-22"]?.basis, "carried", "the project that was read moves on");
   const board = buildBoard(stored, {}, after);
   const kept = board.needsYou.flatMap((group) => group.rows).find((row) => row.id === "mw-22");
   assert.equal(kept?.park.since, "2026-09-08T09:00:00.000Z", "the age a kept project shows does not flicker to unknown");
+
+  await emitSnapshot({ ...options(place, new Date("2026-09-08T10:00:00Z")), env, probe: async () => true });
+  assert.deepEqual(stoppedIn(readSnapshot(state).snapshot, id), before, "a second unreadable run keeps them too");
 });
 
 function lanedRoot(): string {
@@ -1385,8 +1545,8 @@ test("a project whose issues were read keeps them even though the rest of it fai
     "a lane that could not be read is not a collection that could not be read",
   );
   assert.deepEqual(
-    board.ready.filter((row) => row.projectId === id).map((row) => row.id),
-    ["mw-5"],
+    board.ready.filter((row) => row.projectId === id).map((row) => row.id).sort(),
+    ["mw-5", "mw-6"],
     "the issues the tracker answered with are on the board as read now",
   );
 });

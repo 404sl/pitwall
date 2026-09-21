@@ -1,5 +1,92 @@
 # Changelog
 
+## 0.1.130
+
+A rework brings a dropped or retired branch up to master by merging master into it and pushing the plain fast-forward, instead of rebasing and asking for a force-push a session refuses. Nothing on the branch is rewritten, no lease is needed, and no push is left for a person. The pre-push check runs with the branch named rather than as rebased. A reworked branch that master moves under again before the lander reaches it is refused as merge-shaped and stays where it is, labelled and undispatched, until pitwall-uoxk teaches the lander to merge master into it; until then a person moves such a branch.
+
+## 0.1.129
+
+The lander no longer refuses a branch that carries a merge commit of its own and has fallen behind master. It merges master into the branch, pushes the fast-forward and waits for checks on it, exactly as it rebases a linear branch; only a merge that conflicts comes back, as the same conflict the rebase path reports. A reworked branch that is merge-shaped by design therefore lands on its own once master has moved under it, and there is no merge-shaped status for the landing step to return. A version commit an earlier round wrote that sits under the branch's merge commit is dropped by restoring its files from master before the merge, and the number is assigned again from master as it is now.
+
+## 0.1.128
+
+The lander's close step is handed a per-issue verdict as data - the config key each landed pull request was pre-flighted under, whether that key has a deploy array in the run's config, what the deploy step returned for it, and the exact `bd close` with its reason - instead of a list of deploying keys to map slugs onto. A repository with no deploy closes on the merge whatever any notes file says about which key is which; a deploying repository whose deploy did not succeed is still held.
+
+## 0.1.127
+
+A ticket the lander or the train holds open now carries a note saying which pull request (or which survey gap) held the close, what did merge for it, and that the hold was deliberate. Read that note before treating a claim older than an hour as a dead lane; a held ticket is not one. A hold the note step could not record is logged as such in the run.
+
+## 0.1.126
+
+The lander now holds a ticket's close when a pull request on the ticket's branch was put in this run's skipped list - labelled after the pre-flight, unconfigured slug, or outlasting the rounds - and names that pull request and the skip reason in the held-open line. A labelled pull request that the run neither landed nor skipped still holds nothing.
+
+## 0.1.125
+
+The triage scan's handed-off check now says on stderr which repo checkout it could not read, naming the key and the path, and says when the workspace config named no repositories at all. A stale-claim finding that follows one of those warnings should be read as "a checkout was never consulted", not as a dead lane.
+
+## 0.1.124
+
+A release train no longer closes a ticket on the label alone. Before closing, it reads the branch of everything it merged and asks every configured repository what is open on those branches. A pull request that is open on one of them without the handoff label holds that ticket open, and the run says which one held it under `heldOpen`. A survey it could not read, or a repository it cannot show it asked, holds the close too — silence from a repository is not read as nothing there. Only the affected tickets are held; the rest of the train closes as before.
+
+## 0.1.123
+
+The lander no longer closes a ticket on the label alone. Before the close step runs it surveys the branch: every configured repository is asked for its open pull requests whose head is the ticket's branch, with their labels, and a ticket whose branch still carries a pull request that is open and unlabelled **anywhere** is held open rather than closed. The run names the pull request that held it, and the final line says `HELD OPEN`.
+
+What a session should do differently now:
+
+- A two-repository ticket whose second pull request never got labelled no longer closes on the half that landed. If a run reports `HELD OPEN`, the work that merged is merged and deployed and stays that way — what is missing is the other repository's pull request, so look there rather than at the tracker.
+- `heldOpen` is not `unclosed`. `unclosed` still means merged, deployed, and nobody confirmed the close, which wants `bd show`. `heldOpen` means the lander deliberately declined to close, which wants a look at the sibling repository.
+- A survey that could not be read, or that does not report asking every configured repository about every branch, holds the close too. That is the safe direction — a survey trusted over a failed command closes a ticket wrongly and invisibly — but a hold is not a retry. The close step only ever considers what merged in the same run, so no later run revisits a held ticket: it stays `in_progress` until a sibling pull request lands on the same branch and that run finds the branch clear, or somebody closes it by hand. The `NOT CLOSED` line naming what held it and the `HELD OPEN` line at the end of the run are the only signal it leaves, so a single-repository ticket held by an unreadable survey waits for a person.
+- An open pull request that *is* labelled holds nothing — it is already in the queue.
+
+## 0.1.122
+
+A scan no longer reports a finished hand-off as a dead lane in three cases it previously always got wrong, and no longer drops a real one in three cases the first of those fixes would have introduced.
+
+The handed-off check now asks each repository inside the directory the workspace config names for it, instead of assuming the config key is the directory. In a workspace whose keys and paths differ - `site` keyed to the `cli` checkout, for instance - it was reading one wrong checkout, skipping the rest, and never asking about the repositories where lanes actually run, so every genuine hand-off there could report as a stale claim.
+
+An issue whose notes quote the number of an open pull request carrying the handoff label is now recognised as handed off even when its branch name says nothing about the issue - that fallback was documented but had never actually run. It now requires the reference to be the repository's own: the number must be followed by a non-digit, and preceded by a word the repository answers to (its checkout directory, its slug, or the name half of its slug), so `cli #77` and a pull request url count while another repository's `schema #77` does not, and `#16` no longer matches inside `#1627`. A bare `#77` with no repository beside it no longer silences a finding - when recording a hand-off in an issue's notes, quote the pull request url or put the repository word in front of the number.
+
+Branches under `autofix/`, cut before the devloop rename, are now recognised everywhere `devloop/` is, both in the handed-off set and in the orphaned-pull-request check, so a merged `autofix/` branch no longer leaves its issue reading as a stale claim. An open unlabelled one now shows up in the orphan check as well: on a project still carrying old `autofix/` refs the first scan after this lands can be both noisy and slow, because each such pull request costs one `bd show` with a 15-second timeout, up to the 50 the check lists per repository.
+
+## 0.1.121
+
+WRITING-TICKETS.md now says where a blocker belongs: in the dependency graph with `bd dep add`, with the prose explaining why. A ticket that merely mentions another is not blocked by it, a pull request number is not a blocker, and an edge must never be added to make the graph look complete, because a wrong edge hides an issue from the ready queue.
+
+## 0.1.120
+
+A request the console records - a bead labelled `unrefined` - is now refined by a run rather than by hand. `queue.sh --next` prints it as a three-field line, `<id> <slot> refine`, and the loop dispatches it with `config.sh --refine <id>`, which emits the args for `refine.js`. The run reads the request and its dropped files, measures the claim against origin following `WRITING-TICKETS.md`, and either writes the specification beside the raw text and hands the ticket to the devloop, parks it with one question for the planning session (keeping `unrefined` so an answer sends it round again), or closes it as a duplicate, done, or a note. It never rewrites the request. A workspace must declare `actor` in its config before any refine can dispatch; `config.sh --args` and `dispatchable.sh` refuse an unrefined issue.
+
+## 0.1.119
+
+A rework that ends green now takes its rework route off the tracker issue once the handoff label is on, so reopening that issue later hands it to the task path rather than to a rework against a pull request that has already merged.
+
+## 0.1.118
+
+`config.sh --check` now reports every repository whose default branch, deploy entry or branch-name field is wrong, in one run. Fix them all, then run it once to confirm, instead of fixing one and re-running to discover the next. The dispatch modes still refuse on the first problem they meet and print nothing on stdout when they do.
+
+Refs pitwall-4st8
+
+## 0.1.117
+
+`precheck.sh <id>` now works from anywhere inside a workspace: it resolves the root and lock prefix through `config.sh`, refuses rather than reading the nearest tracker when it finds no config, and its worktree check actually fires. It is a hand check for an id you are about to dispatch outside `queue.sh --next`, or one that keeps bouncing - not a gate, and nothing in the loop calls it.
+
+## 0.1.116
+
+When the configured repositories do not share a default branch, the rules block a split step receives lists each repository beside the remote branch it lands on and phrases every ref and branch flag as `<base>` and `<branch>` taken from that list, instead of rendering a placeholder that names a branch nobody has. Prompts for a single repository, and every prompt when the repositories share one default, are unchanged.
+
+Refs pitwall-gp1x.
+
+## 0.1.115
+
+A rework whose release step answers nothing, dies, or is not permitted to run now retries with two plain commands - the slot file first, then the lane lock through its owner file, each removed only when it names this run - and a release refused twice is recorded as REFUSED in the lane and slot fields with the plain command that releases each one, instead of LEAKED pointing at files the release never touched.
+
+Refs pitwall-vaqi
+
+## 0.1.114
+
+A run that stopped on a cached `blocked` or `needs_feedback` can now be continued: resume it with `retryFailed: true` added to the args object it was launched with, and that step is issued once more while everything that succeeded replays from cache. SKILL.md says plainly that a resume replays cached failures, and that a resume must never be built from a fresh `config.sh --args`.
+
 ## 0.1.113
 
 A lane kills what it launched by the pid it recorded at launch, never with a pattern kill on a path or flag substring. Without a recorded pid it lists matches first, prints them, and kills only those whose command starts with the intended binary; if it cannot identify the process that way it leaves it running and says so. A permission failure that appears right after a cleanup step is to be reported as self-inflicted, not as an environment fault.

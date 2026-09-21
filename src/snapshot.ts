@@ -7,10 +7,12 @@ import {
   type Issue,
   type Metrics,
   type Snapshot,
+  type Stopped,
 } from "@404sl/pitwall-schema";
-import { noteAppender, readIssues, type ClosedIssue, type IssueText } from "./beads.js";
-import { KEPT_SOURCE, PARTIAL_SOURCE, type ParkEntry, type ParkStore, type ProjectParks } from "./board.js";
-import { collectionError, recordOnce } from "./errors.js";
+import { collectionFailed, noteAppender, readIssues, type ClosedIssue, type IssueText } from "./beads.js";
+import { KEPT_SOURCE, PARTIAL_SOURCE, type ProjectQuestions, type QuestionStore } from "./board.js";
+import { readCandidates } from "./candidates.js";
+import { collectionError, hard, recordOnce } from "./errors.js";
 import { hasLiveStructuralBlocker, type ClassifyContext } from "./classify.js";
 import {
   collectProjects,
@@ -27,7 +29,7 @@ import {
   type Noter,
   type Sender,
 } from "./notify.js";
-import { parksFor, readConsoleState, writeConsoleState } from "./parks.js";
+import { questionsFor, readConsoleState, withStopped, writeConsoleState } from "./parks.js";
 import { readPipeline } from "./pipeline.js";
 import { preconditionProbe } from "./probes.js";
 import { carryFailingSince } from "./problems.js";
@@ -135,7 +137,6 @@ async function assessed(
   texts: ReadonlyMap<string, IssueText>,
   context: StalenessContext,
   structure: ClassifyContext,
-  parkedSince: string | undefined,
 ): Promise<Assessed> {
   if (!isAssessable(issue.classification)) {
     return { issue, errors: [] };
@@ -151,7 +152,7 @@ async function assessed(
       structurallyBlocked: hasLiveStructuralBlocker(issue, structure),
       description: text?.description,
       notes: text?.notes,
-      labelledAt: parkedSince,
+      labelledAt: placedSince(issue.stopped),
       notedAt: lastNoteAt(text?.notes),
     },
     context,
@@ -159,22 +160,22 @@ async function assessed(
   return { issue: { ...issue, staleness: assessment.staleness }, errors: assessment.errors };
 }
 
-function placedSince(entry: ParkEntry | undefined): string | undefined {
-  return entry?.basis === "carried" ? entry.parkedSince : undefined;
+function placedSince(stopped: Stopped | undefined): string | undefined {
+  return stopped?.basis === "carried" ? stopped.since : undefined;
 }
 
 interface Gathered {
   project: Project;
   closed: readonly ClosedIssue[];
   issuesRead: boolean;
-  parks: ProjectParks;
+  questions: ProjectQuestions;
 }
 
 async function gather(
   project: Project,
   options: SnapshotOptions,
   day: Date,
-  previous: ProjectParks | undefined,
+  previous: Project | undefined,
 ): Promise<Gathered> {
   const collected = await readIssues(project.root, {
     env: options.env,
@@ -187,11 +188,11 @@ async function gather(
   const structure: ClassifyContext = {
     issues: [...collected.issues, ...collected.closed],
     lanes: project.lanes,
-    collectionComplete: project.errors.length === 0,
+    collectionComplete: !collectionFailed(project.root, project.errors),
   };
-  const parks = parksFor(collected.issues, collected.texts, previous, day.toISOString());
+  const dated = withStopped(collected.issues, previous?.issues, day.toISOString());
   const assessments = await Promise.all(
-    collected.issues.map((issue) => assessed(issue, collected.texts, context, structure, placedSince(parks[issue.id]))),
+    dated.map((issue) => assessed(issue, collected.texts, context, structure)),
   );
   const issues = assessments.map((entry) => entry.issue);
   const unassessable: CollectionError[] = [];
@@ -205,24 +206,33 @@ async function gather(
     timeoutMs: options.timeoutMs,
     knownIds: context.knownIds,
   });
-  const unreadable = project.errors.length > 0 || collected.errors.length > 0;
+  const found = await readCandidates(project, {
+    env: options.env,
+    timeoutMs: options.timeoutMs,
+    linked: collected.errors.length === 0 ? collected.linked : undefined,
+  });
+  const unreadable = [...project.errors, ...collected.errors].some(hard);
   return {
     closed: collected.closed,
     project: Project.parse({
       ...project,
+      signals: found.signals,
+      candidates: found.candidates,
       issues,
+      ...(collected.errors.length === 0 ? { issuesReadAt: day.toISOString() } : {}),
       pipeline: pipeline.pipeline,
       metrics: metricsOf(issues, collected.closed, day, !unreadable),
       errors: [
         ...project.errors,
         ...collected.errors,
         ...pipeline.errors,
+        ...found.errors,
         ...unchecked,
         ...unassessable,
       ],
     }),
     issuesRead: collected.errors.length === 0,
-    parks,
+    questions: questionsFor(collected.issues, collected.texts),
   };
 }
 
@@ -234,6 +244,7 @@ function keeping(project: Project, held: Project, at: string, day: Date): Projec
   return Project.parse({
     ...project,
     issues: held.issues,
+    issuesReadAt: held.issuesReadAt ?? at,
     metrics: { ...project.metrics, ...metricsOf(held.issues, [], day, false) },
     errors: [
       ...project.errors,
@@ -323,11 +334,12 @@ interface Assembled {
   roots: ResolvedRoots;
 }
 
-async function assemble(options: SnapshotOptions, previous: ParkStore = {}): Promise<Assembled> {
+async function assemble(options: SnapshotOptions, previous?: Snapshot): Promise<Assembled> {
   const startedAt = options.now ?? new Date();
   const { projects, roots } = collectProjects(options);
+  const held = new Map((previous?.projects ?? []).map((project) => [project.id, project]));
   const gathered = await Promise.all(
-    projects.map((project) => gather(project, options, startedAt, previous[project.id])),
+    projects.map((project) => gather(project, options, startedAt, held.get(project.id))),
   );
   return {
     snapshot: parseSnapshot({
@@ -518,12 +530,12 @@ function withCollectionHits(
   };
 }
 
-function parksOf(board: Snapshot, gathered: readonly Gathered[], previous: ParkStore): ParkStore {
+function questionsOf(board: Snapshot, gathered: readonly Gathered[], previous: QuestionStore): QuestionStore {
   const read = new Map(gathered.map((entry) => [entry.project.id, entry]));
-  const store: ParkStore = {};
+  const store: QuestionStore = {};
   for (const project of board.projects) {
     const entry = read.get(project.id);
-    store[project.id] = entry?.issuesRead === true ? entry.parks : (previous[project.id] ?? {});
+    store[project.id] = entry?.issuesRead === true ? entry.questions : (previous[project.id] ?? {});
   }
   return store;
 }
@@ -531,7 +543,7 @@ function parksOf(board: Snapshot, gathered: readonly Gathered[], previous: ParkS
 export async function emitSnapshot(options: SnapshotOptions = {}): Promise<SnapshotResult> {
   const previous = readSnapshot(options).snapshot;
   const stored = readConsoleState(options);
-  const { snapshot, code, gathered, roots } = await assemble(options, stored.state.parks);
+  const { snapshot, code, gathered, roots } = await assemble(options, previous);
   if (!readSomething(gathered)) {
     return {
       snapshot,
@@ -563,7 +575,7 @@ export async function emitSnapshot(options: SnapshotOptions = {}): Promise<Snaps
     ],
   });
   const board = carryFailingSince(keptBoard(recorded, previous, gathered), previous);
-  writeConsoleState({ parks: parksOf(board, gathered, stored.state.parks) }, options);
+  writeConsoleState({ questions: questionsOf(board, gathered, stored.state.questions) }, options);
   const delivered = await announce(gathered, previous, roots, options);
   const upstream = await closeUpstreamIssues(gathered, previous, roots, options);
   const written = withCollectionHits(board, gathered, collectionHits(delivered, upstream));

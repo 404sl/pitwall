@@ -1,11 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { register } from "node:module";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { Classification, SCHEMA_VERSION, isYours, parseSnapshot } from "@404sl/pitwall-schema";
 import type { CollectionError } from "@404sl/pitwall-schema";
 import {
+  KEPT_SOURCE,
   PARK_SUSPECT_AFTER_MS,
   PARTIAL_SOURCE,
   REFRESH_SOURCE,
@@ -20,7 +22,15 @@ import {
   problemKey,
   snapshotAge,
 } from "../ui/model.ts";
-import type { Board, BuildState, FilterState, IssuePayload, IssuePreview, ParkStore } from "../ui/model.ts";
+import type {
+  Board,
+  BuildState,
+  FilterState,
+  IssuePayload,
+  IssuePreview,
+  ProjectAge,
+  QuestionStore,
+} from "../ui/model.ts";
 import { strings } from "../ui/strings.ts";
 import { countLabel } from "../ui/format.ts";
 import { boardHref, filterOf, filterQuery, issueHref, routeOf, sortOf } from "../ui/routes.ts";
@@ -41,12 +51,21 @@ function headerMarkup(
   update?: string,
   refreshFailure?: CollectionError,
   build?: BuildState,
+  projectAges?: ProjectAge[],
 ): string {
   const realNow = Date.now;
   Date.now = () => HEADER_NOW;
   try {
     return renderToStaticMarkup(
-      createElement(Header, { projectCount, generatedAt, version: VERSION, update, refreshFailure, build }),
+      createElement(Header, {
+        projectCount,
+        generatedAt,
+        version: VERSION,
+        update,
+        refreshFailure,
+        build,
+        projectAges,
+      }),
     );
   } finally {
     Date.now = realNow;
@@ -167,44 +186,35 @@ test("every needs-you row carries a staleness verdict, unchecked by default", ()
 
 const DAY = 24 * 60 * 60_000;
 
-function parkedAt(ms: number, label: string, question?: string) {
-  return {
-    label,
-    parkedSince: new Date(Date.parse(GENERATED_AT) - ms).toISOString(),
-    basis: "carried" as const,
-    ...(question === undefined ? {} : { question }),
-  };
+function stoppedAt(ms: number) {
+  return { since: new Date(Date.parse(GENERATED_AT) - ms).toISOString(), basis: "carried" };
 }
 
-const AGED_PARKS: ParkStore = {
+const AGED_QUESTIONS: QuestionStore = {
   pitwall: {
-    "pitwall-old": parkedAt(11 * DAY, "needs-decision", "Which one?"),
-    "pitwall-week": parkedAt(PARK_SUSPECT_AFTER_MS, "needs-access"),
-    "pitwall-almost": parkedAt(PARK_SUSPECT_AFTER_MS - 60_000, "needs-decision", "Keep it?"),
-    "pitwall-mute": parkedAt(3 * DAY, "needs-decision"),
-    "pitwall-p0": parkedAt(3 * DAY, "needs-decision", "Ship?"),
-    "pitwall-p2": parkedAt(3 * DAY, "needs-decision", "Ship?"),
-    "pitwall-t1": parkedAt(9 * DAY, "blocked-tooling"),
-    "pitwall-t2": parkedAt(2 * DAY, "watch"),
-    "pitwall-t3": parkedAt(8 * DAY, "roadmap"),
-    "pitwall-relabelled": parkedAt(20 * DAY, "needs-access"),
+    "pitwall-old": "Which one?",
+    "pitwall-almost": "Keep it?",
+    "pitwall-p0": "Ship?",
+    "pitwall-p2": "Ship?",
   },
 };
 
 const AGED = snapshotOf([
   project("pitwall", {
     issues: [
-      issue("pitwall-p2", "yours:decision", { labels: ["needs-decision"], priority: 2 }),
-      issue("pitwall-p0", "yours:decision", { labels: ["needs-decision"], priority: 0 }),
-      issue("pitwall-mute", "yours:decision", { labels: ["needs-decision"], priority: 0 }),
-      issue("pitwall-almost", "yours:decision", { labels: ["needs-decision"] }),
-      issue("pitwall-week", "yours:access", { labels: ["needs-access"] }),
-      issue("pitwall-old", "yours:decision", { labels: ["needs-decision"] }),
+      issue("pitwall-p2", "yours:decision", { labels: ["needs-decision"], priority: 2, stopped: stoppedAt(3 * DAY) }),
+      issue("pitwall-p0", "yours:decision", { labels: ["needs-decision"], priority: 0, stopped: stoppedAt(3 * DAY) }),
+      issue("pitwall-mute", "yours:decision", { labels: ["needs-decision"], priority: 0, stopped: stoppedAt(3 * DAY) }),
+      issue("pitwall-almost", "yours:decision", {
+        labels: ["needs-decision"],
+        stopped: stoppedAt(PARK_SUSPECT_AFTER_MS - 60_000),
+      }),
+      issue("pitwall-week", "yours:access", { labels: ["needs-access"], stopped: stoppedAt(PARK_SUSPECT_AFTER_MS) }),
+      issue("pitwall-old", "yours:decision", { labels: ["needs-decision"], stopped: stoppedAt(11 * DAY) }),
       issue("pitwall-new", "yours:access", { labels: ["needs-access"], priority: 0 }),
-      issue("pitwall-relabelled", "yours:decision", { labels: ["needs-decision"] }),
-      issue("pitwall-t2", "parked:watch", { labels: ["watch"] }),
-      issue("pitwall-t1", "parked:tooling", { labels: ["blocked-tooling"] }),
-      issue("pitwall-t3", "parked:roadmap", { labels: ["roadmap"] }),
+      issue("pitwall-t2", "parked:watch", { labels: ["watch"], stopped: stoppedAt(2 * DAY) }),
+      issue("pitwall-t1", "parked:tooling", { labels: ["blocked-tooling"], stopped: stoppedAt(9 * DAY) }),
+      issue("pitwall-t3", "parked:roadmap", { labels: ["roadmap"], stopped: stoppedAt(8 * DAY) }),
       issue("pitwall-t4", "parked:umbrella", { labels: ["umbrella"] }),
       issue("pitwall-epic", "parked:umbrella", { issueType: "epic" }),
       issue("pitwall-dep", "blocked"),
@@ -213,20 +223,11 @@ const AGED = snapshotOf([
 ]);
 
 test("the owner's queue is sorted oldest park first, unknown after known, misfiled last, then priority, then id", () => {
-  const board = buildBoard(AGED, {}, AGED_PARKS);
+  const board = buildBoard(AGED, {}, AGED_QUESTIONS);
   const rows = board.needsYou.flatMap((group) => group.rows);
   assert.deepEqual(
     rows.map((row) => row.id),
-    [
-      "pitwall-old",
-      "pitwall-week",
-      "pitwall-almost",
-      "pitwall-p0",
-      "pitwall-p2",
-      "pitwall-mute",
-      "pitwall-new",
-      "pitwall-relabelled",
-    ],
+    ["pitwall-old", "pitwall-week", "pitwall-almost", "pitwall-p0", "pitwall-p2", "pitwall-mute", "pitwall-new"],
   );
   const byId = new Map(rows.map((row) => [row.id, row]));
   assert.equal(byId.get("pitwall-old")?.park.ms, 11 * DAY);
@@ -237,19 +238,14 @@ test("the owner's queue is sorted oldest park first, unknown after known, misfil
   assert.equal(byId.get("pitwall-almost")?.park.suspect, false, "a minute under the threshold is not");
   assert.equal(byId.get("pitwall-mute")?.misfiled, true, "a decision with no stated question is misfiled");
   assert.equal(byId.get("pitwall-mute")?.kind, "decision", "misfiled is rendering, not classification");
-  assert.deepEqual(byId.get("pitwall-new")?.park, { suspect: false }, "a park the store has not placed is unknown");
+  assert.deepEqual(byId.get("pitwall-new")?.park, { suspect: false }, "a park the document has not dated is unknown");
   assert.equal(byId.get("pitwall-new")?.misfiled, false, "an unplaced park cannot be judged misfiled");
-  assert.deepEqual(
-    byId.get("pitwall-relabelled")?.park,
-    { suspect: false },
-    "an entry carried under another label does not date this park",
-  );
   assert.equal(board.needsYouCount, rows.length, "a misfiled row still counts: the count is the classification's");
-  assert.equal(board.totals.needsYou, 8);
+  assert.equal(board.totals.needsYou, 7);
 });
 
 test("only a park a label put on is aged, and a structural one is neither aged nor listed", () => {
-  const board = buildBoard(AGED, {}, AGED_PARKS);
+  const board = buildBoard(AGED, {}, AGED_QUESTIONS);
   const listed = [...board.parkedRows.suspect, ...board.parkedRows.rest].flatMap((group) => group.rows);
   assert.deepEqual(
     listed.map((row) => row.id),
@@ -280,9 +276,14 @@ test("only a park a label put on is aged, and a structural one is neither aged n
     false,
   );
   const blocked = buildBoard(
-    snapshotOf([project("maas", { issues: [issue("maas-b1", "blocked"), issue("maas-e", "parked:umbrella", { issueType: "epic" })] })]),
-    {},
-    { maas: { "maas-b1": parkedAt(30 * DAY, "blocked"), "maas-e": parkedAt(30 * DAY, "umbrella") } },
+    snapshotOf([
+      project("maas", {
+        issues: [
+          issue("maas-b1", "blocked", { stopped: stoppedAt(30 * DAY) }),
+          issue("maas-e", "parked:umbrella", { issueType: "epic", stopped: stoppedAt(30 * DAY) }),
+        ],
+      }),
+    ]),
   );
   assert.deepEqual(blocked.parkedRows, { suspect: [], rest: [] });
   assert.deepEqual(blocked.needsYou, []);
@@ -292,28 +293,24 @@ test("only a park a label put on is aged, and a structural one is neither aged n
 
 test("the parked tables follow the shown projects like every band, and the summary keeps its counts", () => {
   const two = snapshotOf([
-    project("pitwall", { issues: [issue("pitwall-t1", "parked:tooling", { labels: ["blocked-tooling"] })] }),
-    project("maas", { issues: [issue("maas-t1", "parked:tooling", { labels: ["blocked-tooling"] })] }),
+    project("pitwall", { issues: [issue("pitwall-t1", "parked:tooling", { labels: ["blocked-tooling"], stopped: stoppedAt(9 * DAY) })] }),
+    project("maas", { issues: [issue("maas-t1", "parked:tooling", { labels: ["blocked-tooling"], stopped: stoppedAt(9 * DAY) })] }),
   ]);
-  const parks: ParkStore = {
-    pitwall: { "pitwall-t1": parkedAt(9 * DAY, "blocked-tooling") },
-    maas: { "maas-t1": parkedAt(9 * DAY, "blocked-tooling") },
-  };
-  const board = buildBoard(two, { project: "maas" }, parks);
+  const board = buildBoard(two, { project: "maas" });
   assert.deepEqual(board.parkedRows.suspect.map((group) => group.projectId), ["maas"]);
   assert.deepEqual(board.parked, [{ reason: "tooling", count: 1 }]);
   assert.deepEqual(board.totals.parked, [{ reason: "tooling", count: 2 }]);
 });
 
-test("the issue preview carries the park age and the question the store recorded", () => {
-  const preview = previewIssue(AGED, "pitwall", "pitwall-old", AGED_PARKS);
+test("the issue preview carries the park age the document dates and the question the store recorded", () => {
+  const preview = previewIssue(AGED, "pitwall", "pitwall-old", AGED_QUESTIONS);
   assert.equal(preview?.park?.ms, 11 * DAY);
   assert.equal(preview?.park?.suspect, true);
   assert.equal(preview?.question, "Which one?");
-  const unplaced = previewIssue(AGED, "pitwall", "pitwall-new", AGED_PARKS);
+  const unplaced = previewIssue(AGED, "pitwall", "pitwall-new", AGED_QUESTIONS);
   assert.deepEqual(unplaced?.park, { suspect: false });
-  assert.equal(previewIssue(AGED, "pitwall", "pitwall-epic", AGED_PARKS)?.park, undefined, "no label, no age");
-  assert.equal(previewIssue(AGED, "pitwall", "pitwall-dep", AGED_PARKS)?.park, undefined);
+  assert.equal(previewIssue(AGED, "pitwall", "pitwall-epic", AGED_QUESTIONS)?.park, undefined, "no label, no age");
+  assert.equal(previewIssue(AGED, "pitwall", "pitwall-dep", AGED_QUESTIONS)?.park, undefined);
 });
 
 test("parked is counted per reason and never summed", () => {
@@ -367,7 +364,7 @@ test("parked reasons come from the contract enum rather than a local list, less 
   assert.ok(fromContract.includes("call"), "the contract carries parked:call");
   assert.deepEqual(
     parkedReasons(),
-    [...fromContract.filter((reason) => reason !== "call"), "blocked"],
+    [...fromContract.filter((reason) => reason !== "call"), "blocked", "unknown"],
   );
 });
 
@@ -380,6 +377,27 @@ test("blocked is counted with the parked reasons and appears in no other band", 
   assert.deepEqual(board.running, []);
   assert.deepEqual(board.ready, []);
   assert.deepEqual(board.problems, []);
+});
+
+test("unknown is counted with the parked reasons rather than dropped from the board", () => {
+  const board = buildBoard(
+    snapshotOf([
+      project("maas", {
+        issues: [issue("maas-u1", "unknown"), issue("maas-u2", "unknown"), issue("maas-b1", "blocked"), issue("maas-r1", "ready")],
+        errors: [{ source: "/maas/.beads", message: "bd list --all --limit 0 --json: timed out", at: "2026-09-08T14:09:00Z" }],
+      }),
+    ]),
+  );
+  assert.deepEqual(board.parked, [
+    { reason: "blocked", count: 1 },
+    { reason: "unknown", count: 2 },
+  ]);
+  assert.equal(board.readyCount, 1);
+  assert.equal(board.needsYou.length, 0);
+  assert.deepEqual(board.running, []);
+  assert.equal(board.issueCount, 4);
+  assert.equal(parkedSummary(board.parked), "unknown 2");
+  assert.equal(blockedSummary(board.parked), "blocked 1");
 });
 
 test("a project that could not be read renders in problems and in no other band", () => {
@@ -797,6 +815,96 @@ test("a confirmed newer release is named beside the running version", () => {
   assert.match(markup, /<span aria-hidden="true"> · <\/span>0\.1\.99 available<\/span>/);
 });
 
+const KEPT_READ_AT = new Date(Date.parse(GENERATED_AT) - 2 * 24 * 60 * 60_000).toISOString();
+
+function keptProject(name: string, readAt: string): Record<string, unknown> {
+  return project(name, {
+    issuesReadAt: readAt,
+    errors: [
+      {
+        source: KEPT_SOURCE,
+        message: "2 issues kept from the last collection that could read this project.",
+        at: readAt,
+      },
+    ],
+  });
+}
+
+const PARTIAL_RUN = {
+  source: PARTIAL_SOURCE,
+  message: "1 of 2 projects could not be read: brochure (issues kept from the last snapshot).",
+  at: GENERATED_AT,
+};
+
+test("a board where one project was kept and another read shows each project's own age, oldest first", () => {
+  const mixed = snapshotOf(
+    [project("pitwall", { issuesReadAt: GENERATED_AT }), keptProject("brochure", KEPT_READ_AT)],
+    [PARTIAL_RUN],
+  );
+  const board = buildBoard(mixed);
+  assert.deepEqual(board.projectAges, [
+    { project: "brochure", projectId: "brochure", readAt: KEPT_READ_AT },
+    { project: "pitwall", projectId: "pitwall", readAt: GENERATED_AT },
+  ]);
+  const markup = headerMarkup(2, GENERATED_AT, undefined, board.refreshFailure, undefined, board.projectAges);
+  assert.match(markup, /<header class="pw-header pw-header--stale">/);
+  assert.match(markup, /<span class="pw-header__age">38m old<\/span>/);
+  assert.match(markup, /<span aria-hidden="true"> · refresh failed<\/span>/);
+  assert.match(markup, /<ul class="pw-header__ages" aria-label="Age by project">/);
+  assert.match(
+    markup,
+    /<li class="pw-header__project"><span class="pw-header__project-name">brochure<\/span> <span class="pw-age" title="[^"]+">2d0h<\/span><time class="pw-sr" dateTime="2026-09-06T14:11:00.000Z">brochure issues read [^<]+\.<\/time><\/li>/,
+  );
+  assert.match(
+    markup,
+    /<li class="pw-header__project"><span aria-hidden="true"> · <\/span><span class="pw-header__project-name">pitwall<\/span> <span class="pw-age" title="[^"]+">38m<\/span><time class="pw-sr" dateTime="2026-09-08T14:11:00Z">pitwall issues read [^<]+\.<\/time><\/li>/,
+  );
+  assert.match(markup, /<\/p><ul class="pw-header__ages"/, "the ages sit beside the meta line, not inside it");
+});
+
+test("a board whose projects were all read in the same run keeps one age", () => {
+  const read = snapshotOf([
+    project("pitwall", { issuesReadAt: GENERATED_AT }),
+    project("brochure", { issuesReadAt: GENERATED_AT }),
+  ]);
+  const board = buildBoard(read);
+  assert.deepEqual(board.projectAges, []);
+  const markup = headerMarkup(2, GENERATED_AT, undefined, undefined, undefined, board.projectAges);
+  assert.doesNotMatch(markup, /pw-header__ages/);
+  assert.equal(markup, headerMarkup(2, GENERATED_AT));
+});
+
+test("a snapshot from a producer that never dated its projects renders the header it always did", () => {
+  const board = buildBoard(snapshotOf([project("pitwall"), project("brochure")]));
+  assert.deepEqual(board.projectAges, []);
+  const markup = headerMarkup(2, GENERATED_AT, undefined, undefined, undefined, board.projectAges);
+  assert.equal(markup, headerMarkup(2, GENERATED_AT));
+  assert.doesNotMatch(markup, /pw-header__ages/);
+});
+
+test("a project with no read date sorts after the dated ones and claims no age", () => {
+  const board = buildBoard(
+    snapshotOf([project("brochure"), project("pitwall", { issuesReadAt: GENERATED_AT }), project("docs")]),
+  );
+  assert.deepEqual(board.projectAges, [
+    { project: "pitwall", projectId: "pitwall", readAt: GENERATED_AT },
+    { project: "brochure", projectId: "brochure" },
+    { project: "docs", projectId: "docs" },
+  ]);
+  const unknown = /<span class="pw-age" title="When this project&#x27;s issues were read is not recorded\.">—<\/span><\/li>/;
+  const markup = headerMarkup(3, GENERATED_AT, undefined, undefined, undefined, board.projectAges);
+  assert.match(markup, /<span class="pw-header__project-name">pitwall<\/span> <span class="pw-age" title="[^"]+">38m<\/span><time/);
+  assert.match(markup, new RegExp(`<span class="pw-header__project-name">brochure</span> ${unknown.source}`));
+  assert.match(markup, new RegExp(`<span class="pw-header__project-name">docs</span> ${unknown.source}`));
+  assert.equal((markup.match(/<time/g) ?? []).length, 2, "the run and the one dated project, nothing else");
+
+  const unreadable = headerMarkup(1, GENERATED_AT, undefined, undefined, undefined, [
+    { project: "docs", projectId: "docs", readAt: "yesterday" },
+  ]);
+  assert.match(unreadable, new RegExp(`<span class="pw-header__project-name">docs</span> ${unknown.source}`));
+  assert.doesNotMatch(unreadable, /yesterday/);
+});
+
 test("a header rendered from a stamp it cannot read shows the stamp and claims nothing about it", () => {
   const markup = headerMarkup(1, "not-a-date");
   assert.match(markup, /1 project · /);
@@ -1178,6 +1286,11 @@ test("a call is a sentence about what to do, one per classification and verdict"
   }
   assert.equal(callFor("ready", "unchecked", false).text, strings.issue.call.ready);
   assert.equal(callFor("blocked", "unchecked", false).text, strings.issue.call.blocked);
+  assert.deepEqual(callFor("unknown", "unchecked", false), {
+    text: "Nothing for you yet — its tracker could not be read, so nothing can say what holds it.",
+    tone: "waiting",
+  });
+  assert.doesNotMatch(callFor("unknown", "unchecked", false).text, /parked|ready/);
   assert.equal(callFor(undefined, "unchecked", true).text, strings.issue.call.closed);
   assert.equal(callFor("yours:decision", "still-blocking", true).tone, "waiting");
   for (const classification of Classification.options) {
@@ -1208,7 +1321,7 @@ test("a park age leads with the number, flags a suspect one in words, and never 
 });
 
 test("the needs-you band shows how long each park has waited between the title and the verdict", () => {
-  const board = buildBoard(AGED, {}, AGED_PARKS);
+  const board = buildBoard(AGED, {}, AGED_QUESTIONS);
   const markup = renderToStaticMarkup(createElement(NeedsYouBand, { groups: board.needsYou }));
   assert.match(markup, /<th scope="col">Title<\/th><th scope="col">Parked<\/th><th scope="col">Staleness<\/th>/);
   assert.match(markup, /<th colSpan="8" scope="rowgroup">pitwall<\/th>/);
@@ -1223,7 +1336,7 @@ test("the needs-you band shows how long each park has waited between the title a
 });
 
 test("the parked band lists the suspect parks in the open and the rest behind a disclosure, never a summed count", () => {
-  const board = buildBoard(AGED, {}, AGED_PARKS);
+  const board = buildBoard(AGED, {}, AGED_QUESTIONS);
   const markup = renderToStaticMarkup(
     createElement(ParkedBand, { entries: board.parked, rows: board.parkedRows }),
   );
@@ -1327,7 +1440,8 @@ test("the ticket page places the park under the classification and states the qu
 
   const view = buildIssueView(
     payload({
-      park: { label: "needs-decision", parkedSince: "2026-08-28T14:11:00Z", basis: "carried", question: "Honour paid checkout?" },
+      stopped: { since: "2026-08-28T14:11:00Z", basis: "carried" },
+      question: "Honour paid checkout?",
       labels: ["needs-decision"],
     }, { generatedAt: GENERATED_AT, status: "open" }),
   );
@@ -1379,6 +1493,7 @@ test("a blocked sentence agrees in number with the blockers it names", () => {
     { rule: "umbrella-open-child", childId: "pitwall-a.1" },
     { rule: "blocked-parent-in-progress", parentId: "pitwall-a" },
     { rule: "stored-status", status: "blocked" },
+    { rule: "uncollected" },
     { rule: "default" },
   ];
   for (const reason of others) {
@@ -1638,6 +1753,52 @@ test("problems render whole under every filter, because a hidden collection fail
   assert.ok(markup.includes(strings.filters.notFiltered), "a filtered board must say problems are not filtered");
 });
 
+test("the problems table bounds its source column so a long source wraps inside it and the message keeps its width", () => {
+  const source = "/Users/somebody/Documents/work/pitwall/.beads";
+  assert.equal(source.length, 45);
+  const board = buildBoard(
+    snapshotOf([
+      project("pitwall", {
+        issues: [issue("pitwall-4b5.2", "ready")],
+        errors: [{ source, message: "field scope origin/HEAD could not be resolved", at: "2026-09-20T09:00:00Z" }],
+      }),
+    ]),
+  );
+  const problems = renderToStaticMarkup(createElement(Problems, { rows: board.problems }));
+  assert.ok(problems.includes(`<td class="pw-cell pw-cell--source">${source}</td>`));
+  assert.ok(!problems.includes("pw-cell--id"), "the id cell means one line everywhere it appears");
+  const ready = renderToStaticMarkup(createElement(Ready, { rows: board.ready, total: board.ready.length }));
+  assert.ok(ready.includes('<td class="pw-cell pw-cell--id">pitwall-4b5.2</td>'));
+
+  const css = readFileSync(new URL("../ui/styles/console.css", import.meta.url), "utf8");
+  const phone = css.indexOf("@media (max-width: 640px)");
+  assert.ok(phone > 0);
+  const base = css.slice(0, phone);
+  const narrow = css.slice(phone);
+  const dataCells = base.match(/\.pw-cell--id,\n\.pw-cell--source,[^}]*\}/);
+  assert.ok(dataCells, "the source cell shares the data-font rule with the id cell");
+  assert.match(dataCells[0], /white-space: nowrap;/);
+  const problemsTable = base.match(/\.pw-table--problems \{[^}]*\}/);
+  assert.ok(problemsTable, "the problems table has a column template of its own");
+  assert.match(problemsTable[0], /display: grid;/);
+  assert.match(
+    problemsTable[0],
+    /grid-template-columns: auto fit-content\(28ch\) 1fr auto;/,
+    "the source column is bounded and the message column takes what is left",
+  );
+  assert.match(
+    base,
+    /\.pw-table--problems \.pw-cell--source \{\n\s+white-space: normal;\n\s+overflow-wrap: anywhere;\n\}/,
+    "above 640px a long source wraps inside its bounded column instead of widening it",
+  );
+  assert.match(narrow, /\.pw-cell--source \{\n\s+white-space: normal;\n\s+overflow-wrap: anywhere;\n\s+\}/);
+  assert.match(
+    narrow,
+    /\.pw-table--problems,\n\s+\.pw-table--problems tbody,\n\s+\.pw-table--problems tbody > tr \{\n\s+display: block;\n\s+\}/,
+    "below 640px the problems rows become blocks again, so the row padding and the rails have a box to paint on",
+  );
+});
+
 test("a count under a filter says what it is counting, and an unfiltered one stays a plain number", () => {
   const crowded = snapshotOf([
     project("pitwall", { issues: Array.from({ length: 5 }, (_, i) => issue(`pitwall-${i}`, "yours:decision")) }),
@@ -1676,13 +1837,6 @@ test("every band count under a filter reads as a subset of the figure it came fr
   assert.equal(countLabel(board.issueCount, board.totals.issues, board.filtered), "4 of 5");
 });
 
-const CALLS_PARKS: ParkStore = {
-  pitwall: {
-    "pitwall-c1": parkedAt(9 * DAY, "needs-call"),
-    "pitwall-c2": parkedAt(2 * DAY, "needs-call"),
-  },
-};
-
 const CALLS = snapshotOf([
   project("pitwall", {
     issues: [
@@ -1692,8 +1846,14 @@ const CALLS = snapshotOf([
         issueType: "bug",
         owner: "pitwall-devloop",
         reporter: "pitwall-planning-session",
+        stopped: stoppedAt(2 * DAY),
       }),
-      issue("pitwall-c1", "parked:call", { labels: ["needs-call", "needs-decision"], priority: 2, issueType: "task" }),
+      issue("pitwall-c1", "parked:call", {
+        labels: ["needs-call", "needs-decision"],
+        priority: 2,
+        issueType: "task",
+        stopped: stoppedAt(9 * DAY),
+      }),
       issue("pitwall-d1", "yours:decision", { labels: ["needs-decision"], issueType: "bug", owner: "pitwall-devloop" }),
       issue("pitwall-a1", "yours:access", { labels: ["needs-access"], issueType: "task" }),
       issue("pitwall-t1", "parked:tooling", { labels: ["blocked-tooling"], issueType: "task" }),
@@ -1721,7 +1881,7 @@ function callsMarkup(board: Board, filter?: FilterState): string {
 }
 
 test("a call is its own band, counted, and never the owner's queue", () => {
-  const board = buildBoard(CALLS, {}, CALLS_PARKS);
+  const board = buildBoard(CALLS, {});
   assert.deepEqual(
     board.calls.map((group) => [group.projectId, group.rows.map((row) => row.id)]),
     [
@@ -1746,7 +1906,7 @@ test("a call is its own band, counted, and never the owner's queue", () => {
 });
 
 test("a call is listed in no parked table and counted under no parked reason", () => {
-  const board = buildBoard(CALLS, {}, CALLS_PARKS);
+  const board = buildBoard(CALLS, {});
   assert.deepEqual(board.parked, [{ reason: "tooling", count: 1 }]);
   assert.deepEqual(board.totals.parked, [{ reason: "tooling", count: 1 }]);
   const listed = [...board.parkedRows.suspect, ...board.parkedRows.rest].flatMap((group) => group.rows.map((row) => row.id));
@@ -1755,7 +1915,7 @@ test("a call is listed in no parked table and counted under no parked reason", (
 });
 
 test("the calls band renders beside needs you, with the call kind, and never as an alert", () => {
-  const board = buildBoard(CALLS, {}, CALLS_PARKS);
+  const board = buildBoard(CALLS, {});
   const markup = callsMarkup(board);
   assert.ok(markup.includes('aria-labelledby="band-calls"'));
   assert.ok(markup.includes(strings.band.calls));
@@ -1779,27 +1939,27 @@ test("the calls band renders beside needs you, with the call kind, and never as 
 });
 
 test("the calls band follows the board's sort by the same rule as needs you", () => {
-  const plain = buildBoard(CALLS, {}, CALLS_PARKS);
+  const plain = buildBoard(CALLS, {});
   assert.deepEqual(rowsOf(plain.calls), [["pitwall-c1", "pitwall-c2"], ["maas-c1"]], "oldest park first by default");
   assert.deepEqual(rowsOf(plain.needsYou), [["pitwall-a1", "pitwall-d1"]]);
   for (const sort of ["owner", "reporter"] as const) {
-    const sorted = buildBoard(CALLS, {}, CALLS_PARKS, sort);
+    const sorted = buildBoard(CALLS, {}, {}, sort);
     assert.equal(sorted.sort, sort);
     assert.deepEqual(rowsOf(sorted.calls), [["pitwall-c2", "pitwall-c1"], ["maas-c1"]], `${sort}: the named row first, the unrecorded last`);
     assert.equal(sorted.callCount, plain.callCount, sort);
     assert.deepEqual(sorted.totals, plain.totals, sort);
   }
-  assert.deepEqual(rowsOf(buildBoard(CALLS, {}, CALLS_PARKS, "owner").needsYou), [["pitwall-d1", "pitwall-a1"]]);
-  const markup = renderToStaticMarkup(createElement(Calls, { groups: buildBoard(CALLS, {}, CALLS_PARKS, "owner").calls, sort: "owner" }));
+  assert.deepEqual(rowsOf(buildBoard(CALLS, {}, {}, "owner").needsYou), [["pitwall-d1", "pitwall-a1"]]);
+  const markup = renderToStaticMarkup(createElement(Calls, { groups: buildBoard(CALLS, {}, {}, "owner").calls, sort: "owner" }));
   assert.match(markup, /href="#\/issue\/pitwall\/pitwall-c2\?sort=owner"/, "opening a call keeps the sort");
   assert.equal(markup.match(/pw-cell--who/g)?.length, 6, "the queue and reporter cells render for every call");
 });
 
 test("the calls band under a filter reads as a subset, and an empty one says which is which", () => {
-  const filtered = buildBoard(CALLS, { project: "maas" }, CALLS_PARKS);
+  const filtered = buildBoard(CALLS, { project: "maas" });
   assert.equal(countLabel(filtered.callCount, filtered.totals.calls, filtered.filtered), "1 of 3");
   const filter: FilterState = { project: "pitwall", type: "chore" };
-  const emptied = buildBoard(CALLS, filter, CALLS_PARKS);
+  const emptied = buildBoard(CALLS, filter);
   assert.equal(emptied.callCount, 0);
   const markup = callsMarkup(emptied, filter);
   assert.ok(markup.includes("0 of 3"));

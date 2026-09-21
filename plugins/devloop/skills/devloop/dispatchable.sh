@@ -170,6 +170,8 @@ for r in ready:
     labels = set(r.get("labels") or [])
     if labels & park:
         continue
+    if "unrefined" in labels:
+        continue
     if r.get("issue_type") == "epic":
         continue
     if r["id"] in parents:

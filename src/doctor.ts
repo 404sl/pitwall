@@ -6,7 +6,7 @@ import { LEGACY_WORKSPACE_FILE, WORKSPACE_FILE, WORKSPACE_FILES, workspaceFile }
 import { BEADS_DIR, BEADS_DIR_VAR } from "./beads.js";
 import { describeRoots, resolveRoots, type ResolvedRoots, type RootsOptions } from "./config.js";
 import { failureOf } from "./errors.js";
-import { defaultBranchOf, remoteSlugOf } from "./git.js";
+import { defaultBranchOf, remoteOf } from "./git.js";
 import { slotsPath } from "./lanes.js";
 import { painter } from "./status.js";
 import { VERSION } from "./version.js";
@@ -18,6 +18,8 @@ const MAX_OUTPUT = 1024 * 1024;
 
 const GH_COST = "pull request state and staleness stay unchecked";
 const BD_COST = "no issue can be read and every project reads as empty";
+const NO_ORIGIN_HEAD = "no origin/HEAD";
+const REMOTE_COST = "its pull requests and imported issues go unread";
 
 export type Severity = "ok" | "warn" | "fail";
 
@@ -206,16 +208,26 @@ function repoEntries(workspace: Record<string, unknown>): [string, unknown][] {
   return Object.entries(asRecord(repos, "repos")).filter(([name]) => !name.startsWith("_"));
 }
 
-function repoCheck(id: string, dir: string, name: string, value: unknown): Check {
+function repoCheck(id: string, dir: string, file: string, name: string, value: unknown): Check {
   const label = `${id} repo ${name}`;
-  let path: unknown;
+  let declared: Record<string, unknown>;
   try {
-    path = asRecord(value, `repo ${name}`)["path"];
+    declared = asRecord(value, `repo ${name}`);
   } catch (cause) {
     return { severity: "fail", name: label, tried: `read repo ${name}`, result: messageOf(cause) };
   }
+  const path = declared["path"];
   if (typeof path !== "string") {
     return { severity: "fail", name: label, tried: `read repo ${name}`, result: "no path" };
+  }
+  const configured = declared["defaultBranch"];
+  if (configured !== undefined && (typeof configured !== "string" || configured === "")) {
+    return {
+      severity: "fail",
+      name: label,
+      tried: `read repo ${name}`,
+      result: "defaultBranch is not a branch name",
+    };
   }
   const repo = resolve(dir, path);
   const tried = `stat ${repo}`;
@@ -225,9 +237,24 @@ function repoCheck(id: string, dir: string, name: string, value: unknown): Check
   if (!existsSync(join(repo, ".git"))) {
     return { severity: "fail", name: label, tried, result: `${repo} is not a git checkout` };
   }
-  const slug = remoteSlugOf(repo) ?? "no origin remote";
-  const branch = defaultBranchOf(repo) ?? "no origin/HEAD";
-  return { severity: "ok", name: label, tried, result: `${slug} · ${branch}` };
+  const remote = remoteOf(repo);
+  if (remote.failure !== undefined) {
+    return { severity: "fail", name: label, tried, result: `${remote.failure} - ${REMOTE_COST}` };
+  }
+  const slug = remote.slug ?? "no origin remote";
+  const branch = configured ?? defaultBranchOf(repo);
+  if (branch !== undefined) {
+    return { severity: "ok", name: label, tried, result: `${slug} · ${branch}` };
+  }
+  if (remote.slug === undefined) {
+    return { severity: "ok", name: label, tried, result: `${slug} · ${NO_ORIGIN_HEAD}` };
+  }
+  return {
+    severity: "warn",
+    name: label,
+    tried,
+    result: `${slug} · ${NO_ORIGIN_HEAD} - set defaultBranch in ${file} or run git remote set-head origin -a`,
+  };
 }
 
 function rootCheck(id: string, dir: string, file: string, declared: unknown): Check {
@@ -370,7 +397,7 @@ async function workspaceChecks(
   });
   checks.push(await bdCheck(id, beadsDir, env, timeoutMs));
   for (const [name, value] of repos) {
-    checks.push(repoCheck(id, dir, name, value));
+    checks.push(repoCheck(id, dir, found.name, name, value));
   }
   const lanes = lanesCheck(id, found.name, workspace, options.lockRoot);
   checks.push(lanes.check);

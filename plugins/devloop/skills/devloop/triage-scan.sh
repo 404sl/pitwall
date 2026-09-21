@@ -130,13 +130,32 @@ ORPHANS=""
 # That is how it was found on 2026-09-09: the guard passed (the test directory happened to
 # contain a .beads) and the leak continued regardless, which is the lesson - a guard on one
 # input does not constrain code that reads a different one.
-_SLUGS="$(bash "$CFG" --land 2>/dev/null | python3 -c "
+_LAND_CFG="$(bash "$CFG" --land 2>/dev/null)"
+_SLUGS="$(printf '%s' "$_LAND_CFG" | python3 -c "
 import json,sys
 try: cfg = json.load(sys.stdin)
 except Exception: raise SystemExit
 for r in (cfg.get('repos') or {}).values():
     slug = (r or {}).get('slug')
     if slug: print(slug)
+" 2>/dev/null)"
+_REPO_TOKENS="$(printf '%s' "$_LAND_CFG" | python3 -c "
+import json,sys
+try: cfg = json.load(sys.stdin)
+except Exception: raise SystemExit
+for key, r in (cfg.get('repos') or {}).items():
+    r = r or {}
+    slug = r.get('slug') or ''
+    toks = {r.get('path') or key, slug, slug.split('/', 1)[1] if '/' in slug else ''}
+    for t in sorted(toks):
+        if t: print('%s %s' % (key, t))
+" 2>/dev/null)"
+_REPO_PATHS="$(printf '%s' "$_LAND_CFG" | python3 -c "
+import json,sys
+try: cfg = json.load(sys.stdin)
+except Exception: raise SystemExit
+for key, r in (cfg.get('repos') or {}).items():
+    print('%s\t%s' % (key, (r or {}).get('path') or key))
 " 2>/dev/null)"
 if [ -n "$_SLUGS" ] && command -v gh >/dev/null 2>&1; then
   for _slug in $_SLUGS; do
@@ -165,6 +184,7 @@ try:
 except Exception:
     sys.exit(0)
 PARK = {"needs-decision", "needs-access", "roadmap", "blocked-tooling", "watch", "umbrella"}
+BRANCH_PREFIXES = ("devloop/", "autofix/")
 
 def parked(issue_id):
     """A PR whose issue is parked is being held on purpose, not stranded.
@@ -189,11 +209,12 @@ def parked(issue_id):
 
 for p in prs:
     ref = p.get("headRefName") or ""
-    if not ref.startswith("devloop/"):
+    _pfx = next((q for q in BRANCH_PREFIXES if ref.startswith(q)), None)
+    if _pfx is None:
         continue
     if any(l.get("name") == "lane-verified" for l in (p.get("labels") or [])):
         continue
-    issue_id = ref[len("devloop/"):]
+    issue_id = ref[len(_pfx):]
     if issue_id in held:
         continue
     if parked(issue_id):
@@ -218,8 +239,8 @@ if [ -n "$ORPHANS" ]; then
 fi
 
 TRACKER_RC=0
-python3 - "$QUIET" "$ROOT" "$PFX" "$ID_PFX" <<'PY' || TRACKER_RC=$?
-import json, os, subprocess, sys
+python3 - "$QUIET" "$ROOT" "$PFX" "$ID_PFX" "$_REPO_TOKENS" "$_REPO_PATHS" <<'PY' || TRACKER_RC=$?
+import json, os, re, subprocess, sys
 
 quiet = sys.argv[1] == "1"
 # The workspace root, passed in rather than hardcoded: the repos hang off it and the
@@ -227,6 +248,17 @@ quiet = sys.argv[1] == "1"
 ROOT = sys.argv[2]
 PFX = sys.argv[3] if len(sys.argv) > 3 else "devloop"
 ID_PFX = sys.argv[4]
+REPO_TOKENS = []
+for _line in (sys.argv[5] if len(sys.argv) > 5 else "").splitlines():
+    _bits = _line.split(None, 1)
+    if len(_bits) == 2:
+        REPO_TOKENS.append((_bits[1].strip().lower(), _bits[0]))
+REPO_TOKENS.sort(key=lambda t: (-len(t[0]), t[0]))
+REPO_PATHS = []
+for _line in (sys.argv[6] if len(sys.argv) > 6 else "").splitlines():
+    _bits = _line.split("\t", 1)
+    if len(_bits) == 2 and _bits[1]:
+        REPO_PATHS.append((_bits[0], _bits[1]))
 PARK = {"needs-decision", "needs-access", "blocked-tooling", "watch", "umbrella", "roadmap"}
 
 def load(p):
@@ -506,17 +538,49 @@ def _live_ids():
 #
 # The label is the difference, and it is authoritative: nothing writes lane-verified except a
 # lane that finished. If a PR carries it, the work is waiting for the lander, not lost.
-# Open pull requests that carry the label, as (repo, number). Filled by _handed_off_ids below.
+# Open pull requests that carry the label, as (repo key, number). Filled by _handed_off_ids below.
 # A branch name is not always devloop/<id> - a pull request opened by hand carries whatever the
 # person called it - so the id-from-branch mapping misses those entirely and category E then
 # reports a finished hand-off as a dead lane.
 queued_prs = set()
+BRANCH_PREFIXES = ("devloop/", "autofix/")
+_PR_REF = re.compile(r"(?:#|/pull/)(\d+)(?!\d)")
+_PR_LEAD = re.compile(r"([a-z0-9][a-z0-9._/-]*)[^a-z0-9]*$")
+
+def _quotes_queued_pr(notes):
+    owners = {}
+    for _repo, _num in queued_prs:
+        owners.setdefault(_num, set()).add(_repo)
+    if not owners:
+        return False
+    low = notes.lower()
+    for m in _PR_REF.finditer(low):
+        keys = owners.get(int(m.group(1)))
+        if not keys:
+            continue
+        lead = _PR_LEAD.search(low[:m.start()])
+        if lead is None:
+            continue
+        word = lead.group(1)
+        for tok, key in REPO_TOKENS:
+            if word == tok or word.endswith("/" + tok):
+                if key in keys:
+                    return True
+                break
+    return False
 
 def _handed_off_ids():
     ids = set()
-    for repo in ("site", "extension", "integration", "docs"):
-        path = os.path.join(ROOT, repo)
+    if not REPO_PATHS:
+        print("warning: the workspace config names no repositories - handed-off check read no "
+              "checkout, so every in_progress issue without a worktree will read as a stale claim",
+              file=sys.stderr)
+        return ids
+    for key, rel in REPO_PATHS:
+        path = os.path.join(ROOT, rel)
         if not os.path.isdir(path):
+            print(f"warning: {key} checkout missing at {path} - handed-off check did not read it",
+                  file=sys.stderr)
             continue
         # TWO STATES, NOT ONE. A labelled open PR is waiting for the lander; a MERGED one has
         # already landed and is waiting only for the deploy that closes its issue. Both leave the
@@ -542,7 +606,7 @@ def _handed_off_ids():
                 cwd=path, capture_output=True, text=True, timeout=30).stdout
             for n in nums.split():
                 if n.isdigit():
-                    queued_prs.add((name, int(n)))
+                    queued_prs.add((key, int(n)))
         except Exception:
             pass
 
@@ -556,9 +620,10 @@ def _handed_off_ids():
                 continue   # cannot ask: fall through and let E flag it, a false finding beats a miss
             for line in out.splitlines():
                 branch = line.strip()
-                if not branch.startswith("devloop/"):
+                _pfx = next((q for q in BRANCH_PREFIXES if branch.startswith(q)), None)
+                if _pfx is None:
                     continue
-                bid = branch[len("devloop/"):]
+                bid = branch[len(_pfx):]
                 ids.add(bid)
                 # Branches are not always exactly devloop/<id>: a lane that reworks its own
                 # branch appends a word, as devloop/app-1jxg.9.3.1-parse did. Matching only the
@@ -609,10 +674,10 @@ for i in run:
         handed_off = _handed_off_ids()
 
     # An issue whose notes quote a pull request number that is open and labelled is handed off,
-    # whatever its branch was called. Checked against the numbers actually queued rather than any
-    # number in the text, so an unrelated "#12" cannot silence a real finding.
-    _n = (i.get("notes") or "")
-    if any(f"#{num}" in _n or f"/pull/{num}" in _n for _repo, num in queued_prs):
+    # whatever its branch was called. The reference has to be this repository's: a word it answers
+    # to immediately before the number, and a non-digit after the digits, so another repository's
+    # "#77" and a "#16" inside "#1627" cannot silence a real finding.
+    if _quotes_queued_pr(i.get("notes") or ""):
         continue
 
     if i["id"] in handed_off:

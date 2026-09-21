@@ -260,6 +260,74 @@ const CLOSED = {
   },
 }
 
+const HELD = {
+  type: 'object',
+  required: ['status', 'noted'],
+  properties: {
+    status: { type: 'string', enum: ['noted', 'partial', 'none'] },
+    noted: {
+      type: 'array',
+      description: 'one entry per bd-note.sh that exited 0, and an empty array when none did - keyed by pull request because that is the list you were given',
+      items: {
+        type: 'object',
+        required: ['pr', 'issue'],
+        properties: {
+          pr: { type: 'number', description: 'the pull request number from the list you were given' },
+          issue: { type: 'string', description: 'the tracker id you appended the note to' },
+        },
+      },
+    },
+    notes: { type: 'string' },
+  },
+}
+
+const ON_BRANCH = {
+  type: 'object',
+  required: ['status', 'branches', 'asked', 'open'],
+  properties: {
+    status: { type: 'string', enum: ['read', 'unreadable'], description: "'read' only when every command printed something you could read an answer out of - a repository with nothing on a branch counts" },
+    branches: {
+      type: 'array',
+      description: 'one entry per pull request number you were given, with the branch gh printed for it. A number missing from here is a pull request whose branch nobody established, and the close is held for it.',
+      items: {
+        type: 'object',
+        required: ['number', 'branch'],
+        properties: {
+          number: { type: 'number' },
+          branch: { type: 'string', description: 'the headRefName gh printed, copied exactly - it is how a sibling pull request is matched to this one' },
+        },
+      },
+    },
+    asked: {
+      type: 'array',
+      description: 'one entry per command you actually ran and read an answer from - one repository and one branch each, so every repository in the list times every branch you found. A pair missing from here is read as a repository nobody asked about that branch, and the close is held rather than reading silence as nothing there.',
+      items: {
+        type: 'object',
+        required: ['slug', 'branch'],
+        properties: {
+          slug: { type: 'string', description: "the repository's owner/name, copied from the list you were given" },
+          branch: { type: 'string', description: 'the branch you passed to --head, copied from the branch you found' },
+        },
+      },
+    },
+    open: {
+      type: 'array',
+      description: 'every OPEN pull request on any of those branches, in any of the repositories, labelled or not. An empty array only when every repository answered and none of them held one.',
+      items: {
+        type: 'object',
+        required: ['slug', 'number', 'branch', 'labelled'],
+        properties: {
+          slug: { type: 'string', description: "the repository's owner/name, copied from the list you were given" },
+          number: { type: 'number' },
+          branch: { type: 'string', description: 'the headRefName gh printed, copied exactly' },
+          labelled: { type: 'boolean', description: "true only when gh printed lane-verified among that pull request's labels. A label list you could not read is not a false - report status 'unreadable' instead." },
+        },
+      },
+    },
+    notes: { type: 'string' },
+  },
+}
+
 function versionAhead(branch, master) {
   const a = SEMVER.exec(branch)
   const b = SEMVER.exec(master)
@@ -717,6 +785,113 @@ Say in 'notes' what you could not read. An environment you could not confirm is 
 one, and reporting it as deployed closes a tracker issue for work nobody is serving.`
 }
 
+function surveySlugs() {
+  return [...new Set(Object.values(REPOS).map((r) => r.slug).filter(Boolean))]
+}
+
+function onBranchPrompt(landed) {
+  const lines = Object.entries(REPOS)
+    .filter(([, r]) => r.slug)
+    .map(([name, r]) => `  ${name}  ${r.slug}`)
+    .join('\n')
+  return `Report the branch each of these merged pull requests came from, and every OPEN pull request
+on those branches anywhere in this workspace.
+
+${landed.map((n) => `  ${SLUG}#${n}`).join('\n')}
+
+FIRST, read the branch of each one:
+
+  gh pr view <n> --repo ${SLUG} --json number,headRefName
+
+Report every number and the headRefName it printed in 'branches', copied exactly. A number you
+cannot get a branch for is a number you leave out - say so in notes.
+
+THEN, for EVERY branch you just read, ask EVERY one of these repositories about it:
+${lines}
+
+  gh pr list --repo <that repository's owner/name> --state open --head <branch> --json number,headRefName,title,labels
+
+Run it from ${ROOT}. --repo names the repository and gh needs no checkout to list it, so a
+directory that is not there is not a reason to skip a repository.
+
+REPORT EVERY PAIR YOU RAN IT FOR IN 'asked' - one entry per repository per branch, whether it
+printed a pull request or nothing. That list is checked against the one above: any pair missing
+from it holds the close, because a repository nobody asked about and a repository with nothing on
+the branch both print nothing here, and reading the first as the second is the whole defect this
+step exists to catch.
+
+WHY YOU ARE BEING ASKED. A ticket that spans two repositories opens a pull request in each, both
+on the same branch name, and the handoff labels all of them in one pass. When that pass fails
+part-way the first is labelled and the rest are not - and lane-verified is the only thing a train's
+queue reads, so the labelled half rides the train, nothing anywhere reads the second half, and the
+ticket closes on the half that landed.
+
+REPORT WHAT YOU FIND, LABELLED OR NOT, and decide nothing about it. An unlabelled pull request is
+not yours to label, close or judge - it may be a lane's work in progress - and this run only needs
+to know that it is there.
+
+IF ANY COMMAND FAILED - a rate limit, an expired token, a slug gh did not recognise - REPORT
+status 'unreadable' AND NAME WHAT FAILED. A failed list and a branch with no second half both
+print nothing, this step cannot tell them apart, and an empty read is not a clean read. The run
+holds the close rather than guessing which one it got: 'unreadable' costs a ticket one more cycle,
+and 'read' over a failed command closes it wrongly and invisibly.
+
+CHANGE NOTHING. This step runs while the train still holds the merge lock and it exists only to
+report. Do not label, do not unlabel, do not merge, do not close, do not comment, and do not touch
+any working tree.
+
+Never use 2>&1 - it makes some commands fail outright. Use absolute paths, never relative ones.`
+}
+
+function heldByBranch(landed, read) {
+  const held = new Map()
+  if (!landed.length) return held
+  const hold = (n, why) => { if (!held.has(n)) held.set(n, why) }
+  if (!read || read.status !== 'read') {
+    const why = `the branch survey ${read ? `answered '${trimmed(read.status) || 'nothing'}'` : 'reported nothing'}, so whether a pull request on this branch is open and unlabelled in another configured repository was never established${read && trimmed(read.notes) ? ` - ${trimmed(read.notes)}` : ''}`
+    for (const n of landed) hold(n, why)
+    return held
+  }
+  const branchOf = new Map()
+  for (const b of (Array.isArray(read.branches) ? read.branches : [])) {
+    if (!b || !Number.isInteger(b.number) || !landed.includes(b.number) || !trimmed(b.branch)) continue
+    branchOf.set(b.number, trimmed(b.branch))
+  }
+  for (const n of landed) {
+    if (!branchOf.has(n)) {
+      hold(n, `the branch survey did not report which branch ${SLUG}#${n} came from, so nothing could be looked for on it - a pull request whose branch nobody read is one whose unlabelled sibling nobody could have found`)
+    }
+  }
+  const holdBranch = (branch, why) => {
+    for (const [n, b] of branchOf) if (b === branch) hold(n, why)
+  }
+  const asked = new Set()
+  for (const a of (Array.isArray(read.asked) ? read.asked : [])) {
+    if (!a || typeof a.slug !== 'string' || typeof a.branch !== 'string') continue
+    asked.add(`${a.slug.trim()} ${trimmed(a.branch)}`)
+  }
+  const configured = surveySlugs()
+  for (const branch of new Set(branchOf.values())) {
+    const unasked = configured.filter((s) => !asked.has(`${s} ${branch}`))
+    if (unasked.length) {
+      holdBranch(branch, `the survey did not report asking ${unasked.join(' ')} about ${branch}, and a ` +
+        `repository nobody asked about is one whose orphan nobody looked for - an unasked repository ` +
+        `and a clean one both come back empty, so this close is held rather than taken on a survey ` +
+        `that may never have looked where the orphan sits`)
+    }
+  }
+  for (const p of (Array.isArray(read.open) ? read.open : [])) {
+    if (!p || p.labelled === true) continue
+    const branch = trimmed(p.branch)
+    if (!branch) continue
+    const key = `${trimmed(p.slug) || '(a repository the survey did not name)'}#${Number.isInteger(p.number) ? p.number : '(no number)'}`
+    holdBranch(branch, p.labelled === false
+      ? `${key} is open on ${branch} and does not carry lane-verified, so no train's queue has ever seen it and half of this ticket has not landed`
+      : `${key} is open on ${branch} and the survey did not report whether it carries lane-verified`)
+  }
+  return held
+}
+
 function closePrompt(landed, mergeSha, where) {
   return `These changes are on master at ${mergeSha} - ${where}:
 
@@ -772,6 +947,58 @@ that looks nothing like devloop/<id> means you read another repository's pull re
 answer is to retry with --repo, not to report the issue as unidentifiable.`
 }
 
+function heldPrompt(held, mergeSha, where) {
+  return `Record on the tracker issue behind each of these pull requests why this train did NOT close it,
+and do nothing else to it. Each is on master at ${mergeSha} - ${where} - and stays there; the ticket
+stays exactly where it is, in_progress and assigned to whoever holds it. Without a note a person
+arriving at the ticket sees a claim older than an hour and reads it as a lane that died. The note is
+what tells them the train held it deliberately, and why.
+
+${held.map((h) => `  ${SLUG}#${h.number}
+    ---
+    Merged as ${SLUG}#${h.number} at ${mergeSha}, ${where}. NOT closed: ${h.why}. Held open by the train on purpose - this is not a dead lane. Close it when what is still open on this ticket's branch has landed.
+    ---`).join('\n\n')}
+
+EVERY gh CALL NEEDS --repo ${SLUG}. Pull request numbers are per repository and this project has
+several, so a bare number silently resolves against whatever repository the working directory
+belongs to and hands you a different project's pull request with the same number.
+
+For each pull request, find its issue - the branch is devloop/<issue-id>, and the issue is also named
+in the pull request body:
+
+  gh pr view <n> --repo ${SLUG} --json headRefName,body,title
+
+Then write the text between that pull request's markers to a file VERBATIM - a file rather than an
+argument, so a backtick or a $( in it cannot be evaluated by the shell before bd sees it - and
+append it with exactly this, one run per issue, from the workspace root and not from inside a
+repository:
+
+  cd ${ROOT} && PITWALL_SESSION=land-train bash ${SKILL_DIR}/bd-note.sh <id> --note-file <that file>
+
+ONE NOTE PER ISSUE, THROUGH bd-note.sh. Never 'bd update --notes': it replaces every note already
+on the issue and has already destroyed a decision somebody recorded. Never a bare append by hand
+either - the script is the only writer that takes the write lock, stamps the note and reads it
+back, and two overlapping bare appends silently become one.
+
+DO NOT CLOSE, REOPEN, REASSIGN OR RELABEL ANYTHING. Not a close, not a status change, not an
+assignee change, not a label. The hold is the outcome of this run and the ticket is somebody
+else's until the rest of its branch lands; a note is the only thing this step is allowed to write.
+
+THAT LIST IS THE WHOLE JOB. Do not survey the tracker for other issues and do not read pull
+requests this train did not land. Before writing on an issue, CHECK YOU READ THE RIGHT PULL
+REQUEST: the branch name should start with devloop/, and the issue id in it should exist in bd. A
+branch that looks nothing like devloop/<id> means you read another repository's pull request, and
+the answer is to retry with --repo, not to write on whatever issue that one names.
+
+REPORT ONE ENTRY PER bd-note.sh THAT EXITED 0, carrying the pull request number it came from and
+the tracker id you wrote on - and an empty list when none did. A non-zero exit means the note did
+NOT land and its text is on stderr - name that pull request in 'notes' with what the script
+printed, not in the list. A pull request you leave out comes back as a hold nobody recorded, so
+name them - and do not name one you did not write on.
+
+Never use 2>&1 - it makes some commands fail outright. Use absolute paths, never relative ones.`
+}
+
 function leftBehindPrompt() {
   const lines = Object.entries(REPOS)
     .filter(([, r]) => r.slug)
@@ -822,6 +1049,7 @@ let deployed = 'not_attempted'
 let closed = 'not_attempted'
 let unclosed = []
 let heldBack = []
+let heldOpen = []
 const perRepo = {}
 let released = null
 let lockState = `LEAKED - the release step never reported. Read ${MERGE_LOCK}/holder before touching anything.`
@@ -1017,17 +1245,39 @@ if (landed.length && lastSha && !masterIsRed) {
 
   if (deployed === 'deployed' || deployed === 'not_needed') {
     phase('Close')
-    const where = deployed === 'not_needed'
-      ? `${REPO_KEY} has no deploy to be live in, so these are closed on the merge alone`
-      : `deployed${servingText ? ` - ${servingText}` : ''}`
-    const c = await agent(closePrompt(landed, lastSha, where), { model: 'sonnet', phase: 'Close', label: 'close', schema: CLOSED })
-    closed = (c && c.status) || 'unknown'
-    const reported = new Set(((c && c.closed) || []).map((e) => Number(e && e.pr)).filter((n) => Number.isInteger(n)))
-    unclosed = landed.filter((n) => !reported.has(n))
-    if (unclosed.length) {
-      log(`CLOSE ${closed === 'unknown' ? 'UNKNOWN - that step reported nothing, which is not the same as a refusal' : closed} - these landed and nothing confirmed the issue behind them was closed, so they are sitting in_progress with nothing reporting it: ${unclosed.map((n) => `${SLUG}#${n}`).join(' ')}\n    Check them with bd show before closing anything by hand.${c && c.notes ? `\n    ${c.notes}` : ''}`)
-    } else {
-      log(`closed ${reported.size} issue(s) - ${((c && c.closed) || []).map((e) => `${SLUG}#${e.pr} ${trimmed(e.issue) || '(no id reported)'}`).join(', ')}`)
+    const onBranch = await agent(onBranchPrompt(landed), {
+      schema: ON_BRANCH, model: 'haiku', effort: 'low', phase: 'Close', label: 'branch-survey',
+    })
+    heldOpen = [...heldByBranch(landed, onBranch).entries()].map(([number, why]) => ({ number, slug: SLUG, why }))
+    for (const h of heldOpen) {
+      log(`NOT CLOSED ${SLUG}#${h.number} - ${h.why}. What it carried is merged and deployed and stays that way; the ticket is left open because something on its branch has not landed.`)
+    }
+    if (heldOpen.length) {
+      const where = deployed === 'not_needed'
+        ? `${REPO_KEY} has no deploy to be live in`
+        : `deployed${servingText ? ` - ${servingText}` : ''}`
+      const n = await agent(heldPrompt(heldOpen, lastSha, where), { model: 'sonnet', phase: 'Close', label: 'held', schema: HELD })
+      const noted = ((n && n.noted) || []).filter((e) => e && Number.isInteger(Number(e.pr)))
+      const unnoted = heldOpen.map((h) => h.number).filter((num) => !noted.some((e) => Number(e.pr) === num))
+      if (unnoted.length) {
+        log(`HOLD NOT RECORDED ${unnoted.map((num) => `${SLUG}#${num}`).join(' ')} - ${n ? `the note step answered '${trimmed(n.status) || 'nothing'}'` : 'the note step reported nothing'}, so the tickets behind these sit in_progress with nothing on them saying the train held them, and queue.sh will read the claim as a dead lane.${n && trimmed(n.notes) ? `\n    ${trimmed(n.notes)}` : ''}`)
+      }
+      for (const e of noted) if (heldOpen.some((h) => h.number === Number(e.pr))) log(`noted the hold on ${SLUG}#${e.pr} ${trimmed(e.issue) || '(no id reported)'}`)
+    }
+    const clear = landed.filter((n) => !heldOpen.some((h) => h.number === n))
+    if (clear.length) {
+      const where = deployed === 'not_needed'
+        ? `${REPO_KEY} has no deploy to be live in, so these are closed on the merge alone`
+        : `deployed${servingText ? ` - ${servingText}` : ''}`
+      const c = await agent(closePrompt(clear, lastSha, where), { model: 'sonnet', phase: 'Close', label: 'close', schema: CLOSED })
+      closed = (c && c.status) || 'unknown'
+      const reported = new Set(((c && c.closed) || []).map((e) => Number(e && e.pr)).filter((n) => Number.isInteger(n)))
+      unclosed = clear.filter((n) => !reported.has(n))
+      if (unclosed.length) {
+        log(`CLOSE ${closed === 'unknown' ? 'UNKNOWN - that step reported nothing, which is not the same as a refusal' : closed} - these landed and nothing confirmed the issue behind them was closed, so they are sitting in_progress with nothing reporting it: ${unclosed.map((n) => `${SLUG}#${n}`).join(' ')}\n    Check them with bd show before closing anything by hand.${c && c.notes ? `\n    ${c.notes}` : ''}`)
+      } else {
+        log(`closed ${reported.size} issue(s) - ${((c && c.closed) || []).map((e) => `${SLUG}#${e.pr} ${trimmed(e.issue) || '(no id reported)'}`).join(', ')}`)
+      }
     }
   } else {
     heldBack = [...landed]
@@ -1189,6 +1439,7 @@ return {
   closed,
   unclosed,
   heldBack,
+  heldOpen,
   mergeSha: lastSha,
   stopped: outcome.stopped || null,
   notes: outcome.notes || null,

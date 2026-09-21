@@ -128,17 +128,18 @@ test("the rework takes its worktree while the lane's worktree still holds the br
     resolve,
     /superseded/i,
     "the resolve brief no longer names the superseded-ref trap, so a lane that finds the task " +
-      "lane's worktree holding the branch has nothing telling it not to rebase and push from there",
+      "lane's worktree holding the branch has nothing telling it not to merge and push from there",
   );
 
-  const rebased = spawnGit([...WHO, "rebase", "origin/master"], { cwd: rework });
-  assert.equal(rebased.status, 0, rebased.stderr);
+  const merged = spawnGit([...WHO, "merge", "--no-edit", "origin/master"], { cwd: rework });
+  assert.equal(merged.status, 0, merged.stderr);
   const newHead = git(rework, "rev-parse", "HEAD");
-  assert.notEqual(newHead, laneHead, "the fixture's rebase replayed nothing, so the push below proves nothing");
+  assert.notEqual(newHead, laneHead, "the fixture's merge brought nothing in, so the push below proves nothing");
 
-  const pushLine = onlyLine(resolve, /^ {2}cd \S+ && git push\b/, "pushes the rebased head");
-  const push = pushLine.replace(/<the branch>/g, BRANCH).replace(/<the head you recorded>/g, laneHead);
-  assert.notEqual(push, pushLine, "the push line no longer carries the placeholders this test fills in");
+  const pushLine = onlyLine(resolve, /^ {2}cd \S+ && git push\b/, "pushes the merged head");
+  assert.doesNotMatch(pushLine, /--force/, `the push is forced, and a force-push is what the session refuses: ${pushLine}`);
+  const push = pushLine.replace(/<the branch>/g, BRANCH);
+  assert.notEqual(push, pushLine, "the push line no longer carries the placeholder this test fills in");
   const pushed = sh(push, repo);
   assert.equal(
     pushed.status,
@@ -149,7 +150,7 @@ test("the rework takes its worktree while the lane's worktree still holds the br
   assert.equal(
     git(repo, "rev-parse", `refs/remotes/origin/${BRANCH}`),
     newHead,
-    "origin's head of the branch is not the rebased head, so the push went somewhere else",
+    "origin's head of the branch is not the merged head, so the push went somewhere else",
   );
   assert.equal(git(lane, "rev-parse", "HEAD"), laneHead, "the push moved the lane's worktree");
 });

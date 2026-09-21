@@ -67,7 +67,7 @@ function standingShellBlock(source: string, file: string): string {
 }
 
 test("the standing shell block carries no backticks in any script that hands it out", () => {
-  for (const file of ["task.js", "land.js", "rework.js", "land-train.js"]) {
+  for (const file of ["task.js", "land.js", "rework.js", "land-train.js", "refine.js"]) {
     const block = standingShellBlock(readFileSync(join(SKILL, file), "utf8"), file);
     const found = block.split("\n").filter((line) => line.includes("`"));
     assert.deepEqual(
@@ -85,7 +85,7 @@ test("the standing shell block carries no backticks in any script that hands it 
 const WRITES_A_COMMIT = /(^\s*|&&\s*|\|\|\s*|;\s*)(if ! )?git\s+(-C\s+\S+\s+)?(commit|rebase|cherry-pick|merge)(?![-\w])/;
 
 test("nothing in the plugin commits or rebases on an identity it did not pass", () => {
-  for (const file of ["task.js", "land.js", "rework.js", "land-train.js", "land-train.sh", "land-one.sh"]) {
+  for (const file of ["task.js", "land.js", "rework.js", "land-train.js", "refine.js", "land-train.sh", "land-one.sh"]) {
     const source = readFileSync(join(SKILL, file), "utf8");
     const writes = source
       .split("\n")
@@ -104,7 +104,7 @@ test("nothing in the plugin commits or rebases on an identity it did not pass", 
 });
 
 test("every workflow script is present in the plugin", () => {
-  for (const file of ["task.js", "land.js", "rework.js", "land-train.js", "config.sh", "lock-check.sh", "lane-running.sh", "git-guard.sh"]) {
+  for (const file of ["task.js", "land.js", "rework.js", "land-train.js", "refine.js", "config.sh", "lock-check.sh", "lane-running.sh", "git-guard.sh"]) {
     const path = join(SKILL, file);
     assert.doesNotThrow(() => readFileSync(path), `${file} is missing from the published plugin`);
   }
@@ -414,31 +414,34 @@ test("the rules never call a commit-message hit unfixable without saying it is p
   }
 });
 
-test("the rework briefs read the commit messages back before every force-push", () => {
+test("the rework briefs read the commit messages back before every push, and never force one", () => {
   const source = readFileSync(join(SKILL, "rework.js"), "utf8");
-  const pushes = [...source.matchAll(/--force-with-lease/g)].map((m) => m.index ?? -1);
+  const pushes = [...source.matchAll(/\bgit push\b/g)].map((m) => m.index ?? -1);
 
   assert.ok(
     pushes.length >= 2,
     "rework.js no longer pushes where this test expects it to - update the test rather than " +
       "deleting it",
   );
+  assert.equal(
+    source.includes("force-with-lease"),
+    false,
+    "rework.js renders a lease. A rework rewrites nothing - it merges master in and pushes the " +
+      "fast-forward that leaves - and a force-push, leased or not, is what the session refuses, " +
+      "so every rework that asks for one ends on a person's board with a one-line command.",
+  );
+  assert.equal(source.includes("--rebased"), false, "rework.js tells the pre-push check the range was rebased, and it is not");
 
   let from = 0;
   for (const at of pushes) {
     const segment = source.slice(from, at);
     assert.ok(
-      segment.includes("--pre-push"),
-      "a force-push in rework.js is reached with nothing having read the commit messages first. " +
-        "A rebase path force-pushes anyway, so the check is free there, and the commit the step " +
-        "writes on top is the one nothing has graded - a hit found after that push is a pull " +
-        "request that is green, correct and waiting on a person.",
-    );
-    assert.ok(
-      segment.includes("--pre-push --rebased"),
-      "the check before a force-push in rework.js is not told the range was rebased. A rebase " +
-        "gives every commit a new sha, so the plain mode reads the replayed commits as never " +
-        "pushed and offers to squash reviewed history away.",
+      segment.includes("--pre-push --branch"),
+      "a push in rework.js is reached with nothing having read the commit messages first, or with " +
+        "a check that cannot tell which commits are published: the worktree is detached, so the " +
+        "check needs --branch to ask the remote. The commit the step writes on top is the one " +
+        "nothing has graded - a hit found after the push is a pull request that is green, " +
+        "correct and waiting on a person.",
     );
     from = at;
   }
@@ -468,7 +471,7 @@ test("the briefs name the answer the pre-push check gives a branch it cannot fas
   );
 });
 
-const NOTE_WRITERS = ["task.js", "land.js", "land-train.js", "rework.js"];
+const NOTE_WRITERS = ["task.js", "land.js", "land-train.js", "rework.js", "refine.js"];
 
 test("no brief tells a run to write a tracker note with a raw append", () => {
   for (const file of NOTE_WRITERS) {
@@ -490,7 +493,7 @@ test("no brief tells a run to write a tracker note with a raw append", () => {
   }
 });
 
-const WRITES_NOTES = ["task.js", "land.js", "land-train.js"];
+const WRITES_NOTES = ["task.js", "land.js", "land-train.js", "refine.js"];
 
 test("every brief that asks for a tracker note names the script and the writer", () => {
   for (const file of WRITES_NOTES) {

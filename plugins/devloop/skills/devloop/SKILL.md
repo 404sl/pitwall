@@ -49,7 +49,7 @@ three times and spent 4h26m shipping 43 minutes of work, and the cost grew with 
 of lanes. The old merge lock serialised the merge but not the rebase-and-wait in front of it.
 
 **Never pick a slot from memory. Ask `slot.sh`.** A dispatch has no number left to pick:
-`config.sh --args <id>` and `config.sh --rework <id> <pr> <repo>` call `slot.sh` themselves, carry
+`config.sh --args <id>`, `config.sh --rework <id> <pr> <repo>` and `config.sh --refine <id>` call `slot.sh` themselves, carry
 the number it reserved into the args, and stop the dispatch when it cannot reserve one. Call
 `slot.sh` by hand to give a lane back, or to see who holds what.
 
@@ -277,6 +277,32 @@ number is still accepted for the sake of `queue.sh`, which reserves before it pr
 CHECKED against the reservation rather than used instead of it - one that disagrees is refused,
 naming both.
 
+**A RESUME REPLAYS A CACHED FAILURE AS FAITHFULLY AS A CACHED SUCCESS.** The runner caches each
+completed step by its prompt, and a step that finished by answering `blocked` or `needs_feedback`
+is a completed step: resuming a run that stopped there returns the same answer instantly, the
+script stops on it exactly as it did the first time, and nothing runs - agent_count 2, tool_uses 0,
+in 9 milliseconds, measured 2026-09-08 on a lane whose fix had finished and been killed by a
+permission fault before review. Only a step that died without answering is re-run on its own.
+
+To continue such a run, resume with `retryFailed: true` added to the args object it was launched
+with, and nothing else about that object changed:
+
+```
+Workflow({ scriptPath: <the same scriptPath>, resumeFromRunId: <the runId>,
+           args: { ...<the object the launch used>, retryFailed: true } })
+```
+
+Steps that succeeded replay from cache; a fix, apply or handoff step whose cached answer is
+`blocked` or `needs_feedback` is issued once more, with a line appended to its brief saying so, and
+the run continues from whatever it answers this time. It is off by default, and it is issued once:
+a step that answers `blocked` again stands. Never build a resume from a fresh `config.sh --args`:
+that mints a new dispatch token, the token sits in every fix brief, and a brief that differs by one
+character misses the cache, so the resume would start the whole run again rather than continue it.
+The resume runs whatever is at that `scriptPath`, which is the staged copy under
+`<root>/.autofix-run/`, and a copy staged before the flag existed ignores it without a word and
+stops in the same 9 milliseconds. If the plugin was upgraded since the launch, re-stage first -
+`run-script.sh task.js`, or any `config.sh --args` dispatch, rewrites the copy - and then resume.
+
 **It also says when a root checkout is behind origin.** `--args` and `--rework` fetch each
 configured repository's default branch and compare the checkout's local branch with
 `origin/<defaultBranch>`. A checkout behind by more than `warnBehind` commits (default 0, set
@@ -290,7 +316,7 @@ that says so.
 
 **THE SCRIPT YOU DISPATCH IS A COPY, AND `--args` MAKES IT FRESH.** The Workflow tool refuses
 a `scriptPath` outside the working directory, so the workflow scripts cannot be dispatched from
-the install. `run-script.sh` copies all four into `<root>/.autofix-run/` and prints the path of
+the install. `run-script.sh` copies every workflow script into `<root>/.autofix-run/` and prints the path of
 the one asked for; `config.sh --args` and `--land` call it before they print anything and carry
 the result as `scriptPath`. So take the path out of the object and dispatch that - never a path
 under the install, and never one remembered from an earlier tick.
@@ -580,8 +606,17 @@ sending a rework at a database another run holds. `rework.js` refuses an args ob
 for the same reason, so the two-command form this used to document - `--args` spread by hand with
 `pr` and `repo` added - no longer runs.
 
-No design and no review: rebase onto master keeping BOTH sides of every conflict, push with a
-lease, wait for CI on the new head, re-apply `lane-verified`. It takes a lane the same way
+No design and no review: merge master into the branch keeping BOTH sides of every conflict, push
+it as the plain fast-forward a merge leaves, wait for CI on the new head, re-apply `lane-verified`.
+It merges rather than rebases because a rebased branch can only be published with a force-push,
+which the session refuses and a run neither retries nor routes around - so every rebased rework
+ended as a one-line command waiting on a person. The lander squash-merges, so the merge commit is
+discarded with everything else on the branch and master's history is the same either way; it reads
+the merged branch as 0 behind and takes its no-rebase path. A merged branch that master has moved
+under again before the lander reaches it - which is every reworked branch that is not first in the
+lander's queue - is refused as merge-shaped: `land.js` logs it, keeps the label and the issue as
+they are, and nothing dispatches it again, until pitwall-uoxk teaches the lander to merge master
+into it. It takes a lane the same way
 `task.js` does, and it gives the lane and the slot back the same way - in a `finally`, so
 a `red`, a `blocked` and an exception all go through it rather than only the handoff. It strips the label while it works, because a
 `lane-verified` branch that cannot merge is a lie the lander keeps acting on.
@@ -627,9 +662,66 @@ that returned nothing, and one that reported a fix whose head did not move - so 
 diagnosis on the issue.
 
 A retired branch arrives ALREADY ON MASTER: `land-one.sh` pushes the rebased head before it waits
-on CI. So the resolve step's rebase replays nothing, it pushes nothing, and it answers
+on CI. So the resolve step's merge brings nothing in, it pushes nothing, and it answers
 `already_clean` with the same head twice - that is the expected shape of this arrival, not a
 resolve that failed, and the run goes on to wait for CI and repair from there.
+
+## A request from the console
+
+The console records a request as typed: a bead labelled `unrefined`, assigned to the planning
+session, with the text in the description and any dropped files under `.pitwall-intake/<id>/`.
+It is a true sentence, not a ticket - it names no repository and measures nothing - so
+`queue.sh` counts it under `to refine`, never under `ready to start`, and `dispatchable.sh` and
+`config.sh --args` both refuse it. When the workspace declares an `actor`, `--next` hands it out
+as a three-field line, claimed with a plain status change rather than `--claim`, because `--claim`
+under the loop's actor refuses an issue intake assigned to somebody else. A workspace with no
+`actor` sees the count with a note saying so and nothing is claimed: `config.sh --refine` would
+refuse the dispatch, and a claim it cannot follow through on is a request stuck `in_progress` with
+a lane reserved for nobody.
+
+```
+# BUILD THE ARGS WITH config.sh --refine. Do not hand-write them, and do not pass a slot.
+args=$(bash ${CLAUDE_PLUGIN_ROOT}/skills/devloop/config.sh --refine app-zzzz)
+
+Workflow({ scriptPath: <the scriptPath in it>,
+           args: <the object config.sh printed> })
+```
+
+`--refine` is `--args` for a recorded request: it checks the issue carries the label and the
+workspace declares an `actor` BEFORE it reserves anything, stages `refine.js`, reserves the lane
+through `slot.sh`, and prints one object carrying the id, the slot, `scriptPath`, `root`,
+`repos`, `skillDir` and `actor`. **The actor is required**, and it is the same declared name
+`dispatchable.sh` gates on: every tracker write the run makes carries `--actor <that name>`, and a
+refined ticket is assigned to it. A workspace with no `actor` cannot dispatch a refine, and the
+refusal says what to add.
+
+`refine.js` runs two steps and takes no lane lock, because it opens no worktree and runs no suite:
+it reads code from `origin/<default branch>` and runs only commands that change nothing. The first
+step reads the request, every dropped file, and `WRITING-TICKETS.md` - the standard it refines
+against - and measures the claim against origin. The second records the result and routes the
+issue. Three outcomes:
+
+- **refined** - the specification is appended as a note beside the request, leading with
+  `Repo: <key> (<path>)`; the `unrefined` label comes off; the issue is assigned to the actor and
+  set open, so the next tick offers it as a task. A specification naming no configured repository
+  is refused by the script before anything is written, because nothing reaches a lane without the
+  repository named.
+- **needs_answer** - what was understood and ONE question are appended, `needs-decision` goes on,
+  the issue stays open in the planning session's queue, and the `unrefined` label STAYS. That is
+  the loop closing: the person answers as a note and removes `needs-decision`, and the next tick
+  offers it for refinement again with the answer in front of it.
+- **not_work** - closed with the reason: a duplicate (with the id), already done (with where on
+  origin), or a note.
+
+**The raw text is never overwritten**, in any outcome. The record step is handed only commands
+that append a note or move labels, assignee and status; the description, title and `intake`
+metadata are left exactly as the console wrote them, and the step reads the description back
+and reports whether it still matches. A reader must always be able to hold the request and the
+refinement side by side and judge one against the other.
+
+A refine that returns `error` before its record step - no actor, no slot, a specification with
+no repository - leaves the issue `in_progress` and untouched, like any other dispatch that bails
+early: release it with `bd update <id> -s open` and it is offered again.
 
 ## The loop
 
@@ -651,12 +743,16 @@ Then, from the numbers it printed:
 ${CLAUDE_PLUGIN_ROOT}/skills/devloop/queue.sh --next 2   # claims 2, prints one line per issue
 ```
 
-Each line is one of two shapes, and the shape decides the script:
+Each line is one of three shapes, and the shape decides the script:
 
 ```
 app-xxxx 3                       a task:    config.sh --args app-xxxx        -> task.js
 app-yyyy 4 rework 186 site       a rework:  config.sh --rework app-yyyy 186 site -> rework.js
+app-zzzz 5 refine                a request: config.sh --refine app-zzzz      -> refine.js
 ```
+
+The three-field line is a request the console recorded - see "A request from the console" below.
+It is not a ticket yet, and `config.sh --args` refuses it the same way it refuses a rework.
 
 The five-field line is an issue the lander retired - `red_after_rebase` or `conflict` - and it
 carries the pull request number and the repository key from the issue's `rework` metadata, which
@@ -687,9 +783,9 @@ exists to stop. It is a no-op when the metadata is already gone.
 now coerces a string rather than no-opping, but the object form is what to write.
 
 `--next` sets each issue to `in_progress` **as it hands the id back**, so two ticks - or two
-supervisors - cannot dispatch the same issue. It prints one line per issue, in one of the two
-shapes above. Launch one workflow per line - `task.js` for a two-field line, `rework.js` for a five-field one -
-passing **exactly the slot it was given** - `{ id: "app-xxxx", slot: 3 }` - all in the background.
+supervisors - cannot dispatch the same issue. It prints one line per issue, in one of the three
+shapes above. Launch one workflow per line - `task.js` for a two-field line, `rework.js` for a five-field one,
+`refine.js` for a three-field one - passing **exactly the slot it was given** - `{ id: "app-xxxx", slot: 3 }` - all in the background.
 Never dispatch an id `--next` did not give you, and never choose a slot yourself.
 
 The slot is not decoration: `task.js` derives `TEST_ENV_NUMBER` from it, so the slot number
@@ -881,6 +977,14 @@ agent cannot relay what it has not been shown.
 - `git worktree list` in each repo - lanes clean up after themselves, leftovers mean a
   handover or a crash
 - issues left `in_progress` are claims from a lane that died; reset them to `open`
+- `precheck.sh <id>` - a hand check before dispatching an issue outside `--next`, or when one
+  keeps bouncing. It prints `GO` or `STOP` with the mechanical reason triage would give -
+  closed, an epic, a parking label, an open dependency, a worktree still on disk, text that
+  says it was handed back, resemblance to a closed issue - read from this workspace's tracker,
+  resolved through `config.sh` from wherever you run it. Nothing in the loop calls it and it is
+  not a gate: `queue.sh --next` and `dispatchable.sh` already refuse what must be refused, and
+  `config.sh --args` refuses the rest. Run it by hand, read the reason, and dispatch anyway if
+  the reason is wrong.
 
 ## Notes that will bite
 

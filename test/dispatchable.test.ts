@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import { INTAKE_LABEL } from "../src/intake.ts";
 import { GIT_ENV } from "./support/git.js";
 
 const SKILL = join(import.meta.dirname, "..", "plugins", "devloop", "skills", "devloop");
@@ -190,4 +191,22 @@ test("dispatchable.sh refuses --limit with no value instead of looping on it for
   assert.equal(signal, null, "the script had to be killed");
   assert.equal(status, 6, `${out}${err}`);
   assert.match(err, /--limit needs a value/);
+});
+
+test("dispatchable.sh never offers a recorded request as a task, whatever queue it sits in", () => {
+  const root = workspace({});
+  const bd = stubBd([
+    { id: "fixture-ticket", title: "a ticket", assignee: null },
+    { id: "fixture-request", title: "the board is unreadable", assignee: null, labels: [INTAKE_LABEL] },
+  ]);
+
+  const { status, out, err } = runDispatchable(root, bd);
+
+  assert.equal(status, 0, `${out}${err}`);
+  assert.match(out, /fixture-ticket/);
+  assert.doesNotMatch(
+    out,
+    /fixture-request/,
+    "a request that names no repository and measures nothing was offered to a lane, which cannot start from it",
+  );
 });

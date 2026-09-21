@@ -37,6 +37,20 @@ const landed: Reply = (call: Call) => {
     };
   }
   if (call.label.startsWith("merge:")) return { status: "merged", mergeSha: SHA, masterGreen: true, notes: "" };
+  if (call.label === "branch-survey") {
+    return {
+      status: "read",
+      branches: [
+        { number: 1287, branch: "devloop/pitwall-80o" },
+        { number: 1290, branch: "devloop/pitwall-81p" },
+      ],
+      asked: ["devloop/pitwall-80o", "devloop/pitwall-81p"].flatMap((branch) => [
+        { slug: "404sl/pitwall", branch },
+        { slug: "404sl/pitwall-site", branch },
+      ]),
+      open: [],
+    };
+  }
   if (call.label === "left-behind") {
     return { repos: [{ repo: "site", status: "read", labelled: [1287] }] };
   }

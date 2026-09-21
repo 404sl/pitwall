@@ -19,6 +19,7 @@ interface Case {
   siblings?: UnclassifiedIssue[];
   lanes?: Lane[];
   complete?: boolean;
+  live?: Pick<ClassifyContext, "blockerStatus" | "parentStatus" | "childStatus">;
   stored?: Classification;
   storedStatus?: string;
   expected: Classification;
@@ -199,7 +200,77 @@ const cases: Case[] = [
     issue: anIssue("pitwall-a", { blockedBy: ["pitwall-b"] }),
     siblings: [anIssue("pitwall-b", { status: "closed" })],
     complete: false,
-    expected: "ready",
+    expected: "unknown",
+    because: { rule: "uncollected" },
+  },
+  {
+    name: "an incomplete collection cannot rule out an open child, so the issue is unknown rather than ready",
+    issue: anIssue("pitwall-a"),
+    complete: false,
+    expected: "unknown",
+    because: { rule: "uncollected" },
+  },
+  {
+    name: "an incomplete collection cannot rule out a parent in progress once live children have been read",
+    issue: anIssue("pitwall-a.1"),
+    complete: false,
+    live: { childStatus: new Map() },
+    expected: "unknown",
+    because: { rule: "uncollected" },
+  },
+  {
+    name: "a child the incomplete collection did carry as open still parks its parent",
+    issue: anIssue("pitwall-a"),
+    siblings: [anIssue("pitwall-a.1")],
+    complete: false,
+    expected: "parked:umbrella",
+    because: { rule: "umbrella-open-child", childId: "pitwall-a.1" },
+  },
+  {
+    name: "a child the tracker reports live as open parks its parent whatever the list says",
+    issue: anIssue("pitwall-a"),
+    complete: false,
+    live: { childStatus: new Map([["pitwall-a.1", "open"]]) },
+    expected: "parked:umbrella",
+    because: { rule: "umbrella-open-child", childId: "pitwall-a.1" },
+  },
+  {
+    name: "a parent the tracker reports live as in progress blocks its child whatever the list says",
+    issue: anIssue("pitwall-a.1"),
+    complete: false,
+    live: { parentStatus: "in_progress" },
+    expected: "blocked",
+    because: { rule: "blocked-parent-in-progress", parentId: "pitwall-a" },
+  },
+  {
+    name: "a blocker the tracker reports live as open blocks under an incomplete collection, never unknown",
+    issue: anIssue("pitwall-a", { blockedBy: ["pitwall-b"] }),
+    complete: false,
+    live: { blockerStatus: new Map([["pitwall-b", "open"]]) },
+    expected: "blocked",
+    because: { rule: "blocked-open", ids: ["pitwall-b"] },
+  },
+  {
+    name: "a blocker nobody could read blocks under an incomplete collection, never unknown",
+    issue: anIssue("pitwall-a", { blockedBy: ["pitwall-b"] }),
+    complete: false,
+    expected: "blocked",
+    because: { rule: "blocked-unreadable", ids: ["pitwall-b"] },
+  },
+  {
+    name: "a classification carried by the tracker's own status outranks an incomplete collection",
+    issue: anIssue("pitwall-a"),
+    complete: false,
+    stored: "parked:roadmap",
+    expected: "parked:roadmap",
+    because: { rule: "stored-status", status: "deferred" },
+  },
+  {
+    name: "a label parks an issue under an incomplete collection as it does under a complete one",
+    issue: anIssue("pitwall-a", { labels: ["watch"] }),
+    complete: false,
+    expected: "parked:watch",
+    because: { rule: "label", label: "watch" },
   },
   {
     name: "a parent in progress blocks its child",
@@ -247,6 +318,7 @@ function contextFor(scenario: Case): ClassifyContext {
     issues: [scenario.issue, ...(scenario.siblings ?? [])],
     lanes: scenario.lanes ?? [],
     collectionComplete: scenario.complete ?? true,
+    ...scenario.live,
     stored:
       scenario.stored === undefined
         ? undefined
@@ -289,6 +361,7 @@ test("every rule the precedence walk can take names itself", () => {
       "umbrella-open-child",
       "umbrella-title-marker",
       "umbrella-type",
+      "uncollected",
     ],
   );
 });
@@ -321,7 +394,7 @@ test("a reason names the blocker it read rather than one it could not", () => {
   assert.deepEqual(classify(issue, context).reason, { rule: "blocked-open", ids: ["pitwall-b"] });
 });
 
-const NOT_YET_PRODUCED: Classification[] = ["parked:unrefined", "unknown"];
+const NOT_YET_PRODUCED: Classification[] = ["parked:unrefined"];
 
 test("every classification in the contract is produced by a case, except the ones the classifier does not know yet", () => {
   const produced = [...new Set(cases.map((scenario) => scenario.expected))].sort();

@@ -117,6 +117,32 @@ body {
   letter-spacing: 0.08em;
 }
 
+.pw-header__ages {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px 0;
+  flex-basis: 100%;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-family: var(--pw-font-data);
+  font-size: 12px;
+  line-height: 1.6;
+  letter-spacing: 0.02em;
+  color: var(--pw-muted);
+}
+
+.pw-header__project {
+  white-space: pre;
+}
+
+.pw-header__project-name {
+  font-family: var(--pw-font-ui);
+  font-weight: 500;
+  color: var(--pw-ink);
+}
+
 .pw-console {
   display: flex;
   flex-direction: column;
@@ -233,6 +259,22 @@ body {
   text-align: start;
 }
 
+.pw-table--problems {
+  display: grid;
+  grid-template-columns: auto fit-content(28ch) 1fr auto;
+  align-items: baseline;
+}
+
+.pw-table--problems tbody,
+.pw-table--problems tbody > tr {
+  display: contents;
+}
+
+.pw-table--problems .pw-cell--source {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 .pw-group > th {
   padding: 12px 0 2px 12px;
   font-family: var(--pw-font-ui);
@@ -259,6 +301,7 @@ body {
 }
 
 .pw-cell--id,
+.pw-cell--source,
 .pw-cell--data,
 .pw-cell--at,
 .pw-count {
@@ -924,6 +967,10 @@ button.pw-link {
     flex-basis: 100%;
   }
 
+  .pw-header__ages {
+    justify-content: flex-start;
+  }
+
   .pw-filters__fields {
     flex-direction: column;
     align-items: stretch;
@@ -945,6 +992,12 @@ button.pw-link {
   .pw-table tr,
   .pw-table td,
   .pw-table th {
+    display: block;
+  }
+
+  .pw-table--problems,
+  .pw-table--problems tbody,
+  .pw-table--problems tbody > tr {
     display: block;
   }
 
@@ -977,6 +1030,11 @@ button.pw-link {
 
   .pw-cell--at {
     text-align: start;
+  }
+
+  .pw-cell--source {
+    white-space: normal;
+    overflow-wrap: anywhere;
   }
 
   .pw-issue__title {

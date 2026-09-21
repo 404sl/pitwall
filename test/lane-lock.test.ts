@@ -444,7 +444,7 @@ test("a rework dispatched with no slot refuses before it claims any lane", async
   );
 });
 
-test("a rework release step that answers nothing is reported as a leak naming what to read", async () => {
+test("a rework release step that answers nothing twice is reported as refused naming what to read", async () => {
   const { logs, done } = runScript("rework.js", REWORK_ARGS, (call, n) => {
     if (n === 1) return RESOLVED;
     if (n === 2) return { status: "red", ciConclusion: "failure" };
@@ -452,11 +452,11 @@ test("a rework release step that answers nothing is reported as a leak naming wh
   });
 
   const result = await done;
-  assert.match(String(result["lane"]), /^LEAKED/);
+  assert.match(String(result["lane"]), /^REFUSED - /);
   assert.match(String(result["lane"]), new RegExp(LANE_LOCK.replace(/[/.]/g, "\\$&")));
   assert.ok(
-    logs.some((line) => line.includes("LEAKED") && line.includes(LANE_LOCK) && line.includes(SLOT_FILE)),
-    `a leaked lane was not reported in the log: ${logs.join(" | ")}`,
+    logs.some((line) => line.includes("REFUSED") && line.includes(LANE_LOCK) && line.includes(SLOT_FILE)),
+    `a refused release was not reported in the log: ${logs.join(" | ")}`,
   );
 });
 

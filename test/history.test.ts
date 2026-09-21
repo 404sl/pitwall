@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import { SCHEMA_VERSION, parseSnapshot, type Snapshot } from "@404sl/pitwall-schema";
+import { SCHEMA_VERSION, parseSnapshot, type CollectionScope, type Snapshot } from "@404sl/pitwall-schema";
 import { DEFAULT_LIMITS, STORE_VERSION, historyPath, recordSnapshot } from "../src/history.ts";
 import { VERSION } from "../src/version.ts";
 
@@ -33,7 +33,12 @@ function at(minutesBeforeNow: number): string {
   return new Date(NOW.getTime() - minutesBeforeNow * MINUTE_MS).toISOString();
 }
 
-function document(generatedAt: string, issues: readonly Observed[], errors: string[] = []): Snapshot {
+interface Unread {
+  source: string;
+  scope?: CollectionScope;
+}
+
+function document(generatedAt: string, issues: readonly Observed[], errors: Unread[] = []): Snapshot {
   return parseSnapshot({
     schemaVersion: SCHEMA_VERSION,
     generatedAt,
@@ -51,7 +56,7 @@ function document(generatedAt: string, issues: readonly Observed[], errors: stri
           classification: issue.status === "in_progress" ? "in-flight" : "ready",
         })),
         metrics: {},
-        errors: errors.map((source) => ({ source, message: "unreadable", at: generatedAt })),
+        errors: errors.map((error) => ({ ...error, message: "unreadable", at: generatedAt })),
       },
     ],
     errors: [],
@@ -337,7 +342,49 @@ test("a snapshot that could not read a project is not read as everything closing
     DEFAULT_LIMITS,
     new Date(at(60)),
   );
-  const blind = await record(home, env, document(at(0), [], ["/tmp/midwinter/.beads"]), DEFAULT_LIMITS, NOW);
+  const blind = await record(home, env, document(at(0), [], [{ source: "/tmp/midwinter/.beads" }]), DEFAULT_LIMITS, NOW);
+  assert.equal(blind.metrics.get("mw")?.closedToday, 0);
+});
+
+test("a snapshot whose only errors are field-scope still records an empty backlog", { skip: withoutSqlite }, async () => {
+  const { home, env } = place();
+  const path = historyPath({ env, home });
+  await record(
+    home,
+    env,
+    document(at(60), [{ id: "mw-1", status: "in_progress" }]),
+    DEFAULT_LIMITS,
+    new Date(at(60)),
+  );
+  const soft = await record(
+    home,
+    env,
+    document(at(0), [], [{ source: "/tmp/midwinter", scope: "field" }]),
+    DEFAULT_LIMITS,
+    NOW,
+  );
+  assert.deepEqual(JSON.parse(frames(path)[1] as string).projects, [{ id: "mw", statuses: {} }]);
+  assert.equal(soft.metrics.get("mw")?.closedToday, 1);
+});
+
+test("a snapshot with a source-scope error and no issues is still skipped", { skip: withoutSqlite }, async () => {
+  const { home, env } = place();
+  const path = historyPath({ env, home });
+  await record(
+    home,
+    env,
+    document(at(60), [{ id: "mw-1", status: "in_progress" }]),
+    DEFAULT_LIMITS,
+    new Date(at(60)),
+  );
+  const blind = await record(
+    home,
+    env,
+    document(at(0), [], [{ source: "/tmp/midwinter/.beads", scope: "source" }]),
+    DEFAULT_LIMITS,
+    NOW,
+  );
+  assert.deepEqual(JSON.parse(frames(path)[1] as string).projects, []);
   assert.equal(blind.metrics.get("mw")?.closedToday, 0);
 });
 

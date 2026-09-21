@@ -14,7 +14,7 @@ import {
   DEFAULT_PORT,
   HOST,
   NOTHING_READ,
-  PARKS_ROUTE,
+  QUESTIONS_ROUTE,
   createConsoleServer,
   listen,
   parseServeArgs,
@@ -505,60 +505,75 @@ test("an issue that is not there is a 404, told apart from one that could not be
 
 const PARKED_SINCE = "2026-08-28T10:00:00.000Z";
 
-test("the park the collection placed is served on its own route and again on the issue, from one store", async (t) => {
-  const entry = { label: "needs-decision", parkedSince: PARKED_SINCE, basis: "first-seen" as const, question: "Honour the paid checkout?" };
+test("the park age is served in the document and again on the issue, and the question from one store", async (t) => {
+  const stopped = { since: PARKED_SINCE, basis: "first-seen" };
   const server = trackerServer(
     "ok",
-    [indexed("mw-3", "open", "yours:decision", { labels: ["needs-decision"] }), indexed("mw-1", "open", "parked:umbrella")],
+    [
+      indexed("mw-3", "open", "yours:decision", { labels: ["needs-decision"], stopped }),
+      indexed("mw-1", "open", "parked:umbrella"),
+    ],
     [],
     {},
-    { parks: { mw: { "mw-3": entry } } },
+    { questions: { mw: { "mw-3": "Honour the paid checkout?" } } },
   );
   t.after(() => server.close());
   const { origin } = await started(server);
 
   const board = (await (await fetch(`${origin}/api/snapshot`)).json()) as Record<string, unknown>;
-  assert.equal("console" in board || "parks" in board, false, "the snapshot body is the document and nothing else");
-  assert.equal(
-    (board.projects as Array<{ issues: Array<Record<string, unknown>> }>)[0]?.issues.some(
-      (issue) => "park" in issue || "parkedSince" in issue,
-    ),
-    false,
-    "the document itself is unchanged",
-  );
+  assert.equal("console" in board || "parks" in board || "questions" in board, false, "the snapshot body is the document and nothing else");
+  const served = (board.projects as Array<{ issues: Array<Record<string, unknown>> }>)[0]?.issues ?? [];
+  assert.deepEqual(served.find((issue) => issue.id === "mw-3")?.stopped, stopped, "the document carries the age");
+  assert.equal(served.some((issue) => "park" in issue || "parkedSince" in issue || "question" in issue), false);
 
-  const parks = await fetch(`${origin}${PARKS_ROUTE}`);
-  assert.equal(parks.status, 200);
-  assert.deepEqual(await parks.json(), { parks: { mw: { "mw-3": entry } } });
+  const questions = await fetch(`${origin}${QUESTIONS_ROUTE}`);
+  assert.equal(questions.status, 200);
+  assert.deepEqual(await questions.json(), { questions: { mw: { "mw-3": "Honour the paid checkout?" } } });
 
-  const issue = (await (await fetch(`${origin}/api/issue/mw/mw-3`)).json()) as { issue: { park?: unknown } };
-  assert.deepEqual(issue.issue.park, entry, "the page reads the same store as the board and recomputes nothing");
+  const issue = (await (await fetch(`${origin}/api/issue/mw/mw-3`)).json()) as {
+    issue: { stopped?: unknown; question?: unknown; park?: unknown };
+  };
+  assert.deepEqual(issue.issue.stopped, stopped, "the page reads the age the document carries and recomputes nothing");
+  assert.equal(issue.issue.question, "Honour the paid checkout?", "the page reads the same store as the board");
+  assert.equal("park" in issue.issue, false, "the sidecar entry is no longer served");
 
-  const umbrella = (await (await fetch(`${origin}/api/issue/mw/mw-1`)).json()) as { issue: { park?: unknown } };
-  assert.equal(umbrella.issue.park, undefined, "a structural park has no label and so no age");
+  const umbrella = (await (await fetch(`${origin}/api/issue/mw/mw-1`)).json()) as {
+    issue: { stopped?: unknown; question?: unknown };
+  };
+  assert.equal(umbrella.issue.stopped, undefined, "a structural park has no label and so no age");
+  assert.equal(umbrella.issue.question, undefined);
 });
 
-test("the park route answers with an empty store before any collection has placed a park", async (t) => {
+test("the question route answers with an empty store before any collection has asked one", async (t) => {
   const server = trackerServer("ok", [indexed("mw-3", "open", "yours:decision", { labels: ["needs-decision"] })]);
   t.after(() => server.close());
   const { origin } = await started(server);
-  const response = await fetch(`${origin}${PARKS_ROUTE}`);
+  const response = await fetch(`${origin}${QUESTIONS_ROUTE}`);
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), { parks: {} });
+  assert.deepEqual(await response.json(), { questions: {} });
 });
 
-test("a park the store holds under a label the issue no longer carries is not served against it", async (t) => {
+test("an age the snapshot placed under a label the issue no longer carries is not served against it", async (t) => {
   const server = trackerServer(
     "ok",
-    [indexed("mw-3", "open", "yours:decision", { labels: ["needs-decision"] })],
+    [
+      indexed("mw-3", "open", "yours:access", {
+        labels: ["needs-access"],
+        stopped: { since: PARKED_SINCE, basis: "carried" },
+      }),
+    ],
     [],
     {},
-    { parks: { mw: { "mw-3": { label: "needs-access", parkedSince: PARKED_SINCE, basis: "carried" as const } } } },
+    { questions: { mw: { "mw-3": "Still this?" } } },
   );
   t.after(() => server.close());
   const { origin } = await started(server);
-  const issue = (await (await fetch(`${origin}/api/issue/mw/mw-3`)).json()) as { issue: { park?: unknown } };
-  assert.equal(issue.issue.park, undefined);
+  const issue = (await (await fetch(`${origin}/api/issue/mw/mw-3`)).json()) as {
+    issue: { labels: string[]; stopped?: unknown; question?: unknown };
+  };
+  assert.deepEqual(issue.issue.labels, ["needs-decision"]);
+  assert.equal(issue.issue.stopped, undefined);
+  assert.equal(issue.issue.question, undefined, "nor is the question that was asked under it");
 });
 
 test("an issue closed since the snapshot reports both the reading and the snapshot", async (t) => {
@@ -690,6 +705,38 @@ test("the verdict one ticket reports agrees with the blocker status beside it", 
     "ready",
     "a snapshot still carrying mw-9 as open must not park a ticket the tracker has unblocked",
   );
+});
+
+test("a ticket whose only path to ready runs through a list that did not collect is unknown, not ready", async (t) => {
+  const unread = { source: join(TRACKER, ".beads"), message: "bd list --all --limit 0 --json: timed out", at: "2026-09-08T13:02:00Z" };
+  const blind = trackerServer("ok", [], [unread]);
+  t.after(() => blind.close());
+  const { origin } = await started(blind);
+  const read = async (id: string) =>
+    (await (await fetch(`${origin}/api/issue/mw/${id}`)).json()) as {
+      issue: { classification: string; reason: { rule: string; parentId?: string; childId?: string } };
+    };
+
+  const plain = await read("mw-13");
+  assert.equal(plain.issue.classification, "unknown");
+  assert.deepEqual(
+    plain.issue.reason,
+    { rule: "uncollected" },
+    "an empty list that failed to collect must not assert that nothing parks it",
+  );
+  const orphan = await read("mw-1");
+  assert.equal(orphan.issue.classification, "unknown", "a child with no parent-child edge is only visible in the list");
+
+  const parented = await read("mw-4.2");
+  assert.equal(parented.issue.classification, "blocked");
+  assert.deepEqual(parented.issue.reason, { rule: "blocked-parent-in-progress", parentId: "mw-4" });
+  const umbrella = await read("mw-5");
+  assert.equal(umbrella.issue.classification, "parked:umbrella");
+  assert.deepEqual(umbrella.issue.reason, { rule: "umbrella-open-child", childId: "mw-5.1" });
+  const labelled = await read("mw-16");
+  assert.equal(labelled.issue.classification, "parked:watch");
+  const stored = await read("mw-10");
+  assert.equal(stored.issue.classification, "parked:roadmap");
 });
 
 test("a project the snapshot does not name is a read failure, not a missing issue", async (t) => {
@@ -870,6 +917,35 @@ test("a re-collection that read nothing names the source that could not be read"
       Promise.resolve({
         read: false,
         errors: [{ source: "bd list", message: "bd: command not found", at: SNAPSHOT.generatedAt }],
+      }),
+  ]);
+  const server = createConsoleServer({ env, uiDir: builtConsole(), collect });
+  t.after(() => server.close());
+  const { origin } = await started(server);
+
+  await fetch(`${origin}/api/snapshot`);
+  await (calls[0] as Promise<Collection>);
+  await settle();
+
+  const errors = errorsOf(await (await fetch(`${origin}/api/snapshot`)).json());
+  assert.equal(errors[0]?.message, `${NOTHING_READ} bd list: bd: command not found`);
+});
+
+test("a re-collection that read nothing names the tracker, not a field a checkout could not read", async (t) => {
+  const { env } = stateWith(JSON.stringify(SNAPSHOT));
+  const { collect, calls } = collector([
+    () =>
+      Promise.resolve({
+        read: false,
+        errors: [
+          {
+            source: "/x/cli",
+            message: "no origin/HEAD, so the default branch could not be read",
+            at: SNAPSHOT.generatedAt,
+            scope: "field",
+          },
+          { source: "bd list", message: "bd: command not found", at: SNAPSHOT.generatedAt },
+        ],
       }),
   ]);
   const server = createConsoleServer({ env, uiDir: builtConsole(), collect });
