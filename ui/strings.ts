@@ -275,6 +275,7 @@ export const strings = {
       landing: "Nothing for you — it is waiting to be landed.",
       ready: "Nothing for you — it is waiting for a lane to pick it up.",
       parked: "Nothing for you — it is parked: {reason}.",
+      parkedCall: "Nothing for you — it is waiting on a call: a decision, but not yours.",
       blocked: "Nothing for you — something else has to close first.",
       unknown: "Nothing for you yet — its tracker could not be read, so nothing can say what holds it.",
       closed: "Nothing for you — this issue is closed.",
