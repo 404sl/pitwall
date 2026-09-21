@@ -2430,8 +2430,11 @@ function parkedProperly(v) {
 if (!triage.eligible) {
   const handover = await agent(`Issue ${ID} cannot be done unattended: ${triage.reason}
 
-Hand it to a person, from ${ROOT}:
-  bd label add ${ID} <needs-decision if a choice only a person can make, needs-access if it needs a deploy/dashboard/device they have and you do not>
+Hand it to a person, from ${ROOT}. One test picks the label:
+WOULD THE OWNER'S ANSWER DIFFER FROM ANY COMPETENT ENGINEER'S? Yes is needs-decision. No, and
+nothing written settles it, is needs-call - any engineer may make that call and it stays out of
+the owner's inbox. needs-access is unchanged: something only a person can run.
+  bd label add ${ID} <needs-decision if the owner's answer would differ from any competent engineer's, needs-call if any competent engineer could settle it, needs-access if it needs a deploy/dashboard/device they have and you do not>
   Write why this needs a person, and the exact question or decision, so that somebody can answer
   it without re-reading the code, to ${SCRATCH}/${ID}/handover-note.txt. It goes in a file rather
   than an argument so that a backtick or a $( in it cannot be evaluated by the shell. Then record

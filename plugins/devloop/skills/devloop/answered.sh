@@ -32,7 +32,7 @@ bd list --status open --json 2>/dev/null > /tmp/answered-open.json
 python3 - <<'PY'
 import json
 
-PARK = {"needs-decision", "needs-access", "blocked-tooling", "watch"}
+PARK = {"needs-decision", "needs-call", "needs-access", "blocked-tooling", "watch"}
 # Markers that an answer was recorded, and markers that a question was asked. Position decides:
 # the answer has to come after the question it settles, or it is just the hand-back text that
 # created the label in the first place.

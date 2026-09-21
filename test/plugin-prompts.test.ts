@@ -756,10 +756,10 @@ test("the stopping section of the skill carries the same test and both labels", 
   }
 });
 
-test("a park verified as open with needs-call is a park, not a failure", async () => {
+test("a park verified as open with needs-call is a park, not a failure, and the handover offers the label", async () => {
   const seen: string[] = [];
   for (const label of ["needs-call", "needs-decision"]) {
-    const { logs, done } = runScript(
+    const { calls, logs, done } = runScript(
       "task.js",
       { id: "zz-aaa5", slot: 1, root: "/root", skillDir: "/skill", lockPrefix: "pw", repos: HANDOFF_REPOS },
       (_call, n) => {
@@ -771,6 +771,18 @@ test("a park verified as open with needs-call is a park, not a failure", async (
     );
     await done;
     seen.push(...logs);
+    const handover = calls.find((c) => c.label.startsWith("handover:"));
+    assert.ok(handover, `no handover step ran. Steps seen: ${calls.map((c) => c.label || "?").join(", ")}`);
+    const labelLine = handover.prompt.split("\n").find((line) => line.includes("bd label add zz-aaa5"));
+    assert.ok(labelLine, `the handover never tells the run the label command:\n${handover.prompt}`);
+    assert.ok(
+      labelLine.includes("needs-call"),
+      `the handover verifies a needs-call park but its label command cannot produce one:\n${labelLine}`,
+    );
+    assert.ok(
+      handover.prompt.split("\n").some((line) => OWNERS_TEST.test(line)),
+      "the handover offers needs-call without the one test that picks it",
+    );
     assert.ok(
       !logs.some((line) => line.includes("PARK FAILED")),
       `an issue reopened with ${label} was reported as not parked, so a person is told to park by hand ` +
