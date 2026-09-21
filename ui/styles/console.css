@@ -259,6 +259,22 @@ body {
   text-align: start;
 }
 
+.pw-table--problems {
+  display: grid;
+  grid-template-columns: auto fit-content(28ch) 1fr auto;
+  align-items: baseline;
+}
+
+.pw-table--problems tbody,
+.pw-table--problems tbody > tr {
+  display: contents;
+}
+
+.pw-table--problems .pw-cell--source {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 .pw-group > th {
   padding: 12px 0 2px 12px;
   font-family: var(--pw-font-ui);
