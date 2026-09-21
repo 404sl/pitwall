@@ -272,7 +272,7 @@ const LAND = {
   properties: {
     // conflict: the rebase surfaced a disagreement about what the code should do, rather
     // than two edits to nearby lines. That is a decision, and it goes back to a person.
-    status: { enum: ['merged', 'red_after_rebase', 'conflict', 'merge_shaped', 'master_red', 'blocked'] },
+    status: { enum: ['merged', 'red_after_rebase', 'conflict', 'master_red', 'blocked'] },
     mergeSha: { type: 'string', description: 'the sha of the commit the merge produced ON THE DEFAULT BRANCH - the squash commit gh pr merge reports, never the pull request head, because a deployed host is compared against this' },
     masterGreen: { type: 'boolean' },
     failureDetail: { type: 'string', description: 'the failing examples and their messages, in enough detail to act on without re-running anything' },
@@ -807,7 +807,9 @@ a report to the supervisor, not a problem for you to solve.
    Pass timeout: 600000 on the tool call. The Bash tool's default is two minutes, and after a
    rebase push this script now blocks for check registration plus the full CI run.
 
-   It checks master is green, rebases onto master only if the branch is behind, assigns the next
+   It checks master is green, brings master in only if the branch is behind - a rebase for a
+   linear branch, a merge for one that carries a merge commit of its own, because a rebase would
+   drop whatever exists only in that merge's resolution - assigns the next
    devloop plugin version when the branch ships a file under plugins/ or .claude-plugin/,
    force-pushes with the guard, and waits for CI on the pushed head by BLOCKING rather than
    polling. Then it re-reads the rollup, refuses an empty one, and refuses one that describes a
@@ -816,7 +818,7 @@ a report to the supervisor, not a problem for you to solve.
    Read its EXIT CODE, not its prose:
 
      0  ready       steps 1 to 5 are done. Go straight to step 6. Do not redo them.
-     3  conflict    the rebase disagreed. It has already aborted and cleaned up. Read step 4,
+     3  conflict    the rebase or merge disagreed. It has already aborted and cleaned up. Read step 4,
                     decide whether this is two edits to nearby lines or a real disagreement
                     about what the code should do, and return status 'conflict' if it is the
                     second. THIS is the one part of landing that needs you.
@@ -828,12 +830,6 @@ a report to the supervisor, not a problem for you to solve.
                     the line it printed in 'notes', VERBATIM - the run puts it back for a later
                     round instead of retiring it, and that line is the only record of why. Do
                     NOT report this as red.
-     8  merge_shaped the branch already carries a merge commit of its own, and rebasing it onto
-                    master would drop whatever exists only in that merge's resolution. Nothing
-                    was touched. NOT a failure and NOT a conflict: return status 'merge_shaped'
-                    with the line it printed in 'notes', VERBATIM - the label stays on and the
-                    branch goes back for rework onto master. Do NOT rebase, merge or push it by
-                    hand, and do not report this as a conflict.
      9  unreadable  the rollup, or master's latest run before it, could not be READ - gh
                     failed, was throttled, or returned something that did not parse. Nothing
                     is known about the checks or about master, which is not the same as
@@ -1256,9 +1252,7 @@ ${LAW()}`
 // was, only un-queued.
 //
 // NOT retired: 'master_red' (nothing is wrong with the PR), 'blocked' (CI simply had not
-// finished - a timing accident that the next round should retry), 'merge_shaped' (the branch
-// needs rebuilding onto master, and un-queueing it would reopen an issue whose work is fine),
-// 'version_unreadable' (the number could not be read at all, which is ignorance rather than a
+// finished - a timing accident that the next round should retry), 'version_unreadable' (the number could not be read at all, which is ignorance rather than a
 // finding), 'fetch_failed' (the refs everything else was read from may be stale, which is
 // ignorance about all of them at once), and 'agent_error' (we do not know what happened, and
 // un-queueing on ignorance loses work silently).
@@ -1883,9 +1877,7 @@ try {
       }
 
       stopped.push({ ...pr, why, detail })
-      log(why === 'merge_shaped'
-        ? `NEEDS REWORK ${keyOf(pr)} - the branch carries a merge commit of its own, so the lander will not rebase it. The label stays on, the issue stays as it is, and nothing was touched - rebuild the branch onto master.\n    ${detail || 'the agent returned nothing'}`
-        : `STOPPED ${keyOf(pr)} - ${why}\n    ${detail || 'the agent returned nothing'}`)
+      log(`STOPPED ${keyOf(pr)} - ${why}\n    ${detail || 'the agent returned nothing'}`)
 
       // A red master blocks everything behind it, so there is no point trying the rest.
       //
