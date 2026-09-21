@@ -105,6 +105,16 @@ test("precheck.sh answers STOP with the parking label it read from the tracker",
   assert.doesNotMatch(out, /bd returned nothing/);
 });
 
+test("precheck.sh answers STOP on needs-call, a park that is nobody's question", () => {
+  const called: Issue = { ...PARKED, id: "fixture-stp2", labels: ["needs-call"] };
+  const ws = workspace([CLEAN, called]);
+
+  const { status, out, err } = runPrecheck(ws, called.id);
+
+  assert.equal(status, 1, `${out}${err}`);
+  assert.match(out, /^STOP {2}fixture-stp2: labelled needs-call/);
+});
+
 test("precheck.sh refuses rather than reading the nearest tracker when no workspace config is found", () => {
   const ws = workspace([CLEAN]);
   const outside = mkdtempSync(join(tmpdir(), "pitwall-precheck-outside-"));

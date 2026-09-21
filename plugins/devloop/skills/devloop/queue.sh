@@ -13,8 +13,9 @@
 # that IS the number in flight. It needs no task list and survives a session restart. A
 # workflow that dies leaves a stale claim - shown below with the command to release it.
 #
-# Seven labels park an issue. Five say WHO or WHAT it waits on - needs-decision (a choice only
-# the owner can make), needs-access (something only they can run: a deploy, a dashboard, a
+# Eight labels park an issue. Six say WHO or WHAT it waits on - needs-decision (a choice only
+# the owner can make), needs-call (a choice any competent engineer could make, and nobody has),
+# needs-access (something only they can run: a deploy, a dashboard, a
 # device), needs-feedback (the older label for either of those, still written by people
 # following the skill text and still meaning "a person"), blocked-tooling (a gap in this
 # pipeline, not a question for anyone), watch (an observation over time) - plus umbrella (a
@@ -58,7 +59,7 @@ ACTOR="$(bash "$CFG" actor 2>/dev/null)" || ACTOR=""
 
 cd "$ROOT" || exit 1
 
-PARKED="needs-decision needs-access needs-feedback blocked-tooling watch umbrella roadmap"
+PARKED="needs-decision needs-call needs-access needs-feedback blocked-tooling watch umbrella roadmap"
 
 # A PRIVATE scratch directory per run, not fixed paths under /tmp.
 #
@@ -84,7 +85,7 @@ import json, sys, os, datetime, subprocess
 
 PFX = sys.argv[2] if len(sys.argv) > 2 else "devloop"
 
-PARKED = {"needs-decision", "needs-access", "needs-feedback", "blocked-tooling", "watch", "umbrella", "roadmap"}
+PARKED = {"needs-decision", "needs-call", "needs-access", "needs-feedback", "blocked-tooling", "watch", "umbrella", "roadmap"}
 UNREFINED = "unrefined"
 
 def load(p):
@@ -267,6 +268,7 @@ for i in waiting:
 # were things only they could RUN. A number is only useful if it means one thing.
 LABELS = [
     ("needs-decision",  "a choice only you can make"),
+    ("needs-call",      "a call any engineer can make - not on you"),
     ("needs-access",    "an action only you can run - deploy, dashboard, device"),
     ("needs-feedback",  "a person, unsplit - relabel needs-decision or needs-access"),
     ("blocked-tooling", "waiting on a tooling fix, not on you"),
