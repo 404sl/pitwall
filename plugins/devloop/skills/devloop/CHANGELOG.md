@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.132
+
+- A refusal reading `[Merge Without Review]` on a pull request that was queried in the transcript, labelled and green means the org of that repository's slug is missing from the machine's merge and deploy allow rules, and nothing else. Do not retry, re-query or rebase; tell the owner which org is missing and stop. The lander section of SKILL.md now says so, and its examples use `<org>/<name>` rather than one org.
+- `config.sh --check` prints the orgs the configured slugs live under and states that the merge and deploy exceptions must name each. When it can read the harness settings file (`PITWALL_HARNESS_SETTINGS`, then the harness's configuration directory, then the home directory) it warns on any org the rules do not mention, read-only, and says which case it took; when it cannot, it prints the reminder unconditionally. A miss is a warning, never a refusal.
+
+Refs pitwall-ok98.1
+
 ## 0.1.131
 
 The lander's survey and version steps read pull requests over REST (`gh api repos/{slug}/pulls`) rather than `gh pr list` and `gh pr view`, so a GraphQL secondary rate limit no longer stops every pull request in a pass as `pr_unreadable` while REST answers. A survey that cannot list a repository says so in the run log instead of reporting the queue empty.
