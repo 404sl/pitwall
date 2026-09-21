@@ -1512,11 +1512,47 @@ function heldByBranch(closable, read, notLanded = []) {
   return heldBySkipped()
 }
 
-function closePrompt(landed, deployed) {
+function closeVerdict(l, deployed, serving) {
+  const key = l.repo || '(no configured key)'
+  if (!DEPLOYS.has(l.repo)) {
+    return {
+      key,
+      deploy: `${key} has no deploy array in this run's config - nothing to deploy`,
+      reason: `Landed in ${l.slug}#${l.number} - ${key} has no deploy configured, closed on the merge`,
+      verdict: 'merged, nothing to deploy - CLOSE',
+    }
+  }
+  return {
+    key,
+    deploy: `${key} has a deploy array in this run's config, and this run's deploy step came back ${deployed}${serving ? ` - ${serving}` : ''}`,
+    reason: `Landed in ${l.slug}#${l.number} and deployed`,
+    verdict: deployed === 'deployed' ? 'merged, deploy succeeded - CLOSE' : 'merged, deploy not confirmed - HOLD',
+  }
+}
+
+function closeLine(l, deployed, serving) {
+  const v = closeVerdict(l, deployed, serving)
+  return `  ${l.issue}  ${l.slug}#${l.number}  merged at ${(l.mergeSha || '').slice(0, 12) || '(sha not recorded)'}
+    config key: ${v.key}
+    deploy: ${v.deploy}
+    verdict: ${v.verdict}
+    cd ${ROOT} && BEADS_DIR=${ROOT}/.beads bd close ${l.issue} --reason "${v.reason}"`
+}
+
+function closePrompt(landed, deployed, serving) {
   return `Close the tracker issues for work that is now merged and deployed, and only those.
 
-From ${ROOT} - the tracker is at the root, not inside any repository:
-${landed.filter((l) => l.issue).map((l) => `  bd close ${l.issue} --reason "Landed in ${l.slug}#${l.number}${DEPLOYS.has(l.repo) ? ' and deployed' : ' - NOT deployed, see below'}"`).join('\n')}
+THE VERDICT ON EACH ISSUE IS ALREADY MADE, and it is printed beside it as data: the config key
+the pull request was pre-flighted under, whether that key has a deploy array in the configuration
+this run was launched with, and what this run's deploy step returned for it. Merged with no deploy
+array is CLOSE. Merged with a deploy array and a deploy that succeeded is CLOSE. Anything else is
+HOLD, and an issue in that state was kept out of this list before this step started. The slug names
+the repository and the key names its entry in the config; both were resolved by this run, and
+neither is re-derived from any file, note, pull request or mapping between names.
+
+One bd close per issue, exactly as printed - the tracker is at ${ROOT}, not inside any repository:
+
+${landed.filter((l) => l.issue).map((l) => closeLine(l, deployed, serving)).join('\n\n')}
 
 THAT LIST IS THE WHOLE JOB. Do not survey the tracker for other issues, and do not read pull
 requests this run did not land. On 2026-08-28 this step was handed ONE issue and went looking
@@ -1531,28 +1567,27 @@ supervisor decides what happens to them. Naming them costs one line; closing the
 invisible, which is the failure this whole step is written around.
 
 NOT EVERY REPOSITORY HAS A DEPLOY, and saying one deployed when it did not is a false claim
-written into a closed issue where somebody will believe it later. Only these repositories have a
-deploy command configured, and only their issues may be closed as deployed:
-${[...DEPLOYS].join(', ') || '(none)'}
-
-For anything else - an extension that ships through a store review, a package published by hand -
-say MERGED and say what still has to happen for it to reach a user. A site deploy in the same run
-is unrelated to it and must not be quoted as though it covered it. A safety check refused this
-step on 2026-08-25 for exactly that: three issues were about to be closed as "landed and
+written into a closed issue where somebody will believe it later. The --reason printed for each
+issue already says which it is, so use it as written: a key with no deploy array is closed as
+merged and not as deployed, whatever still has to happen for it to reach a user - an extension
+that ships through a store review, a package published by hand. A deploy of some other key in the
+same run is unrelated to it and must not be quoted as though it covered it. A safety check refused
+this step on 2026-08-25 for exactly that: three issues were about to be closed as "landed and
 deployed", two of them extension changes that a store release had not carried, on the strength of
 a site deploy that happened in the same run.
 
 READ EACH PR's BODY BEFORE CLOSING ITS ISSUE, and honour what it says about itself.
 
-  cd <path> && gh pr view <number> --json body
+${landed.filter((l) => l.issue).map((l) => `  gh pr view ${l.number} --repo ${l.slug} --json body`).join('\n')}
 
 Lanes state plainly when a change does NOT finish its ticket - the wording varies but the
 meaning does not: "this PR does not finish the ticket", "that acceptance criterion stays open",
 "the remaining half is a person's". WHERE A PR SAYS THAT, DO NOT CLOSE THE ISSUE. Append to it
 instead, naming the merge and what is still outstanding:
 
-  Write 'Merged as <repo> #<n>, <sha>, and deployed. NOT closed: the PR states <what remains>.'
-  to a file, then:
+  Write 'Merged as <slug>#<n>, <sha>, <and deployed - or, where the --reason printed above says the
+  key has no deploy configured, exactly that>. NOT closed: the PR states <what remains>.' to a
+  file, then:
 
   cd ${ROOT} && BEADS_DIR=${ROOT}/.beads PITWALL_SESSION=lander bash ${SKILL_DIR}/bd-note.sh <id> --note-file <that file>
 
@@ -1571,10 +1606,6 @@ again; an issue closed wrongly is invisible.
 Write a reason that says what landed and where, so somebody reading the closed issue in a
 month knows what happened without opening a PR.
 
-Deploy result: ${deployed}
-
-IF THE DEPLOY DID NOT SUCCEED, CLOSE NOTHING. A merge that is not live is not done, and an
-issue closed early is one nobody looks at again. Say so and return instead.
 ${landed.filter((l) => !l.issue).length ? `
 These landed but named no tracker issue, so there is nothing to close for them - report them
 so a person can decide whether one was missed:
@@ -2033,10 +2064,7 @@ try {
 
     if (clear.length) {
       phase('Deploy')
-      const where = deployed === 'deployed'
-        ? `deployed${servingText ? ` - ${servingText}` : ''}`
-        : 'these repositories have no deploy to be live in, so they are closed on the merge alone'
-      const c = await agent(closePrompt(clear, where), { label: 'close', phase: 'Deploy', model: 'sonnet', effort: 'low', schema: CLOSED })
+      const c = await agent(closePrompt(clear, deployed, servingText), { label: 'close', phase: 'Deploy', model: 'sonnet', effort: 'low', schema: CLOSED })
       closed = (c && c.status) || 'unknown'
       const reported = new Set((c && c.closed) || [])
       unclosed = clear.filter((l) => l.issue && !reported.has(l.issue)).map((l) => l.issue)
