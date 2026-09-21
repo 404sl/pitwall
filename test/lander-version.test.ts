@@ -374,7 +374,7 @@ test("the land.js version step reads the label and the state of the pull request
 
   const step = calls.find((c) => c.label.startsWith("version:"));
   assert.ok(step, `no version step ran: ${labels(calls)}`);
-  assert.match(step.prompt, /gh pr view 80 --repo 404sl\/pitwall --json labels,state,isDraft/);
+  assert.match(step.prompt, /gh api repos\/404sl\/pitwall\/pulls\/80 /);
   assert.deepEqual(
     (step.schema?.required || []).filter((f: string) => f === "labelled" || f === "open"),
     ["labelled", "open"],
@@ -487,6 +487,23 @@ test("land.js lands a plugin branch whose pull request read failed, once land-on
   );
   assert.deepEqual(out.stopped, []);
   assert.equal(out.landed.length, 1);
+});
+
+test("the version step reads the pull request over REST, not through a GraphQL command a secondary limit throttles", async () => {
+  const { calls, done } = lander(declared());
+  await done;
+
+  const prompt = calls.find((c) => c.label.startsWith("version:"))?.prompt || "";
+  assert.match(
+    prompt,
+    /gh api repos\/404sl\/pitwall\/pulls\/80 --jq '\{labels: \[\.labels\[\]\.name\], state, draft, merged\}'/,
+    "the label and state of the pull request are not read over REST - every gh pr view in a run was " +
+      "refused with 'API rate limit already exceeded' while gh api rate_limit showed 5000 of 5000 and " +
+      "every REST read answered, and the run stopped six pull requests as pr_unreadable to land nothing",
+  );
+  assert.doesNotMatch(prompt, /gh pr view \d+ --repo/, "the version step still runs gh pr view, which goes over GraphQL");
+  assert.doesNotMatch(prompt, /isDraft|state is OPEN/, "the prompt describes GraphQL field names for a REST read");
+  assert.match(prompt, /state is "open" and draft is false/, "the prompt does not say how REST spells an open pull request");
 });
 
 test("the version prompt asks for the manifest read and the pull request read as separate fields", async () => {

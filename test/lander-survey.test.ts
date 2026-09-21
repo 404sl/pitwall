@@ -346,3 +346,45 @@ test("a skipped PR says whether it was pre-flighted under a name that matched no
     }
   }
 });
+
+test("the survey lists labelled pull requests over REST and takes the tracker id from the same read", async () => {
+  const { calls, done } = lander((call) => {
+    if (call.label.startsWith("survey")) return { prs: [] };
+    return { status: "deployed" };
+  });
+  await done;
+
+  const survey = calls.find((c) => c.label.startsWith("survey"));
+  assert.ok(survey, `no survey ran: ${calls.map((c) => c.label).join(", ")}`);
+  assert.match(
+    survey.prompt,
+    /gh api "repos\/<that repository's owner\/name>\/pulls\?state=open&per_page=100"/,
+    "the survey lists pull requests with a GraphQL command - gh pr list was refused with 'API rate " +
+      "limit already exceeded' while REST answered, and a survey that cannot list lands nothing",
+  );
+  assert.doesNotMatch(survey.prompt, /gh pr list --repo/, "the survey still runs gh pr list");
+  assert.match(
+    survey.prompt,
+    /\.name == "lane-verified"/,
+    "the REST list carries no label parameter, and a survey that does not filter on the label hands back unlabelled work",
+  );
+  assert.match(
+    survey.prompt,
+    /\{number, title, branch: \.head\.ref, createdAt: \.created_at, body\}/,
+    "the body is not read with the list, so the tracker id costs one GraphQL call per pull request",
+  );
+  assert.match(survey.prompt, /IF THE READ FAILS IN A REPOSITORY/, "a refused list reads as an empty queue");
+});
+
+test("a survey that could not read a repository is reported in the run log, not as an empty queue", async () => {
+  const { logged, done } = lander((call) => {
+    if (call.label.startsWith("survey")) return { prs: [], notes: "404sl/pitwall-site: gh api exited 1: API rate limit already exceeded" };
+    return { status: "deployed" };
+  });
+  await done;
+
+  assert.ok(
+    logged.some((line) => /404sl\/pitwall-site: gh api exited 1/.test(line)),
+    `the survey said a repository could not be listed and the run log does not:\n${logged.join("\n")}`,
+  );
+});

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.131
+
+The lander's survey and version steps read pull requests over REST (`gh api repos/{slug}/pulls`) rather than `gh pr list` and `gh pr view`, so a GraphQL secondary rate limit no longer stops every pull request in a pass as `pr_unreadable` while REST answers. A survey that cannot list a repository says so in the run log instead of reporting the queue empty.
+
 ## 0.1.130
 
 A rework brings a dropped or retired branch up to master by merging master into it and pushing the plain fast-forward, instead of rebasing and asking for a force-push a session refuses. Nothing on the branch is rewritten, no lease is needed, and no push is left for a person. The pre-push check runs with the branch named rather than as rebased. A reworked branch that master moves under again before the lander reaches it is refused as merge-shaped and stays where it is, labelled and undispatched, until pitwall-uoxk teaches the lander to merge master into it; until then a person moves such a branch.
