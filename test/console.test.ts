@@ -1748,7 +1748,7 @@ test("problems render whole under every filter, because a hidden collection fail
   assert.ok(markup.includes(strings.filters.notFiltered), "a filtered board must say problems are not filtered");
 });
 
-test("a long source in the problems band wraps at phone width, while issue ids stay on one line", () => {
+test("the problems table bounds its source column so a long source wraps inside it and the message keeps its width", () => {
   const source = "/Users/somebody/Documents/work/pitwall/.beads";
   assert.equal(source.length, 45);
   const board = buildBoard(
@@ -1773,8 +1773,25 @@ test("a long source in the problems band wraps at phone width, while issue ids s
   const dataCells = base.match(/\.pw-cell--id,\n\.pw-cell--source,[^}]*\}/);
   assert.ok(dataCells, "the source cell shares the data-font rule with the id cell");
   assert.match(dataCells[0], /white-space: nowrap;/);
-  assert.doesNotMatch(base, /\.pw-cell--source\s*\{/, "above 640px the source column stays on one line beside the full-width message");
+  const problemsTable = base.match(/\.pw-table--problems \{[^}]*\}/);
+  assert.ok(problemsTable, "the problems table has a column template of its own");
+  assert.match(problemsTable[0], /display: grid;/);
+  assert.match(
+    problemsTable[0],
+    /grid-template-columns: auto fit-content\(28ch\) 1fr auto;/,
+    "the source column is bounded and the message column takes what is left",
+  );
+  assert.match(
+    base,
+    /\.pw-table--problems \.pw-cell--source \{\n\s+white-space: normal;\n\s+overflow-wrap: anywhere;\n\}/,
+    "above 640px a long source wraps inside its bounded column instead of widening it",
+  );
   assert.match(narrow, /\.pw-cell--source \{\n\s+white-space: normal;\n\s+overflow-wrap: anywhere;\n\s+\}/);
+  assert.match(
+    narrow,
+    /\.pw-table--problems,\n\s+\.pw-table--problems tbody,\n\s+\.pw-table--problems tbody > tr \{\n\s+display: block;\n\s+\}/,
+    "below 640px the problems rows become blocks again, so the row padding and the rails have a box to paint on",
+  );
 });
 
 test("a count under a filter says what it is counting, and an unfiltered one stays a plain number", () => {
