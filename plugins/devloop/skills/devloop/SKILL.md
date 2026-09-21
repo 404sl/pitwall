@@ -612,7 +612,11 @@ It merges rather than rebases because a rebased branch can only be published wit
 which the session refuses and a run neither retries nor routes around - so every rebased rework
 ended as a one-line command waiting on a person. The lander squash-merges, so the merge commit is
 discarded with everything else on the branch and master's history is the same either way; it reads
-the merged branch as 0 behind and takes its no-rebase path. It takes a lane the same way
+the merged branch as 0 behind and takes its no-rebase path. A merged branch that master has moved
+under again before the lander reaches it - which is every reworked branch that is not first in the
+lander's queue - is refused as merge-shaped: `land.js` logs it, keeps the label and the issue as
+they are, and nothing dispatches it again, until pitwall-uoxk teaches the lander to merge master
+into it. It takes a lane the same way
 `task.js` does, and it gives the lane and the slot back the same way - in a `finally`, so
 a `red`, a `blocked` and an exception all go through it rather than only the handoff. It strips the label while it works, because a
 `lane-verified` branch that cannot merge is a lie the lander keeps acting on.
@@ -658,7 +662,7 @@ that returned nothing, and one that reported a fix whose head did not move - so 
 diagnosis on the issue.
 
 A retired branch arrives ALREADY ON MASTER: `land-one.sh` pushes the rebased head before it waits
-on CI. So the resolve step's rebase replays nothing, it pushes nothing, and it answers
+on CI. So the resolve step's merge brings nothing in, it pushes nothing, and it answers
 `already_clean` with the same head twice - that is the expected shape of this arrival, not a
 resolve that failed, and the run goes on to wait for CI and repair from there.
 

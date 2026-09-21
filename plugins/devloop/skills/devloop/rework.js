@@ -346,12 +346,17 @@ left. CI runs on the merged tree, which is the same tree. The pull request's dif
 branch's own changes, because GitHub diffs against the merge-base and the merge-base moves with
 the merge.
 
-THE LANDER READS A MERGED BRANCH AS CURRENT. land-one.sh counts how far the branch is behind
-origin/${BASE}, and a branch that has just merged it is 0 behind, which is the path that rebases
-nothing and pushes nothing. It refuses a branch that carries a merge commit AND is behind - that
-happens only when master moves again between this push and the lander's turn, and the answer is
-one more round of exactly this. A branch from an earlier round of this shape already carries a
-merge commit; merging again on top of it is fine, and its earlier resolutions stay where they are.
+THE LANDER READS A MERGED BRANCH AS CURRENT, AND ONLY AS LONG AS MASTER STAYS PUT. land-one.sh
+counts how far the branch is behind origin/${BASE}, and a branch that has just merged it is 0
+behind, which is the path that rebases nothing and pushes nothing. It refuses a branch that
+carries a merge commit AND is behind - it exits 8 merge_shaped, and land.js then logs NEEDS
+REWORK, leaves the label on, leaves the issue as it is, writes no rework metadata and retires
+nothing, so no run picks that branch up again until the lander learns to merge master into it
+itself (pitwall-uoxk). Master moves every time the lander merges the pull request ahead of this
+one, so a reworked branch that is not first in the lander's queue is behind by the time its turn
+comes. Until pitwall-uoxk lands, a person moves such a branch by hand. A branch from an earlier
+round of this shape already carries a merge commit; merging again on top of it is fine, and its
+earlier resolutions stay where they are.
 
 RESOLVING. Most conflicts here are one shape: master added entries and this branch added
 different ones, in the same region. KEEP BOTH SIDES. Taking one side wholesale - --ours, --theirs,
