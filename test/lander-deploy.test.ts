@@ -25,7 +25,7 @@ const OTHER = "0123456789abcdef0123456789abcdef01234567";
 const PR = { slug: "owner/site", number: 16, title: "Rewrite the headline", branch: "devloop/pitwall-7b1", issue: "pitwall-7b1" };
 const SECOND = { slug: "owner/site", number: 17, title: "Rewrite the subhead", branch: "devloop/pitwall-7b2", issue: "pitwall-7b2" };
 
-type Replies = { deploy?: unknown; check?: unknown; close?: unknown; prs?: unknown[]; args?: unknown };
+type Replies = { deploy?: unknown; deployThrows?: Error; check?: unknown; close?: unknown; prs?: unknown[]; args?: unknown };
 
 function hosts(revision: string, repo = "docs", environment = "only") {
   return [{ repo, environment, revision }];
@@ -56,15 +56,27 @@ const NO_PLUGIN = {
   notes: "this repository carries no devloop plugin manifest on master",
 };
 
+function askedAbout(args: unknown, queue: unknown[]) {
+  const slugs = Object.values((args as { repos: Record<string, { slug: string }> }).repos).map((r) => r.slug);
+  const branches = (queue as { branch: string }[]).map((pr) => pr.branch);
+  return slugs.flatMap((slug) => branches.map((branch) => ({ slug, branch })));
+}
+
 function landOnce(replies: Replies) {
   const queue = replies.prs || [PR];
+  const args = replies.args || ARGS;
+  const asked = askedAbout(args, queue);
   const shas: Record<string, string> = { "owner/site#16": SHA, "owner/site#17": LATER };
-  return runScript("land.js", replies.args || ARGS, (call: Call, n: number) => {
+  return runScript("land.js", args, (call: Call, n: number) => {
     if (n === 1) return { status: "taken", token: "lander-1788964650-29574", holder: "lander-1788964650-29574" };
     if (call.label.startsWith("survey")) return n === 2 ? { prs: queue } : { prs: [] };
     if (call.label.startsWith("version:")) return NO_PLUGIN;
     if (call.label.startsWith("land:")) return { status: "merged", mergeSha: shas[call.label.slice(5)] || SHA, masterGreen: true, notes: "" };
-    if (call.label === "deploy") return replies.deploy;
+    if (call.label === "branch-survey") return { status: "read", asked, prs: [] };
+    if (call.label === "deploy") {
+      if (replies.deployThrows) throw replies.deployThrows;
+      return replies.deploy;
+    }
     if (call.label === "deploy-check") return replies.check;
     if (call.label === "close") return replies.close;
     return { status: "released" };
@@ -97,6 +109,52 @@ test("a deploy step that reported nothing is not called failed", async () => {
     said.includes("https://staging.example.com/health"),
     `an unknown deploy must say what to check, and the verify command is it. Logged:\n${said}`,
   );
+});
+
+test("a deploy step whose agent throws still reports what merged and what the hosts serve", async () => {
+  const { calls, logs, done } = landOnce({
+    deployThrows: new Error("the deploy step was killed on every attempt"),
+    check: { status: "read", hosts: hosts(""), notes: "the host did not answer" },
+  });
+  const result = await done;
+
+  const landed = result.landed as Array<{ mergeSha: string; issue: string }>;
+  assert.equal(landed.length, 1, "the merge that happened before the deploy step died was lost from the result");
+  assert.equal(landed[0]?.mergeSha, SHA, "the result does not carry the sha that merged");
+  assert.equal(landed[0]?.issue, "pitwall-7b1");
+  assert.equal(result.deployed, "unknown", "a deploy step that died is neither deployed nor not_needed");
+  assert.equal(result.masterBroken, false);
+  assert.equal(result.lock, "released", "the merge lock was not given back on the path where the deploy agent threw");
+
+  assert.ok(!calls.some((c) => c.label === "close"), "an issue was closed on the strength of a deploy step that never reported");
+  assert.ok(calls.some((c) => c.label === "release"), `no release step ran. Steps: ${calls.map((c) => c.label).join(", ")}`);
+  const check = calls.find((c) => c.label === "deploy-check");
+  assert.ok(check, `the hosts were not read back after the deploy agent threw. Steps: ${calls.map((c) => c.label).join(", ")}`);
+  assert.ok(check.prompt.includes("https://staging.example.com/health"), "the read-back was not given the host to read");
+
+  const said = logs.join("\n");
+  assert.match(said, /^landed 1, stopped 0, skipped 0, deploy unknown/m, `the final counts line was never logged. Logged:\n${said}`);
+  assert.match(said, /killed on every attempt/, `the reason the deploy step gave nothing is not in the log. Logged:\n${said}`);
+  assert.doesNotMatch(said, /reported nothing/, `a deploy agent that threw was reported as a step that answered nothing. Logged:\n${said}`);
+  assert.match(said, new RegExp(`merged: docs ${SHA.slice(0, 12)}`), `the log does not name the sha that merged. Logged:\n${said}`);
+  assert.match(said, /docs only reported no revision/, `the log does not say what the host answered. Logged:\n${said}`);
+  assert.match(said, /pitwall-7b1/, "the log does not name the issue left open");
+});
+
+test("a host serving another revision decides a deploy whose agent threw, the same as one that reported nothing", async () => {
+  const { calls, logs, done } = landOnce({
+    deployThrows: new Error("the deploy step was killed on every attempt"),
+    check: { status: "read", hosts: hosts(OTHER), notes: "the host answered" },
+  });
+  const result = await done;
+
+  assert.equal(result.deployed, "failed", "the read-back saw a host serving something other than what merged and the run did not say so");
+  assert.equal((result.landed as unknown[]).length, 1);
+  assert.equal(result.lock, "released");
+  assert.ok(!calls.some((c) => c.label === "close"));
+  const said = logs.join("\n");
+  assert.match(said, /^landed 1, stopped 0, skipped 0, deploy failed/m, `the final counts line was never logged. Logged:\n${said}`);
+  assert.match(said, new RegExp(`serving ${OTHER.slice(0, 12)}, and what merged was ${SHA.slice(0, 12)}`), `the log does not compare what the host serves against what merged. Logged:\n${said}`);
 });
 
 test("the read-back is never told the answer it is being asked to produce", async () => {

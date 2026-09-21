@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode, type Ref } from "react";
 import { isYours, type Authority, type Classification, type StalenessVerdict } from "@404sl/pitwall-schema";
-import type { ClassificationReason } from "../../src/classify.js";
+import { liftableParkOf, type ClassificationReason } from "../../src/classify.js";
 import { noteBlocks, noteSaid, quote } from "../../src/staleness.js";
 import {
   buildIssueView,
@@ -9,14 +9,17 @@ import {
   type IssuePayload,
   type IssuePreview,
   type IssueView,
+  type ParkAge as ParkAgeValue,
+  type SortKey,
   type StalenessView,
 } from "../model.js";
-import { VERDICT_CLASS, VERDICT_WORD, clock, fill, priorityLabel, stamp } from "../format.js";
+import { VERDICT_CLASS, VERDICT_WORD, clock, elapsed, fill, priorityLabel, stamp } from "../format.js";
 import { boardHref, issueHref, type IssueRoute } from "../routes.js";
 import { strings } from "../strings.js";
 import { Band } from "./Band.js";
 import { Failure } from "./Failure.js";
 import { IssueActions, type ActionName, type ActionOutcome } from "./IssueActions.js";
+import { ParkAge } from "./ParkAge.js";
 
 interface PageFailure {
   heading: string;
@@ -70,21 +73,41 @@ function Interpolated({ template, values }: { template: string; values: Record<s
   );
 }
 
-function IdLink({ project, id, filter }: { project: string; id: string; filter: FilterState }) {
+function IdLink({
+  project,
+  id,
+  filter,
+  sort,
+}: {
+  project: string;
+  id: string;
+  filter: FilterState;
+  sort?: SortKey;
+}) {
   return (
-    <a className="pw-link" href={issueHref(project, id, filter)}>
+    <a className="pw-link" href={issueHref(project, id, filter, sort)}>
       {id}
     </a>
   );
 }
 
-function IdList({ project, ids, filter }: { project: string; ids: string[]; filter: FilterState }) {
+function IdList({
+  project,
+  ids,
+  filter,
+  sort,
+}: {
+  project: string;
+  ids: string[];
+  filter: FilterState;
+  sort?: SortKey;
+}) {
   return (
     <>
       {ids.map((id, index) => (
         <Fragment key={id}>
           {index === 0 ? null : strings.issue.reason.separator}
-          <IdLink project={project} id={id} filter={filter} />
+          <IdLink project={project} id={id} filter={filter} sort={sort} />
         </Fragment>
       ))}
     </>
@@ -95,6 +118,7 @@ function reasonValues(
   reason: ClassificationReason,
   project: string,
   filter: FilterState,
+  sort: SortKey | undefined,
 ): Record<string, ReactNode> {
   switch (reason.rule) {
     case "in-progress-lane":
@@ -104,12 +128,12 @@ function reasonValues(
     case "umbrella-type":
       return { issueType: reason.issueType };
     case "umbrella-open-child":
-      return { childId: <IdLink project={project} id={reason.childId} filter={filter} /> };
+      return { childId: <IdLink project={project} id={reason.childId} filter={filter} sort={sort} /> };
     case "blocked-open":
     case "blocked-unreadable":
-      return { ids: <IdList project={project} ids={reason.ids} filter={filter} /> };
+      return { ids: <IdList project={project} ids={reason.ids} filter={filter} sort={sort} /> };
     case "blocked-parent-in-progress":
-      return { parentId: <IdLink project={project} id={reason.parentId} filter={filter} /> };
+      return { parentId: <IdLink project={project} id={reason.parentId} filter={filter} sort={sort} /> };
     case "stored-status":
       return { status: reason.status };
     default:
@@ -117,33 +141,56 @@ function reasonValues(
   }
 }
 
+function ParkLine({ park }: { park?: ParkAgeValue }) {
+  if (park === undefined) {
+    return null;
+  }
+  return (
+    <p className="pw-reason">
+      <ParkAge park={park} />
+      <span className="pw-reason__because">
+        {park.since === undefined
+          ? strings.park.unknownLine
+          : fill(strings.park.sinceLine, { at: stamp(park.since) })}
+      </span>
+    </p>
+  );
+}
+
 function Reason({
   classification,
   reason,
   project,
   filter,
+  sort,
+  park,
 }: {
   classification?: Classification;
   reason?: ClassificationReason;
   project: string;
   filter: FilterState;
+  sort?: SortKey;
+  park?: ParkAgeValue;
 }) {
   if (classification === undefined || reason?.rule === "closed") {
     return <p className="pw-reason">{strings.issue.notClassified}</p>;
   }
   return (
-    <p className="pw-reason">
-      <span className="pw-reason__token">{classification}</span>
-      {reason === undefined ? null : (
-        <span className="pw-reason__because">
-          {strings.issue.because}
-          <Interpolated
-            template={reasonTemplate(reason)}
-            values={reasonValues(reason, project, filter)}
-          />
-        </span>
-      )}
-    </p>
+    <>
+      <p className="pw-reason">
+        <span className="pw-reason__token">{classification}</span>
+        {reason === undefined ? null : (
+          <span className="pw-reason__because">
+            {strings.issue.because}
+            <Interpolated
+              template={reasonTemplate(reason)}
+              values={reasonValues(reason, project, filter, sort)}
+            />
+          </span>
+        )}
+      </p>
+      <ParkLine park={park} />
+    </>
   );
 }
 
@@ -162,24 +209,53 @@ export function reasonTemplate(reason: Exclude<ClassificationReason, { rule: "cl
   }
 }
 
+export interface CallContext {
+  park?: ParkAgeValue;
+  misfiled?: boolean;
+  liftable?: boolean;
+}
+
+function agedText(park: ParkAgeValue | undefined): string | undefined {
+  return park?.suspect === true && park.ms !== undefined ? elapsed(park.ms) : undefined;
+}
+
+export function isMisfiled(shown: Pick<IssuePreview, "classification" | "park" | "question">): boolean {
+  return (
+    shown.classification === "yours:decision" &&
+    shown.park?.since !== undefined &&
+    shown.question === undefined
+  );
+}
+
 export function callFor(
   classification: Classification | undefined,
   verdict: StalenessVerdict,
   closed: boolean,
+  context: CallContext = {},
 ): { text: string; tone: "yours" | "waiting" } {
   if (closed || classification === undefined) {
     return { text: strings.issue.call.closed, tone: "waiting" };
   }
   const expired = verdict === "likely-stale" || verdict === "resolved";
+  const age = agedText(context.park);
   switch (classification) {
     case "yours:decision":
+      if (expired) {
+        return { text: strings.issue.call.decision.stale, tone: "yours" };
+      }
+      if (context.misfiled === true) {
+        return { text: strings.issue.call.decision.misfiled, tone: "yours" };
+      }
       return {
-        text: expired ? strings.issue.call.decision.stale : strings.issue.call.decision.standing,
+        text: age === undefined ? strings.issue.call.decision.standing : fill(strings.issue.call.decision.aged, { age }),
         tone: "yours",
       };
     case "yours:access":
+      if (expired) {
+        return { text: strings.issue.call.access.stale, tone: "yours" };
+      }
       return {
-        text: expired ? strings.issue.call.access.stale : strings.issue.call.access.standing,
+        text: age === undefined ? strings.issue.call.access.standing : fill(strings.issue.call.access.aged, { age }),
         tone: "yours",
       };
     case "in-flight":
@@ -190,17 +266,40 @@ export function callFor(
       return { text: strings.issue.call.ready, tone: "waiting" };
     case "blocked":
       return { text: strings.issue.call.blocked, tone: "waiting" };
-    default:
-      return {
-        text: fill(strings.issue.call.parked, { reason: classification.slice("parked:".length) }),
-        tone: "waiting",
-      };
+    case "unknown":
+      return { text: strings.issue.call.unknown, tone: "waiting" };
+    default: {
+      const reason = classification.slice("parked:".length);
+      if (age !== undefined) {
+        const template = context.liftable === true ? strings.issue.call.parkedAgedLiftable : strings.issue.call.parkedAged;
+        return { text: fill(template, { reason, age }), tone: "yours" };
+      }
+      return { text: fill(strings.issue.call.parked, { reason }), tone: "waiting" };
+    }
   }
 }
 
 function Call({ shown }: { shown: IssuePreview }) {
-  const call = callFor(shown.classification, shown.staleness.verdict, shown.closed);
+  const call = callFor(shown.classification, shown.staleness.verdict, shown.closed, {
+    park: shown.park,
+    misfiled: isMisfiled(shown),
+    liftable: liftableParkOf(shown) !== undefined,
+  });
   return <p className={`pw-call pw-call--${call.tone}`}>{call.text}</p>;
+}
+
+export function Question({ shown }: { shown: IssuePreview }) {
+  if (shown.closed || shown.classification !== "yours:decision" || shown.question === undefined) {
+    return null;
+  }
+  return (
+    <p className="pw-call__ask">
+      <span className="pw-call__ask-meta">
+        <span className="pw-call__ask-label">{strings.issue.call.question}</span>
+      </span>
+      <q className="pw-call__ask-text">{shown.question}</q>
+    </p>
+  );
 }
 
 export function LatestNote({
@@ -323,17 +422,19 @@ function DependencyRows({
   project,
   links,
   filter,
+  sort,
 }: {
   project: string;
   links: IssueLink[];
   filter: FilterState;
+  sort?: SortKey;
 }) {
   return (
     <>
       {links.map((link) => (
         <tr key={link.id} className="pw-row">
           <td className="pw-cell pw-cell--id">
-            <IdLink project={project} id={link.id} filter={filter} />
+            <IdLink project={project} id={link.id} filter={filter} sort={sort} />
           </td>
           <td className="pw-cell pw-cell--title">{link.title}</td>
           <td className="pw-cell pw-cell--data">{link.status}</td>
@@ -343,7 +444,7 @@ function DependencyRows({
   );
 }
 
-function Dependencies({ view, filter }: { view: IssueView; filter: FilterState }) {
+function Dependencies({ view, filter, sort }: { view: IssueView; filter: FilterState; sort?: SortKey }) {
   const { project, blockedBy, blocks } = view.issue;
   return (
     <table className="pw-table pw-table--deps">
@@ -368,7 +469,7 @@ function Dependencies({ view, filter }: { view: IssueView; filter: FilterState }
             </td>
           </tr>
         ) : (
-          <DependencyRows project={project} links={blockedBy} filter={filter} />
+          <DependencyRows project={project} links={blockedBy} filter={filter} sort={sort} />
         )}
       </tbody>
       <tbody>
@@ -384,11 +485,22 @@ function Dependencies({ view, filter }: { view: IssueView; filter: FilterState }
             </td>
           </tr>
         ) : (
-          <DependencyRows project={project} links={blocks} filter={filter} />
+          <DependencyRows project={project} links={blocks} filter={filter} sort={sort} />
         )}
       </tbody>
     </table>
   );
+}
+
+function WhoFact({ value, absent }: { value: string | undefined; absent: string }) {
+  if (value === undefined) {
+    return (
+      <dd className="pw-facts__value">
+        <span className="pw-absent">{absent}</span>
+      </dd>
+    );
+  }
+  return <dd className="pw-facts__value pw-cell--data">{value}</dd>;
 }
 
 function Facts({ shown, superseded }: { shown: IssuePreview; superseded?: { status: string; at: string } }) {
@@ -404,6 +516,14 @@ function Facts({ shown, superseded }: { shown: IssuePreview; superseded?: { stat
         </p>
       )}
       <dl className="pw-facts__list">
+      <div className="pw-facts__pair">
+        <dt className="pw-facts__term">{strings.issue.facts.owner}</dt>
+        <WhoFact value={shown.owner} absent={strings.who.unassigned} />
+      </div>
+      <div className="pw-facts__pair">
+        <dt className="pw-facts__term">{strings.issue.facts.reporter}</dt>
+        <WhoFact value={shown.reporter} absent={strings.who.unreported} />
+      </div>
       <div className="pw-facts__pair">
         <dt className="pw-facts__term">{strings.issue.facts.project}</dt>
         <dd className="pw-facts__value">{shown.projectName}</dd>
@@ -471,17 +591,21 @@ export function shownOf(view: IssueView): IssuePreview {
     issueType: issue.issueType,
     priority: issue.priority,
     labels: issue.labels,
+    owner: issue.owner,
+    reporter: issue.reporter,
     project: issue.project,
     projectName: issue.projectName,
     classification: issue.classification,
     closed: view.closed,
     staleness: view.staleness,
+    park: view.park,
+    question: view.question,
   };
 }
 
-function backLink(filter: FilterState) {
+function backLink(filter: FilterState, sort: SortKey | undefined) {
   return (
-    <a className="pw-link pw-link--back" href={boardHref(filter)}>
+    <a className="pw-link pw-link--back" href={boardHref(filter, sort)}>
       {strings.issue.back}
     </a>
   );
@@ -511,6 +635,7 @@ const DONE: Record<ActionName, string> = {
   answer: strings.actions.doneAnswer,
   ready: strings.actions.doneReady,
   "not-mine": strings.actions.doneNotMine,
+  unpark: strings.actions.doneUnpark,
 };
 
 function outcomeNotice(
@@ -540,6 +665,7 @@ export function IssueDetail({
   view,
   failure,
   filter = {},
+  sort,
   heading,
   route,
   onOutcome,
@@ -549,6 +675,7 @@ export function IssueDetail({
   view?: IssueView;
   failure?: PageFailure;
   filter?: FilterState;
+  sort?: SortKey;
   heading?: Ref<HTMLHeadingElement>;
   route?: IssueRoute;
   onOutcome?: (outcome: ActionOutcome) => Promise<void>;
@@ -558,11 +685,12 @@ export function IssueDetail({
   return (
     <>
       <div className="pw-issue__head">
-        {backLink(filter)}
+        {backLink(filter, sort)}
         <h2 className="pw-issue__title" ref={heading} tabIndex={-1}>
           {shown.title}
         </h2>
         <Call shown={shown} />
+        <Question shown={shown} />
         {view === undefined ? null : (
           <LatestNote
             classification={shown.classification}
@@ -605,6 +733,8 @@ export function IssueDetail({
           reason={view?.issue.reason}
           project={shown.project}
           filter={filter}
+          sort={sort}
+          park={shown.park}
         />
       </Band>
       <Band id="staleness" label={strings.issue.band.staleness} level="h3">
@@ -630,7 +760,7 @@ export function IssueDetail({
             <Notes authority={view.issue.authority} text={view.issue.notes} />
           </Band>
           <Band id="dependencies" label={strings.issue.band.dependencies} level="h3">
-            <Dependencies view={view} filter={filter} />
+            <Dependencies view={view} filter={filter} sort={sort} />
           </Band>
           <Origin view={view} />
         </>
@@ -643,10 +773,12 @@ export function IssuePage({
   route,
   preview,
   filter = {},
+  sort,
 }: {
   route: IssueRoute;
   preview?: IssuePreview;
   filter?: FilterState;
+  sort?: SortKey;
 }) {
   const [view, setView] = useState<IssueView | undefined>(undefined);
   const [failure, setFailure] = useState<PageFailure | undefined>(undefined);
@@ -741,7 +873,7 @@ export function IssuePage({
   if (shown === undefined) {
     return (
       <>
-        {backLink(filter)}
+        {backLink(filter, sort)}
         {loading ? (
           <p className="pw-empty" role="status">
             {strings.issue.loading}
@@ -759,6 +891,7 @@ export function IssuePage({
       view={view}
       failure={failure}
       filter={filter}
+      sort={sort}
       heading={heading}
       route={route}
       onOutcome={onOutcome}

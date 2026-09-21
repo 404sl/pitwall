@@ -16,9 +16,9 @@ journal labels its phases with the issue id.
 
 A workflow is attributed by the SCRIPT it was dispatched from, which the transcript
 records beside the task id, because the scripts do not label alike. task.js labels
-every phase with the issue id, so a task.js journal carrying labels that are not
-this id belongs to another issue. rework.js labels resolve:<id>#<pr>, handoff:<id>#<pr>
-and release:<id>#<pr>, so the same holds for it once EVERY label in its journal
+every phase with the issue id, and so does refine.js, so a journal of either carrying
+labels that are not this id belongs to another issue. rework.js labels resolve:<id>#<pr>, handoff:<id>#<pr>,
+repair:<id>#<pr> and release:<id>#<pr>, so the same holds for it once EVERY label in its journal
 carries an id; one still carrying the old id-less resolve:#<pr> is UNKNOWN. land.js and land-train.js carry no issue id
 at all and are no issue's lane - which is a statement about attribution and not
 about the worktree: a lander rebases inside a lane's worktree when it finds one,
@@ -124,7 +124,7 @@ rework_labels_another_issue() {
   local labels
   labels="$(labels_in "$1")"
   [ -n "$labels" ] || return 1
-  printf '%s\n' "$labels" | grep -qvE '^(resolve|handoff|release):[A-Za-z0-9._-]+(#[0-9]+)+$' && return 1
+  printf '%s\n' "$labels" | grep -qvE '^(resolve|handoff|repair|release):[A-Za-z0-9._-]+(#[0-9]+)+$' && return 1
   return 0
 }
 
@@ -246,7 +246,7 @@ for task in $inflight; do
     running="$running ${task}:${runs}"
   elif [ "$script" = "land.js" ] || [ "$script" = "land-train.js" ]; then
     landers=$((landers + 1))
-  elif [ "$script" = "task.js" ] && [ -n "$journal" ] && grep -q '"label":"' "$journal" 2>/dev/null; then
+  elif { [ "$script" = "task.js" ] || [ "$script" = "refine.js" ]; } && [ -n "$journal" ] && grep -q '"label":"' "$journal" 2>/dev/null; then
     elsewhere=$((elsewhere + 1))
   elif [ "$script" = "rework.js" ] && [ -n "$journal" ] && rework_labels_another_issue "$journal"; then
     elsewhere=$((elsewhere + 1))

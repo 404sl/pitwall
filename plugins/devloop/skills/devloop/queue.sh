@@ -2,7 +2,8 @@
 # State of the devloop queue, in one screen.
 #
 #   queue.sh            print the summary
-#   queue.sh --next 3   print the summary, then claim and print the next 3 issue ids
+#   queue.sh --next 3   print the summary, then claim and print the next 3 issue ids, each as
+#                       <id> <slot>, <id> <slot> rework <pr> <repo>, or <id> <slot> refine
 #
 # Reads through the bd CLI. It used to query .beads/beads.db with sqlite3, which stopped
 # working at bd 1.0: issues now live in an embedded Dolt database and the JSONL is only a
@@ -12,11 +13,12 @@
 # that IS the number in flight. It needs no task list and survives a session restart. A
 # workflow that dies leaves a stale claim - shown below with the command to release it.
 #
-# Six labels park an issue. Four say WHO or WHAT it waits on - needs-decision (a choice only
+# Seven labels park an issue. Five say WHO or WHAT it waits on - needs-decision (a choice only
 # the owner can make), needs-access (something only they can run: a deploy, a dashboard, a
-# device), blocked-tooling (a gap in this pipeline, not a question for anyone), watch (an
-# observation over time) - plus umbrella (a parent whose
-# work lives in its children) and roadmap (a feature build, not a defect).
+# device), needs-feedback (the older label for either of those, still written by people
+# following the skill text and still meaning "a person"), blocked-tooling (a gap in this
+# pipeline, not a question for anyone), watch (an observation over time) - plus umbrella (a
+# parent whose work lives in its children) and roadmap (a feature build, not a defect).
 #
 # A workspace that declares "actor" in its config also gets an assignee gate, matching
 # dispatchable.sh: "ready to start" and `--next` then count and claim only the issues assigned
@@ -56,7 +58,7 @@ ACTOR="$(bash "$CFG" actor 2>/dev/null)" || ACTOR=""
 
 cd "$ROOT" || exit 1
 
-PARKED="needs-decision needs-access blocked-tooling watch umbrella roadmap"
+PARKED="needs-decision needs-access needs-feedback blocked-tooling watch umbrella roadmap"
 
 # A PRIVATE scratch directory per run, not fixed paths under /tmp.
 #
@@ -82,7 +84,8 @@ import json, sys, os, datetime, subprocess
 
 PFX = sys.argv[2] if len(sys.argv) > 2 else "devloop"
 
-PARKED = {"needs-decision", "needs-access", "blocked-tooling", "watch", "umbrella", "roadmap"}
+PARKED = {"needs-decision", "needs-access", "needs-feedback", "blocked-tooling", "watch", "umbrella", "roadmap"}
+UNREFINED = "unrefined"
 
 def load(p):
     try:
@@ -115,6 +118,9 @@ running_ids = {i["id"] for i in running}
 def parked(i):
     return PARKED & set(i.get("labels") or [])
 
+def unrefined(i):
+    return UNREFINED in set(i.get("labels") or [])
+
 def parent_of(issue_id):
     # app-a8d9.2 -> app-a8d9 ; app-a8d9 -> None
     return issue_id.rsplit(".", 1)[0] if "." in issue_id else None
@@ -143,14 +149,50 @@ def eligible(i):
     # id prefix is the fact; the label is only documentation of it.
     if i["id"] in live_children_of:
         return False
+    if unrefined(i):
+        return False
     if ACTOR and (i.get("assignee") or "") != ACTOR:
         return False
     return (i.get("issue_type") != "epic"
             and not parked(i)
             and i["id"] not in blocked_ids)
 
-ready = sorted([i for i in open_ if eligible(i)],
-               key=lambda i: (i.get("priority", 9), i.get("created_at", "")))
+def refinable(i):
+    return (bool(ACTOR)
+            and unrefined(i)
+            and not parked(i)
+            and i["id"] not in blocked_ids
+            and parent_of(i["id"]) not in running_ids)
+
+def rework_of(i):
+    meta = i.get("metadata")
+    if isinstance(meta, str):
+        try:
+            meta = json.loads(meta)
+        except Exception:
+            meta = None
+    r = (meta or {}).get("rework") if isinstance(meta, dict) else None
+    if not isinstance(r, dict):
+        return None
+    pr = r.get("pr")
+    if isinstance(pr, str) and pr.isdigit():
+        pr = int(pr)
+    if not isinstance(pr, int) or isinstance(pr, bool) or pr < 1:
+        return None
+    repo = r.get("repo")
+    return (pr, repo if isinstance(repo, str) and repo else "-")
+
+def kind_of(i):
+    if rework_of(i):
+        return 0
+    if unrefined(i):
+        return 1
+    return 2
+
+ready = sorted([i for i in open_ if eligible(i) or refinable(i)],
+               key=lambda i: (i.get("priority", 9), kind_of(i), i.get("created_at", "")))
+requests = [i for i in ready if unrefined(i)]
+undispatchable_requests = [] if ACTOR else [i for i in open_ if unrefined(i) and not parked(i) and i["id"] not in blocked_ids]
 waiting = sorted([i for i in open_ if parked(i)], key=lambda i: i.get("priority", 9))
 today = datetime.date.today().isoformat()
 closed_today = [i for i in closed if (i.get("updated_at") or "")[:10] == today]
@@ -180,11 +222,15 @@ print(bar)
 # lane dead.
 _working = []
 for _i in running:
-    _wt = f"/tmp/{PFX}-worktrees/" + _i["id"]
-    if not os.path.isdir(_wt):
+    if unrefined(_i):
+        _working.append(_i)
+        continue
+    _wts = [d for d in (f"/tmp/{PFX}-worktrees/" + _i["id"], f"/tmp/{PFX}-worktrees/" + _i["id"] + "-rework")
+            if os.path.isdir(d)]
+    if not _wts:
         continue
     try:
-        if subprocess.run(["find", _wt, "-mmin", "-20"],
+        if subprocess.run(["find", *_wts, "-mmin", "-20"],
                           capture_output=True, text=True, timeout=20).stdout.strip():
             _working.append(_i)
     except Exception:
@@ -193,7 +239,12 @@ _handed_off = len(running) - len(_working)
 print(f" running now      {len(_working)}")
 if _handed_off:
     print(f" awaiting lander  {_handed_off}  claimed and green, not yet live")
-print(f" ready to start   {len(ready)}" + (f"  assigned to {ACTOR}" if ACTOR else ""))
+print(f" ready to start   {len(ready) - len(requests)}" + (f"  assigned to {ACTOR}" if ACTOR else ""))
+if requests:
+    print(f" to refine        {len(requests)}  requests recorded as typed, not yet tickets")
+if undispatchable_requests:
+    print(f" to refine        {len(undispatchable_requests)}  requests recorded as typed - nothing can refine them until this "
+          f"workspace declares \"actor\"")
 
 # Report the parked issues BY REASON, never as one total.
 #
@@ -217,6 +268,7 @@ for i in waiting:
 LABELS = [
     ("needs-decision",  "a choice only you can make"),
     ("needs-access",    "an action only you can run - deploy, dashboard, device"),
+    ("needs-feedback",  "a person, unsplit - relabel needs-decision or needs-access"),
     ("blocked-tooling", "waiting on a tooling fix, not on you"),
     ("watch",           "waiting on observation over time"),
 ]
@@ -256,7 +308,9 @@ if running:
 
 print(" NEXT UP")
 for i in ready[:8]:
-    print(f"   {i['id']:<10} P{i.get('priority','?')}  {i.get('issue_type',''):<7} {i['title'][:55]}")
+    rw = rework_of(i)
+    tag = f"  rework #{rw[0]} {rw[1]}" if rw else ("  refine" if unrefined(i) else "")
+    print(f"   {i['id']:<10} P{i.get('priority','?')}  {i.get('issue_type',''):<7} {i['title'][:55]}{tag}")
 if not ready:
     if ACTOR:
         print(f"   (nothing in {ACTOR}'s queue - every open issue is in another queue, needs a "
@@ -321,8 +375,8 @@ if want > 0:
     for i in ready:
         if len(handed) >= want:
             break
-        r = subprocess.run(BD + ["update", i["id"], "--claim"],
-                           capture_output=True, text=True)
+        claim = ["update", i["id"], "-s", "in_progress"] if unrefined(i) else ["update", i["id"], "--claim"]
+        r = subprocess.run(BD + claim, capture_output=True, text=True)
         if r.returncode != 0:
             continue
         slot = free_slot(set(taken))
@@ -334,8 +388,13 @@ if want > 0:
         taken[slot] = i["id"]
         with open(os.path.join(SLOTDIR, str(slot)), "w") as f:
             f.write(i["id"])
-        handed.append((i["id"], slot))
+        handed.append((i["id"], slot, rework_of(i), unrefined(i)))
 
-    for issue_id, slot in handed:
-        print(f"{issue_id} {slot}")
+    for issue_id, slot, rw, request in handed:
+        if rw:
+            print(f"{issue_id} {slot} rework {rw[0]} {rw[1]}")
+        elif request:
+            print(f"{issue_id} {slot} refine")
+        else:
+            print(f"{issue_id} {slot}")
 PY

@@ -43,9 +43,15 @@ lock="/tmp/${PFX}-merge.lock"
 
 [ -d "$lock" ] || { [ "$quiet" = 1 ] || echo "no merge lock held"; exit 0; }
 
+mtime_of() {
+  stat -c %Y "$1" 2>/dev/null && return 0
+  stat -f %m "$1" 2>/dev/null
+}
+
 token=$(cat "$lock/holder" 2>/dev/null)
 now=$(date +%s)
-held_since=$(stat -f %m "$lock/holder" 2>/dev/null || stat -c %Y "$lock/holder" 2>/dev/null || echo "$now")
+held_since=$(mtime_of "$lock/holder")
+case "$held_since" in ''|*[!0-9]*) held_since=$now ;; esac
 held_min=$(( (now - held_since) / 60 ))
 
 if [ -z "$token" ]; then
@@ -103,7 +109,8 @@ fi
 
 newest=$(ls -t "$owner"/*.jsonl 2>/dev/null | head -1)
 [ -n "$newest" ] || newest="$owner/journal.jsonl"
-last=$(stat -f %m "$newest" 2>/dev/null || stat -c %Y "$newest" 2>/dev/null || echo "$now")
+last=$(mtime_of "$newest")
+case "$last" in ''|*[!0-9]*) last=$now ;; esac
 idle=$(( now - last ))
 
 if [ "$idle" -lt "$silent_for" ]; then
@@ -111,13 +118,14 @@ if [ "$idle" -lt "$silent_for" ]; then
   exit 0
 fi
 
+bases="$(bash "$skill/default-branch.sh" --all 2>/dev/null | sed 's|^|origin/|' | paste -sd, - | sed 's|,| and |g')"
 echo "MERGE LOCK LOOKS DEAD: held ${held_min}m by ${token}, its run has not written for $(( idle / 60 ))m."
 echo "  run: ${owner}"
 echo "  Nothing will land until this is released, and queue-watch reads the lock as a live train,"
 echo "  so it will stay silent about the pull requests piling up behind it."
 echo "  BEFORE RELEASING, confirm no deploy is in flight - a mid-deploy train is legitimately slow:"
 echo "    ps ax | grep -E 'mina|land-one|deploy-one' | grep -v grep"
-echo "    staging and production and origin/master should all read the SAME revision;"
+echo "    staging and production and ${bases} should all read the SAME revision;"
 echo "    staging AHEAD of production means a train is between its two deploys - leave it alone."
 echo "  Then release it by TOKEN, never with a bare rm:"
 echo "    [ \"\$(cat ${lock}/holder)\" = \"${token}\" ] && rm -rf ${lock} || echo NOT_MINE"

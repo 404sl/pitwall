@@ -20,6 +20,8 @@ export interface ProblemRow {
 
 export type Disposition = "act" | "derived" | "self-healing" | "limitation";
 
+type Said = Omit<CollectionError, "scope">;
+
 export const SELF_HEALING_GRACE_MS = 6 * 60 * 60_000;
 
 const RUN_SCOPE = "";
@@ -42,22 +44,22 @@ function causeKey(name: string, source: string): string {
   return JSON.stringify([name, source]);
 }
 
-function isDerived(error: CollectionError): boolean {
+function isDerived(error: Said): boolean {
   return error.source.startsWith(ISSUE_STALENESS) && unresolvedOf(error.message) !== undefined;
 }
 
-function isLimitation(error: CollectionError): boolean {
+function isLimitation(error: Said): boolean {
   return error.source === STALENESS_SOURCE && error.message.startsWith(UNRECORDED);
 }
 
-export function isSelfHealing(error: CollectionError): boolean {
+export function isSelfHealing(error: Said): boolean {
   return (
     PROBE_SOURCES.includes(error.source) &&
     SELF_HEALING.some((pattern) => pattern.test(error.message))
   );
 }
 
-export function dispositionOf(error: CollectionError): Disposition {
+export function dispositionOf(error: Said): Disposition {
   if (isDerived(error)) {
     return "derived";
   }

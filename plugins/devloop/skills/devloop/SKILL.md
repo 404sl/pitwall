@@ -49,7 +49,7 @@ three times and spent 4h26m shipping 43 minutes of work, and the cost grew with 
 of lanes. The old merge lock serialised the merge but not the rebase-and-wait in front of it.
 
 **Never pick a slot from memory. Ask `slot.sh`.** A dispatch has no number left to pick:
-`config.sh --args <id>` and `config.sh --rework <id> <pr> <repo>` call `slot.sh` themselves, carry
+`config.sh --args <id>`, `config.sh --rework <id> <pr> <repo>` and `config.sh --refine <id>` call `slot.sh` themselves, carry
 the number it reserved into the args, and stop the dispatch when it cannot reserve one. Call
 `slot.sh` by hand to give a lane back, or to see who holds what.
 
@@ -70,6 +70,28 @@ somebody's memory. A run that bounced at triage - a dead triage agent, a split, 
 has built its result before the release step answers, so for those three the log is the only place
 it appears. Every `rework.js` ending but an exception carries both answers, because the endings that
 used to return early set a result instead.
+
+**A release that is not permitted to run is retried as plain commands, and a second refusal is
+`REFUSED`, never silent.** The release step runs `release-lane.sh`, and a command that is refused
+before it runs prints nothing. `task.js` then runs a second step whose two commands are plain shell:
+read the slot file and remove it if it names this run, then the same for the lane lock through its
+owner file. Nothing is removed that does not name the run. If that step is refused or answers nothing
+too, each of `lane` and `slot` reads `REFUSED` and carries its own plain command, the same line the
+retry was given for that file, to run on reading it. Each command stands alone: `slot.sh --release`
+reaches a lane lock only through a slot file that names the run, so a lane refused after its slot was
+given back is out of its reach, and the lane command reads the owner file instead. A slot left behind
+shrinks the pool by one lane with nothing to refuse the next dispatch, which is why it goes first and
+why the answer has to arrive in the result. The first refusal is logged with what refused it, so a
+classifier that refuses `release-lane.sh` on every run is visible even when the retry succeeds.
+
+**The same release step reads the worktree, and `task.js` carries the answer as `worktree`.**
+`release-lane.sh --worktree <path>` reports one word - `GONE`, `CLEAN`, `UNPUSHED`, `UNCOMMITTED`
+or `UNREAD` - and changes nothing there. A run that got past triage returns `worktree` naming the
+path and, for anything but gone or clean, that it still holds work nothing protects, and its console
+line says the same whenever the run ended short of verified. A release step that never answers
+leaves the field `UNKNOWN`, never clean. It exists because a run that ended `blocked` once left a
+worktree full of finished, uncommitted work, and the supervisor found it only because that one
+summary happened to be thorough.
 
 A rework dispatched without a slot does not start. `rework.js` used to fall back to slot 1 for
 `TEST_ENV_NUMBER`, which is whichever run actually reserved it, and gave only the lane back because
@@ -196,7 +218,7 @@ queue changed while you were deciding.
 
 **`preflighted` is that list, written down.** Give it every PR you just ran `gh pr view` on,
 as `owner/name#number`. The lander intersects its own survey against it and reports anything
-else as `SKIPPED <pr> - not pre-flighted, lands next run`, without spending a worktree, a
+else as `SKIPPED <pr> - not in the pre-flighted list`, without spending a worktree, a
 rebase and a full CI wait to arrive at a refusal it could predict. It only ever merges FEWER PRs than
 before, never more, so it cannot turn an unchecked PR into a merged one - and a PR it skips
 keeps its label and lands on the next run, whose pre-flight will have seen it.
@@ -208,10 +230,10 @@ Two ways to get it wrong, both quiet:
   what the lander keys on, and it is the only form that cannot mean two repositories: a key is
   this workspace's label, and `site` is the CLI checkout here while also being the obvious word
   for the website repo. Pull request numbers repeat across repositories, so the wrong pairing
-  does not fail - it names a real, different pull request. A repository matching nothing filters
-  that PR out as though it were never labelled; the lander says `pre-flighted but never
-  surveyed: ...` at the end of a run for exactly this, and that line is the only warning you
-  get.
+  does not fail - it names a real, different pull request. A repository matching nothing cannot
+  match any surveyed PR: the lander says so at the start of the run, skips that PR as
+  `pre-flighted as '<what you passed>', which names no configured repository`, and repeats
+  `pre-flighted but never surveyed: ...` at the end.
 - **Omitting the field means no filtering at all**, which is the old behaviour and is safe;
   passing `[]` means land nothing. An empty list is not the way to say "I did not check".
 
@@ -255,26 +277,121 @@ number is still accepted for the sake of `queue.sh`, which reserves before it pr
 CHECKED against the reservation rather than used instead of it - one that disagrees is refused,
 naming both.
 
+**A RESUME REPLAYS A CACHED FAILURE AS FAITHFULLY AS A CACHED SUCCESS.** The runner caches each
+completed step by its prompt, and a step that finished by answering `blocked` or `needs_feedback`
+is a completed step: resuming a run that stopped there returns the same answer instantly, the
+script stops on it exactly as it did the first time, and nothing runs - agent_count 2, tool_uses 0,
+in 9 milliseconds, measured 2026-09-08 on a lane whose fix had finished and been killed by a
+permission fault before review. Only a step that died without answering is re-run on its own.
+
+To continue such a run, resume with `retryFailed: true` added to the args object it was launched
+with, and nothing else about that object changed:
+
+```
+Workflow({ scriptPath: <the same scriptPath>, resumeFromRunId: <the runId>,
+           args: { ...<the object the launch used>, retryFailed: true } })
+```
+
+Steps that succeeded replay from cache; a fix, apply or handoff step whose cached answer is
+`blocked` or `needs_feedback` is issued once more, with a line appended to its brief saying so, and
+the run continues from whatever it answers this time. It is off by default, and it is issued once:
+a step that answers `blocked` again stands. Never build a resume from a fresh `config.sh --args`:
+that mints a new dispatch token, the token sits in every fix brief, and a brief that differs by one
+character misses the cache, so the resume would start the whole run again rather than continue it.
+The resume runs whatever is at that `scriptPath`, which is the staged copy under
+`<root>/.autofix-run/`, and a copy staged before the flag existed ignores it without a word and
+stops in the same 9 milliseconds. If the plugin was upgraded since the launch, re-stage first -
+`run-script.sh task.js`, or any `config.sh --args` dispatch, rewrites the copy - and then resume.
+
+**It also says when a root checkout is behind origin.** `--args` and `--rework` fetch each
+configured repository's default branch and compare the checkout's local branch with
+`origin/<defaultBranch>`. A checkout behind by more than `warnBehind` commits (default 0, set
+it in the workspace config) gets one line on stderr naming the repository, the count and both
+shas; a fetch that fails gets one line saying the checkout could not be compared, which is not
+the same as up to date. It is a warning: the dispatch proceeds and nothing is fast-forwarded,
+because the root checkout is a person's working copy. Triage reads origin rather than the
+checkout's HEAD since #208, so a stale checkout no longer misleads a lane - but a person
+reading `git log` there still sees a default branch that is days old, and this is the line
+that says so.
+
 **THE SCRIPT YOU DISPATCH IS A COPY, AND `--args` MAKES IT FRESH.** The Workflow tool refuses
 a `scriptPath` outside the working directory, so the workflow scripts cannot be dispatched from
-the install. `run-script.sh` copies all four into `<root>/.autofix-run/` and prints the path of
+the install. `run-script.sh` copies every workflow script into `<root>/.autofix-run/` and prints the path of
 the one asked for; `config.sh --args` and `--land` call it before they print anything and carry
 the result as `scriptPath`. So take the path out of the object and dispatch that - never a path
 under the install, and never one remembered from an earlier tick.
 
-It copies unconditionally, every time, without comparing or checking a version. That is the
-whole design: a copy that is rewritten at every dispatch cannot be stale, and there is nothing
-for anybody to notice or act on. Each copy is written under a temporary name and renamed into
-place, so a run that re-reads its script cannot see half a file.
+It copies every time, without checking a version, so a copy rewritten at every dispatch cannot
+be stale by neglect. Each copy is written under a temporary name and renamed into place, so a
+run that re-reads its script cannot see half a file. Beside the copies it writes `staged-from`:
+the install it copied from, that install's plugin version, when, and each copy's byte count
+and sha256. Before it copies anything it compares every staged copy with that record, and one
+that differs was replaced by something other than run-script.sh since it was staged - a lander
+once ran a copy three releases old that way, with every source of truth current. It then
+refuses with exit 3, naming the file and both versions, and the dispatch stops; the replaced
+copy is left where it is for you to read. Read it, then re-stage on purpose:
 
 ```
-bash ${CLAUDE_PLUGIN_ROOT}/skills/devloop/run-script.sh rework.js   # stages without dispatching
+bash ${CLAUDE_PLUGIN_ROOT}/skills/devloop/run-script.sh rework.js     # stages without dispatching
+bash ${CLAUDE_PLUGIN_ROOT}/skills/devloop/run-script.sh --restage     # after a refusal, once read
 ```
 
 Absolute path - the tool does not resolve `~`. `slot` is the lane `--args` or `--rework` reserved,
 and it only sets `TEST_ENV_NUMBER` so concurrent site runs do not share a test database; two live
-workflows must never carry the same one, which is what reserving it is for. Other args:
-`maxAttempts` (3), `root`, `worktrees`.
+workflows must never carry the same one, which is what reserving it is for. `dispatch` is a token
+`--args` mints fresh for every dispatch and the lane writes into its lock's owner file, so a retry of
+a step that died holding the lock can prove the lock is its own run's and reclaim it, while a second
+dispatch of the same issue is still refused. Other args: `maxAttempts` (3), `root`, `worktrees`.
+
+## Work that lives in no checkout
+
+A ticket whose work is tracker edits - a split, a note, a label, closing something already done -
+or a paragraph in the workspace's own instructions names no source path, and triage cannot route
+it to a checkout because it is in none. Four tickets in one day were dispatched that way and each
+cost a slot before the lane could say so. So one entry in `repos` may name the workspace root
+itself, and the owner adds it by hand:
+
+```
+"workspace": { "path": ".", "role": "workspace" }
+```
+
+`path` is `.` - the directory the config sits in - and `role` MUST be written down: `roleOf()` in
+task.js falls back on the key name only for the four historical keys, and no name falls through to
+this shape. The role is what every reader keys on, so the key itself may be called anything;
+`workspace` is the convention. It carries no `slug`, no `test` and no `lint`, and `--check` does
+not ask it for them; it refuses instead a `slug` on it and a path that is not the root. A
+single-repository workspace whose one checkout sits at `.` is unaffected: the role, not the path,
+selects this shape.
+
+A lane dispatched there does not cut a worktree, does not branch, does not open a pull request and
+runs no suite. It applies the tracker edits through bd, edits root-level documentation in place
+and leaves it **uncommitted** - the root is the owner's own checkout, with their unfinished work
+in it and possibly no remote - lists every file it touched, and then **closes the issue itself**,
+because nothing merges and no lander will. It returns `CLOSED` rather than `READY TO LAND`, with
+the files it edited on the line below, and `CLOSED` is taken from the status token at the end of
+the first line of `bd show`, not from the word appearing anywhere in the read-back, because a
+title can carry it. It refuses to edit inside any checkout: a ticket that turns out
+to need one comes back as `NEEDS YOU` naming the checkout, for re-routing or a split.
+
+Three things at the root are off-limits to it whatever the ticket says, and a ticket that needs
+one of them comes back as `NEEDS YOU` naming the file: `.pitwall.json` and `.autofix.json`, which
+every concurrent lane re-reads while it runs, and everything under `.beads/`, which only bd writes.
+The step runs unattended, uncommitted and unreviewed, and those are the files where a live edit
+changes the ground under work already in flight.
+
+`applied` is that step's outcome and no other's: a checkout lane that returns it is refused
+before review, because there is no branch and no pull request to review.
+
+Triage is told the key exists and routes to it a ticket whose `Repo:` line says none, or whose
+only work is bd commands and root-level files. A path inside a configured checkout still routes to
+that checkout, whatever the ticket calls the work: the pipeline's own scripts are ordinary files
+in the repository that holds them.
+
+The lander, the train, `--rework`, the handoff survey, the queue scan and the console all skip
+the entry, and the snapshot the console publishes leaves it out of `repos[]`, because the
+contract's repositories are checkouts and the root is not one. Without the role they would not:
+the lander refuses to start over any repository with no slug, and the handoff survey refuses to
+label anything while one is present.
 
 ## When a lane dies
 
@@ -489,14 +606,122 @@ sending a rework at a database another run holds. `rework.js` refuses an args ob
 for the same reason, so the two-command form this used to document - `--args` spread by hand with
 `pr` and `repo` added - no longer runs.
 
-Two agents, no design and no review: rebase onto master keeping BOTH sides of every conflict, push
-with a lease, wait for CI on the new head, re-apply `lane-verified`. It takes a lane the same way
+No design and no review: merge master into the branch keeping BOTH sides of every conflict, push
+it as the plain fast-forward a merge leaves, wait for CI on the new head, re-apply `lane-verified`.
+It merges rather than rebases because a rebased branch can only be published with a force-push,
+which the session refuses and a run neither retries nor routes around - so every rebased rework
+ended as a one-line command waiting on a person. The lander squash-merges, so the merge commit is
+discarded with everything else on the branch and master's history is the same either way; it reads
+the merged branch as 0 behind and takes its no-rebase path. A merged branch that master has moved
+under again before the lander reaches it - which is every reworked branch that is not first in the
+lander's queue - is refused as merge-shaped: `land.js` logs it, keeps the label and the issue as
+they are, and nothing dispatches it again, until pitwall-uoxk teaches the lander to merge master
+into it. It takes a lane the same way
 `task.js` does, and it gives the lane and the slot back the same way - in a `finally`, so
 a `red`, a `blocked` and an exception all go through it rather than only the handoff. It strips the label while it works, because a
 `lane-verified` branch that cannot merge is a lie the lander keeps acting on.
 
 Find the dropped ones in the train's own result - `stranded` - or on the pull requests, which each
 get a comment saying they were dropped rather than rejected.
+
+## A pull request that is red after a clean rebase
+
+The same lane takes a branch the lander retired as `red_after_rebase`. That is a SEMANTIC
+conflict: the rebase was clean or was resolved, the diff is the one that was green, and the
+combined tree fails anyway because something merged since moved a symbol, a path, a helper's
+signature or a rule the branch assumed. On 2026-09-08 three green branches merged without a
+single textual conflict and the result did not compile - two import lines, after master had moved
+`collectionError` into its own file. On 2026-09-12 #186 rebased cleanly onto master after #183 and
+#185 changed `live.sh`, and five tests master had added failed against it.
+
+The lander detects this - it rebases and waits for CI on the new head - and retires the pull
+request with the failures written onto the issue, the pull request number and the repository
+written onto it as `rework` metadata, and the issue set back to open. From there it needs nobody
+to read anything: `queue.sh --next` sees the metadata and prints the issue as a five-field rework
+line - `<id> <slot> rework <pr> <repo>` - and the loop dispatches it with
+`config.sh --rework <id> <pr> <repo>` exactly as it would a dropped pull request. A retirement for
+`conflict` takes the same route, because the same step in `land.js` retires both. A pull request
+the TRAIN dropped is not a retirement - its label stays on and its issue stays `in_progress` - so
+it still arrives through `stranded.sh` and a hand-built `--rework`. `task.js` is the wrong door for
+what follows, for the same reason as above: the work is done, and triage says so. So `rework.js`
+has a **Repair** step between its handoff and its label. When CI is red on the rebased head it runs the repository's
+own tests in the worktree, reads what master changed under the failing files, and mends the break
+so the branch follows master - never by softening what master landed, and never by redesigning the
+feature. Then it waits for CI once more.
+
+**Exactly one attempt.** Red a second time, or a repair that would have to weaken a test or revert
+a rule master added, means the branch and master disagree about what the code should do, and that
+is a person's call. The run ends `red`, the diagnosis is on the tracker issue, the pull request is
+left open and unlabelled, and the branch is left as pushed. A rework that ended `red` is NOT
+dispatched to rework again - a second run would get a second repair, and that is the loop this
+limit exists to prevent. So the agent that ends it takes the `rework` metadata off the issue,
+labels it `needs-decision` and sets it open: parked in a person's queue, visible, and routed
+nowhere until somebody removes the label. Two `red` endings run no such agent - a repair step
+that returned nothing, and one that reported a fix whose head did not move - so the result's
+`notes` carry that one command for the supervisor to run by hand. A person picks it up from the
+diagnosis on the issue.
+
+A retired branch arrives ALREADY ON MASTER: `land-one.sh` pushes the rebased head before it waits
+on CI. So the resolve step's merge brings nothing in, it pushes nothing, and it answers
+`already_clean` with the same head twice - that is the expected shape of this arrival, not a
+resolve that failed, and the run goes on to wait for CI and repair from there.
+
+## A request from the console
+
+The console records a request as typed: a bead labelled `unrefined`, assigned to the planning
+session, with the text in the description and any dropped files under `.pitwall-intake/<id>/`.
+It is a true sentence, not a ticket - it names no repository and measures nothing - so
+`queue.sh` counts it under `to refine`, never under `ready to start`, and `dispatchable.sh` and
+`config.sh --args` both refuse it. When the workspace declares an `actor`, `--next` hands it out
+as a three-field line, claimed with a plain status change rather than `--claim`, because `--claim`
+under the loop's actor refuses an issue intake assigned to somebody else. A workspace with no
+`actor` sees the count with a note saying so and nothing is claimed: `config.sh --refine` would
+refuse the dispatch, and a claim it cannot follow through on is a request stuck `in_progress` with
+a lane reserved for nobody.
+
+```
+# BUILD THE ARGS WITH config.sh --refine. Do not hand-write them, and do not pass a slot.
+args=$(bash ${CLAUDE_PLUGIN_ROOT}/skills/devloop/config.sh --refine app-zzzz)
+
+Workflow({ scriptPath: <the scriptPath in it>,
+           args: <the object config.sh printed> })
+```
+
+`--refine` is `--args` for a recorded request: it checks the issue carries the label and the
+workspace declares an `actor` BEFORE it reserves anything, stages `refine.js`, reserves the lane
+through `slot.sh`, and prints one object carrying the id, the slot, `scriptPath`, `root`,
+`repos`, `skillDir` and `actor`. **The actor is required**, and it is the same declared name
+`dispatchable.sh` gates on: every tracker write the run makes carries `--actor <that name>`, and a
+refined ticket is assigned to it. A workspace with no `actor` cannot dispatch a refine, and the
+refusal says what to add.
+
+`refine.js` runs two steps and takes no lane lock, because it opens no worktree and runs no suite:
+it reads code from `origin/<default branch>` and runs only commands that change nothing. The first
+step reads the request, every dropped file, and `WRITING-TICKETS.md` - the standard it refines
+against - and measures the claim against origin. The second records the result and routes the
+issue. Three outcomes:
+
+- **refined** - the specification is appended as a note beside the request, leading with
+  `Repo: <key> (<path>)`; the `unrefined` label comes off; the issue is assigned to the actor and
+  set open, so the next tick offers it as a task. A specification naming no configured repository
+  is refused by the script before anything is written, because nothing reaches a lane without the
+  repository named.
+- **needs_answer** - what was understood and ONE question are appended, `needs-decision` goes on,
+  the issue stays open in the planning session's queue, and the `unrefined` label STAYS. That is
+  the loop closing: the person answers as a note and removes `needs-decision`, and the next tick
+  offers it for refinement again with the answer in front of it.
+- **not_work** - closed with the reason: a duplicate (with the id), already done (with where on
+  origin), or a note.
+
+**The raw text is never overwritten**, in any outcome. The record step is handed only commands
+that append a note or move labels, assignee and status; the description, title and `intake`
+metadata are left exactly as the console wrote them, and the step reads the description back
+and reports whether it still matches. A reader must always be able to hold the request and the
+refinement side by side and judge one against the other.
+
+A refine that returns `error` before its record step - no actor, no slot, a specification with
+no repository - leaves the issue `in_progress` and untouched, like any other dispatch that bails
+early: release it with `bd update <id> -s open` and it is offered again.
 
 ## The loop
 
@@ -515,8 +740,26 @@ Then, from the numbers it printed:
 - If fewer, claim and dispatch the shortfall:
 
 ```bash
-${CLAUDE_PLUGIN_ROOT}/skills/devloop/queue.sh --next 2   # claims 2, prints "<id> <slot>" a line
+${CLAUDE_PLUGIN_ROOT}/skills/devloop/queue.sh --next 2   # claims 2, prints one line per issue
 ```
+
+Each line is one of three shapes, and the shape decides the script:
+
+```
+app-xxxx 3                       a task:    config.sh --args app-xxxx        -> task.js
+app-yyyy 4 rework 186 site       a rework:  config.sh --rework app-yyyy 186 site -> rework.js
+app-zzzz 5 refine                a request: config.sh --refine app-zzzz      -> refine.js
+```
+
+The three-field line is a request the console recorded - see "A request from the console" below.
+It is not a ticket yet, and `config.sh --args` refuses it the same way it refuses a rework.
+
+The five-field line is an issue the lander retired - `red_after_rebase` or `conflict` - and it
+carries the pull request number and the repository key from the issue's `rework` metadata, which
+`land.js` writes as it retires. Its work is done and green; `task.js` triage bounces it, so it is
+never sent there. `config.sh --args` refuses an issue carrying that metadata and prints the
+`--rework` command instead, so the wrong door does not open by mistake. The slot on the line is
+the one `config.sh --rework` hands back, because `slot.sh` returns an id's existing reservation.
 
 **A dispatch that returns `error`.** The script cannot run `bd`, so a workflow that bails
 before its first agent - bad args, missing id - leaves the issue claimed and does nothing
@@ -527,14 +770,23 @@ launching, if a workflow returns an `error` result, release its issue yourself:
 bd update <id> -s open
 ```
 
+The same for a rework that returns `blocked` or `error` before it wrote anything on the issue -
+a refused lease, a worktree that would not add. Its `rework` metadata is still on, so `-s open`
+offers it to `rework.js` again on the next tick; if the block is one a retry cannot clear, take
+the route off first with `bd update <id> --unset-metadata rework` and park it for a person. A
+rework that ends `red` usually has both done by its last agent; when its result's `notes` end
+with the hand-back command, the run could not confirm that - run the command before anything
+reopens the issue, or the reopen sends it round for the second repair the one-attempt limit
+exists to stop. It is a no-op when the metadata is already gone.
+
 `args` must be an actual JSON object in the tool call, not a JSON-encoded string. The script
 now coerces a string rather than no-opping, but the object form is what to write.
 
 `--next` sets each issue to `in_progress` **as it hands the id back**, so two ticks - or two
-supervisors - cannot dispatch the same issue. It prints one `<id> <slot>` pair per line.
-Launch one `task.js` workflow per line, passing **exactly the slot it was given** -
-`{ id: "app-xxxx", slot: 3 }` - all in the background. Never dispatch an id `--next` did not
-give you, and never choose a slot yourself.
+supervisors - cannot dispatch the same issue. It prints one line per issue, in one of the three
+shapes above. Launch one workflow per line - `task.js` for a two-field line, `rework.js` for a five-field one,
+`refine.js` for a three-field one - passing **exactly the slot it was given** - `{ id: "app-xxxx", slot: 3 }` - all in the background.
+Never dispatch an id `--next` did not give you, and never choose a slot yourself.
 
 The slot is not decoration: `task.js` derives `TEST_ENV_NUMBER` from it, so the slot number
 *is* the test database. Two live workflows on one slot share a database and corrupt each
@@ -562,13 +814,14 @@ honest.
 
 1. **Triage** - reads the issue and decides the repo, whether it is user-facing, and whether
    it is safe unattended. Ineligible stops here: the reason is written onto the issue,
-   `needs-feedback` is added, and the workflow returns without touching code.
+   `needs-decision` (a choice only a person can make) or `needs-access` (something only
+   they can run) is added, and the workflow returns without touching code.
 2. **Split** - when the *only* thing wrong is shape - the issue spans repos, or bundles
    independent fixes, or is half-verifiable here - it becomes several issues instead of a
    question. Deciding an issue is two issues is scoping, not a product decision. Children
    are created under the parent, the parent becomes an epic so it stops being picked up, and
    the loop takes the children on its next tick. A child that still needs a person is
-   created too, labelled `needs-feedback`, rather than being dropped.
+   created too, labelled `needs-decision` or `needs-access`, rather than being dropped.
    Splitting may not invent scope, drop a requirement, or pick between fixes the parent
    proposed - if the parent leans towards both, both become children. Size alone is never a
    reason to split; independence is. If a child would still be ambiguous, it asks instead.
@@ -623,8 +876,9 @@ not the speed. Judge a long-running task by which round it is on, not by the clo
 
 ## Where it stops and asks
 
-Any of these puts `needs-feedback` on the issue, writes the question and the options into it,
-and leaves the branch and PR alone:
+Any of these puts `needs-decision` on the issue (or `needs-access`, when what is missing is
+a deploy, a dashboard or a device rather than an answer), writes the question and the options
+into it, and leaves the branch and PR alone:
 
 - the issue offers a choice that changes what ships, and splitting would not resolve it
 - billing, payments, Stripe, pricing - money is never moved unattended
@@ -705,7 +959,8 @@ MERGED? NO app-1056 P0 site - ...
 ```
 
 Outcomes are `SHIPPED`, `NEEDS YOU`, `SPLIT`, `NOTHING TO DO`, `BLOCKED`, `MERGED? NO`,
-`AGENT DIED`. A `SPLIT` returns no work done on purpose - its children appear in the queue
+`AGENT DIED`, and `CLOSED` for the workspace key, whose work lands as it is written and has no
+pull request to hand on. A `SPLIT` returns no work done on purpose - its children appear in the queue
 on the next tick, so the loop makes progress on the following pass rather than this one.
 Designs and rejected review rounds print as they happen too.
 
@@ -716,10 +971,20 @@ agent cannot relay what it has not been shown.
 
 ## Before trusting a run
 
-- `bd list --status open --label needs-feedback` - the queue for a person
+- `bd list --status open --label-any needs-decision,needs-access` - the queue for a person.
+  `needs-feedback` is the older, undivided form of the same two labels; the queue still parks
+  on it, and the console still does not count it as yours, so relabel one when you meet it.
 - `git worktree list` in each repo - lanes clean up after themselves, leftovers mean a
   handover or a crash
 - issues left `in_progress` are claims from a lane that died; reset them to `open`
+- `precheck.sh <id>` - a hand check before dispatching an issue outside `--next`, or when one
+  keeps bouncing. It prints `GO` or `STOP` with the mechanical reason triage would give -
+  closed, an epic, a parking label, an open dependency, a worktree still on disk, text that
+  says it was handed back, resemblance to a closed issue - read from this workspace's tracker,
+  resolved through `config.sh` from wherever you run it. Nothing in the loop calls it and it is
+  not a gate: `queue.sh --next` and `dispatchable.sh` already refuse what must be refused, and
+  `config.sh --args` refuses the rest. Run it by hand, read the reason, and dispatch anyway if
+  the reason is wrong.
 
 ## Notes that will bite
 
@@ -736,8 +1001,9 @@ agent cannot relay what it has not been shown.
 - A workflow that dies leaves its issue `in_progress` forever. `queue.sh` flags a claim
   older than an hour as STALE with the command to release it. Nothing releases it
   automatically, because an issue genuinely being worked on looks identical.
-- Keep decision-bound issues out of the queue by labelling them `needs-feedback` up front.
-  Triage would catch them anyway, but that costs a workflow to learn what a label says.
+- Keep decision-bound issues out of the queue by labelling them `needs-decision` up front
+  (`needs-access` when they wait on something only a person can run). Triage would catch
+  them anyway, but that costs a workflow to learn what a label says.
 - Visual evidence is scaffolding and must never reach a commit. Captures are written by a
   throwaway spec that is deleted before committing, and both the implementer and the
   reviewer grep the staged diff for the worktree root, the scratch root and `save_screenshot`. A scratch
@@ -759,6 +1025,18 @@ agent cannot relay what it has not been shown.
   one per lane. Adding lanes beyond 5 is fine, but nothing else may run the suite meanwhile.
 - A fresh site worktree needs `.env`, `config/master.key`, `node_modules` and
   `app/assets/builds` symlinked in to boot. All gitignored; they must never reach a commit.
+- **A lane kills what it launched by the pid it recorded, never with `pkill -f` on a path
+  or flag substring.** `pkill -f` matches the full argument list of every process on the
+  machine, and the shell wrapping a backgrounded command carries that command in its own
+  argv, so a pattern aimed at one headless browser matches the wrapper running the cleanup -
+  and `/tmp` is shared with every other lane and workspace. On 2026-09-08 a lane did exactly
+  that against its browser's `user-data-dir`; from that moment every path under the owner's
+  home read `Operation not permitted` for the lane and its supervisor until the whole process
+  tree was relaunched. A correlation, not a proven cause, and unsafe either way. Without a
+  recorded pid: `pgrep -f` first, print every match, kill only pids whose command starts with
+  the intended binary, and if that cannot identify it, leave it running and say so. Rule 13 of
+  the brief carries this; a permission failure that appears right after a cleanup step is the
+  tell, and it presents as an environment fault.
 
 ## Check bd's exit code per command, not per call
 

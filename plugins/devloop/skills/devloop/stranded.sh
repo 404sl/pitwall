@@ -40,7 +40,9 @@ LOCK_PREFIX="${LOCK_PREFIX:-$(bash "$HERE/config.sh" lockPrefix 2>/dev/null || e
 ONLY=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --repo) ONLY="${2:-}"; shift 2 ;;
+    --repo)
+      [ $# -ge 2 ] || { echo "--repo needs a value" >&2; exit 6; }
+      ONLY="${2:-}"; shift 2 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -68,12 +70,13 @@ for name,cfg in repos.items():
     # a DIFFERENT REAL REPOSITORY - so there was no missing-directory error, merge-tree ran
     # against a repo with no commits, failed, and every open pull request was reported as
     # conflicting.
-    print(cfg.get("path",name)+":"+url.rstrip("/").removesuffix(".git").split("github.com")[-1].lstrip(":/"))
+    print(cfg.get("path",name)+":"+url.rstrip("/").removesuffix(".git").split("github.com")[-1].lstrip(":/")
+          +":"+((cfg.get("defaultBranch") if isinstance(cfg.get("defaultBranch"),str) and cfg.get("defaultBranch").strip() else None) or "master"))
 ' "$ROOT")"
 
 found=0
 inflight=""
-while IFS=: read -r path slug; do
+while IFS=: read -r path slug default; do
   [ -n "$path" ] || continue
   [ -z "$ONLY" ] || [ "$ONLY" = "$path" ] || continue
   dir="$ROOT/$path"
@@ -81,10 +84,9 @@ while IFS=: read -r path slug; do
 
   git -C "$dir" fetch origin --quiet 2>/dev/null
 
-  # The default branch is asked for rather than assumed: this project's repos are on master, but
-  # the skill is meant to be shared, and guessing 'main' here would report every branch as clean.
-  base=$(git -C "$dir" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null)
-  base="${base:-origin/master}"
+  # The default branch is the configured one, the same repos.<key>.defaultBranch the landers are
+  # handed, so this agrees with the train about what a branch has to merge into.
+  base="origin/${default:-master}"
 
   # BOTH LABELLED AND UNLABELLED, and the unlabelled half is not an afterthought. rework.js
   # strips lane-verified while it works, deliberately, because a labelled branch that cannot
@@ -153,7 +155,7 @@ fi
 if [ "$found" = "1" ]; then
   echo
   echo "Run rework on each BEFORE the next train, or the next train drops them again against a"
-  echo "master that has moved further away:"
+  echo "default branch that has moved further away:"
   echo "  args=\$(config.sh --rework <id> <n> <repo>)"
   echo "  Workflow({ scriptPath: <the scriptPath in it>, args: <the object it printed> })"
   exit 1

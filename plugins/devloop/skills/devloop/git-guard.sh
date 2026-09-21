@@ -1,0 +1,180 @@
+#!/usr/bin/env bash
+set -u
+
+dir=""
+branch=""
+defaults=",master,main,"
+have_cmd=0
+
+add_defaults() {
+  local rest=$1 name
+  while [ -n "$rest" ]; do
+    case "$rest" in
+      *,*) name=${rest%%,*}; rest=${rest#*,} ;;
+      *)   name=$rest; rest="" ;;
+    esac
+    [ -n "$name" ] || continue
+    defaults="${defaults}${name},"
+  done
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --dir=*)     dir=${1#--dir=}; shift ;;
+    --branch=*)  branch=${1#--branch=}; shift ;;
+    --default=*) add_defaults "${1#--default=}"; shift ;;
+    --dir)       [ $# -ge 2 ] || { echo "git-guard.sh: --dir takes a value" >&2; exit 2; }; dir=$2; shift 2 ;;
+    --branch)    [ $# -ge 2 ] || { echo "git-guard.sh: --branch takes a value" >&2; exit 2; }; branch=$2; shift 2 ;;
+    --default)   [ $# -ge 2 ] || { echo "git-guard.sh: --default takes a value" >&2; exit 2; }; add_defaults "$2"; shift 2 ;;
+    --)          shift; have_cmd=1; break ;;
+    *) echo "unknown argument: $1" >&2; exit 2 ;;
+  esac
+done
+
+is_default() {
+  local name=$1
+  case "$name" in
+    refs/heads/*) name=${name#refs/heads/} ;;
+    heads/*)      name=${name#heads/} ;;
+  esac
+  case "$defaults" in
+    *",${name},"*) return 0 ;;
+  esac
+  return 1
+}
+
+if [ -z "$dir" ]; then
+  echo "git-guard.sh: --dir is required. Refusing to guess which checkout the command runs in." >&2
+  exit 2
+fi
+
+if [ "$have_cmd" = 0 ] || [ $# -eq 0 ]; then
+  echo "git-guard.sh: no command after --. Nothing to guard and nothing was run." >&2
+  exit 2
+fi
+
+if [ -n "$branch" ] && is_default "$branch"; then
+  echo "REFUSED" >&2
+  echo "git-guard.sh: --branch is ${branch}, which is a default branch. Nothing was run." >&2
+  echo "              Committing or pushing there is the one action this guard exists to stop," >&2
+  echo "              and a caller that names it has already lost track of where it is." >&2
+  exit 2
+fi
+
+if [ ! -d "$dir" ]; then
+  echo "REFUSED" >&2
+  echo "git-guard.sh: ${dir} is not a directory, so the command would run wherever the caller" >&2
+  echo "              happened to be standing. Nothing was run." >&2
+  exit 2
+fi
+
+want=$(cd "$dir" && pwd -P)
+top=$(git -C "$dir" rev-parse --show-toplevel || true)
+[ -n "$top" ] && top=$(cd "$top" && pwd -P)
+
+if [ -z "$top" ]; then
+  echo "REFUSED" >&2
+  echo "git-guard.sh: git reported no worktree root for ${dir}, so where the command would run" >&2
+  echo "              is unknown. Nothing was run. Any git error above this line is the reason -" >&2
+  echo "              an unreadable global config fails here exactly like a directory that is" >&2
+  echo "              not a checkout." >&2
+  exit 2
+fi
+
+if [ "$top" != "$want" ]; then
+  echo "REFUSED" >&2
+  echo "git-guard.sh: ${dir} sits inside the worktree rooted at ${top}, not at its own root. That is" >&2
+  echo "              how a command meant for a lane's worktree reaches a main checkout instead." >&2
+  echo "              Nothing was run." >&2
+  exit 2
+fi
+
+if [ -n "$branch" ]; then
+  head=$(git -C "$dir" symbolic-ref --quiet --short HEAD || true)
+
+  if [ -z "$head" ]; then
+    echo "REFUSED" >&2
+    echo "git-guard.sh: ${dir} is on a detached HEAD, so there is no branch to check ${branch} against." >&2
+    echo "              Nothing was run." >&2
+    exit 2
+  fi
+
+  if [ "$head" != "$branch" ]; then
+    echo "REFUSED" >&2
+    echo "git-guard.sh: ${dir} is on ${head} and the caller believes it is on ${branch}. Nothing was run." >&2
+    echo "              A push from the wrong branch is the failure this guard exists to stop, and the" >&2
+    echo "              disagreement is the evidence that a cd went somewhere it was not meant to." >&2
+    exit 2
+  fi
+fi
+
+case "$1" in
+  git|*/git)
+    seen_push=0
+    end_opts=0
+    want_value=0
+    remote_seen=0
+    for arg in "$@"; do
+      if [ "$seen_push" = 0 ]; then
+        [ "$arg" = push ] && seen_push=1
+        continue
+      fi
+      if [ "$want_value" = 1 ]; then
+        want_value=0
+        continue
+      fi
+      if [ "$end_opts" = 0 ]; then
+        case "$arg" in
+          --) end_opts=1; continue ;;
+          -o|--push-option|--repo|--receive-pack|--exec) want_value=1; continue ;;
+          -*)
+            if [ ${#arg} -ge 3 ]; then
+              for full in --all --mirror --branches; do
+                case "$full" in
+                  "$arg"*)
+                    echo "REFUSED" >&2
+                    echo "git-guard.sh: push ${arg} writes every local branch to the remote without naming one. Nothing was run." >&2
+                    echo "              It carries no refspec for the destination check to read, and master is a local" >&2
+                    echo "              branch shared across every worktree of a checkout, so from a lane it moves master too." >&2
+                    exit 2 ;;
+                esac
+              done
+            fi
+            continue ;;
+        esac
+      fi
+      if [ "$remote_seen" = 0 ]; then
+        remote_seen=1
+        continue
+      fi
+      spec=${arg#+}
+      case "$spec" in
+        *:*) dst=${spec#*:} ;;
+        *)   dst=$spec ;;
+      esac
+      case "$dst" in
+        *\**)
+          echo "REFUSED" >&2
+          echo "git-guard.sh: the push refspec ${arg} has the pattern ${dst} as its destination. Nothing was run." >&2
+          echo "              A pattern lands on every branch it matches, and master is a local branch shared" >&2
+          echo "              across every worktree of a checkout, so a pattern push from a lane moves it too." >&2
+          exit 2 ;;
+        "")
+          echo "REFUSED" >&2
+          echo "git-guard.sh: the push refspec ${arg} has an empty destination. Nothing was run." >&2
+          echo "              An empty destination pushes every local branch the remote also has, and master" >&2
+          echo "              is a local branch shared across every worktree of a checkout, so it goes too." >&2
+          exit 2 ;;
+      esac
+      if is_default "$dst"; then
+        echo "REFUSED" >&2
+        echo "git-guard.sh: the push refspec ${arg} names ${dst}, which is a default branch. Nothing was run." >&2
+        echo "              The branch a worktree is on says nothing about where a push lands; the refspec" >&2
+        echo "              does, and this one lands on the branch this guard exists to keep pushes off." >&2
+        exit 2
+      fi
+    done ;;
+esac
+
+cd "$dir" || exit 2
+exec "$@"

@@ -17,10 +17,11 @@
 #   exited 0 cleanly       + server is NOT at it  -> failure, however happy the tool looked
 set -u
 
-label=""; repo_path="."; deploy_cmd=""; revision_cmd=""; expect=""; timeout_s=1800
+label=""; repo_path="."; deploy_cmd=""; revision_cmd=""; expect=""; timeout_s=1800; base=master
 while [ $# -gt 0 ]; do
   case "$1" in
     --label)     label=$2;       shift 2 ;;
+    --base)      base=$2;        shift 2 ;;
     --repo-path) repo_path=$2;   shift 2 ;;
     --deploy)    deploy_cmd=$2;  shift 2 ;;
     --revision)  revision_cmd=$2;shift 2 ;;
@@ -30,19 +31,20 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ -n "$deploy_cmd" ] && [ -n "$revision_cmd" ] || {
-  echo "usage: deploy-one.sh --label staging --repo-path DIR --deploy CMD --revision CMD [--expect SHA] [--timeout SEC]" >&2
+  echo "usage: deploy-one.sh --label staging --repo-path DIR --deploy CMD --revision CMD [--expect SHA] [--timeout SEC] [--base master]" >&2
   echo "       --repo-path is the repository the deploy worktree is cut FROM; the deploy itself" >&2
-  echo "       runs in a throwaway worktree at origin/master, never in that working tree." >&2
+  echo "       runs in a throwaway worktree at origin/<base>, never in that working tree." >&2
   exit 2; }
 [ -n "$label" ] || label="environment"
 cd "$repo_path" || { echo "! $label: cannot enter $repo_path"; exit 2; }
 repo_path=$(pwd)
 
-git fetch origin master --quiet || {
-  echo "! $label: cannot fetch origin/master in $repo_path - refusing rather than deploying"
+[ -n "$base" ] || { echo "! $label: --base must name a branch"; exit 2; }
+git fetch origin "$base" --quiet || {
+  echo "! $label: cannot fetch origin/$base in $repo_path - refusing rather than deploying"
   echo "! from a ref that may be stale, which is the failure this worktree exists to prevent."
   exit 2; }
-master=$(git rev-parse origin/master) || { echo "! $label: cannot resolve origin/master"; exit 2; }
+master=$(git rev-parse "origin/$base") || { echo "! $label: cannot resolve origin/$base"; exit 2; }
 
 # mina ships origin/master, so that is what the server must end up serving. Defaulting to
 # it means no caller has to substitute a sha into a stored command.

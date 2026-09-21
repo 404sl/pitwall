@@ -4,11 +4,13 @@ set -u
 lane=""
 slot=""
 owner=""
+worktree=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --lane)  lane=$2; shift 2 ;;
-    --slot)  slot=$2; shift 2 ;;
-    --owner) owner=$2; shift 2 ;;
+    --lane)     lane=$2; shift 2 ;;
+    --slot)     slot=$2; shift 2 ;;
+    --owner)    owner=$2; shift 2 ;;
+    --worktree) worktree=$2; shift 2 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -89,6 +91,48 @@ if [ -n "$slot" ]; then
     echo "slot: STILL_HELD"
     echo "  ${slot} named ${owner} and could not be removed. The lane stays reserved."
     status=1
+  fi
+fi
+
+if [ -n "$worktree" ]; then
+  export GIT_CONFIG_GLOBAL=/dev/null
+  if [ ! -e "$worktree" ]; then
+    echo "worktree: GONE"
+    echo "  ${worktree} does not exist. Nothing was left behind there."
+  elif ! git -C "$worktree" rev-parse --is-inside-work-tree >/dev/null 2>/dev/null; then
+    echo "worktree: UNREAD"
+    echo "  ${worktree} exists but git cannot read it as a checkout, so whether it holds work is unknown."
+    echo "  Look inside it before anything removes it."
+  else
+    changed="$(git -C "$worktree" status --porcelain 2>/dev/null)"
+    status_rc=$?
+    changes=0
+    [ -n "$changed" ] && changes="$(printf '%s\n' "$changed" | grep -c .)"
+    unpushed="$(git -C "$worktree" rev-list --count HEAD --not --remotes 2>/dev/null)"
+    revlist_rc=$?
+    branch="$(git -C "$worktree" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+    branch="${branch:-HEAD}"
+    if [ "$status_rc" -ne 0 ]; then
+      echo "worktree: UNREAD"
+      echo "  ${worktree} is a checkout but git status failed inside it (exit ${status_rc}), so whether it holds work is"
+      echo "  unknown. Look inside it before anything removes it."
+    elif [ "$changes" -gt 0 ]; then
+      echo "worktree: UNCOMMITTED"
+      echo "  ${worktree} holds ${changes} uncommitted change(s) and ${unpushed:-an unknown number of} unpushed commit(s) on ${branch}."
+      echo "  No branch protects an uncommitted change: kill-lane.sh removes the worktree with everything in it."
+      echo "  Commit it or copy it out first."
+    elif [ "$revlist_rc" -ne 0 ]; then
+      echo "worktree: UNREAD"
+      echo "  ${worktree} is clean but git rev-list failed inside it (exit ${revlist_rc}), so whether ${branch} holds"
+      echo "  commits no remote has is unknown. Look inside it before anything removes it."
+    elif [ "$unpushed" -gt 0 ]; then
+      echo "worktree: UNPUSHED"
+      echo "  ${worktree} is clean but ${branch} holds ${unpushed} commit(s) no remote has. The branch survives the"
+      echo "  worktree being removed; the commits are lost only if the branch is deleted. Push it first."
+    else
+      echo "worktree: CLEAN"
+      echo "  ${worktree} holds nothing a remote does not already have."
+    fi
   fi
 fi
 

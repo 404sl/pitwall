@@ -1,4 +1,4 @@
-import { FILTER_KEYS, type FilterState } from "../src/board.js";
+import { FILTER_KEYS, SORT_PARAM, sortKeyOf, type FilterState, type SortKey } from "../src/board.js";
 
 export const BOARD_HASH = "#/";
 
@@ -9,7 +9,7 @@ export interface IssueRoute {
   id: string;
 }
 
-export function filterQuery(filter: FilterState): string {
+export function filterQuery(filter: FilterState, sort?: SortKey): string {
   const params = new URLSearchParams();
   for (const key of FILTER_KEYS) {
     const value = filter[key];
@@ -17,16 +17,20 @@ export function filterQuery(filter: FilterState): string {
       params.set(key, value);
     }
   }
+  if (sort !== undefined) {
+    params.set(SORT_PARAM, sort);
+  }
   const query = params.toString();
   return query === "" ? "" : `?${query}`;
 }
 
-export function filterOf(hash: string): FilterState {
+function paramsOf(hash: string): URLSearchParams {
   const cut = hash.indexOf("?");
-  if (cut === -1) {
-    return {};
-  }
-  const params = new URLSearchParams(hash.slice(cut + 1));
+  return new URLSearchParams(cut === -1 ? "" : hash.slice(cut + 1));
+}
+
+export function filterOf(hash: string): FilterState {
+  const params = paramsOf(hash);
   const filter: FilterState = {};
   for (const key of FILTER_KEYS) {
     const value = params.get(key);
@@ -37,12 +41,16 @@ export function filterOf(hash: string): FilterState {
   return filter;
 }
 
-export function boardHref(filter: FilterState): string {
-  return `${BOARD_HASH}${filterQuery(filter)}`;
+export function sortOf(hash: string): SortKey | undefined {
+  return sortKeyOf(paramsOf(hash).get(SORT_PARAM));
 }
 
-export function issueHref(project: string, id: string, filter: FilterState = {}): string {
-  return `${ISSUE_HASH}${encodeURIComponent(project)}/${encodeURIComponent(id)}${filterQuery(filter)}`;
+export function boardHref(filter: FilterState, sort?: SortKey): string {
+  return `${BOARD_HASH}${filterQuery(filter, sort)}`;
+}
+
+export function issueHref(project: string, id: string, filter: FilterState = {}, sort?: SortKey): string {
+  return `${ISSUE_HASH}${encodeURIComponent(project)}/${encodeURIComponent(id)}${filterQuery(filter, sort)}`;
 }
 
 export function routeOf(hash: string): IssueRoute | undefined {

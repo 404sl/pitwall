@@ -27,15 +27,35 @@
 # These used to be one machine's absolute paths, pinned to one project and one session of it.
 # Anywhere else that reported another project's runs as though they were this workspace's.
 # The harness names its per-project directory after the workspace path with the separators
-# swapped, so it can be computed; the session inside it is whichever ran most recently.
+# swapped, so it can be computed; the runs inside it are read from every session, nested or flat.
 CFG="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/config.sh"
 ROOT="${DEVLOOP_ROOT:-$(bash "$CFG" root 2>/dev/null)}"
 [ -n "$ROOT" ] || { echo "$(basename "${BASH_SOURCE[0]}"): no workspace resolved - refusing to guess." >&2; exit 6; }
 SLUG="$(printf '%s' "$ROOT" | sed 's|/|-|g')"
 WF="${DEVLOOP_WORKFLOW_DIR:-${DEVLOOP_WF:-$HOME/.claude/projects/$SLUG}}"
 TASKS="${DEVLOOP_TASKS:-$(ls -dt /private/tmp/claude-*/"$SLUG"/*/tasks 2>/dev/null | head -1)}"
+ID_PFX="$(bash "$CFG" idPrefix 2>/dev/null)"
+case "$ID_PFX" in
+  ''|*[!a-zA-Z0-9_-]*)
+    echo "$(basename "${BASH_SOURCE[0]}"): could not resolve idPrefix from the workspace config - refusing to run." >&2
+    echo "         Guessing it would scrape transcripts for another project's ids, so every run here" >&2
+    echo "         would read UNKNOWN. Run from the workspace root, and check the config is readable:" >&2
+    echo "           bash $CFG --check" >&2
+    exit 3 ;;
+esac
+ID_RE="${ID_PFX}-[a-z0-9][a-z0-9]*\(\.[0-9][0-9]*\)*"
 
 now=$(date +%s)
+
+label_ids() {
+  local labels ids
+  labels=$(grep -oE '"label":"[^"]*"' "$1" 2>/dev/null | sed 's/^"label":"//; s/"$//')
+  [ -n "$labels" ] || return 0
+  ids=$(printf '%s\n' "$labels" | sed 's/^[^:]*://; s/#[0-9]*$//' |
+        grep -E '^[A-Za-z0-9]+-[A-Za-z0-9._-]+$' | sort -u | tr '\n' ' ')
+  ids="${ids% }"
+  printf '%s' "${ids:-no id in its labels}"
+}
 
 echo "LIVE WORKFLOWS (result not yet written)"
 found=0
@@ -52,16 +72,23 @@ done
 
 echo
 echo "WORKFLOW DIRECTORIES BY LAST WRITE"
-for d in $(ls -t "$WF" 2>/dev/null | head -14); do
+shown=0
+ls -dt "$WF"/*/subagents/workflows/*/ "$WF"/*/ 2>/dev/null | while IFS= read -r run; do
+  [ -f "$run/journal.jsonl" ] || ls "$run"/agent-*.jsonl >/dev/null 2>/dev/null || continue
+  [ "$shown" -lt 14 ] || break
+  shown=$((shown + 1))
+  d="${run#"$WF"/}"; d="${d%/}"
   age=$(( (now - $(date -r "$WF/$d" +%s)) / 60 ))
   # Take the issue id from any agent transcript, not a guessed filename, and strip the
   # trailing punctuation that a sentence leaves on it. An unidentified run is reported as
   # unknown rather than skipped.
-  iid=$(cat "$WF/$d"/agent-*.jsonl 2>/dev/null | grep -oham1 'sr-[a-z0-9][a-z0-9]*\(\.[0-9][0-9]*\)*' | head -1)
+  iid=$(cat "$WF/$d"/agent-*.jsonl 2>/dev/null | grep -oham1 "$ID_RE" | head -1)
   [ -z "$iid" ] && iid="UNKNOWN - could not identify"
+  labelled=$(label_ids "$WF/$d/journal.jsonl")
+  [ -n "$labelled" ] && iid=$labelled
   state="idle"
   [ "$age" -lt 10 ] && state="working"
-  printf "  %-20s %-14s %-8s last write %dmin ago\n" "$d" "$iid" "$state" "$age"
+  printf "  %-20s %-14s %-8s last write %dmin ago\n" "${d##*/}" "$iid" "$state" "$age"
 done
 
 echo

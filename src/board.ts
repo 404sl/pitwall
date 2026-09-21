@@ -11,8 +11,10 @@ import {
   type Snapshot,
   type Staleness,
   type StalenessVerdict,
+  type Stopped,
+  type StoppedBasis,
 } from "@404sl/pitwall-schema";
-import { parentIdOf, type ClassificationReason } from "./classify.js";
+import { parentIdOf, parkLabelOf, type ClassificationReason } from "./classify.js";
 import { priorityLabel } from "./format.js";
 import { shownProblems, type ProblemRow } from "./problems.js";
 import {
@@ -33,13 +35,54 @@ export const NOTICE_SOURCE = "pitwall serve: outbound notice";
 export const PARTIAL_SOURCE = "pitwall snapshot: partial collection";
 export const KEPT_SOURCE = "pitwall snapshot: kept from the last readable collection";
 
+export type ProjectQuestions = Record<string, string>;
+
+export type QuestionStore = Record<string, ProjectQuestions>;
+
+export interface ParkAge {
+  since?: string;
+  ms?: number;
+  suspect: boolean;
+  basis?: StoppedBasis;
+}
+
+export type ParkedReason = "tooling" | "watch" | "umbrella" | "roadmap";
+
 export interface NeedsYouRow {
   id: string;
   priority?: number;
+  owner?: string;
+  reporter?: string;
   kind: NeedsYouKind;
   title: string;
   verdict: StalenessVerdict;
   checkedAt?: string;
+  park: ParkAge;
+  question?: string;
+  misfiled: boolean;
+}
+
+export interface ParkedRow {
+  id: string;
+  priority?: number;
+  owner?: string;
+  reporter?: string;
+  reason: ParkedReason;
+  title: string;
+  park: ParkAge;
+  verdict: StalenessVerdict;
+  checkedAt?: string;
+}
+
+export interface ParkedGroup {
+  project: string;
+  projectId: string;
+  rows: ParkedRow[];
+}
+
+export interface ParkedRows {
+  suspect: ParkedGroup[];
+  rest: ParkedGroup[];
 }
 
 export interface ReadyRow {
@@ -47,6 +90,8 @@ export interface ReadyRow {
   projectId: string;
   id: string;
   priority?: number;
+  owner?: string;
+  reporter?: string;
   title: string;
 }
 
@@ -95,7 +140,7 @@ export interface ParkedCount {
 
 export const FILTER_NONE = "none";
 
-export const FILTER_KEYS = ["project", "type", "priority", "epic"] as const;
+export const FILTER_KEYS = ["project", "type", "priority", "epic", "owner"] as const;
 
 export type FilterKey = (typeof FILTER_KEYS)[number];
 
@@ -107,6 +152,16 @@ export interface FilterOption {
 }
 
 export type FilterOptions = Record<FilterKey, FilterOption[]>;
+
+export const SORT_PARAM = "sort";
+
+export const SORT_KEYS = ["owner", "reporter"] as const;
+
+export type SortKey = (typeof SORT_KEYS)[number];
+
+export function sortKeyOf(value: string | null | undefined): SortKey | undefined {
+  return SORT_KEYS.find((key) => key === value);
+}
 
 export interface BoardTotals {
   needsYou: number;
@@ -134,18 +189,29 @@ export interface Board {
   readyCount: number;
   readyShown: number;
   parked: ParkedEntry[];
+  parkedRows: ParkedRows;
   problems: ProblemRow[];
   filter: FilterState;
   filtered: boolean;
+  sort?: SortKey;
   options: FilterOptions;
   issueCount: number;
   today: TodayTotals;
   totals: BoardTotals;
   refreshFailure?: CollectionError;
+  projectAges: ProjectAge[];
+}
+
+export interface ProjectAge {
+  project: string;
+  projectId: string;
+  readAt?: string;
 }
 
 export const READY_LIMIT = 8;
 export const LANE_CHIP_LIMIT = 3;
+export const PARK_SUSPECT_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
+export const PARK_SUSPECT_DAYS = String(PARK_SUSPECT_AFTER_MS / (24 * 60 * 60 * 1000));
 
 const RUNNING_ORDER: RunningState[] = ["working", "awaiting-lander", "stranded"];
 
@@ -196,6 +262,76 @@ function kindOf(issue: Issue): NeedsYouKind {
   return issue.classification === "yours:decision" ? "decision" : "access";
 }
 
+export function parkAgeOf(stopped: Stopped | undefined, generatedAt: string): ParkAge {
+  if (stopped === undefined) {
+    return { suspect: false };
+  }
+  const ms = elapsedMs(generatedAt, stopped.since);
+  return {
+    since: stopped.since,
+    ms,
+    suspect: ms !== undefined && ms >= PARK_SUSPECT_AFTER_MS,
+    basis: stopped.basis,
+  };
+}
+
+function byOldestPark(a: { park: ParkAge }, b: { park: ParkAge }): number {
+  const left = a.park.ms;
+  const right = b.park.ms;
+  if (left === right) {
+    return 0;
+  }
+  if (left === undefined) {
+    return 1;
+  }
+  if (right === undefined) {
+    return -1;
+  }
+  return right - left;
+}
+
+type Sorter<Row> = (a: Row, b: Row) => number;
+
+function bySortKey<Row extends { owner?: string; reporter?: string }>(sort: SortKey | undefined): Sorter<Row> {
+  return (a, b) => {
+    if (sort === undefined) {
+      return 0;
+    }
+    const left = a[sort];
+    const right = b[sort];
+    if (left === right) {
+      return 0;
+    }
+    if (left === undefined) {
+      return 1;
+    }
+    if (right === undefined) {
+      return -1;
+    }
+    return left.localeCompare(right);
+  };
+}
+
+function sortedBy<Row extends { owner?: string; reporter?: string }>(
+  sort: SortKey | undefined,
+  then: Sorter<Row>,
+): Sorter<Row> {
+  const first = bySortKey<Row>(sort);
+  return (a, b) => first(a, b) || then(a, b);
+}
+
+function byParkThenPriority(a: NeedsYouRow, b: NeedsYouRow): number {
+  return (
+    byOldestPark(a, b) ||
+    Number(a.misfiled) - Number(b.misfiled) ||
+    byPriorityThenId(a, b)
+  );
+}
+
+function byParkThenPriorityParked(a: ParkedRow, b: ParkedRow): number {
+  return byOldestPark(a, b) || byPriorityThenId(a, b);
+}
+
 function elapsedMs(generatedAt: string, lastActivityAt: string | undefined): number | undefined {
   if (lastActivityAt === undefined) {
     return undefined;
@@ -228,25 +364,93 @@ function chipsFor(project: Project, generatedAt: string, state: RunningState): L
     .sort(byElapsedDescending);
 }
 
-function needsYouGroups(projects: Project[]): NeedsYouGroup[] {
+function needsYouRow(issue: Issue, question: string | undefined, generatedAt: string): NeedsYouRow {
+  const kind = kindOf(issue);
+  const park = parkAgeOf(issue.stopped, generatedAt);
+  return {
+    id: issue.id,
+    priority: issue.priority,
+    owner: issue.owner,
+    reporter: issue.reporter,
+    kind,
+    title: issue.title,
+    verdict: verdictOf(issue),
+    checkedAt: issue.staleness?.checkedAt,
+    park,
+    question,
+    misfiled: kind === "decision" && park.since !== undefined && question === undefined,
+  };
+}
+
+function needsYouGroups(
+  projects: Project[],
+  generatedAt: string,
+  questions: QuestionStore,
+  sort?: SortKey,
+): NeedsYouGroup[] {
   return projects
     .map((project) => ({
       project: project.name,
       projectId: project.id,
       rows: issuesOf(project)
         .filter((issue) => isYours(issue.classification))
-        .map((issue) => ({
-          id: issue.id,
-          priority: issue.priority,
-          kind: kindOf(issue),
-          title: issue.title,
-          verdict: verdictOf(issue),
-          checkedAt: issue.staleness?.checkedAt,
-        }))
-        .sort(byPriorityThenId),
+        .map((issue) => needsYouRow(issue, questions[project.id]?.[issue.id], generatedAt))
+        .sort(sortedBy(sort, byParkThenPriority)),
     }))
     .filter((group) => group.rows.length > 0)
     .sort((a, b) => byCountThenName({ count: a.rows.length, name: a.project }, { count: b.rows.length, name: b.project }));
+}
+
+function parkedReasonOf(issue: Issue): ParkedReason | undefined {
+  if (!issue.classification.startsWith("parked:") || parkLabelOf(issue) === undefined) {
+    return undefined;
+  }
+  return issue.classification.slice("parked:".length) as ParkedReason;
+}
+
+function parkedRowsOf(project: Project, generatedAt: string): ParkedRow[] {
+  return issuesOf(project).flatMap((issue) => {
+    const reason = parkedReasonOf(issue);
+    if (reason === undefined) {
+      return [];
+    }
+    return [
+      {
+        id: issue.id,
+        priority: issue.priority,
+        owner: issue.owner,
+        reporter: issue.reporter,
+        reason,
+        title: issue.title,
+        park: parkAgeOf(issue.stopped, generatedAt),
+        verdict: verdictOf(issue),
+        checkedAt: issue.staleness?.checkedAt,
+      },
+    ];
+  });
+}
+
+function parkedGroupsOf(
+  groups: ParkedGroup[],
+  pick: (row: ParkedRow) => boolean,
+  sort?: SortKey,
+): ParkedGroup[] {
+  return groups
+    .map((group) => ({ ...group, rows: group.rows.filter(pick).sort(sortedBy(sort, byParkThenPriorityParked)) }))
+    .filter((group) => group.rows.length > 0)
+    .sort((a, b) => byCountThenName({ count: a.rows.length, name: a.project }, { count: b.rows.length, name: b.project }));
+}
+
+function parkedGroups(projects: Project[], generatedAt: string, sort?: SortKey): ParkedRows {
+  const rows = projects.map((project) => ({
+    project: project.name,
+    projectId: project.id,
+    rows: parkedRowsOf(project, generatedAt),
+  }));
+  return {
+    suspect: parkedGroupsOf(rows, (row) => row.park.suspect, sort),
+    rest: parkedGroupsOf(rows, (row) => !row.park.suspect, sort),
+  };
 }
 
 function claimedBy(project: Project): Set<string> {
@@ -297,7 +501,7 @@ function runningTotals(rows: RunningRow[]): RunningTotal[] {
   })).filter((total) => total.count > 0);
 }
 
-function readyGroups(projects: Project[]): ReadyGroup[] {
+function readyGroups(projects: Project[], sort?: SortKey): ReadyGroup[] {
   return projects
     .map((project) => ({
       name: project.name,
@@ -308,9 +512,11 @@ function readyGroups(projects: Project[]): ReadyGroup[] {
           projectId: project.id,
           id: issue.id,
           priority: issue.priority,
+          owner: issue.owner,
+          reporter: issue.reporter,
           title: issue.title,
         }))
-        .sort(byPriorityThenId),
+        .sort(sortedBy<ReadyRow>(sort, byPriorityThenId)),
     }))
     .filter((group) => group.rows.length > 0)
     .map((group) => ({ ...group, count: group.rows.length }))
@@ -318,8 +524,8 @@ function readyGroups(projects: Project[]): ReadyGroup[] {
     .map((group) => ({ project: group.name, rows: group.rows, total: group.count }));
 }
 
-function readyRows(projects: Project[]): ReadyRow[] {
-  return readyGroups(projects).flatMap((group) => group.rows);
+function readyRows(projects: Project[], sort?: SortKey): ReadyRow[] {
+  return readyGroups(projects, sort).flatMap((group) => group.rows);
 }
 
 export function readyByProject(snapshot: Snapshot, limit: number): ReadyGroup[] {
@@ -330,14 +536,17 @@ export function parkedReasons(): string[] {
   const parked = Classification.options
     .filter((option) => option.startsWith("parked:"))
     .map((option) => option.slice("parked:".length));
-  return [...parked, "blocked"];
+  return [...parked, "blocked", "unknown"];
 }
 
 function parkedEntries(projects: Project[]): ParkedEntry[] {
   const counts = new Map<string, number>();
   for (const project of projects) {
     for (const issue of issuesOf(project)) {
-      const reason = issue.classification === "blocked" ? "blocked" : undefined;
+      const reason =
+        issue.classification === "blocked" || issue.classification === "unknown"
+          ? issue.classification
+          : undefined;
       const parked = issue.classification.startsWith("parked:")
         ? issue.classification.slice("parked:".length)
         : reason;
@@ -404,6 +613,29 @@ export function refreshFailure(snapshot: Snapshot): CollectionError | undefined 
   );
 }
 
+function readAtMs(readAt: string | undefined): number {
+  const at = readAt === undefined ? Number.NaN : new Date(readAt).getTime();
+  return Number.isNaN(at) ? Number.POSITIVE_INFINITY : at;
+}
+
+export function projectAges(projects: readonly Project[]): ProjectAge[] {
+  const distinct = new Set(projects.map((project) => project.issuesReadAt));
+  if (distinct.size < 2) {
+    return [];
+  }
+  return projects
+    .map((project, index) => ({
+      index,
+      entry: {
+        project: project.name,
+        projectId: project.id,
+        ...(project.issuesReadAt === undefined ? {} : { readAt: project.issuesReadAt }),
+      },
+    }))
+    .sort((a, b) => readAtMs(a.entry.readAt) - readAtMs(b.entry.readAt) || a.index - b.index)
+    .map(({ entry }) => entry);
+}
+
 export const ISSUE_TYPES = ["bug", "feature", "task", "chore", "epic", "decision"];
 
 export const PRIORITIES = [0, 1, 2, 3, 4];
@@ -418,6 +650,7 @@ interface Filterable {
   id: string;
   issueType?: string;
   priority?: number;
+  owner?: string;
 }
 
 function matchesValue(value: string | undefined, actual: string | undefined): boolean {
@@ -435,6 +668,9 @@ function issueMatches(projectId: string, issue: Filterable, filter: FilterState)
     return false;
   }
   if (!matchesValue(filter.priority, issue.priority === undefined ? undefined : String(issue.priority))) {
+    return false;
+  }
+  if (!matchesValue(filter.owner, issue.owner)) {
     return false;
   }
   if (filter.epic === undefined) {
@@ -473,11 +709,15 @@ function filterOptions(projects: Project[]): FilterOptions {
     ),
   ].sort();
   const epics = [...new Set(issues.map((issue) => epicOf(issue.id)).filter((id): id is string => id !== undefined))].sort();
+  const owners = [
+    ...new Set(issues.map((issue) => issue.owner).filter((owner): owner is string => owner !== undefined)),
+  ].sort((a, b) => a.localeCompare(b));
   return {
     project: projects.map((project) => ({ value: project.id, label: project.name })),
     type: [...ISSUE_TYPES, ...extraTypes].map((type) => ({ value: type, label: type })),
     priority: PRIORITIES.map((priority) => ({ value: String(priority), label: priorityLabel(priority) })),
     epic: epics.map((id) => ({ value: id, label: id })),
+    owner: owners.map((name) => ({ value: name, label: name })),
   };
 }
 
@@ -496,7 +736,10 @@ function todayTotals(projects: Project[]): TodayTotals {
 
 function boardTotals(projects: Project[], generatedAt: string, running: RunningRow[]): BoardTotals {
   return {
-    needsYou: needsYouGroups(projects).reduce((sum, group) => sum + group.rows.length, 0),
+    needsYou: projects.reduce(
+      (sum, project) => sum + issuesOf(project).filter((issue) => isYours(issue.classification)).length,
+      0,
+    ),
     running: running.reduce((sum, row) => sum + row.count, 0),
     runningStates: runningTotals(running),
     ready: readyRows(projects).length,
@@ -505,15 +748,20 @@ function boardTotals(projects: Project[], generatedAt: string, running: RunningR
   };
 }
 
-export function buildBoard(snapshot: Snapshot, filter: FilterState = {}): Board {
+export function buildBoard(
+  snapshot: Snapshot,
+  filter: FilterState = {},
+  questions: QuestionStore = {},
+  sort?: SortKey,
+): Board {
   const projects = snapshot.projects ?? [];
   const generatedAt = snapshot.generatedAt;
   const shown = filteredProjects(projects, filter);
   const filtered = isFiltered(filter);
-  const needsYou = needsYouGroups(shown);
+  const needsYou = needsYouGroups(shown, generatedAt, questions, sort);
   const everyRunning = runningRows(projects, generatedAt);
   const running = filtered ? withRunningTotals(runningRows(shown, generatedAt), everyRunning) : everyRunning;
-  const ready = readyRows(shown);
+  const ready = readyRows(shown, sort);
   const parked = parkedEntries(shown);
   return {
     generatedAt,
@@ -527,14 +775,17 @@ export function buildBoard(snapshot: Snapshot, filter: FilterState = {}): Board 
     readyCount: ready.length,
     readyShown: Math.min(ready.length, READY_LIMIT),
     parked,
+    parkedRows: parkedGroups(shown, generatedAt, sort),
     problems: shownProblems(problemRows(snapshot), generatedAt),
     filter,
     filtered,
+    sort,
     options: filterOptions(projects),
     issueCount: shown.reduce((sum, project) => sum + issuesOf(project).length, 0),
     today: todayTotals(projects),
     totals: boardTotals(projects, generatedAt, everyRunning),
     refreshFailure: refreshFailure(snapshot),
+    projectAges: projectAges(projects),
   };
 }
 
@@ -551,6 +802,8 @@ export interface IssueBody {
   issueType?: string;
   priority?: number;
   labels: string[];
+  owner?: string;
+  reporter?: string;
   project: string;
   projectName: string;
   authority: Authority;
@@ -562,6 +815,8 @@ export interface IssueBody {
   classification?: ClassificationValue;
   reason: ClassificationReason;
   staleness: Staleness;
+  stopped?: Stopped;
+  question?: string;
 }
 
 export interface IssuePayload {
@@ -586,11 +841,15 @@ export interface IssuePreview {
   issueType?: string;
   priority?: number;
   labels: string[];
+  owner?: string;
+  reporter?: string;
   project: string;
   projectName: string;
   classification?: ClassificationValue;
   closed: boolean;
   staleness: StalenessView;
+  park?: ParkAge;
+  question?: string;
 }
 
 export function stalenessErrors(source: { errors?: CollectionError[] }, id: string): CollectionError[] {
@@ -623,19 +882,38 @@ function stalenessView(staleness: Staleness | undefined, errors: readonly Collec
   };
 }
 
-export function previewIssue(snapshot: Snapshot, project: string, id: string): IssuePreview | undefined {
+function parkView(
+  issue: { classification?: ClassificationValue | undefined; labels: string[]; stopped?: Stopped },
+  question: string | undefined,
+  generatedAt: string,
+): { park?: ParkAge; question?: string } {
+  if (parkLabelOf(issue) === undefined) {
+    return {};
+  }
+  return { park: parkAgeOf(issue.stopped, generatedAt), question };
+}
+
+export function previewIssue(
+  snapshot: Snapshot,
+  project: string,
+  id: string,
+  questions: QuestionStore = {},
+): IssuePreview | undefined {
   const found = (snapshot.projects ?? []).find((entry) => entry.id === project);
   const issue = found === undefined ? undefined : issuesOf(found).find((entry) => entry.id === id);
   if (found === undefined || issue === undefined) {
     return undefined;
   }
   return {
+    ...parkView(issue, questions[found.id]?.[issue.id], snapshot.generatedAt),
     id: issue.id,
     title: issue.title,
     status: issue.status,
     issueType: issue.issueType,
     priority: issue.priority,
     labels: issue.labels,
+    owner: issue.owner,
+    reporter: issue.reporter,
     project: found.id,
     projectName: found.name,
     classification: issue.classification,
@@ -651,10 +929,13 @@ export interface IssueView {
   closed: boolean;
   closedSinceSnapshot: boolean;
   staleness: StalenessView;
+  park?: ParkAge;
+  question?: string;
 }
 
 export function buildIssueView(payload: IssuePayload): IssueView {
   return {
+    ...parkView(payload.issue, payload.issue.question, payload.snapshot?.generatedAt ?? payload.readAt),
     issue: payload.issue,
     readAt: payload.readAt,
     snapshot: payload.snapshot,

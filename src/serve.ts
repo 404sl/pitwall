@@ -14,7 +14,21 @@ import {
   type IssueReading,
 } from "./beads.js";
 import { createBuildCheck, type BuildCheck } from "./build.js";
-import { collectionError } from "./errors.js";
+import { LIFTABLE_PARK_LABELS, liftableParkOf, parkLabelOf } from "./classify.js";
+import { collectionError, hard } from "./errors.js";
+import {
+  INTAKE_LABEL,
+  INTAKE_ROUTE,
+  MAX_BODY_BYTES,
+  MAX_FILES,
+  MAX_FILE_BYTES,
+  MAX_REQUEST_BYTES,
+  fileSize,
+  planningSession,
+  sift,
+} from "./intake.js";
+import { boundaryOf, parseMultipart } from "./multipart.js";
+import { recordRequest, type DroppedFile } from "./recording.js";
 import {
   collectionFailedNotice,
   collectionRecoveredNotice,
@@ -22,6 +36,7 @@ import {
   type Delivery,
 } from "./notify.js";
 import { createUpdateCheck, type UpdateCheck } from "./registry.js";
+import { readConsoleState } from "./parks.js";
 import { outboundPath, type OutboundOptions } from "./sender.js";
 import { emitSnapshot, type SnapshotOptions } from "./snapshot.js";
 import { readSnapshot, type StateOptions, type StoredSnapshot } from "./state.js";
@@ -33,6 +48,7 @@ export const LOCAL_HOSTNAMES = ["127.0.0.1", "localhost", "[::1]"];
 export const UI_DIR = fileURLToPath(new URL("../dist/ui", import.meta.url));
 export const ISSUE_PREFIX = "/api/issue/";
 export const VERSION_ROUTE = "/api/version";
+export const QUESTIONS_ROUTE = "/api/questions";
 export const REFRESH_FLOOR_MS = 60_000;
 export const OUTAGE_AFTER_MS = 15 * 60_000;
 export const NOTHING_READ = "No project could be read. The board still shows the last snapshot collected.";
@@ -51,6 +67,7 @@ export type Announcer = (notice: CollectionNotice) => Promise<Delivery>;
 export interface ServeOptions extends StateOptions {
   uiDir?: string;
   timeoutMs?: number;
+  lockRoot?: string;
   updates?: UpdateCheck;
   builds?: BuildCheck;
   collect?: Collector;
@@ -145,7 +162,7 @@ interface Outage {
 }
 
 function causeOf(errors: readonly CollectionError[]): string {
-  const first = errors[0];
+  const first = errors.find(hard) ?? errors[0];
   return first === undefined ? "" : `${first.source}: ${first.message}`;
 }
 
@@ -296,6 +313,10 @@ function serveSnapshot(res: ServerResponse, options: ServeOptions, refresher: Re
   });
 }
 
+function serveQuestions(res: ServerResponse, options: ServeOptions): void {
+  sendJson(res, 200, { questions: readConsoleState(options).state.questions });
+}
+
 function serveVersion(res: ServerResponse, updates: UpdateCheck, builds: BuildCheck): void {
   const update = updates.update();
   sendJson(res, 200, {
@@ -322,6 +343,14 @@ function issueRoute(pathname: string): { project: string; id: string } | undefin
 
 function snapshotIssue(project: Project | undefined, id: string): Issue | undefined {
   return project?.issues.find((issue) => issue.id === id);
+}
+
+function parkedAlike(
+  issue: { classification: Classification | undefined; labels: string[] },
+  indexed: Issue | undefined,
+): indexed is Issue {
+  const label = parkLabelOf(issue);
+  return label !== undefined && indexed !== undefined && parkLabelOf(indexed) === label;
 }
 
 function projectIn(snapshot: Snapshot, id: string): Project | undefined {
@@ -383,6 +412,9 @@ async function serveIssue(
     return;
   }
   const snapshotStatus = snapshotIssue(indexed, route.id);
+  const parked = parkedAlike(reading.issue, snapshotStatus);
+  const stopped = parked ? snapshotStatus.stopped : undefined;
+  const question = parked ? readConsoleState(options).state.questions[indexed.id]?.[route.id] : undefined;
   sendJson(res, 200, {
     issue: {
       ...reading.issue,
@@ -390,6 +422,8 @@ async function serveIssue(
       projectName: indexed.name,
       authority: indexed.authority,
       staleness: snapshotStatus?.staleness ?? { verdict: "unchecked", evidence: [] },
+      ...(stopped === undefined ? {} : { stopped }),
+      ...(question === undefined ? {} : { question }),
     },
     readAt: new Date().toISOString(),
     errors: stalenessErrors(indexed, route.id),
@@ -476,7 +510,7 @@ function serveConsole(res: ServerResponse, uiDir: string, pathname: string): voi
 }
 
 export const ACTION_HEADER = "x-pitwall-action";
-export const ACTIONS = ["answer", "ready", "not-mine"] as const;
+export const ACTIONS = ["answer", "ready", "not-mine", "unpark"] as const;
 export type ActionName = (typeof ACTIONS)[number];
 const MAX_BODY = 16_384;
 const SAME_ORIGIN = "same-origin";
@@ -565,12 +599,19 @@ function noteFor(action: ActionName, text: string, classification: Classificatio
   return "Marked ready from the console.";
 }
 
+function unparkNote(label: string, text: string, classification: Classification): string {
+  return `Park lifted from the console — ${label} removed; the console classified this ${classification}. Reason: ${text}`;
+}
+
 function missingText(action: ActionName, id: string): string | undefined {
   if (action === "answer") {
     return `${id} was not changed - an answer needs the answer itself, and this request carried none.`;
   }
   if (action === "not-mine") {
     return `${id} was not changed - say why it is not yours, so the next reader knows.`;
+  }
+  if (action === "unpark") {
+    return `${id} was not changed - say why the park no longer applies, so the next reader knows.`;
   }
   return undefined;
 }
@@ -650,9 +691,23 @@ async function serveAction(
     });
     return;
   }
-  const note = noteFor(route.action, text, classification);
-  const removedLabels = [...OWNER_LABELS];
-  const act = issueActor(indexed.root, { env: options.env, timeoutMs: options.timeoutMs });
+  const lifted = route.action === "unpark" ? liftableParkOf(reading.issue) : undefined;
+  if (route.action === "unpark" && lifted === undefined) {
+    sendJson(res, 400, {
+      message: `${route.id} was not changed - it carries no park label the console lifts (${LIFTABLE_PARK_LABELS.join(", ")}); the console classifies it ${classification}.`,
+      id: route.id,
+      action: route.action,
+    });
+    return;
+  }
+  const note =
+    lifted === undefined ? noteFor(route.action, text, classification) : unparkNote(lifted, text, classification);
+  const removedLabels = lifted === undefined ? [...OWNER_LABELS] : [lifted];
+  const act = issueActor(indexed.root, {
+    env: options.env,
+    timeoutMs: options.timeoutMs,
+    lockRoot: options.lockRoot,
+  });
   try {
     await act(route.id, { note, removeLabels: removedLabels });
   } catch (cause) {
@@ -676,6 +731,184 @@ async function serveAction(
     note,
     removedLabels,
   });
+}
+
+export class BodyTooLarge extends Error {}
+
+function readBytes(req: IncomingMessage, limit: number): Promise<Buffer> {
+  return new Promise((done, failed) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    let over = false;
+    req.on("data", (chunk: Buffer) => {
+      if (over) {
+        return;
+      }
+      size += chunk.length;
+      if (size > limit) {
+        over = true;
+        chunks.length = 0;
+        failed(new BodyTooLarge(`it carries more than ${fileSize(limit)}`));
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => done(Buffer.concat(chunks)));
+    req.on("error", (cause: Error) => failed(cause));
+  });
+}
+
+interface Dropped {
+  raw: string;
+  project: string;
+  files: DroppedFile[];
+}
+
+function droppedIn(body: Buffer, boundary: string): Dropped {
+  const parts = parseMultipart(body, boundary);
+  const files = parts.flatMap((part) =>
+    part.filename === undefined || part.filename === ""
+      ? []
+      : [{ name: part.filename, body: part.body }],
+  );
+  const fieldOf = (name: string) =>
+    parts.find((part) => part.name === name && part.filename === undefined)?.body.toString("utf8") ??
+    "";
+  return {
+    raw: fieldOf("text").replace(/\r\n/g, "\n"),
+    project: fieldOf("project"),
+    files,
+  };
+}
+
+function overCap(files: readonly DroppedFile[]): string | undefined {
+  const { refused } = sift(files.map((file) => ({ name: file.name, bytes: file.body.length })));
+  const first = refused[0];
+  if (first === undefined) {
+    return undefined;
+  }
+  if (first.kind === "size") {
+    return `${first.name} is ${fileSize(first.bytes)}, over the ${fileSize(MAX_FILE_BYTES)} cap`;
+  }
+  if (first.kind === "count") {
+    return `it carried more than ${String(MAX_FILES)} files`;
+  }
+  return `the files together are over the ${fileSize(MAX_REQUEST_BYTES)} cap`;
+}
+
+function intakeProject(snapshot: Snapshot, named: string): Project | { message: string } {
+  if (named !== "") {
+    return projectIn(snapshot, named) ?? { message: `the snapshot names no project ${named}` };
+  }
+  const only = snapshot.projects[0];
+  if (only === undefined || snapshot.projects.length > 1) {
+    return { message: "it named no project, and the snapshot does not hold exactly one" };
+  }
+  return only;
+}
+
+async function serveIntake(
+  req: IncomingMessage,
+  res: ServerResponse,
+  options: ServeOptions,
+): Promise<void> {
+  const refusal = refusalOf(req);
+  if (refusal !== undefined) {
+    sendJson(res, 403, {
+      message: `Nothing was recorded - ${refusal}, so it was not sent by the console. Recording a request must carry the ${ACTION_HEADER} header and come from the console's own origin.`,
+    });
+    return;
+  }
+  const boundary = boundaryOf(req.headers["content-type"]);
+  if (boundary === undefined) {
+    sendJson(res, 400, {
+      message:
+        "Nothing was recorded - a recorded request is sent as multipart/form-data, and this was not.",
+    });
+    return;
+  }
+  let dropped: Dropped;
+  try {
+    dropped = droppedIn(await readBytes(req, MAX_BODY_BYTES), boundary);
+  } catch (cause) {
+    const reason = cause instanceof Error ? cause.message : String(cause);
+    sendJson(res, cause instanceof BodyTooLarge ? 413 : 400, {
+      message:
+        cause instanceof BodyTooLarge
+          ? `Nothing was recorded - ${reason}, over the ${fileSize(MAX_REQUEST_BYTES)} cap on the files in one request.`
+          : `Nothing was recorded - the request body could not be read: ${reason}`,
+    });
+    return;
+  }
+  if (dropped.raw === "" && dropped.files.length === 0) {
+    sendJson(res, 400, {
+      message:
+        "Nothing was recorded - a request needs some text or at least one file, and this carried neither.",
+    });
+    return;
+  }
+  const over = overCap(dropped.files);
+  if (over !== undefined) {
+    sendJson(res, 400, { message: `Nothing was recorded - ${over}.` });
+    return;
+  }
+  const stored = readSnapshot(options);
+  if (stored.snapshot === undefined) {
+    sendJson(res, 503, {
+      message: `Nothing was recorded - ${stored.error.source} could not be read: ${stored.error.message}`,
+      source: stored.error.source,
+      tried: [stored.path],
+    });
+    return;
+  }
+  const chosen = intakeProject(stored.snapshot, dropped.project);
+  if ("message" in chosen) {
+    sendJson(res, 400, { message: `Nothing was recorded - ${chosen.message}.` });
+    return;
+  }
+  if (chosen.authority.kind !== "beads") {
+    sendJson(res, 400, {
+      message: `Nothing was recorded - ${chosen.name} is tracked in ${chosen.authority.kind}, and the console records into beads only.`,
+    });
+    return;
+  }
+  const recording = await recordRequest(
+    { id: chosen.id, root: chosen.root },
+    { raw: dropped.raw, files: dropped.files },
+    { env: options.env, timeoutMs: options.timeoutMs },
+  );
+  if (recording.kind === "unrecorded") {
+    sendJson(res, 502, { message: `Nothing was recorded - ${recording.reason}` });
+    return;
+  }
+  const recorded = {
+    id: recording.id,
+    project: chosen.id,
+    assignee: planningSession(chosen.id),
+    label: INTAKE_LABEL,
+    files: recording.files,
+  };
+  if (recording.kind === "partial") {
+    sendJson(res, 502, {
+      ...recorded,
+      reason: recording.reason,
+      message:
+        recording.files.length === 0
+          ? `${recording.id} was recorded, but its files were not saved: ${recording.reason} The text is safe on the ticket.`
+          : `${recording.id} was recorded and its files are on disk, but the ticket does not list them: ${recording.reason} The text is safe on the ticket.`,
+    });
+    return;
+  }
+  sendJson(res, 200, recorded);
+}
+
+export function sendIntakeFailure(res: ServerResponse, cause: unknown): void {
+  const message = `A request may or may not have been recorded - it failed after it began: ${cause instanceof Error ? cause.message : String(cause)}`;
+  if (res.headersSent) {
+    process.stderr.write(`pitwall serve: ${message}, after the response had gone out\n`);
+    return;
+  }
+  sendJson(res, 500, { message });
 }
 
 export function sendActionFailure(
@@ -708,6 +941,16 @@ export function createConsoleServer(options: ServeOptions = {}): Server {
     }
     if (pathname === VERSION_ROUTE) {
       serveVersion(res, updates, builds);
+      return;
+    }
+    if (pathname === QUESTIONS_ROUTE) {
+      serveQuestions(res, options);
+      return;
+    }
+    if (req.method === "POST" && pathname === INTAKE_ROUTE) {
+      void serveIntake(req, res, options).catch((cause: unknown) => {
+        sendIntakeFailure(res, cause);
+      });
       return;
     }
     if (req.method === "POST" && pathname.startsWith(ISSUE_PREFIX)) {

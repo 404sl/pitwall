@@ -5,5 +5,6 @@ fi
 case "$1 $2" in
   "auth status") echo "Logged in to github.com account nobody" ;;
   "pr list") cat "${GH_OUTPUT:?GH_OUTPUT is not set}/list.json" ;;
+  "issue list") cat "${GH_OUTPUT:?GH_OUTPUT is not set}/issues.json" ;;
   *) echo "unknown command: gh $*" >&2; exit 1 ;;
 esac

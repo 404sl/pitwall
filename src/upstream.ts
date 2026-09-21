@@ -10,7 +10,7 @@ const run = promisify(execFile);
 const TIMEOUT_MS = 20_000;
 const MAX_OUTPUT = 1024 * 1024;
 
-export const CLOSE_SOURCE = "gh issue close";
+export const CLOSE_SOURCE = "gh issue comment";
 
 const ISSUE_URL = /^https?:\/\/github\.com\/([^/\s]+\/[^/\s]+)\/issues\/(\d+)(?:[?#].*)?$/i;
 
@@ -20,6 +20,9 @@ const NOT_SHIPPED =
 const SHIPPED = /^(?:landed in|merged as|merged in|fixed in|shipped in|released as)\b/i;
 
 const SENTENCE = /[.!?](?:\s|$)/;
+
+export const LEFT_TO_REPORTER =
+  "This issue is left open for you to close if that fixes what you reported.";
 
 const REFERENCE = /(?:([A-Za-z0-9][\w./-]*)\s*)?#(\d+)|\b([0-9a-f]{7,40})\b/;
 
@@ -49,7 +52,7 @@ export interface UpstreamWork {
   left: Left[];
 }
 
-export type Closed = { closed: true } | { closed: false; reason: string };
+export type Closed = { commented: true } | { commented: false; reason: string };
 
 export type Closer = (closure: Closure) => Promise<Closed>;
 
@@ -145,7 +148,7 @@ export function shippingSpanOf(closeReason: string | undefined): string | undefi
 }
 
 function commentFor(issueId: string, shipped: string): string {
-  return `${shipped}. Tracked as ${issueId}.`;
+  return `${shipped}. Tracked as ${issueId}. ${LEFT_TO_REPORTER}`;
 }
 
 function addressed(span: string, pull: PullRequest | undefined): string {
@@ -223,16 +226,8 @@ export function closuresFor(options: ClosuresOptions): UpstreamWork {
   return work;
 }
 
-export function closeArgs(closure: Closure): string[] {
-  return [
-    "issue",
-    "close",
-    closure.issue.url,
-    "--reason",
-    "completed",
-    "--comment",
-    closure.comment,
-  ];
+export function commentArgs(closure: Closure): string[] {
+  return ["issue", "comment", closure.issue.url, "--body", closure.comment];
 }
 
 export interface CloserOptions {
@@ -245,28 +240,28 @@ export function githubCloser(options: CloserOptions = {}): Closer {
   const timeoutMs = options.timeoutMs ?? TIMEOUT_MS;
   return async (closure) => {
     try {
-      await run("gh", closeArgs(closure), {
+      await run("gh", commentArgs(closure), {
         encoding: "utf8",
         env,
         maxBuffer: MAX_OUTPUT,
         timeout: timeoutMs,
       });
-      return { closed: true };
+      return { commented: true };
     } catch (cause) {
-      return { closed: false, reason: failureOf(cause, timeoutMs) };
+      return { commented: false, reason: failureOf(cause, timeoutMs) };
     }
   };
 }
 
 function failureText(closure: Closure, reason: string): string {
-  return `${closure.issue.url} was not commented and not closed: ${reason}. It still shows this as open work, and nothing retries it.`;
+  return `${closure.issue.url} was not commented: ${reason}. Whoever reported it has not been told what shipped, and nothing retries it.`;
 }
 
 async function asked(closure: Closure, closer: Closer): Promise<Closed> {
   try {
     return await closer(closure);
   } catch (cause) {
-    return { closed: false, reason: cause instanceof Error ? cause.message : String(cause) };
+    return { commented: false, reason: cause instanceof Error ? cause.message : String(cause) };
   }
 }
 
@@ -277,7 +272,7 @@ export async function closeUpstream(
   const reported: Reported[] = [];
   for (const closure of closures) {
     const result = await asked(closure, options.closer);
-    if (result.closed) {
+    if (result.commented) {
       reported.push({ closure, result });
       continue;
     }
@@ -296,7 +291,7 @@ export async function closeUpstream(
 }
 
 function lossOf(entry: Reported): string {
-  if (entry.result.closed) {
+  if (entry.result.commented) {
     return "";
   }
   const what = `${entry.closure.issueId} closed, but ${failureText(entry.closure, entry.result.reason)}`;
@@ -307,15 +302,15 @@ function lossOf(entry: Reported): string {
 
 export function upstreamReport(run: UpstreamRun): string[] {
   return [
-    ...run.reported.filter((entry) => !entry.result.closed).map(lossOf),
+    ...run.reported.filter((entry) => !entry.result.commented).map(lossOf),
     ...run.left.map(
-      (entry) => `${entry.issueId} closed, and ${entry.issue.url} was left open because ${entry.reason}`,
+      (entry) => `${entry.issueId} closed, and ${entry.issue.url} was told nothing because ${entry.reason}`,
     ),
   ];
 }
 
 export function failedClosures(run: UpstreamRun): CollectionError[] {
   return run.reported
-    .filter((entry) => !entry.result.closed)
+    .filter((entry) => !entry.result.commented)
     .map((entry) => ({ ...collectionError(CLOSE_SOURCE, lossOf(entry)) }));
 }

@@ -45,7 +45,9 @@ set -u
 LIMIT=0
 while [ $# -gt 0 ]; do
   case "$1" in
-    --limit) LIMIT="${2:-0}"; shift 2 ;;
+    --limit)
+      [ $# -ge 2 ] || { echo "--limit needs a value" >&2; exit 6; }
+      LIMIT="${2:-0}"; shift 2 ;;
     *) echo "unknown argument: $1" >&2; exit 6 ;;
   esac
 done
@@ -140,7 +142,7 @@ except Exception:
 limit = int(os.environ["LIMIT"] or 0)
 actor = os.environ["ACTOR"]
 
-park = {"umbrella", "needs-access", "needs-decision", "watch", "blocked-tooling", "roadmap"}
+park = {"umbrella", "needs-access", "needs-decision", "needs-feedback", "watch", "blocked-tooling", "roadmap"}
 
 def read_ids(name):
     try:
@@ -167,6 +169,8 @@ elsewhere = {}
 for r in ready:
     labels = set(r.get("labels") or [])
     if labels & park:
+        continue
+    if "unrefined" in labels:
         continue
     if r.get("issue_type") == "epic":
         continue

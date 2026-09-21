@@ -1,5 +1,5 @@
 import { strict as assert } from "node:assert";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -58,14 +58,16 @@ function standingShellBlock(source: string, file: string): string {
       "unreadable home-directory config. Every git command fails and every bundler-fronted " +
       "command hangs when that file cannot be read, and the hang is silent.",
   );
-  const body = start + "const SHELL_FIRST = `".length;
+  const opened = source.indexOf("`", start);
+  assert.notEqual(opened, -1, `the standing shell block in ${file} never opens its template literal`);
+  const body = opened + 1;
   const end = source.indexOf("`\n", body);
   assert.notEqual(end, -1, `the standing shell block in ${file} has no end`);
   return source.slice(body, end);
 }
 
 test("the standing shell block carries no backticks in any script that hands it out", () => {
-  for (const file of ["task.js", "land.js", "rework.js", "land-train.js"]) {
+  for (const file of ["task.js", "land.js", "rework.js", "land-train.js", "refine.js"]) {
     const block = standingShellBlock(readFileSync(join(SKILL, file), "utf8"), file);
     const found = block.split("\n").filter((line) => line.includes("`"));
     assert.deepEqual(
@@ -83,7 +85,7 @@ test("the standing shell block carries no backticks in any script that hands it 
 const WRITES_A_COMMIT = /(^\s*|&&\s*|\|\|\s*|;\s*)(if ! )?git\s+(-C\s+\S+\s+)?(commit|rebase|cherry-pick|merge)(?![-\w])/;
 
 test("nothing in the plugin commits or rebases on an identity it did not pass", () => {
-  for (const file of ["task.js", "land.js", "rework.js", "land-train.js", "land-train.sh", "land-one.sh"]) {
+  for (const file of ["task.js", "land.js", "rework.js", "land-train.js", "refine.js", "land-train.sh", "land-one.sh"]) {
     const source = readFileSync(join(SKILL, file), "utf8");
     const writes = source
       .split("\n")
@@ -102,9 +104,42 @@ test("nothing in the plugin commits or rebases on an identity it did not pass", 
 });
 
 test("every workflow script is present in the plugin", () => {
-  for (const file of ["task.js", "land.js", "rework.js", "land-train.js", "config.sh", "lock-check.sh", "lane-running.sh"]) {
+  for (const file of ["task.js", "land.js", "rework.js", "land-train.js", "refine.js", "config.sh", "lock-check.sh", "lane-running.sh", "git-guard.sh"]) {
     const path = join(SKILL, file);
     assert.doesNotThrow(() => readFileSync(path), `${file} is missing from the published plugin`);
+  }
+});
+
+const BARE_GUARD = /\bgit-guard(?!\\?\.sh)/;
+
+test("what the brief tells a run to invoke is the guard that ships, not the binary on PATH", () => {
+  const rules = bodyOfRulesTemplate(readFileSync(join(SKILL, "task.js"), "utf8"));
+  assert.ok(
+    rules.includes("git-guard.sh"),
+    "rule 3 of every brief no longer names git-guard.sh. Whatever it names instead is not the " +
+      "guard that ships with the plugin, and a run following the rule is running something this " +
+      "repository does not contain",
+  );
+  assert.ok(
+    readFileSync(join(SKILL, "land.js"), "utf8").includes("git-guard.sh"),
+    "the rebase-and-push instruction no longer names git-guard.sh, so the step that pushes is " +
+      "told to guard itself with something that is not here",
+  );
+
+  for (const file of readdirSync(SKILL).filter((f) => f.endsWith(".js") || f.endsWith(".sh"))) {
+    const hits = readFileSync(join(SKILL, file), "utf8")
+      .split("\n")
+      .map((line, at) => ({ line, at: at + 1 }))
+      .filter(({ line }) => BARE_GUARD.test(line));
+    assert.deepEqual(
+      hits.map(({ line, at }) => `${file}:${at}${line}`),
+      [],
+      "git-guard with no .sh is a name on PATH, and on the machine this pipeline runs on it " +
+        "resolves to a file mode 700 that a lane can neither read nor execute - calling it exits " +
+        "126 and the caller reports that as the push being refused. Name the script beside the " +
+        "other shared guards instead. The scan covers .js and .sh only: CHANGELOG.md has to be " +
+        "able to say what the old binary was called.",
+    );
   }
 });
 
@@ -129,7 +164,7 @@ test("both steps that write commit and pull request text are handed the rules", 
   const source = readFileSync(join(SKILL, "task.js"), "utf8");
   for (const name of ["fixPrompt", "handoffPrompt"]) {
     assert.ok(
-      promptTemplate(source, name).includes("${LAW}"),
+      promptTemplate(source, name).includes("${LAW("),
       `${name} does not splice the rules, so the step that runs it never sees the settlement`,
     );
   }
@@ -145,7 +180,7 @@ test("the handoff step is told where it decides that the trailer instruction is 
     "the handoff step names 'blocked' as an exit from its compliance check and is not told that a conflict with the trailer instruction is not one of them",
   );
   assert.ok(
-    sentence < handoff.indexOf("${LAW}"),
+    sentence < handoff.indexOf("${LAW("),
     "the sentence has to sit at the compliance step, where 'blocked' is offered, not after the rules it restates",
   );
 });
@@ -183,7 +218,7 @@ test("the handoff brief says a compliance refusal is terminal, not a judgement a
 
 function complianceRefusal(): string {
   const source = readFileSync(join(SKILL, "lane-handoff.sh"), "utf8");
-  const start = source.indexOf('echo "Fix the PR body or the commit message');
+  const start = source.indexOf('echo "non-compliant: ${_slug}#${_pr} was NOT labelled."');
   const end = source.indexOf("return 2", start);
   assert.ok(start > 0 && end > start, "the compliance refusal block moved; this guard no longer reads it");
   return [...source.slice(start, end).matchAll(/^\s*echo "(.*)"$/gm)]
@@ -324,4 +359,354 @@ test("the handoff brief says a refusal is never answered by labelling by hand", 
     "the brief does not say what to do with a suspected defect in the script, so the lane is left " +
       "choosing between believing a refusal it thinks is wrong and bypassing it",
   );
+});
+
+test("the fix brief puts the commit-message check before the push, not after it", () => {
+  const fix = promptTemplate(readFileSync(join(SKILL, "task.js"), "utf8"), "fixPrompt");
+  const check = fix.indexOf("--pre-push");
+  const open = fix.indexOf("gh pr create");
+
+  assert.ok(
+    check > 0,
+    "the brief never tells a lane to read its own commit messages back while the branch is still " +
+      "local. A hit found after the push needs a force-push to clear, which a run may not do, so " +
+      "the pull request is green, correct and waiting on a person - three were at once.",
+  );
+  assert.ok(
+    check < open,
+    "the brief asks for the commit-message check after the pull request is opened, which is the " +
+      "one moment it cannot be acted on. A check that runs after the push is a check nobody can use.",
+  );
+});
+
+test("the compliance refusal says which half of a hit a run cannot fix", () => {
+  const refusal = complianceRefusal();
+
+  assert.ok(
+    refusal.includes("NEEDS A PERSON"),
+    `the refusal names a commit-message hit and a body hit in one breath, so a run reads both as ` +
+      `fixable and retries the half that never clears. Offered: ${refusal}`,
+  );
+  assert.ok(
+    refusal.includes("--pre-push"),
+    `the refusal does not say where the hit was catchable, so the next branch arrives here the same ` +
+      `way. Offered: ${refusal}`,
+  );
+});
+
+test("the rules never call a commit-message hit unfixable without saying it is pushed", () => {
+  const rules = bodyOfRulesTemplate(readFileSync(join(SKILL, "task.js"), "utf8"));
+  const verdicts = rules.split("\n").filter((line) => line.includes("NO FIX AVAILABLE TO YOU"));
+
+  assert.ok(
+    verdicts.length > 0,
+    "the brief no longer says that a pushed commit message cannot be reworded by a run, which is " +
+      "the fact that makes the pre-push check worth running at all",
+  );
+  for (const line of verdicts) {
+    assert.match(
+      line,
+      /PUSHED/,
+      "the unfixable verdict leads unqualified, so a run that skims the rule returns 'blocked' on " +
+        "a hit found while the branch is still local and an amend is free - the exact outcome the " +
+        `pre-push check exists to prevent: ${line}`,
+    );
+  }
+});
+
+test("the rework briefs read the commit messages back before every push, and never force one", () => {
+  const source = readFileSync(join(SKILL, "rework.js"), "utf8");
+  const pushes = [...source.matchAll(/\bgit push\b/g)].map((m) => m.index ?? -1);
+
+  assert.ok(
+    pushes.length >= 2,
+    "rework.js no longer pushes where this test expects it to - update the test rather than " +
+      "deleting it",
+  );
+  assert.equal(
+    source.includes("force-with-lease"),
+    false,
+    "rework.js renders a lease. A rework rewrites nothing - it merges master in and pushes the " +
+      "fast-forward that leaves - and a force-push, leased or not, is what the session refuses, " +
+      "so every rework that asks for one ends on a person's board with a one-line command.",
+  );
+  assert.equal(source.includes("--rebased"), false, "rework.js tells the pre-push check the range was rebased, and it is not");
+
+  let from = 0;
+  for (const at of pushes) {
+    const segment = source.slice(from, at);
+    assert.ok(
+      segment.includes("--pre-push --branch"),
+      "a push in rework.js is reached with nothing having read the commit messages first, or with " +
+        "a check that cannot tell which commits are published: the worktree is detached, so the " +
+        "check needs --branch to ask the remote. The commit the step writes on top is the one " +
+        "nothing has graded - a hit found after the push is a pull request that is green, " +
+        "correct and waiting on a person.",
+    );
+    from = at;
+  }
+});
+
+test("the briefs name the answer the pre-push check gives a branch it cannot fast-forward", () => {
+  const source = readFileSync(join(SKILL, "task.js"), "utf8");
+  const briefs = [promptTemplate(source, "fixPrompt"), bodyOfRulesTemplate(source)];
+
+  for (const brief of briefs) {
+    assert.ok(
+      /Exit 10/.test(brief),
+      "the brief reads the pre-push check as answering only clean or hit. Its third answer is a " +
+        "branch the remote holds at a head the lane's HEAD does not contain - what a rebase " +
+        "leaves - where no plain push exists at all. A lane told only about 0 and 2 reads that " +
+        "refusal as a defect in the script and pushes anyway.",
+    );
+  }
+
+  const fix = promptTemplate(source, "fixPrompt");
+  const third = fix.slice(fix.indexOf("Exit 10"), fix.indexOf("Exit 10") + 500);
+  assert.match(
+    third,
+    /'blocked'/,
+    `the brief names the exit and not the outcome, so a lane that meets it has nothing to return. ` +
+      `There is no remedy for it to try: the push itself is what cannot be made. Offered: ${third}`,
+  );
+});
+
+const NOTE_WRITERS = ["task.js", "land.js", "land-train.js", "rework.js", "refine.js"];
+
+test("no brief tells a run to write a tracker note with a raw append", () => {
+  for (const file of NOTE_WRITERS) {
+    const source = readFileSync(join(SKILL, file), "utf8");
+    const raw = source
+      .split("\n")
+      .map((line, at) => ({ line, at: at + 1 }))
+      .filter(({ line }) => line.includes("--append-notes"))
+      .filter(({ line }) => !line.includes("bd-note.sh"));
+    assert.deepEqual(
+      raw.map(({ line, at }) => `${file}:${at}:${line.trim()}`),
+      [],
+      "a raw append is an unserialised read-modify-write on one text field: two overlapping " +
+        "writers both read the old notes, both append, and the second wins - exit 0, no trace. " +
+        "It is also the only path that produces an unstamped note, and passing the text as a " +
+        "shell argument has already had a note truncated at a backtick. bd-note.sh takes the " +
+        "lock, reads the write back and stamps it; the briefs have to send a run through it.",
+    );
+  }
+});
+
+const WRITES_NOTES = ["task.js", "land.js", "land-train.js", "refine.js"];
+
+test("every brief that asks for a tracker note names the script and the writer", () => {
+  for (const file of WRITES_NOTES) {
+    const source = readFileSync(join(SKILL, file), "utf8");
+    assert.ok(
+      source.includes("${SKILL_DIR}/bd-note.sh"),
+      `${file} no longer names bd-note.sh by the skillDir it is handed, so a run has no path to ` +
+        "the script and falls back to the raw append this guard exists to keep out",
+    );
+    assert.ok(
+      source.includes("PITWALL_SESSION="),
+      `${file} invokes bd-note.sh without PITWALL_SESSION, so the stamp names whatever $USER the ` +
+        "run happens to carry rather than the session that wrote the note",
+    );
+    assert.ok(
+      source.includes("--note-file"),
+      `${file} passes the note as an argument rather than from a file, so a backtick or a dollar-` +
+        "paren in it is evaluated by the shell before bd sees it and the note is stored truncated",
+    );
+  }
+});
+
+test("the brief that parks an issue renders the note command against the issue it parks", async () => {
+  const { calls, done } = runScript(
+    "task.js",
+    { id: "zz-aaa2", slot: 1, root: "/root", skillDir: "/skill", lockPrefix: "pw", repos: HANDOFF_REPOS },
+    (call, n) => {
+      if (n === 1) {
+        return { eligible: false, repo: "site", title: "needs a person", priority: 2, ui: false, reason: "a decision", ticket: "" };
+      }
+      return { verification: "zz-aaa2 [BUG] OPEN needs-decision", notes: "" };
+    },
+  );
+  await done;
+  const handover = calls.find((c) => c.label.startsWith("handover:"));
+  assert.ok(handover, `no handover step ran. Steps seen: ${calls.map((c) => c.label || "?").join(", ")}`);
+  assert.ok(
+    handover.prompt.includes("/skill/bd-note.sh zz-aaa2 --note-file "),
+    "the park brief does not resolve bd-note.sh against the skillDir it was handed and name the " +
+      `issue, so the run has nothing to invoke:\n${handover.prompt}`,
+  );
+});
+
+function triageTemplate(source: string): string {
+  const open = "const triage = await agent(`";
+  const start = source.indexOf(open);
+  assert.notEqual(start, -1, "the triage brief moved - update this test rather than deleting it");
+  const end = source.indexOf("`,\n  { label: `triage:", start);
+  assert.notEqual(end, -1, "could not find the end of the triage brief");
+  return source.slice(start + open.length, end);
+}
+
+async function triageBrief(): Promise<string> {
+  const { calls, done } = runScript(
+    "task.js",
+    { id: "zz-aaa3", slot: 1, root: "/root", skillDir: "/skill", lockPrefix: "pw", repos: HANDOFF_REPOS },
+    (call, n) => {
+      if (n === 1) {
+        return { eligible: false, repo: "site", title: "needs a person", priority: 2, ui: false, reason: "a decision", ticket: "" };
+      }
+      return { verification: "zz-aaa3 [BUG] OPEN needs-decision", notes: "" };
+    },
+  );
+  await done;
+  const triage = calls.find((c) => c.label.startsWith("triage:"));
+  assert.ok(triage, `no triage step ran. Steps seen: ${calls.map((c) => c.label || "?").join(", ")}`);
+  return triage.prompt;
+}
+
+test("the triage brief carries no backticks of its own", () => {
+  const brief = triageTemplate(readFileSync(join(SKILL, "task.js"), "utf8"));
+  const found = brief.split("\n").filter((line) => line.includes("`"));
+  assert.deepEqual(
+    found,
+    [],
+    `a backtick inside the brief closes its template literal early. Use 'single quotes':\n${found.join("\n")}`,
+  );
+});
+
+const CHECKS_A_CHECKOUT = /^\s+(git|ls)\b/;
+
+test("the triage brief verifies files and ancestry against origin/master, never the checkout's HEAD", async () => {
+  const brief = await triageBrief();
+  const commands = brief.split("\n").filter((line) => CHECKS_A_CHECKOUT.test(line));
+
+  assert.ok(
+    commands.some((line) => line.includes("ls-tree --name-only origin/master")),
+    "the brief no longer tells triage how to ask origin/master whether a path exists, so a run " +
+      "improvises against the root checkout - which nobody fast-forwards in a workflow where every " +
+      "lane branches from origin/master and lands from a worktree",
+  );
+  assert.ok(
+    commands.some((line) => line.includes("merge-base --is-ancestor <sha> origin/master")),
+    "the brief no longer tells triage how to check a commit has landed, so a run asks HEAD of the " +
+      "root checkout and reports a merged, deployed commit as not an ancestor",
+  );
+  assert.ok(
+    commands.some((line) => line.includes("fetch origin --quiet")),
+    "the brief asks origin/master without fetching first, and a remote-tracking ref nobody has " +
+      "fetched is stale one level down from the checkout it sits in",
+  );
+
+  const stale = commands.filter((line) => /\bHEAD\b|\bls-files\b|^\s+ls\s/.test(line));
+  assert.deepEqual(
+    stale,
+    [],
+    "a command in the triage brief reads the root checkout's working tree or HEAD. On 2026-09-12 " +
+      "that checkout was 35 merges behind origin/master, and triage bounced an issue over a file " +
+      "and a commit that were both on master, naming prerequisite branches already merged and " +
+      `deployed:\n${stale.join("\n")}`,
+  );
+});
+
+const TRUNK_REPOS = {
+  site: { path: "cli", slug: "acme/site", role: "node", test: "npm test", lint: "npm run lint", defaultBranch: "trunk" },
+  integration: { path: "schema", slug: "acme/schema", role: "node", test: "npm test", defaultBranch: "trunk" },
+  docs: { path: "site", slug: "acme/docs", role: "script", test: "ruby script/check.rb", defaultBranch: "trunk" },
+};
+
+type Briefs = { triage: string; fix: string; review: string; handoff: string };
+
+async function briefsFor(repos: unknown, repo: string): Promise<Briefs> {
+  const { calls, done } = runScript(
+    "task.js",
+    { id: "zz-aaa4", slot: 2, root: "/root", skillDir: "/skill", lockPrefix: "pw", repos },
+    (call, n) => {
+      if (n === 1) {
+        return { eligible: true, repo, title: "lands on another branch", priority: 1, ui: false, reason: "", ticket: "the ticket body" };
+      }
+      if (call.label.startsWith("fix:")) {
+        return { status: "pushed", summary: "fixed", prNumber: 48, prUrl: "https://example.test/pr/48" };
+      }
+      if (call.label.startsWith("review:")) return { approved: true, notes: "good" };
+      if (call.label.startsWith("handoff:")) return { status: "verified", verified: true, prNumber: 48, notes: "" };
+      return { lane: "released", slot: "released" };
+    },
+  );
+  await done;
+  const find = (step: string): string => {
+    const call = calls.find((c) => c.label.startsWith(`${step}:`));
+    assert.ok(call, `no ${step} step ran for ${repo}. Steps seen: ${calls.map((c) => c.label || "?").join(", ")}`);
+    return call.prompt;
+  };
+  return { triage: find("triage"), fix: find("fix"), review: find("review"), handoff: find("handoff") };
+}
+
+test("every brief names the configured default branch and never origin/master when the repo lands elsewhere", async () => {
+  const briefs = await briefsFor(TRUNK_REPOS, "site");
+  for (const step of ["triage", "fix", "review", "handoff"] as const) {
+    const brief = briefs[step];
+    const stale = brief.split("\n").filter((line) => line.includes("origin/master"));
+    assert.deepEqual(
+      stale,
+      [],
+      `the ${step} brief still says origin/master to a lane whose repository lands on trunk. A lane ` +
+        "does what its brief says whatever the workspace config says, so the interpolation has to " +
+        `reach the prompt text, not only the code:\n${stale.join("\n")}`,
+    );
+    assert.ok(brief.includes("origin/trunk"), `the ${step} brief never names origin/trunk, so the base was dropped rather than interpolated`);
+  }
+
+  const fix = briefs.fix;
+  assert.ok(fix.includes("git worktree add /tmp/pw-worktrees/zz-aaa4 -b devloop/zz-aaa4 origin/trunk"), "the worktree is not cut from the configured branch");
+  assert.ok(fix.includes("git log origin/trunk..HEAD"), "an inherited branch is not read against the configured base");
+  assert.ok(fix.includes("git diff origin/trunk...HEAD --stat"), "an inherited branch is not diffed against the configured base");
+  assert.ok(
+    fix.includes('git -c user.name="$(git log -1 --format=%an origin/trunk)" -c user.email="$(git log -1 --format=%ae origin/trunk)"'),
+    "the commit identity is read from a branch this repository does not land on",
+  );
+  assert.ok(fix.includes("--pre-push --base trunk"), "the commit-message check is not told which base the range starts at, so it defaults to master");
+  assert.ok(fix.includes("gh pr create --base trunk"), "the pull request is opened with no --base, which is the case the report called dangerous");
+  assert.ok(fix.includes("open the pull request against\ntrunk"), "the brief still tells the lane which branch to target in prose that names the wrong one");
+  assert.ok(
+    fix.includes("git-guard.sh --dir=<absolute worktree path> --branch=<your branch> --default=trunk -- git <command>"),
+    "rule 3 of the brief does not pass the configured default to the guard, so a lane whose repository " +
+      "lands on trunk is told to guard its pushes with a script that refuses only master and main",
+  );
+
+  assert.ok(briefs.review.includes("rtk git diff origin/trunk...HEAD"), "the reviewer reads the diff against a branch the change was not cut from");
+  assert.ok(briefs.handoff.includes("git log origin/trunk..origin/devloop/zz-aaa4 --format=%B"), "the handoff reads commit messages over the wrong range");
+
+  const docs = await briefsFor(TRUNK_REPOS, "docs");
+  assert.ok(docs.fix.includes("-b devloop/zz-aaa4 origin/trunk"), "the script-role worktree is still cut from origin/master");
+  assert.ok(docs.fix.includes("--pre-push --base trunk"), "the script-role commit check is not told its base");
+  assert.ok(docs.fix.includes("gh pr create --base trunk"), "the script-role pull request is opened with no --base");
+  assert.ok(docs.fix.includes("--branch=<your branch> --default=trunk -- git <command>"), "the script-role guard command is not handed its base");
+});
+
+test("the guard command in a brief for a repository with no configured default names master", async () => {
+  const fix = (await briefsFor(HANDOFF_REPOS, "site")).fix;
+  assert.ok(
+    fix.includes("git-guard.sh --dir=<absolute worktree path> --branch=<your branch> --default=master -- git <command>"),
+    "absent a configured default the guard command has to name master, which is what absent means in the config",
+  );
+});
+
+test("the triage brief asks the configured branch, and names each checkout's own when they differ", async () => {
+  const shared = (await briefsFor(TRUNK_REPOS, "site")).triage;
+  const commands = shared.split("\n").filter((line) => CHECKS_A_CHECKOUT.test(line));
+  assert.ok(commands.some((line) => line.includes("ls-tree --name-only origin/trunk")), "triage is told to look for a path on a branch nothing lands on");
+  assert.ok(commands.some((line) => line.includes("merge-base --is-ancestor <sha> origin/trunk")), "triage is told to check ancestry against a branch nothing lands on");
+  assert.deepEqual(
+    commands.filter((line) => line.includes("origin/master")),
+    [],
+    "a command in the triage brief still asks origin/master in a workspace where every repository lands on trunk",
+  );
+
+  const mixed = (await briefsFor({ ...TRUNK_REPOS, docs: { ...TRUNK_REPOS.docs, defaultBranch: undefined } }, "site")).triage;
+  assert.ok(mixed.includes("site  ->  /root/cli  (acme/site)  lands on origin/trunk"), "the repo table does not say which branch site lands on");
+  assert.ok(mixed.includes("docs  ->  /root/site  (acme/docs)  lands on origin/master"), "a repository with no defaultBranch configured no longer reads as master in the table");
+  assert.ok(
+    mixed.includes("ls-tree --name-only origin/<default branch> '<the path it names>'"),
+    "with two default branches in one workspace the routing command names one of them as if it were both",
+  );
+  assert.ok(!mixed.includes("ls-tree --name-only origin/trunk '<the path it names>'"), "the routing command picked one repository's branch for every checkout");
 });

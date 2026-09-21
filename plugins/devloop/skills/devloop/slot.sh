@@ -96,8 +96,10 @@ case "$1" in
     # reported completion, so the lane is definitively finished. --gc must not do this, because
     # it runs against slots whose runs may still be alive.
     [ -z "$2" ] && { echo "usage: slot.sh --release <issue-id>" >&2; exit 2; }
+    found=0
     for n in $(seq 1 $MAX); do
       if [ -f "$SLOTDIR/$n" ] && [ "$(cat "$SLOTDIR/$n")" = "$2" ]; then
+        found=1
         rm -f "$SLOTDIR/$n"
         lock="/tmp/${PFX}-lane-$((n + 1)).lock"
         if [ -d "$lock" ] && rm -f "${lock%.lock}.owner" && rmdir "$lock" 2>/dev/null; then
@@ -107,6 +109,7 @@ case "$1" in
         fi
       fi
     done
+    [ "$found" -eq 1 ] || echo "no slot under $SLOTDIR names $2, so no slot was released. Lane locks are reached only through a slot: a /tmp/${PFX}-lane-*.owner file may still name $2, and this does not read them."
     exit 0 ;;
   --gc)
     # A LIVE RUN'S SLOT IS NEVER FREED, and neither the lane lock nor the worktree is a reliable
@@ -123,15 +126,9 @@ case "$1" in
     # each is working on and when it last wrote anything. A recent write is proof of life that
     # arrives from the moment of dispatch, unlike the other two.
     LIVEOUT="$(bash "$(dirname "${BASH_SOURCE[0]}")/live.sh" 2>/dev/null)"
-    # Free any slot whose lane lock is not held.
+    # A slot is freed only on lane-running.sh answering NOT-RUNNING for its holder. An absent
+    # lane lock is no evidence either way, and every other check below is a reason to keep.
     #
-    # DANGEROUS SOON AFTER A DISPATCH, and the warning is here because it was ignored once: a
-    # run takes its lane lock only when it first touches the database, which is several minutes
-    # into the work. Before that it is running and looks idle, so this frees its lane and the
-    # next dispatch lands on top of it. Two live runs were freed that way within a minute of
-    # being started.
-    #
-    # Use it to clear up after a batch has plainly finished, never as part of refilling.
     # THE WORKTREE IS THE EARLY SIGNAL, and the lane lock is the late one. A run creates its
     # worktree within a minute of starting and takes the lane lock only when it first touches
     # the database, several minutes later. Judging on the lock alone therefore frees every young
@@ -179,7 +176,14 @@ case "$1" in
         echo "keeping slot $n ($held): no lane lock yet, but its worktree is being written to"
         continue
       fi
-      echo "freeing slot $n (held by $held, no lane lock and no active worktree)"
+      if [ -d "$wt" ]; then
+        wtstate="its worktree has not been written to in 25 minutes"
+      else
+        wtstate="it has no worktree"
+      fi
+      quiet=""
+      [ -n "$LIVEOUT" ] && quiet=" nothing wrote for it in 40 minutes,"
+      echo "freeing slot $n ($held): lane-running.sh reports NOT-RUNNING - no task in flight is its lane,$quiet and $wtstate"
       rm -f "$SLOTDIR/$n"
     done
     exit 0 ;;
@@ -190,7 +194,7 @@ ID="$1"
 
 # A PARKED ISSUE IS NOT DISPATCHABLE, and this is the moment to say so.
 #
-# A lane meeting needs-decision, needs-access, roadmap or blocked-tooling bounces without doing
+# A lane meeting needs-decision, needs-access, needs-feedback, roadmap or blocked-tooling bounces without doing
 # anything - the label is a gate and that is what it is for. The waste is upstream: a slot is
 # reserved, a workflow starts, several minutes go by, and the answer is "this is parked".
 #
@@ -210,7 +214,7 @@ except Exception:
     sys.exit(0)
 i = i[0] if isinstance(i, list) else i
 labs = {x if isinstance(x, str) else x.get("name", "") for x in (i.get("labels") or [])}
-print(" ".join(sorted(labs & {"needs-decision", "needs-access", "roadmap", "blocked-tooling"})))
+print(" ".join(sorted(labs & {"needs-decision", "needs-access", "needs-feedback", "roadmap", "blocked-tooling"})))
 ' 2>/dev/null)"
   if [ -n "$parked" ]; then
     echo "$ID is parked: $parked" >&2
@@ -246,21 +250,16 @@ for n in $(seq 1 $LANES); do
   fi
 done
 
-# FULL IS NOT ALWAYS FULL, and the caller cannot tell the difference from "all lanes busy".
-#
-# Most of the time the registry is full because stale entries piled up: an issue finished, the
-# lane lock went, and nothing gave the number back. Naming those here turns a dead end into an
-# instruction, and it is deliberately a SUGGESTION rather than an automatic --gc - a run takes
-# its lane lock minutes after it starts, so gc'ing as part of refilling frees lanes that are
-# alive. That has already been done once and cost two live runs.
-stale=""
+# FULL IS NOT ALWAYS FULL, but nothing readable here can say which held slot is finished: a
+# run takes its lane lock minutes in, so an absent lock says nothing, and --gc is not suggested.
+unlocked=0
 for n in $(seq 1 $MAX); do
   [ -f "$SLOTDIR/$n" ] || continue
-  [ -d "/tmp/${PFX}-lane-$((n + 1)).lock" ] || stale="$stale slot $n ($(cat "$SLOTDIR/$n"))"
+  [ -d "/tmp/${PFX}-lane-$((n + 1)).lock" ] || unlocked=$((unlocked + 1))
 done
 echo "all $LANES lanes busy" >&2
-if [ -n "$stale" ]; then
-  echo "  but these hold no lane lock and are probably finished:$stale" >&2
-  echo "  if none of them started in the last few minutes: slot.sh --gc" >&2
+if [ "$unlocked" -gt 0 ]; then
+  echo "  $unlocked of them hold no lane lock, which says nothing about whether they are finished." >&2
+  echo "  slot.sh --list shows who holds what; a run that has REPORTED gives its slot back with slot.sh --release <id>" >&2
 fi
 exit 1

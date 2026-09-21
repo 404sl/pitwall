@@ -17,16 +17,24 @@
 # Usage:
 #   lane-handoff.sh --repo-path <abs> --slug <owner/name> --pr <n> --branch <name> \
 #                   --issue <app-xxxx> --note-file <path> [--worktree <abs>] [--lane-lock <abs>]
-#                   [--label lane-verified] [--check-only]
+#                   [--label lane-verified] [--check-only] [--base master]
+#
+#   lane-handoff.sh --repo-path <abs> --pre-push [--rebased] [--branch <name>] [--base master]
 #
 #   Other open pull requests on --branch, across the repositories the workspace config names, are
 #   derived and handled in the same invocation.
 #
 # Exit codes:
 #   0  handed off    every pull request on the branch compliant and labelled, cleaned up, note
-#                    recorded and read back
+#                    recorded and read back. Under --pre-push: the commit range is clear.
 #   2  non-compliant NOTHING was labelled anywhere. The offending lines are printed against the
 #                    pull request they came from. Fix, then re-run.
+#                    Under --pre-push there is no pull request and the range is graded per commit:
+#                    a hit in a commit the remote does not hold prints the amend or squash to run,
+#                    and one in a commit it does hold prints no remedy at all, because every route
+#                    out of that state rewrites published history. Report which commit and stop.
+#                    --rebased narrows that to the top commit, since a rebase renews every sha and
+#                    the commits underneath it were reviewed as they stand.
 #   3  conflicted    a pull request on the branch conflicts with master, so GitHub scheduled no
 #                    checks for it at all and none are coming. Nothing was labelled anywhere.
 #                    The remedy is a merge from master and a push, not another wait.
@@ -39,6 +47,9 @@
 #                    label could not be prepared in one of the repositories holding them, or
 #                    one of their texts could not be read, or GitHub would not say what sha the
 #                    branch is at. Nothing was labelled anywhere.
+#                    Under --pre-push: the remote would not say whether the branch exists at all,
+#                    which is not the same as it not existing - reading silence as absence is how
+#                    an amend gets printed for a branch a plain push cannot reach.
 #                    Fix what it names, then re-run.
 #   8  half-labelled labelling began and could not be finished. It prints which pull requests
 #                    carry the label and which do not. Adding a label is idempotent and this
@@ -48,7 +59,11 @@
 #                    a throttled or failing gh, or output that did not parse. Nothing is known
 #                    about its checks, which is not the same as knowing they failed, so this is
 #                    never reported as 4. Nothing was labelled anywhere. It names the exact
-#                    'gh pr view' it attempted and what gh or the reader said. Retry the read.
+#                    'gh api' read it attempted and what gh or the reader said. Retry the read.
+#  10  published-rewritten  --pre-push without --rebased. The branch exists on the remote and HEAD
+#                    does not contain the head it holds, so it was published and then rewritten and
+#                    no plain push will be accepted. Every commit message graded clear - there is
+#                    simply no plain push here to clear, and publishing this HEAD needs a person.
 
 set -u
 
@@ -56,26 +71,56 @@ SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 LABEL=lane-verified
 REPO_PATH=""; SLUG=""; PR=""; BRANCH=""; ISSUE=""; NOTE_FILE=""; WT=""; LOCK=""; CHECK_ONLY=0
+PRE_PUSH=0; REBASED=0; BASE=master
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --repo-path) REPO_PATH="${2:-}"; shift 2 ;;
-    --slug)      SLUG="${2:-}";      shift 2 ;;
-    --pr)        PR="${2:-}";        shift 2 ;;
-    --branch)    BRANCH="${2:-}";    shift 2 ;;
-    --issue)     ISSUE="${2:-}";     shift 2 ;;
-    --note-file) NOTE_FILE="${2:-}"; shift 2 ;;
-    --worktree)  WT="${2:-}";        shift 2 ;;
-    --lane-lock) LOCK="${2:-}";      shift 2 ;;
-    --label)     LABEL="${2:-}";     shift 2 ;;
+    --repo-path)
+      [ $# -ge 2 ] || { echo "--repo-path needs a value" >&2; exit 6; }
+      REPO_PATH="${2:-}"; shift 2 ;;
+    --slug)
+      [ $# -ge 2 ] || { echo "--slug needs a value" >&2; exit 6; }
+      SLUG="${2:-}"; shift 2 ;;
+    --pr)
+      [ $# -ge 2 ] || { echo "--pr needs a value" >&2; exit 6; }
+      PR="${2:-}"; shift 2 ;;
+    --branch)
+      [ $# -ge 2 ] || { echo "--branch needs a value" >&2; exit 6; }
+      BRANCH="${2:-}"; shift 2 ;;
+    --issue)
+      [ $# -ge 2 ] || { echo "--issue needs a value" >&2; exit 6; }
+      ISSUE="${2:-}"; shift 2 ;;
+    --note-file)
+      [ $# -ge 2 ] || { echo "--note-file needs a value" >&2; exit 6; }
+      NOTE_FILE="${2:-}"; shift 2 ;;
+    --worktree)
+      [ $# -ge 2 ] || { echo "--worktree needs a value" >&2; exit 6; }
+      WT="${2:-}"; shift 2 ;;
+    --lane-lock)
+      [ $# -ge 2 ] || { echo "--lane-lock needs a value" >&2; exit 6; }
+      LOCK="${2:-}"; shift 2 ;;
+    --label)
+      [ $# -ge 2 ] || { echo "--label needs a value" >&2; exit 6; }
+      LABEL="${2:-}"; shift 2 ;;
+    --base)
+      [ $# -ge 2 ] || { echo "--base needs a value" >&2; exit 6; }
+      BASE="${2:-}"; shift 2 ;;
     --check-only) CHECK_ONLY=1;      shift 1 ;;
+    --pre-push)  PRE_PUSH=1;         shift 1 ;;
+    --rebased)   REBASED=1;         shift 1 ;;
     *) echo "unknown argument: $1" >&2; exit 6 ;;
   esac
 done
-for req in REPO_PATH SLUG PR BRANCH; do
-  eval "v=\$$req"; [ -n "$v" ] || { echo "missing --$(echo "$req" | tr 'A-Z_' 'a-z-')" >&2; exit 6; }
-done
-case "$PR" in ''|*[!0-9]*) echo "--pr must be a number, got: $PR" >&2; exit 6 ;; esac
+[ -n "$BASE" ] || { echo "--base must name a branch" >&2; exit 6; }
+if [ "$PRE_PUSH" = "1" ]; then
+  [ -n "$REPO_PATH" ] || { echo "missing --repo-path" >&2; exit 6; }
+else
+  [ "$REBASED" = "0" ] || { echo "--rebased only means anything with --pre-push" >&2; exit 6; }
+  for req in REPO_PATH SLUG PR BRANCH; do
+    eval "v=\$$req"; [ -n "$v" ] || { echo "missing --$(echo "$req" | tr 'A-Z_' 'a-z-')" >&2; exit 6; }
+  done
+  case "$PR" in ''|*[!0-9]*) echo "--pr must be a number, got: $PR" >&2; exit 6 ;; esac
+fi
 
 if [ -n "$NOTE_FILE" ]; then
   [ -n "$ISSUE" ] || {
@@ -107,6 +152,7 @@ git fetch origin --quiet 2>/dev/null
 # have run.
 #
 # The repository knows its own slug. Ask it, and only fall back to what was passed.
+if [ "$PRE_PUSH" != "1" ]; then
 derived=$(git -C "$REPO_PATH" remote get-url origin 2>/dev/null \
           | sed -e 's#\.git$##' -e 's#^git@github\.com:##' -e 's#^https://github\.com/##')
 case "$derived" in */*) SLUG="$derived" ;; esac
@@ -119,6 +165,7 @@ case "$SLUG" in ''|undefined|null)
   echo "                 An empty read is not a clean read." >&2
   exit 6 ;;
 esac
+fi
 
 
 # FIND THE TRACKER, DO NOT ASSUME ITS DEPTH. This used to be a flat `cd "$REPO_PATH/.."`,
@@ -184,60 +231,321 @@ leakage='(devloop|lane-verified|/tmp/|/private/tmp)'
 # Gemfile or schema.rb would. It is not a claim about who wrote the code, and it tripped
 # \bclaude\b on 2026-08-29. Neutralised before the test rather than excused after it.
 neutral='s#[A-Za-z/._-]*CLAUDE\.md#REPO-DOC#g; s#[A-Za-z/._-]*AGENTS\.md#REPO-DOC#g; s#\.claude-plugin#DOT-PLUGIN-DIR#g; s#plugins/devloop#PLUGIN-DIR#g; s#skills/devloop#SKILL-DIR#g'
+plugin_name='s#[Dd][Ee][Vv][Ll][Oo][Oo][Pp]#PLUGIN-NAME#g'
+label_token='s#[Ll][Aa][Nn][Ee]-[Vv][Ee][Rr][Ii][Ff][Ii][Ee][Dd]#HANDOFF-LABEL#g'
+
+neutral_for() {
+  if [ -f "$1/plugins/devloop/skills/devloop/$(basename "${BASH_SOURCE[0]}")" ]; then
+    printf '%s; %s; %s' "$neutral" "$plugin_name" "$label_token"
+  else
+    printf '%s' "$neutral"
+  fi
+}
+
+if [ "$PRE_PUSH" = "1" ]; then
+  git rev-parse --verify --quiet "origin/${BASE}" >/dev/null || {
+    echo "lane-handoff.sh: no origin/${BASE} in ${REPO_PATH}, so there is no range to check." >&2
+    exit 6; }
+
+  range=$(git rev-list "origin/${BASE}..HEAD" 2>/dev/null)
+  if [ -z "$range" ]; then
+    echo "lane-handoff.sh: HEAD is not ahead of origin/${BASE} in ${REPO_PATH} - nothing was read," >&2
+    echo "                 so nothing was checked. Commit first, then run this again." >&2
+    exit 6
+  fi
+
+  tip=$(git rev-parse HEAD)
+
+  PRE_BRANCH=""; rewritten=0; head_absent=0; pushed_tip=""; short_remote=""
+
+  if [ "$REBASED" = "1" ]; then
+    unpushed="$range"
+  else
+    PRE_BRANCH="$BRANCH"
+    if [ -z "$PRE_BRANCH" ]; then
+      PRE_BRANCH=$(git symbolic-ref -q --short HEAD 2>/dev/null) || PRE_BRANCH=""
+    fi
+    if [ -z "$PRE_BRANCH" ]; then
+      echo "lane-handoff.sh: HEAD is detached and no --branch was given, so the remote cannot be" >&2
+      echo "                 asked whether this branch is published - and that is what decides" >&2
+      echo "                 whether an amend here is free or needs a force-push nobody may run." >&2
+      echo "                 Nothing was graded. Pass --branch <name>, or run this on the branch." >&2
+      exit 6
+    fi
+
+    if remote_refs=$(git ls-remote --heads origin "refs/heads/${PRE_BRANCH}" 2>/dev/null); then
+      :
+    else
+      echo "lane-handoff.sh: 'git ls-remote --heads origin refs/heads/${PRE_BRANCH}' failed in" >&2
+      echo "                 ${REPO_PATH}, so whether the branch is published is unknown. Unknown is" >&2
+      echo "                 not local: taken as local it prints an amend and a squash the push then" >&2
+      echo "                 refuses. Nothing was graded. Restore access to the remote and re-run." >&2
+      exit 7
+    fi
+    remote_head=$(printf '%s\n' "$remote_refs" | awk 'NF {print $1; exit}')
+
+    if [ -n "$remote_head" ]; then
+      short_remote=$(git rev-parse --short "$remote_head" 2>/dev/null)
+      [ -n "$short_remote" ] || short_remote="$remote_head"
+      if git cat-file -e "${remote_head}^{commit}" 2>/dev/null; then
+        if git merge-base --is-ancestor "$remote_head" HEAD 2>/dev/null; then
+          pushed_tip="$remote_head"
+        else
+          rewritten=1
+        fi
+      else
+        rewritten=1
+        head_absent=1
+      fi
+    fi
+
+    if [ "$rewritten" = "1" ]; then
+      unpushed=""
+    elif [ -n "$pushed_tip" ]; then
+      unpushed=$(git rev-list "${pushed_tip}..HEAD" 2>/dev/null)
+    else
+      unpushed="$range"
+    fi
+  fi
+
+  local_hits=""; remote_hits=""; deep_hits=""; rewritten_hits=""
+  repo_neutral=$(neutral_for "$REPO_PATH")
+  for sha in $range; do
+    hit=$(git log -1 --format='%B%n%an <%ae>%n%(trailers)' "$sha" 2>/dev/null \
+      | sed "$repo_neutral" \
+      | grep -inE "$authorship|$leakage" \
+      | head -5)
+    [ -n "$hit" ] || continue
+    entry="  $(git log -1 --format='%h %s' "$sha")
+$(printf '%s\n' "$hit" | sed 's/^/    /')
+"
+    if [ "$REBASED" = "1" ] && [ "$sha" != "$tip" ]; then
+      deep_hits="${deep_hits}${entry}"
+    elif [ "$rewritten" = "1" ]; then
+      rewritten_hits="${rewritten_hits}${entry}"
+    elif printf '%s\n' "$unpushed" | grep -qx "$sha"; then
+      local_hits="${local_hits}${entry}"
+    else
+      remote_hits="${remote_hits}${entry}"
+    fi
+  done
+
+  if [ -n "$remote_hits" ] || [ -n "$deep_hits" ] || [ -n "$rewritten_hits" ]; then
+    echo "non-compliant commits: A HIT IN ONE OF THESE NEEDS A PERSON."
+    if [ -n "$rewritten_hits" ]; then
+      echo "The remote holds ${PRE_BRANCH} at ${short_remote} and HEAD does not contain it, so the"
+      echo "branch was published and then rewritten. No plain push is accepted from here and no"
+      echo "amend made here reaches what is already published:"
+      printf '%s' "$rewritten_hits"
+      if [ "$head_absent" = "1" ]; then
+        echo "That published head is not in this checkout, so what it carries could not be read here"
+        echo "either - which is one more reason this is not a state to push out of."
+      fi
+    fi
+    if [ -n "$remote_hits" ]; then
+      echo "Already reachable from a remote ref, so rewording it rewrites history somebody else's"
+      echo "ref points at:"
+      printf '%s' "$remote_hits"
+    fi
+    if [ -n "$deep_hits" ]; then
+      echo "Underneath the top commit. The branch was rebased, so these carry new shas and so"
+      echo "read as unpushed, but their messages were reviewed and are not yours to rewrite:"
+      printf '%s' "$deep_hits"
+    fi
+    if [ -n "$local_hits" ]; then
+      echo "And these, in the top commit:"
+      printf '%s' "$local_hits"
+    fi
+    echo ""
+    echo "REPORT WHICH COMMIT AND STOP. No amend and no squash is offered here, deliberately:"
+    echo "every route to a clean message from this state rewrites a commit something already"
+    echo "relies on, and a squash that reaches one of them is worse than the message it clears."
+    echo "Name the commit in your notes and return blocked."
+    if [ -n "$remote_hits" ] || [ -n "$rewritten_hits" ]; then
+      echo "The moment it was fixable was before that commit was pushed, which is what running this"
+      echo "check first buys you."
+    fi
+    if [ -n "$deep_hits" ]; then
+      echo "A message underneath came from the branch as it was reviewed, so no step here owns it."
+    fi
+    exit 2
+  fi
+
+  if [ -n "$local_hits" ]; then
+    if [ "$REBASED" = "1" ]; then
+      echo "non-compliant commits: the hit is in the top commit, which is not pushed yet."
+      echo "Offending lines:"
+    elif [ -n "$pushed_tip" ]; then
+      echo "non-compliant commits: the remote holds ${PRE_BRANCH} at ${short_remote} and every hit is"
+      echo "above it. Offending lines:"
+    else
+      echo "non-compliant commits: nothing has been pushed - the remote has no ${PRE_BRANCH} at all."
+      echo "Offending lines:"
+    fi
+    printf '%s' "$local_hits"
+    echo ""
+    echo "Fix them NOW, while these commits are still local - this is the only moment a commit"
+    echo "message is cheap to change. Once pushed it takes a force-push, which a lane may not run,"
+    echo "and the pull request is then green and unlandable until a person rewrites the history."
+    echo "CARRY THE IDENTITY ON THE COMMAND, exactly as the commit you are replacing did. A lane"
+    echo "resolves no git identity of its own, and the failure is not reliably loud: git either"
+    echo "refuses outright or stamps a hostname-derived name and address, which then lands on"
+    echo "master and which no grep here reads. Take it from the branch you are building on:"
+    echo "  the tip commit only:"
+    echo "    git -c user.name=\"\$(git log -1 --format=%an origin/${BASE})\" -c user.email=\"\$(git log -1 --format=%ae origin/${BASE})\" commit --amend -F <a file holding the new message>"
+    if [ "$REBASED" = "1" ]; then
+      echo "THAT AMEND IS THE ONLY REMEDY IN THIS MODE, and it is for the top commit alone."
+      echo "There is deliberately no squash: the commits underneath were reviewed as they stand,"
+      echo "and a rebase having renewed their shas does not make them yours."
+    elif [ -n "$pushed_tip" ]; then
+      echo "  anything deeper:"
+      echo "    git reset --soft ${short_remote} && git -c user.name=\"\$(git log -1 --format=%an origin/${BASE})\" -c user.email=\"\$(git log -1 --format=%ae origin/${BASE})\" commit -F <a file>"
+      echo "THAT BASE IS THE HEAD THE REMOTE HOLDS FOR ${PRE_BRANCH}, not origin/${BASE}. Resetting"
+      echo "past it would collapse the commits the remote branch is built on, and the push after it"
+      echo "is refused as a non-fast-forward - which leaves only a force-push, which you may not run."
+    else
+      echo "  anything deeper:"
+      echo "    git reset --soft origin/${BASE} && git -c user.name=\"\$(git log -1 --format=%an origin/${BASE})\" -c user.email=\"\$(git log -1 --format=%ae origin/${BASE})\" commit -F <a file>"
+      echo "Squashing costs nothing here: the remote has no such branch, so no commit on it has been"
+      echo "published, and the train squashes the branch when it lands anyway."
+    fi
+    echo "Judge each hit. A vendor or product name that is the SUBJECT of the change is fine;"
+    echo "the label the lander reads is not, so name it in prose instead of quoting its token."
+    echo "THEN RUN THIS AGAIN, before you push. The message you have just written is the one"
+    echo "nobody has re-read, and a reword that only moved the hit looks identical to a fix"
+    echo "until this exits 0."
+    exit 2
+  fi
+
+  if [ "$rewritten" = "1" ]; then
+    echo "published-rewritten: every commit message in origin/${BASE}..HEAD is clear, and this is"
+    echo "still not a push you can make. The remote holds ${PRE_BRANCH} at ${short_remote}, which"
+    echo "HEAD does not contain, so the branch was published and then rewritten: a plain push is"
+    echo "refused as a non-fast-forward and the only way on rewrites what the remote already holds."
+    if [ "$head_absent" = "1" ]; then
+      echo "That published head is not in this checkout either, so nothing here can say what it"
+      echo "carries."
+    fi
+    echo "THIS IS THE CASE A PERSON APPROVES, and it is not a clean check: the messages are clear,"
+    echo "the push is not. Say in your notes that ${PRE_BRANCH} is published at ${short_remote} and"
+    echo "that HEAD rewrites it, and return blocked. Do not reach for a force-push."
+    exit 10
+  fi
+
+  echo "compliant commits: origin/${BASE}..HEAD in ${REPO_PATH} is clear - safe to push"
+  exit 0
+fi
+
+REST_TRIES="${LANE_HANDOFF_REST_TRIES:-5}"
+REST_BACKOFF="${LANE_HANDOFF_REST_BACKOFF:-5}"
+case "$REST_TRIES" in ''|*[!0-9]*|0) REST_TRIES=1 ;; esac
+case "$REST_BACKOFF" in ''|*[!0-9]*) REST_BACKOFF=5 ;; esac
+
+gh_rest() {
+  local _out="$1" _err="$2" _try=1 _rc _wait
+  shift 2
+  while :; do
+    gh api "$@" >"$_out" 2>"$_err"; _rc=$?
+    [ "$_rc" -eq 0 ] && return 0
+    [ "$_try" -lt "$REST_TRIES" ] || return "$_rc"
+    grep -qiE 'rate limit|secondary rate|abuse detection|HTTP 429' "$_err" || return "$_rc"
+    _wait=$(( REST_BACKOFF << (_try - 1) ))
+    echo "lane-handoff.sh: gh api $* was rate limited on attempt ${_try} of ${REST_TRIES} - waiting ${_wait}s" >&2
+    sleep "$_wait"
+    _try=$((_try + 1))
+  done
+}
 
 # 1. COMPLIANCE, read back from where the text is actually stored rather than from what anybody
 #    meant to write. GitHub and git both add and rewrite text.
 check_one() {
-  local _path="$1" _slug="$2" _pr="$3"
-  local body msgs hits head_sha state verdict rollup_head msgs_rc
-  local attempt rollup_json rollup_err gh_rc read_rc said began
+  local box rc
+  box=$(mktemp -d "${TMPDIR:-/tmp}/lane-handoff-check.XXXXXX")
+  check_one_in "$box" "$@"; rc=$?
+  rm -rf "$box"
+  return "$rc"
+}
 
-  body=$(gh pr view "$_pr" --repo "$_slug" --json title,body 2>/dev/null \
-         | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('title','')); print(d.get('body',''))" 2>/dev/null)
+check_one_in() {
+  local box="$1" _path="$2" _slug="$3" _pr="$4"
+  local body msgs body_hits msg_hits head_sha state verdict rollup_head msgs_rc
+  local attempt gh_rc read_rc said began repo_neutral pr_json pr_rc checks_json endpoint
+
+  gh_rest "$box/pr.json" "$box/err" "repos/${_slug}/pulls/${_pr}"; pr_rc=$?
+  pr_json=$(cat "$box/pr.json" 2>/dev/null)
+  body=$(printf '%s' "$pr_json" \
+         | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('title') or ''); print(d.get('body') or '')" 2>/dev/null)
 
   # AN EMPTY BODY IS A FAILED READ, NOT A CLEAN ONE. gh can fail for a wrong slug, an
   # expired token, a rate limit or a deleted pull request, and every one of those produces
   # the same empty string that a compliant pull request with no text would. The check below
   # cannot tell them apart, so refuse here instead of passing trivially.
-  if [ -z "$(printf '%s' "$body" | tr -d '[:space:]')" ]; then
+  if [ "$pr_rc" -ne 0 ] || [ -z "$(printf '%s' "$body" | tr -d '[:space:]')" ]; then
+    said=$(head -n 1 "$box/err" 2>/dev/null)
     echo "lane-handoff.sh: read an EMPTY body for $_slug#$_pr - refusing to report compliance." >&2
     echo "                 gh may have failed, the token may be expired, or the pull request" >&2
     echo "                 may not exist. An empty read is not a clean read." >&2
+    [ -n "$said" ] && echo "                 gh said: ${said}" >&2
     return 7
   fi
-  msgs=$(gh pr view "$_pr" --repo "$_slug" --json commits 2>/dev/null \
-    | python3 -c "
+  gh_rest "$box/commits.json" "$box/err" -X GET "repos/${_slug}/pulls/${_pr}/commits" --paginate --slurp -F per_page=100; gh_rc=$?
+  msgs=$(python3 -c "
 import json,sys
-d=json.load(sys.stdin)
-cs=d.get('commits') if isinstance(d,dict) else None
+pages=json.load(open(sys.argv[1]))
+cs=[c for p in pages for c in (p if isinstance(p,list) else [])]
 if not cs: raise SystemExit(1)
 for c in cs:
-    h=c.get('messageHeadline') or ''
-    b=c.get('messageBody') or ''
-    if h.endswith('\u2026') and b.startswith('\u2026'): print(h[:-1]+b[1:])
-    else: print(h); print(b)
-    for a in c.get('authors') or []:
-        print('%s <%s>' % (a.get('name') or a.get('login') or '', a.get('email') or ''))
-" 2>/dev/null); msgs_rc=$?
-  if [ "$msgs_rc" != 0 ] || [ -z "$(printf '%s' "$msgs" | tr -d '[:space:]')" ]; then
+    cm=(c or {}).get('commit') or {}
+    print(cm.get('message') or '')
+    for who in (cm.get('author'), cm.get('committer')):
+        if who: print('%s <%s>' % (who.get('name') or '', who.get('email') or ''))
+" "$box/commits.json" 2>/dev/null); msgs_rc=$?
+  if [ "$gh_rc" != 0 ] || [ "$msgs_rc" != 0 ] || [ -z "$(printf '%s' "$msgs" | tr -d '[:space:]')" ]; then
+    said=$(head -n 1 "$box/err" 2>/dev/null)
     echo "lane-handoff.sh: could not read the commits of ${_slug}#${_pr} from GitHub, so its" >&2
     echo "                 commit messages and trailers cannot be graded. A compliance pass over" >&2
     echo "                 the pull request body alone is not a compliance pass, so nothing was" >&2
     echo "                 labelled. gh may have failed, the token may be expired, or the pull" >&2
     echo "                 request may not exist. An empty read is not a clean read." >&2
+    [ -n "$said" ] && echo "                 gh said: ${said}" >&2
     return 7
   fi
 
-  hits=$(printf '%s\n%s\n' "$body" "$msgs" \
-    | sed "$neutral" \
+  repo_neutral=$(neutral_for "$_path")
+  body_hits=$(printf '%s\n' "$body" \
+    | sed "$repo_neutral" \
+    | grep -inE "$authorship|$leakage" \
+    | head -20)
+  msg_hits=$(printf '%s\n' "$msgs" \
+    | sed "$repo_neutral" \
     | grep -inE "$authorship|$leakage" \
     | head -20)
 
-  if [ -n "$hits" ]; then
-    echo "non-compliant: ${_slug}#${_pr} was NOT labelled. Offending lines:"
-    printf '%s\n' "$hits"
+  if [ -n "$body_hits" ] || [ -n "$msg_hits" ]; then
+    echo "non-compliant: ${_slug}#${_pr} was NOT labelled."
+    if [ -n "$body_hits" ]; then
+      echo "In the title or body, which a run fixes in place. Offending lines:"
+      printf '%s\n' "$body_hits"
+    fi
+    if [ -n "$msg_hits" ]; then
+      echo "In a commit message or trailer, which a run CANNOT fix. Offending lines:"
+      printf '%s\n' "$msg_hits"
+    fi
     echo ""
-    echo "Fix the PR body or the commit message, then run this again. THIS REFUSAL IS TERMINAL:"
+    if [ -n "$msg_hits" ]; then
+      echo "A COMMIT-MESSAGE HIT MEANS THIS PULL REQUEST NOW NEEDS A PERSON. Rewording one"
+      echo "rewrites history and the force-push it needs is refused to a lane, so there is no"
+      echo "route from here to a label: report it, say which commit, and stop. Do not label it by"
+      echo "hand, and do not re-run this expecting a different answer. The moment it was fixable"
+      echo "was before the push, where an amend costs nothing:"
+      echo "  lane-handoff.sh --repo-path <abs> --pre-push"
+      echo "Run that before every push and this half stops happening."
+      echo ""
+    fi
+    if [ -n "$body_hits" ]; then
+      echo "Fix the PR body, then run this again."
+    fi
+    echo "THIS REFUSAL IS TERMINAL:"
     echo "your judgement decides HOW TO REWORD a hit, never whether to proceed past it. Nothing"
     echo "here is labelled by hand instead, and a hit you believe is a false positive is still a"
     echo "rewrite - the only way to a label is a re-run of this script that exits 0."
@@ -254,60 +562,76 @@ for c in cs:
 
   # 2. Is it actually green? An empty rollup is not a pass, and a rollup describing an older head
   #    says nothing about what is on the branch now.
-  head_sha=$(gh api "repos/${_slug}/git/ref/heads/${BRANCH}" 2>/dev/null \
-    | python3 -c "
+  gh_rest "$box/ref.json" "$box/err" "repos/${_slug}/git/ref/heads/${BRANCH}"
+  head_sha=$(python3 -c "
 import json,sys
-d=json.load(sys.stdin)
+d=json.load(open(sys.argv[1]))
 if not isinstance(d,dict): raise SystemExit(1)
 print((d.get('object') or {}).get('sha') or '')
-" 2>/dev/null)
+" "$box/ref.json" 2>/dev/null)
   HEAD_OF="$head_sha"
   if [ -z "$head_sha" ]; then
+    said=$(head -n 1 "$box/err" 2>/dev/null)
     echo "lane-handoff.sh: could not read what sha ${BRANCH} is at in ${_slug} from GitHub, so" >&2
     echo "                 whether the rollup describes the current head is unknown. An empty" >&2
     echo "                 read is not a clean read. Nothing was labelled." >&2
+    [ -n "$said" ] && echo "                 gh said: ${said}" >&2
     return 7
   fi
-  attempt="gh pr view ${_pr} --repo ${_slug} --json statusCheckRollup,headRefOid,mergeable,mergeStateStatus"
-  rollup_err=$(mktemp "${TMPDIR:-/tmp}/lane-handoff-rollup.XXXXXX")
-  rollup_json=$(gh pr view "$_pr" --repo "$_slug" --json statusCheckRollup,headRefOid,mergeable,mergeStateStatus 2>"$rollup_err")
-  gh_rc=$?
-  if [ "$gh_rc" -ne 0 ] || [ -z "$rollup_json" ]; then
-    said=$(head -n 1 "$rollup_err")
-    rm -f "$rollup_err"
-    echo "unreadable: could not read the status rollup for ${_slug}#${_pr} - nothing is known about its checks"
-    echo "            attempted: ${attempt}"
-    echo "            gh exited ${gh_rc} and said: ${said:-nothing on stderr}"
+  rollup_head=$(printf '%s' "$pr_json" \
+    | python3 -c "import json,sys; print(((json.load(sys.stdin).get('head') or {}).get('sha') or ''))" 2>/dev/null)
+  if [ -z "$rollup_head" ]; then
+    began=$(printf '%s' "$pr_json" | head -c 120 | tr '\n\t' '  ')
+    echo "unreadable: the pull request ${_slug}#${_pr} names no head sha - nothing is known about its checks"
+    echo "            attempted: gh api repos/${_slug}/pulls/${_pr}"
+    echo "            gh returned ${#pr_json} bytes beginning: ${began}"
     echo "            Nothing was labelled and no check is known to have failed. Retry the read."
     return 9
   fi
+  for endpoint in check-runs status; do
+    attempt="gh api repos/${_slug}/commits/${rollup_head}/${endpoint}"
+    gh_rest "$box/${endpoint}.json" "$box/err" -X GET "repos/${_slug}/commits/${rollup_head}/${endpoint}" --paginate --slurp -F per_page=100
+    gh_rc=$?
+    if [ "$gh_rc" -ne 0 ] || [ ! -s "$box/${endpoint}.json" ]; then
+      said=$(head -n 1 "$box/err" 2>/dev/null)
+      echo "unreadable: could not read the status rollup for ${_slug}#${_pr} - nothing is known about its checks"
+      echo "            attempted: ${attempt}"
+      echo "            gh exited ${gh_rc} and said: ${said:-nothing on stderr}"
+      echo "            Nothing was labelled and no check is known to have failed. Retry the read."
+      return 9
+    fi
+  done
 
-  state=$(printf '%s' "$rollup_json" | python3 -c "
+  state=$(python3 -c "
 import json,sys
-d=json.load(sys.stdin)
-r=d.get('statusCheckRollup') or []
-m=str(d.get('mergeable') or '').upper()
-s=str(d.get('mergeStateStatus') or '').upper()
-c='CONFLICTED' if m == 'CONFLICTING' or s == 'DIRTY' else ''
-if not r: print('EMPTY||'+c); raise SystemExit
-bad=[c2.get('name') for c2 in r if c2.get('conclusion') not in ('SUCCESS','NEUTRAL','SKIPPED')]
-print(('BAD:'+','.join(bad) if bad else 'GREEN')+'|'+(d.get('headRefOid') or '')+'|'+c)
-" 2>"$rollup_err")
+def pages(path):
+    p=json.load(open(path))
+    return p if isinstance(p,list) else [p]
+runs=[c for p in pages(sys.argv[1]) for c in (p.get('check_runs') or [])]
+ctx=[c for p in pages(sys.argv[2]) for c in (p.get('statuses') or [])]
+pr=json.load(open(sys.argv[3]))
+m=pr.get('mergeable'); s=str(pr.get('mergeable_state') or '').lower()
+c='CONFLICTED' if m is False or s == 'dirty' else ''
+if not runs and not ctx: print('EMPTY|'+c); raise SystemExit
+bad=[c2.get('name') or 'unnamed' for c2 in runs
+     if str(c2.get('conclusion') or '').lower() not in ('success','neutral','skipped')]
+bad+=[c2.get('context') or 'unnamed' for c2 in ctx if str(c2.get('state') or '').lower() != 'success']
+print(('BAD:'+','.join(bad) if bad else 'GREEN')+'|'+c)
+" "$box/check-runs.json" "$box/status.json" "$box/pr.json" 2>"$box/err")
   read_rc=$?
   if [ "$read_rc" -ne 0 ] || [ -z "$state" ]; then
-    said=$(tail -n 1 "$rollup_err")
-    began=$(printf '%s' "$rollup_json" | head -c 120 | tr '\n\t' '  ')
-    rm -f "$rollup_err"
+    said=$(tail -n 1 "$box/err" 2>/dev/null)
+    checks_json=$(cat "$box/check-runs.json" 2>/dev/null)
+    began=$(printf '%s' "$checks_json" | head -c 120 | tr '\n\t' '  ')
     echo "unreadable: the status rollup for ${_slug}#${_pr} did not parse - nothing is known about its checks"
-    echo "            attempted: ${attempt}"
+    echo "            attempted: gh api repos/${_slug}/commits/${rollup_head}/check-runs and /status"
     echo "            the reader exited ${read_rc} and said: ${said:-nothing on stderr}"
-    echo "            gh returned ${#rollup_json} bytes beginning: ${began}"
+    echo "            gh returned ${#checks_json} bytes beginning: ${began}"
     echo "            Nothing was labelled and no check is known to have failed. Retry the read."
     return 9
   fi
-  rm -f "$rollup_err"
 
-  verdict=${state%%|*}; rest=${state#*|}; rollup_head=${rest%%|*}; conflict=${rest#*|}
+  verdict=${state%%|*}; conflict=${state#*|}
 
   stale=0
   if [ -n "$rollup_head" ] && [ "$rollup_head" != "$head_sha" ]; then stale=1; fi
@@ -343,6 +667,7 @@ except Exception: raise SystemExit(1)
 if not isinstance(repos,dict): raise SystemExit(1)
 for name in sorted(repos):
     r=repos[name] or {}
+    if r.get('role') == 'workspace': continue
     print('%s|%s|%s' % (name, r.get('path') or name, r.get('slug') or ''))
 " 2>/dev/null)
 CFG_CODE=$?
@@ -404,21 +729,30 @@ while IFS="|" read -r rname rpath rslug; do
     echo "                 to it, then re-run." >&2
     exit 7
   fi
-  found=$(gh pr list --repo "$rslug" --head "$BRANCH" --state open --json number 2>/dev/null \
-    | python3 -c "
+  survey_out=$(mktemp "${TMPDIR:-/tmp}/lane-handoff-survey.XXXXXX")
+  survey_err=$(mktemp "${TMPDIR:-/tmp}/lane-handoff-survey.XXXXXX")
+  gh_rest "$survey_out" "$survey_err" -X GET "repos/${rslug}/pulls" -f head="${rslug%%/*}:${BRANCH}" -f state=open -F per_page=100
+  survey_rc=$?
+  found=$(python3 -c "
 import json,sys
-try: prs=json.load(sys.stdin)
+try: prs=json.load(open(sys.argv[1]))
 except Exception: raise SystemExit(1)
+if not isinstance(prs,list): raise SystemExit(1)
 for p in prs:
-    n=p.get('number')
+    n=(p or {}).get('number')
     if n: print(n)
-" 2>/dev/null)
-  if [ $? != 0 ]; then
+" "$survey_out" 2>/dev/null)
+  found_rc=$?
+  if [ "$survey_rc" != 0 ] || [ "$found_rc" != 0 ]; then
+    said=$(head -n 1 "$survey_err" 2>/dev/null)
+    rm -f "$survey_out" "$survey_err"
     echo "lane-handoff.sh: could not list the open pull requests of ${rslug} on ${BRANCH}." >&2
     echo "                 Nothing was labelled. An empty read is not a clean read, and a" >&2
     echo "                 second repository's pull request is exactly what hides in one." >&2
+    [ -n "$said" ] && echo "                 gh said: ${said}" >&2
     exit 7
   fi
+  rm -f "$survey_out" "$survey_err"
   for num in $found; do
     case " $SEEN " in *" ${rslug}#${num} "*) continue ;; esac
     if [ "$rslug" = "$SLUG" ]; then rp="$REPO_PATH"; else rp="$rdir"; fi
@@ -467,24 +801,27 @@ fi
 
 # 3. Prove every repository in the set can carry the label before the first one is labelled.
 preflight_err_file=$(mktemp "${TMPDIR:-/tmp}/lane-handoff-label.XXXXXX")
+preflight_out_file=$(mktemp "${TMPDIR:-/tmp}/lane-handoff-label.XXXXXX")
 for pslug in $(printf '%s\n' "$TRIPLES" | cut -f2 | sort -u); do
   [ -n "$pslug" ] || continue
   : > "$preflight_err_file"
-  label_json=$(gh label list --repo "$pslug" --search "$LABEL" --limit 100 --json name 2>"$preflight_err_file")
+  gh_rest "$preflight_out_file" "$preflight_err_file" -X GET "repos/${pslug}/labels" --paginate --slurp -F per_page=100
   label_rc=$?
+  label_json=$(cat "$preflight_out_file" 2>/dev/null)
   if [ "$label_rc" -ne 0 ]; then
     echo "lane-handoff.sh: could not read the labels of ${pslug}, so whether it can carry" >&2
     echo "                 ${LABEL} is unknown. Nothing was labelled." >&2
     perr=$(cat "$preflight_err_file"); [ -n "$perr" ] && printf '                 gh said: %s\n' "$perr" >&2
-    rm -f "$preflight_err_file"
+    rm -f "$preflight_err_file" "$preflight_out_file"
     exit 7
   fi
   case "$label_json" in
     *[![:space:]]*)
       have=$(printf '%s' "$label_json" | python3 -c "
 import json,sys
-try: labels=json.load(sys.stdin)
+try: pages=json.load(sys.stdin)
 except Exception: raise SystemExit(1)
+labels=[l for p in pages for l in (p if isinstance(p,list) else [p])]
 print('YES' if any((l or {}).get('name') == sys.argv[1] for l in labels) else 'NO')
 " "$LABEL" 2>/dev/null) ;;
     *) have=NO ;;
@@ -493,7 +830,7 @@ print('YES' if any((l or {}).get('name') == sys.argv[1] for l in labels) else 'N
     echo "lane-handoff.sh: ${pslug} answered its label list in a shape this cannot read, so" >&2
     echo "                 whether it can carry ${LABEL} is unknown. Nothing was labelled." >&2
     printf '                 it said: %s\n' "$label_json" >&2
-    rm -f "$preflight_err_file"
+    rm -f "$preflight_err_file" "$preflight_out_file"
     exit 7
   fi
   if [ "$have" = "NO" ]; then
@@ -508,7 +845,7 @@ print('YES' if any((l or {}).get('name') == sys.argv[1] for l in labels) else 'N
           echo "                 so labelling it would fail part-way through the branch." >&2
           echo "                 Nothing was labelled." >&2
           [ -n "$perr" ] && printf '                 gh said: %s\n' "$perr" >&2
-          rm -f "$preflight_err_file"
+          rm -f "$preflight_err_file" "$preflight_out_file"
           exit 7 ;;
       esac
     fi
@@ -524,10 +861,14 @@ while IFS="$TAB" read -r cpath cslug cpr; do
   # KEEP gh's REASON. This discarded stderr, so a 403, a rate limit or a missing label all read
   # as the same bare "the label did not stick" with nothing to act on.
   edit_err=""
-  gh pr edit "$cpr" --repo "$cslug" --add-label "$LABEL" >/dev/null 2>"$preflight_err_file" \
+  gh_rest "$preflight_out_file" "$preflight_err_file" -X POST "repos/${cslug}/issues/${cpr}/labels" -f "labels[]=${LABEL}" \
     || edit_err=$(cat "$preflight_err_file")
-  back=$(gh pr view "$cpr" --repo "$cslug" --json labels 2>/dev/null \
-    | python3 -c "import json,sys; print(','.join(l['name'] for l in json.load(sys.stdin).get('labels') or []))" 2>/dev/null)
+  gh_rest "$preflight_out_file" "$preflight_err_file" -X GET "repos/${cslug}/issues/${cpr}/labels" --paginate --slurp -F per_page=100
+  back=$(python3 -c "
+import json,sys
+pages=json.load(open(sys.argv[1]))
+print(','.join((l or {}).get('name') or '' for p in pages for l in (p if isinstance(p,list) else [p])))
+" "$preflight_out_file" 2>/dev/null)
   case ",$back," in
     *,"$LABEL",*) LABELLED="$LABELLED ${cslug}#${cpr}" ;;
     *)
@@ -539,14 +880,14 @@ while IFS="$TAB" read -r cpath cslug cpr; do
       echo "  invisible to it and its half of the ticket closes on the half that landed."
       echo "  Adding a label is idempotent and nothing has been cleaned up or recorded yet, so fix"
       echo "  what gh reported and RE-RUN this command rather than labelling the rest by hand."
-      rm -f "$preflight_err_file"
+      rm -f "$preflight_err_file" "$preflight_out_file"
       exit 8 ;;
   esac
   if [ "$cslug" = "$SLUG" ] && [ "$cpr" = "$PR" ]; then labels="$back"; fi
 done <<EOF
 $TRIPLES
 EOF
-rm -f "$preflight_err_file"
+rm -f "$preflight_err_file" "$preflight_out_file"
 
 # 5. Remove the lane's worktree so the lander's --delete-branch does not trip on a checked-out
 #    branch. Only this lane's own - never a sweep.
@@ -652,13 +993,20 @@ if [ -n "$ISSUE" ] && [ -n "$NOTE_FILE" ]; then
   # trains plus the supervisor write notes, so overlap is the normal case, not the rare one.
   # bd-note.sh takes a lock, then verifies and retries. Through it the same eight-way race loses
   # none. The read-back below stays regardless - it is what caught this in the first place.
+  bd_out_file=$(mktemp "${TMPDIR:-/tmp}/lane-handoff-note.XXXXXX")
   bd_err=$( (cd "$ROOT_DIR" && BEADS_DIR="${BEADS_DIR:-$ROOT_DIR/.beads}" \
     PITWALL_SESSION="${PITWALL_SESSION:-lane-${BRANCH}}" \
-    bash "$SKILL_DIR/bd-note.sh" "$ISSUE" --note-file "$NOTE_FILE" >/dev/null) 2>&1 )
+    bash "$SKILL_DIR/bd-note.sh" "$ISSUE" --note-file "$NOTE_FILE" >"$bd_out_file") 2>&1 )
   bd_code=$?
+  bd_out=$(cat "$bd_out_file" 2>/dev/null)
+  rm -f "$bd_out_file"
   if [ "$bd_code" != "0" ]; then
     echo "bd update exited ${bd_code} for ${ISSUE}: ${bd_err:-no message}"
   fi
+  note_transformed=""
+  case "$bd_out" in
+    *"stored text differs from what was sent"*) note_transformed=yes ;;
+  esac
   # PROVE IT LANDED. On 2026-08-28 this step reported success while the note was absent - the
   # lane read the issue back itself, found nothing, and appended by hand. A length nobody
   # compares against anything is not evidence. Check the text is actually in the field.
@@ -674,7 +1022,17 @@ ok = bool(probe) and probe in flat(notes)
 print('%s|%d|%s' % (d.get('status'), len(notes), 'APPENDED' if ok else 'MISSING'))" "$NOTE_FILE" 2>/dev/null)
   case "$got" in
     *APPENDED*) echo "tracker: ${ISSUE} ${got}" ;;
-    *MISSING*)  NOTE_VERDICT=MISSING ;;
+    *MISSING*)
+      if [ -n "$note_transformed" ]; then
+        diverged_at=$(printf '%s\n' "$bd_err" | grep -m1 'diverges at character')
+        echo "handed off WITH A WARNING: ${ISSUE} holds the note in transformed form - bd altered"
+        echo "  the text on the way in, so the whole of it is not in the field (${got})."
+        echo "  ${diverged_at:-bd-note.sh reported the divergence without naming an offset}"
+        echo "  It was recorded once and warned about once. Do NOT append it again."
+      else
+        NOTE_VERDICT=MISSING
+      fi
+      ;;
     *)          NOTE_VERDICT=UNREADABLE ;;
   esac
 fi

@@ -7,10 +7,12 @@ import {
   type Issue,
   type Metrics,
   type Snapshot,
+  type Stopped,
 } from "@404sl/pitwall-schema";
-import { noteAppender, readIssues, type ClosedIssue, type IssueText } from "./beads.js";
-import { KEPT_SOURCE, PARTIAL_SOURCE } from "./board.js";
-import { collectionError, recordOnce } from "./errors.js";
+import { collectionFailed, noteAppender, readIssues, type ClosedIssue, type IssueText } from "./beads.js";
+import { KEPT_SOURCE, PARTIAL_SOURCE, type ProjectQuestions, type QuestionStore } from "./board.js";
+import { readCandidates } from "./candidates.js";
+import { collectionError, hard, recordOnce } from "./errors.js";
 import { hasLiveStructuralBlocker, type ClassifyContext } from "./classify.js";
 import {
   collectProjects,
@@ -27,6 +29,7 @@ import {
   type Noter,
   type Sender,
 } from "./notify.js";
+import { questionsFor, readConsoleState, withStopped, writeConsoleState } from "./parks.js";
 import { readPipeline } from "./pipeline.js";
 import { preconditionProbe } from "./probes.js";
 import { carryFailingSince } from "./problems.js";
@@ -149,6 +152,7 @@ async function assessed(
       structurallyBlocked: hasLiveStructuralBlocker(issue, structure),
       description: text?.description,
       notes: text?.notes,
+      labelledAt: placedSince(issue.stopped),
       notedAt: lastNoteAt(text?.notes),
     },
     context,
@@ -156,13 +160,23 @@ async function assessed(
   return { issue: { ...issue, staleness: assessment.staleness }, errors: assessment.errors };
 }
 
+function placedSince(stopped: Stopped | undefined): string | undefined {
+  return stopped?.basis === "carried" ? stopped.since : undefined;
+}
+
 interface Gathered {
   project: Project;
   closed: readonly ClosedIssue[];
   issuesRead: boolean;
+  questions: ProjectQuestions;
 }
 
-async function gather(project: Project, options: SnapshotOptions, day: Date): Promise<Gathered> {
+async function gather(
+  project: Project,
+  options: SnapshotOptions,
+  day: Date,
+  previous: Project | undefined,
+): Promise<Gathered> {
   const collected = await readIssues(project.root, {
     env: options.env,
     lanes: project.lanes,
@@ -174,10 +188,11 @@ async function gather(project: Project, options: SnapshotOptions, day: Date): Pr
   const structure: ClassifyContext = {
     issues: [...collected.issues, ...collected.closed],
     lanes: project.lanes,
-    collectionComplete: project.errors.length === 0,
+    collectionComplete: !collectionFailed(project.root, project.errors),
   };
+  const dated = withStopped(collected.issues, previous?.issues, day.toISOString());
   const assessments = await Promise.all(
-    collected.issues.map((issue) => assessed(issue, collected.texts, context, structure)),
+    dated.map((issue) => assessed(issue, collected.texts, context, structure)),
   );
   const issues = assessments.map((entry) => entry.issue);
   const unassessable: CollectionError[] = [];
@@ -191,23 +206,33 @@ async function gather(project: Project, options: SnapshotOptions, day: Date): Pr
     timeoutMs: options.timeoutMs,
     knownIds: context.knownIds,
   });
-  const unreadable = project.errors.length > 0 || collected.errors.length > 0;
+  const found = await readCandidates(project, {
+    env: options.env,
+    timeoutMs: options.timeoutMs,
+    linked: collected.errors.length === 0 ? collected.linked : undefined,
+  });
+  const unreadable = [...project.errors, ...collected.errors].some(hard);
   return {
     closed: collected.closed,
     project: Project.parse({
       ...project,
+      signals: found.signals,
+      candidates: found.candidates,
       issues,
+      ...(collected.errors.length === 0 ? { issuesReadAt: day.toISOString() } : {}),
       pipeline: pipeline.pipeline,
       metrics: metricsOf(issues, collected.closed, day, !unreadable),
       errors: [
         ...project.errors,
         ...collected.errors,
         ...pipeline.errors,
+        ...found.errors,
         ...unchecked,
         ...unassessable,
       ],
     }),
     issuesRead: collected.errors.length === 0,
+    questions: questionsFor(collected.issues, collected.texts),
   };
 }
 
@@ -219,6 +244,7 @@ function keeping(project: Project, held: Project, at: string, day: Date): Projec
   return Project.parse({
     ...project,
     issues: held.issues,
+    issuesReadAt: held.issuesReadAt ?? at,
     metrics: { ...project.metrics, ...metricsOf(held.issues, [], day, false) },
     errors: [
       ...project.errors,
@@ -308,10 +334,13 @@ interface Assembled {
   roots: ResolvedRoots;
 }
 
-async function assemble(options: SnapshotOptions): Promise<Assembled> {
+async function assemble(options: SnapshotOptions, previous?: Snapshot): Promise<Assembled> {
   const startedAt = options.now ?? new Date();
   const { projects, roots } = collectProjects(options);
-  const gathered = await Promise.all(projects.map((project) => gather(project, options, startedAt)));
+  const held = new Map((previous?.projects ?? []).map((project) => [project.id, project]));
+  const gathered = await Promise.all(
+    projects.map((project) => gather(project, options, startedAt, held.get(project.id))),
+  );
   return {
     snapshot: parseSnapshot({
       schemaVersion: SCHEMA_VERSION,
@@ -374,7 +403,8 @@ async function announce(
         sessionRef,
       });
     const note =
-      options.note ?? noteAppender(root, { env: options.env, timeoutMs: options.timeoutMs });
+      options.note ??
+      noteAppender(root, { env: options.env, timeoutMs: options.timeoutMs, lockRoot: options.lockRoot });
     delivered.push(...(await deliver(notices, { sender, note })));
   }
   return delivered;
@@ -417,7 +447,11 @@ async function closeUpstreamIssues(
       options.closer ?? githubCloser({ env: options.env, timeoutMs: options.timeoutMs });
     const note =
       options.note ??
-      noteAppender(entry.project.root, { env: options.env, timeoutMs: options.timeoutMs });
+      noteAppender(entry.project.root, {
+        env: options.env,
+        timeoutMs: options.timeoutMs,
+        lockRoot: options.lockRoot,
+      });
     run.reported.push(...(await closeUpstream(work.closures, { closer, note })));
   }
   return run;
@@ -496,9 +530,20 @@ function withCollectionHits(
   };
 }
 
+function questionsOf(board: Snapshot, gathered: readonly Gathered[], previous: QuestionStore): QuestionStore {
+  const read = new Map(gathered.map((entry) => [entry.project.id, entry]));
+  const store: QuestionStore = {};
+  for (const project of board.projects) {
+    const entry = read.get(project.id);
+    store[project.id] = entry?.issuesRead === true ? entry.questions : (previous[project.id] ?? {});
+  }
+  return store;
+}
+
 export async function emitSnapshot(options: SnapshotOptions = {}): Promise<SnapshotResult> {
   const previous = readSnapshot(options).snapshot;
-  const { snapshot, code, gathered, roots } = await assemble(options);
+  const stored = readConsoleState(options);
+  const { snapshot, code, gathered, roots } = await assemble(options, previous);
   if (!readSomething(gathered)) {
     return {
       snapshot,
@@ -526,9 +571,11 @@ export async function emitSnapshot(options: SnapshotOptions = {}): Promise<Snaps
       ...snapshot.errors,
       ...unlisted,
       ...(history.error === undefined ? [] : [history.error]),
+      ...(stored.error === undefined ? [] : [stored.error]),
     ],
   });
   const board = carryFailingSince(keptBoard(recorded, previous, gathered), previous);
+  writeConsoleState({ questions: questionsOf(board, gathered, stored.state.questions) }, options);
   const delivered = await announce(gathered, previous, roots, options);
   const upstream = await closeUpstreamIssues(gathered, previous, roots, options);
   const written = withCollectionHits(board, gathered, collectionHits(delivered, upstream));

@@ -60,9 +60,10 @@ const ROOT = input.root
 // deploys is false. From the config, a repo deploys when its entry carries a deploy array, and the
 // commands in that array are what the deploy step runs.
 const REPOS = input.repos
-  ? Object.fromEntries(Object.entries(input.repos).map(([name, r]) => [name, {
+  ? Object.fromEntries(Object.entries(input.repos).filter(([, r]) => (r || {}).role !== 'workspace').map(([name, r]) => [name, {
       path: (r || {}).path || name,
       slug: (r || {}).slug,
+      defaultBranch: trimmed((r || {}).defaultBranch) || 'master',
       deploy: (Array.isArray((r || {}).deploy) ? (r || {}).deploy : []).filter((c) => trimmed(c)),
       verify: (r || {}).verify,
       deploys: Array.isArray((r || {}).deploy) && (r || {}).deploy.length > 0
@@ -117,6 +118,7 @@ if (!LOCK_TOKEN || !TOKEN_SHAPE.test(LOCK_TOKEN)) {
 }
 const REPO_PATH = `${ROOT}/${REPO.path}`
 const SLUG = REPO.slug
+const BASE = REPO.defaultBranch || 'master'
 const MAX = (args && args.max) || 8
 const MAX_BISECT_DEPTH = 2
 
@@ -168,7 +170,7 @@ const VERSION = {
   additionalProperties: false,
   properties: {
     status: { type: 'string', enum: ['read', 'no_manifest', 'unreadable'], description: "'read' only when both git show calls printed a manifest you could copy a version string out of" },
-    masterVersion: { type: 'string', description: `the "version" string in origin/master's ${PLUGIN_MANIFEST}, verbatim. An empty string when you could not read one.` },
+    masterVersion: { type: 'string', description: `the "version" string in origin/${BASE}'s ${PLUGIN_MANIFEST}, verbatim. An empty string when you could not read one.` },
     branchVersion: { type: 'string', description: `the "version" string in the train branch's ${PLUGIN_MANIFEST}, verbatim. An empty string when you could not read one.` },
     touchesPlugin: { type: 'boolean', description: 'true when the train changes any file under plugins/ or .claude-plugin/ - that is what the marketplace serves' },
     notes: { type: 'string' },
@@ -258,6 +260,74 @@ const CLOSED = {
   },
 }
 
+const HELD = {
+  type: 'object',
+  required: ['status', 'noted'],
+  properties: {
+    status: { type: 'string', enum: ['noted', 'partial', 'none'] },
+    noted: {
+      type: 'array',
+      description: 'one entry per bd-note.sh that exited 0, and an empty array when none did - keyed by pull request because that is the list you were given',
+      items: {
+        type: 'object',
+        required: ['pr', 'issue'],
+        properties: {
+          pr: { type: 'number', description: 'the pull request number from the list you were given' },
+          issue: { type: 'string', description: 'the tracker id you appended the note to' },
+        },
+      },
+    },
+    notes: { type: 'string' },
+  },
+}
+
+const ON_BRANCH = {
+  type: 'object',
+  required: ['status', 'branches', 'asked', 'open'],
+  properties: {
+    status: { type: 'string', enum: ['read', 'unreadable'], description: "'read' only when every command printed something you could read an answer out of - a repository with nothing on a branch counts" },
+    branches: {
+      type: 'array',
+      description: 'one entry per pull request number you were given, with the branch gh printed for it. A number missing from here is a pull request whose branch nobody established, and the close is held for it.',
+      items: {
+        type: 'object',
+        required: ['number', 'branch'],
+        properties: {
+          number: { type: 'number' },
+          branch: { type: 'string', description: 'the headRefName gh printed, copied exactly - it is how a sibling pull request is matched to this one' },
+        },
+      },
+    },
+    asked: {
+      type: 'array',
+      description: 'one entry per command you actually ran and read an answer from - one repository and one branch each, so every repository in the list times every branch you found. A pair missing from here is read as a repository nobody asked about that branch, and the close is held rather than reading silence as nothing there.',
+      items: {
+        type: 'object',
+        required: ['slug', 'branch'],
+        properties: {
+          slug: { type: 'string', description: "the repository's owner/name, copied from the list you were given" },
+          branch: { type: 'string', description: 'the branch you passed to --head, copied from the branch you found' },
+        },
+      },
+    },
+    open: {
+      type: 'array',
+      description: 'every OPEN pull request on any of those branches, in any of the repositories, labelled or not. An empty array only when every repository answered and none of them held one.',
+      items: {
+        type: 'object',
+        required: ['slug', 'number', 'branch', 'labelled'],
+        properties: {
+          slug: { type: 'string', description: "the repository's owner/name, copied from the list you were given" },
+          number: { type: 'number' },
+          branch: { type: 'string', description: 'the headRefName gh printed, copied exactly' },
+          labelled: { type: 'boolean', description: "true only when gh printed lane-verified among that pull request's labels. A label list you could not read is not a false - report status 'unreadable' instead." },
+        },
+      },
+    },
+    notes: { type: 'string' },
+  },
+}
+
 function versionAhead(branch, master) {
   const a = SEMVER.exec(branch)
   const b = SEMVER.exec(master)
@@ -278,7 +348,7 @@ function versionVerdict(read) {
   if (read.status !== 'read') {
     return {
       why: 'version_unreadable',
-      detail: `origin/master's ${PLUGIN_MANIFEST} could not be read - ${trimmed(read.notes) || `the step reported only '${read.status}'`}`,
+      detail: `origin/${BASE}'s ${PLUGIN_MANIFEST} could not be read - ${trimmed(read.notes) || `the step reported only '${read.status}'`}`,
     }
   }
   if (!read.touchesPlugin) return null
@@ -288,13 +358,13 @@ function versionVerdict(read) {
   if (ahead === null) {
     return {
       why: 'version_unreadable',
-      detail: `the declared devloop plugin version cannot be compared - the train reported '${branch}' and origin/master reported '${master}', and a version that is not three numbers cannot be ordered against anything`,
+      detail: `the declared devloop plugin version cannot be compared - the train reported '${branch}' and origin/${BASE} reported '${master}', and a version that is not three numbers cannot be ordered against anything`,
     }
   }
   if (!ahead) {
     return {
       why: 'version_not_ahead',
-      detail: `the train declares devloop plugin version ${branch} and origin/master holds ${master}, which is not strictly greater. land-train.sh assigns that number as it builds the train, from what master held then, so this is its own arithmetic to read rather than a branch's guess - the 'version:' line in the build output says what it wrote. No branch is asked to bump ${PLUGIN_MANIFEST} or ${MARKETPLACE_MANIFEST}.`,
+      detail: `the train declares devloop plugin version ${branch} and origin/${BASE} holds ${master}, which is not strictly greater. land-train.sh assigns that number as it builds the train, from what master held then, so this is its own arithmetic to read rather than a branch's guess - the 'version:' line in the build output says what it wrote. No branch is asked to bump ${PLUGIN_MANIFEST} or ${MARKETPLACE_MANIFEST}.`,
     }
   }
   return null
@@ -324,7 +394,7 @@ COMMIT IDENTITY IS THE ONE THING THAT DOES NOT SURVIVE THEM, and every command t
 commit needs it - commit, rebase, merge, cherry-pick. Pass it on the command, taken from the
 branch being built on:
 
-  git -c user.name="$(git log -1 --format=%an origin/master)" -c user.email="$(git log -1 --format=%ae origin/master)" commit -F <message file>
+  git -c user.name="$(git log -1 --format=%an origin/${BASE})" -c user.email="$(git log -1 --format=%ae origin/${BASE})" commit -F <message file>
 
 Without it git either refuses outright, 'unable to auto-detect email address', or writes the
 wrong author - and nothing downstream notices the second. On this machine the credential helper
@@ -337,16 +407,16 @@ function versionPrompt(trainBranch) {
   return `Read two version numbers and report them. Nothing merges here, nothing is edited, and
 the working tree of ${REPO_PATH} is not yours to move - a person works in that checkout.
 
-FETCH FIRST. What matters is the number origin/master holds RIGHT NOW, at the moment this train
+FETCH FIRST. What matters is the number origin/${BASE} holds RIGHT NOW, at the moment this train
 is about to merge, not the one it held when the train was built or when its checks started.
 
 ${SHELL_FIRST}
 
   cd ${REPO_PATH} && git fetch origin --quiet && echo FETCHED
-  cd ${REPO_PATH} && git ls-tree --name-only origin/master ${PLUGIN_MANIFEST}
-  cd ${REPO_PATH} && git show origin/master:${PLUGIN_MANIFEST}
+  cd ${REPO_PATH} && git ls-tree --name-only origin/${BASE} ${PLUGIN_MANIFEST}
+  cd ${REPO_PATH} && git show origin/${BASE}:${PLUGIN_MANIFEST}
   cd ${REPO_PATH} && git show origin/${trainBranch}:${PLUGIN_MANIFEST}
-  cd ${REPO_PATH} && git diff --name-only origin/master...origin/${trainBranch}
+  cd ${REPO_PATH} && git diff --name-only origin/${BASE}...origin/${trainBranch}
 
 git show prints a file as it is at a ref and touches nothing. Do not check anything out, do not
 switch, do not reset, and do not stash.
@@ -408,7 +478,7 @@ function buildPrompt(only, suffix) {
 
 ${SHELL_FIRST}
 
-  bash ${SKILL_DIR}/land-train.sh --repo-path ${REPO_PATH} --slug ${SLUG} --prefix ${LOCK_PREFIX} --max ${MAX}${onlyArg}${suffixArg}
+  bash ${SKILL_DIR}/land-train.sh --repo-path ${REPO_PATH} --slug ${SLUG} --prefix ${LOCK_PREFIX} --base ${BASE} --max ${MAX}${onlyArg}${suffixArg}
 
 Read its exit code and its stdout, and return them faithfully:
 
@@ -474,7 +544,7 @@ tree happened to be clean at that moment, which is luck, not a safeguard.
 TO READ A FILE AT A COMMIT, ASK GIT FOR ITS CONTENT INSTEAD OF MOVING THE TREE TO IT:
 
   git show <sha>:spec/system/whatever_spec.rb | sed -n '30,75p'
-  git show origin/master:config/importmap.rb | grep prism
+  git show origin/${BASE}:config/importmap.rb | grep prism
 
 That prints the file as it is at that commit and touches nothing. It is strictly better for this
 purpose anyway - no cleanup, no risk, and it works while another agent is using the checkout.`
@@ -498,8 +568,8 @@ unlanded.
 
 Then confirm master, and confirm the pull requests actually closed:
 
-  git fetch origin --quiet && git log -1 --format='%H' origin/master
-  gh run list --branch master --limit 1 --json status,conclusion
+  git fetch origin --quiet && git log -1 --format='%H' origin/${BASE}
+  gh run list --branch ${BASE} --limit 1 --json status,conclusion
   gh pr view <n> --repo ${SLUG} --json state    for each of ${included.join(', ')}
 
 Report mergeSha, masterGreen, and in notes: any of those pull requests that is NOT closed. Do
@@ -653,9 +723,9 @@ which carries ${included.length} change(s): ${included.join(', ')}.
 ${SHELL_FIRST}
 
   cd ${REPO_PATH}
-  git fetch origin --quiet && git log -1 --format='%H' origin/master
+  git fetch origin --quiet && git log -1 --format='%H' origin/${BASE}
 
-Confirm the sha above is what origin/master actually points at BEFORE deploying. If it is not,
+Confirm the sha above is what origin/${BASE} actually points at BEFORE deploying. If it is not,
 stop and report it rather than deploying something else.
 
 Then deploy each environment with these, IN THE ORDER LISTED - the first is the earliest
@@ -715,6 +785,113 @@ Say in 'notes' what you could not read. An environment you could not confirm is 
 one, and reporting it as deployed closes a tracker issue for work nobody is serving.`
 }
 
+function surveySlugs() {
+  return [...new Set(Object.values(REPOS).map((r) => r.slug).filter(Boolean))]
+}
+
+function onBranchPrompt(landed) {
+  const lines = Object.entries(REPOS)
+    .filter(([, r]) => r.slug)
+    .map(([name, r]) => `  ${name}  ${r.slug}`)
+    .join('\n')
+  return `Report the branch each of these merged pull requests came from, and every OPEN pull request
+on those branches anywhere in this workspace.
+
+${landed.map((n) => `  ${SLUG}#${n}`).join('\n')}
+
+FIRST, read the branch of each one:
+
+  gh pr view <n> --repo ${SLUG} --json number,headRefName
+
+Report every number and the headRefName it printed in 'branches', copied exactly. A number you
+cannot get a branch for is a number you leave out - say so in notes.
+
+THEN, for EVERY branch you just read, ask EVERY one of these repositories about it:
+${lines}
+
+  gh pr list --repo <that repository's owner/name> --state open --head <branch> --json number,headRefName,title,labels
+
+Run it from ${ROOT}. --repo names the repository and gh needs no checkout to list it, so a
+directory that is not there is not a reason to skip a repository.
+
+REPORT EVERY PAIR YOU RAN IT FOR IN 'asked' - one entry per repository per branch, whether it
+printed a pull request or nothing. That list is checked against the one above: any pair missing
+from it holds the close, because a repository nobody asked about and a repository with nothing on
+the branch both print nothing here, and reading the first as the second is the whole defect this
+step exists to catch.
+
+WHY YOU ARE BEING ASKED. A ticket that spans two repositories opens a pull request in each, both
+on the same branch name, and the handoff labels all of them in one pass. When that pass fails
+part-way the first is labelled and the rest are not - and lane-verified is the only thing a train's
+queue reads, so the labelled half rides the train, nothing anywhere reads the second half, and the
+ticket closes on the half that landed.
+
+REPORT WHAT YOU FIND, LABELLED OR NOT, and decide nothing about it. An unlabelled pull request is
+not yours to label, close or judge - it may be a lane's work in progress - and this run only needs
+to know that it is there.
+
+IF ANY COMMAND FAILED - a rate limit, an expired token, a slug gh did not recognise - REPORT
+status 'unreadable' AND NAME WHAT FAILED. A failed list and a branch with no second half both
+print nothing, this step cannot tell them apart, and an empty read is not a clean read. The run
+holds the close rather than guessing which one it got: 'unreadable' costs a ticket one more cycle,
+and 'read' over a failed command closes it wrongly and invisibly.
+
+CHANGE NOTHING. This step runs while the train still holds the merge lock and it exists only to
+report. Do not label, do not unlabel, do not merge, do not close, do not comment, and do not touch
+any working tree.
+
+Never use 2>&1 - it makes some commands fail outright. Use absolute paths, never relative ones.`
+}
+
+function heldByBranch(landed, read) {
+  const held = new Map()
+  if (!landed.length) return held
+  const hold = (n, why) => { if (!held.has(n)) held.set(n, why) }
+  if (!read || read.status !== 'read') {
+    const why = `the branch survey ${read ? `answered '${trimmed(read.status) || 'nothing'}'` : 'reported nothing'}, so whether a pull request on this branch is open and unlabelled in another configured repository was never established${read && trimmed(read.notes) ? ` - ${trimmed(read.notes)}` : ''}`
+    for (const n of landed) hold(n, why)
+    return held
+  }
+  const branchOf = new Map()
+  for (const b of (Array.isArray(read.branches) ? read.branches : [])) {
+    if (!b || !Number.isInteger(b.number) || !landed.includes(b.number) || !trimmed(b.branch)) continue
+    branchOf.set(b.number, trimmed(b.branch))
+  }
+  for (const n of landed) {
+    if (!branchOf.has(n)) {
+      hold(n, `the branch survey did not report which branch ${SLUG}#${n} came from, so nothing could be looked for on it - a pull request whose branch nobody read is one whose unlabelled sibling nobody could have found`)
+    }
+  }
+  const holdBranch = (branch, why) => {
+    for (const [n, b] of branchOf) if (b === branch) hold(n, why)
+  }
+  const asked = new Set()
+  for (const a of (Array.isArray(read.asked) ? read.asked : [])) {
+    if (!a || typeof a.slug !== 'string' || typeof a.branch !== 'string') continue
+    asked.add(`${a.slug.trim()} ${trimmed(a.branch)}`)
+  }
+  const configured = surveySlugs()
+  for (const branch of new Set(branchOf.values())) {
+    const unasked = configured.filter((s) => !asked.has(`${s} ${branch}`))
+    if (unasked.length) {
+      holdBranch(branch, `the survey did not report asking ${unasked.join(' ')} about ${branch}, and a ` +
+        `repository nobody asked about is one whose orphan nobody looked for - an unasked repository ` +
+        `and a clean one both come back empty, so this close is held rather than taken on a survey ` +
+        `that may never have looked where the orphan sits`)
+    }
+  }
+  for (const p of (Array.isArray(read.open) ? read.open : [])) {
+    if (!p || p.labelled === true) continue
+    const branch = trimmed(p.branch)
+    if (!branch) continue
+    const key = `${trimmed(p.slug) || '(a repository the survey did not name)'}#${Number.isInteger(p.number) ? p.number : '(no number)'}`
+    holdBranch(branch, p.labelled === false
+      ? `${key} is open on ${branch} and does not carry lane-verified, so no train's queue has ever seen it and half of this ticket has not landed`
+      : `${key} is open on ${branch} and the survey did not report whether it carries lane-verified`)
+  }
+  return held
+}
+
 function closePrompt(landed, mergeSha, where) {
   return `These changes are on master at ${mergeSha} - ${where}:
 
@@ -742,11 +919,16 @@ the workspace root - not from inside a repository.
 For each pull request, find its issue (the branch is devloop/<issue-id>, and the issue is also
 named in the pull request body), then:
 
-  bd update <id> --append-notes "<what landed, and the merge sha>"
+  Write what landed, and the merge sha, to a file - a file rather than an argument, so that a
+  backtick or a $( in it cannot be evaluated by the shell - then:
+
+  cd ${ROOT} && PITWALL_SESSION=land-train bash ${SKILL_DIR}/bd-note.sh <id> --note-file <that file>
   bd close <id>
 
---append-notes, NEVER --notes. The notes field has no history and an overwrite is simply gone;
-that has already destroyed a recorded decision on this tracker.
+THROUGH bd-note.sh, NEVER 'bd update --notes'. The script takes the write lock, stamps the note
+with the date and the writer, and reads it back; a bare append is an unserialised read-modify-
+write and loses one of two overlapping notes silently. The notes field has no history and an
+overwrite is simply gone; that has already destroyed a recorded decision on this tracker.
 
 THAT LIST IS THE WHOLE JOB. Do not survey the tracker for other issues, do not close anything
 that is not above, and do not reopen anything. If an issue is already closed, say so and move
@@ -763,6 +945,58 @@ Before reporting "no issue found" for any pull request, CHECK YOU READ THE RIGHT
 name you got back should start with devloop/, and the issue id in it should exist in bd. A branch
 that looks nothing like devloop/<id> means you read another repository's pull request and the
 answer is to retry with --repo, not to report the issue as unidentifiable.`
+}
+
+function heldPrompt(held, mergeSha, where) {
+  return `Record on the tracker issue behind each of these pull requests why this train did NOT close it,
+and do nothing else to it. Each is on master at ${mergeSha} - ${where} - and stays there; the ticket
+stays exactly where it is, in_progress and assigned to whoever holds it. Without a note a person
+arriving at the ticket sees a claim older than an hour and reads it as a lane that died. The note is
+what tells them the train held it deliberately, and why.
+
+${held.map((h) => `  ${SLUG}#${h.number}
+    ---
+    Merged as ${SLUG}#${h.number} at ${mergeSha}, ${where}. NOT closed: ${h.why}. Held open by the train on purpose - this is not a dead lane. Close it when what is still open on this ticket's branch has landed.
+    ---`).join('\n\n')}
+
+EVERY gh CALL NEEDS --repo ${SLUG}. Pull request numbers are per repository and this project has
+several, so a bare number silently resolves against whatever repository the working directory
+belongs to and hands you a different project's pull request with the same number.
+
+For each pull request, find its issue - the branch is devloop/<issue-id>, and the issue is also named
+in the pull request body:
+
+  gh pr view <n> --repo ${SLUG} --json headRefName,body,title
+
+Then write the text between that pull request's markers to a file VERBATIM - a file rather than an
+argument, so a backtick or a $( in it cannot be evaluated by the shell before bd sees it - and
+append it with exactly this, one run per issue, from the workspace root and not from inside a
+repository:
+
+  cd ${ROOT} && PITWALL_SESSION=land-train bash ${SKILL_DIR}/bd-note.sh <id> --note-file <that file>
+
+ONE NOTE PER ISSUE, THROUGH bd-note.sh. Never 'bd update --notes': it replaces every note already
+on the issue and has already destroyed a decision somebody recorded. Never a bare append by hand
+either - the script is the only writer that takes the write lock, stamps the note and reads it
+back, and two overlapping bare appends silently become one.
+
+DO NOT CLOSE, REOPEN, REASSIGN OR RELABEL ANYTHING. Not a close, not a status change, not an
+assignee change, not a label. The hold is the outcome of this run and the ticket is somebody
+else's until the rest of its branch lands; a note is the only thing this step is allowed to write.
+
+THAT LIST IS THE WHOLE JOB. Do not survey the tracker for other issues and do not read pull
+requests this train did not land. Before writing on an issue, CHECK YOU READ THE RIGHT PULL
+REQUEST: the branch name should start with devloop/, and the issue id in it should exist in bd. A
+branch that looks nothing like devloop/<id> means you read another repository's pull request, and
+the answer is to retry with --repo, not to write on whatever issue that one names.
+
+REPORT ONE ENTRY PER bd-note.sh THAT EXITED 0, carrying the pull request number it came from and
+the tracker id you wrote on - and an empty list when none did. A non-zero exit means the note did
+NOT land and its text is on stderr - name that pull request in 'notes' with what the script
+printed, not in the list. A pull request you leave out comes back as a hold nobody recorded, so
+name them - and do not name one you did not write on.
+
+Never use 2>&1 - it makes some commands fail outright. Use absolute paths, never relative ones.`
 }
 
 function leftBehindPrompt() {
@@ -800,6 +1034,111 @@ rebase, and do not touch any working tree. This step reads and reports.
 Never use 2>&1 - it makes some commands fail outright. Use absolute paths, never relative ones.`
 }
 
+const landed = []
+const rejected = []
+const flakes = []
+// Every pull request any build dropped for conflicting. A drop is silent by design - the train
+// carries on rather than stalling - but nothing re-queues a dropped branch, so it is dropped
+// again by every later train until somebody rebases it. Four sat that way for a whole afternoon
+// on 2026-08-29 and were only found by going to look. Collected here so the run can say so.
+const skipped = new Set()
+let lastSha = null
+let outcome = { stopped: null }
+let stranded = []
+let deployed = 'not_attempted'
+let closed = 'not_attempted'
+let unclosed = []
+let heldBack = []
+let heldOpen = []
+const perRepo = {}
+let released = null
+let lockState = `LEAKED - the release step never reported. Read ${MERGE_LOCK}/holder before touching anything.`
+let lockOwned = false
+
+// Build a train, test it, and merge it if green. On red, split and recurse: the failure is in one
+// half or the other, and log2(n) CI runs finds it. Depth is capped because a train that keeps
+// failing is telling us something a bisect cannot fix - at that point every remaining branch is
+// handed back rather than ground through one at a time.
+async function runTrain(only, suffix, depth) {
+  const built = await agent(buildPrompt(only, suffix), { schema: BUILT, phase: 'Build', label: `build:${suffix || 'full'}` })
+  if (!built || built.status !== 'built') {
+    return { stopped: built ? built.status : 'error', notes: built ? built.notes : 'build agent returned nothing' }
+  }
+
+  for (const n of built.skipped || []) skipped.add(n)
+
+  const included = built.included || []
+  if (!included.length) return { stopped: 'empty' }
+
+  const verdict = await agent(verifyPrompt(built.trainPr, included), {
+    schema: VERDICT, phase: 'Verify', label: `verify:#${built.trainPr}`,
+  })
+
+  if (verdict && verdict.failingSpecs && verdict.failingSpecs.length) flakes.push(...verdict.failingSpecs)
+
+  if (verdict && verdict.status === 'green') {
+    const declared = await agent(versionPrompt(built.trainBranch), {
+      schema: VERSION, phase: 'Merge', label: `version:#${built.trainPr}`, model: 'haiku', effort: 'low',
+    })
+    const stale = versionVerdict(declared)
+    if (stale) {
+      log(`REFUSED #${built.trainPr} - ${stale.why}\n    ${stale.detail}`)
+      await agent(
+        retirePrompt(built, included, 'cannot merge and is being abandoned',
+          'the devloop plugin version it declares is not ahead of master, the changes it carried are going back to the queue'),
+        { model: 'haiku', effort: 'low', phase: 'Merge', label: `retire:#${built.trainPr}` },
+      )
+      return { stopped: stale.why, notes: stale.detail }
+    }
+    if (declared && declared.status === 'read' && !declared.touchesPlugin) {
+      log(`#${built.trainPr} declares devloop plugin version ${trimmed(declared.branchVersion) || '(none)'} against origin/${BASE}'s ${trimmed(declared.masterVersion) || '(none)'}, and its diff lists no path under plugins/ or .claude-plugin/, so the versions are not compared`)
+    }
+
+    const merged = await agent(mergePrompt(built.trainPr, built.trainBranch, included), {
+      schema: MERGED, phase: 'Merge', label: `merge:#${built.trainPr}`,
+    })
+    if (merged && merged.status === 'merged') {
+      landed.push(...included)
+      lastSha = merged.mergeSha || lastSha
+      if (merged.masterGreen === false) {
+        return { stopped: 'master_red_after_merge', notes: merged.notes }
+      }
+      return { stopped: null }
+    }
+    return { stopped: 'merge_refused', notes: merged ? merged.notes : 'merge agent returned nothing' }
+  }
+
+  // RED, SO THE TRAIN IS OVER - RETIRE IT BEFORE DOING ANYTHING ELSE. A merged train is removed
+  // by --delete-branch; a red one is not, and nothing else was removing it. Four release
+  // branches and their pull requests were left on the remote by 2026-08-29 evening, each looking
+  // like an open change somebody might read. The pull request is closed rather than left open
+  // because it proposes merging a set that has just been proven not to work.
+  await agent(
+    retirePrompt(built, included, 'failed its checks and is being abandoned',
+      'failed CI, the changes it carried are going back to the queue and will be tried again separately'),
+    { model: 'haiku', effort: 'low', phase: 'Verify', label: `retire:#${built.trainPr}` },
+  )
+
+  // One branch left means the culprit is identified.
+  if (included.length === 1) {
+    rejected.push(included[0])
+    log(`#${included[0]} fails on its own - handing it back`)
+    return { stopped: null }
+  }
+  if (depth >= MAX_BISECT_DEPTH) {
+    rejected.push(...included)
+    log(`bisect depth reached with ${included.length} still failing - handing all of them back`)
+    return { stopped: null }
+  }
+
+  const half = Math.ceil(included.length / 2)
+  log(`train of ${included.length} is red - splitting into ${half} and ${included.length - half}`)
+  const a = await runTrain(included.slice(0, half), `${suffix || 'b'}a${depth}`, depth + 1)
+  if (a.stopped) return a
+  return runTrain(included.slice(half), `${suffix || 'b'}b${depth}`, depth + 1)
+}
+
+try {
 phase('Lock')
 const lock = await agent(
   `Take the serial merge lock so only one lander runs at a time:
@@ -850,110 +1189,8 @@ if (holder !== LOCK_TOKEN) {
   const unproven = `LEAKED - the lock step reported taken, but ${MERGE_LOCK}/holder reads [${holder}] against a token of [${LOCK_TOKEN}], so this train cannot prove the lock is its own. Nothing was built and nothing was removed. Read ${MERGE_LOCK}/holder: if it names a run that has finished, clear it; if it names another lander, it is theirs and they give it back themselves.`
   return { status: 'held', notes: unproven, lock: unproven }
 }
+lockOwned = true
 
-const landed = []
-const rejected = []
-const flakes = []
-// Every pull request any build dropped for conflicting. A drop is silent by design - the train
-// carries on rather than stalling - but nothing re-queues a dropped branch, so it is dropped
-// again by every later train until somebody rebases it. Four sat that way for a whole afternoon
-// on 2026-08-29 and were only found by going to look. Collected here so the run can say so.
-const skipped = new Set()
-let lastSha = null
-let outcome = { stopped: null }
-let stranded = []
-let deployed = 'not_attempted'
-let closed = 'not_attempted'
-let unclosed = []
-let heldBack = []
-const perRepo = {}
-let released = null
-let lockState = `LEAKED - the release step never reported. Read ${MERGE_LOCK}/holder before touching anything.`
-
-// Build a train, test it, and merge it if green. On red, split and recurse: the failure is in one
-// half or the other, and log2(n) CI runs finds it. Depth is capped because a train that keeps
-// failing is telling us something a bisect cannot fix - at that point every remaining branch is
-// handed back rather than ground through one at a time.
-async function runTrain(only, suffix, depth) {
-  const built = await agent(buildPrompt(only, suffix), { schema: BUILT, phase: 'Build', label: `build:${suffix || 'full'}` })
-  if (!built || built.status !== 'built') {
-    return { stopped: built ? built.status : 'error', notes: built ? built.notes : 'build agent returned nothing' }
-  }
-
-  for (const n of built.skipped || []) skipped.add(n)
-
-  const included = built.included || []
-  if (!included.length) return { stopped: 'empty' }
-
-  const verdict = await agent(verifyPrompt(built.trainPr, included), {
-    schema: VERDICT, phase: 'Verify', label: `verify:#${built.trainPr}`,
-  })
-
-  if (verdict && verdict.failingSpecs && verdict.failingSpecs.length) flakes.push(...verdict.failingSpecs)
-
-  if (verdict && verdict.status === 'green') {
-    const declared = await agent(versionPrompt(built.trainBranch), {
-      schema: VERSION, phase: 'Merge', label: `version:#${built.trainPr}`, model: 'haiku', effort: 'low',
-    })
-    const stale = versionVerdict(declared)
-    if (stale) {
-      log(`REFUSED #${built.trainPr} - ${stale.why}\n    ${stale.detail}`)
-      await agent(
-        retirePrompt(built, included, 'cannot merge and is being abandoned',
-          'the devloop plugin version it declares is not ahead of master, the changes it carried are going back to the queue'),
-        { model: 'haiku', effort: 'low', phase: 'Merge', label: `retire:#${built.trainPr}` },
-      )
-      return { stopped: stale.why, notes: stale.detail }
-    }
-    if (declared && declared.status === 'read' && !declared.touchesPlugin) {
-      log(`#${built.trainPr} declares devloop plugin version ${trimmed(declared.branchVersion) || '(none)'} against origin/master's ${trimmed(declared.masterVersion) || '(none)'}, and its diff lists no path under plugins/ or .claude-plugin/, so the versions are not compared`)
-    }
-
-    const merged = await agent(mergePrompt(built.trainPr, built.trainBranch, included), {
-      schema: MERGED, phase: 'Merge', label: `merge:#${built.trainPr}`,
-    })
-    if (merged && merged.status === 'merged') {
-      landed.push(...included)
-      lastSha = merged.mergeSha || lastSha
-      if (merged.masterGreen === false) {
-        return { stopped: 'master_red_after_merge', notes: merged.notes }
-      }
-      return { stopped: null }
-    }
-    return { stopped: 'merge_refused', notes: merged ? merged.notes : 'merge agent returned nothing' }
-  }
-
-  // RED, SO THE TRAIN IS OVER - RETIRE IT BEFORE DOING ANYTHING ELSE. A merged train is removed
-  // by --delete-branch; a red one is not, and nothing else was removing it. Four release
-  // branches and their pull requests were left on the remote by 2026-08-29 evening, each looking
-  // like an open change somebody might read. The pull request is closed rather than left open
-  // because it proposes merging a set that has just been proven not to work.
-  await agent(
-    retirePrompt(built, included, 'failed its checks and is being abandoned',
-      'failed CI, the changes it carried are going back to the queue and will be tried again separately'),
-    { model: 'haiku', effort: 'low', phase: 'Verify', label: `retire:#${built.trainPr}` },
-  )
-
-  // One branch left means the culprit is identified.
-  if (included.length === 1) {
-    rejected.push(included[0])
-    log(`#${included[0]} fails on its own - handing it back`)
-    return { stopped: null }
-  }
-  if (depth >= MAX_BISECT_DEPTH) {
-    rejected.push(...included)
-    log(`bisect depth reached with ${included.length} still failing - handing all of them back`)
-    return { stopped: null }
-  }
-
-  const half = Math.ceil(included.length / 2)
-  log(`train of ${included.length} is red - splitting into ${half} and ${included.length - half}`)
-  const a = await runTrain(included.slice(0, half), `${suffix || 'b'}a${depth}`, depth + 1)
-  if (a.stopped) return a
-  return runTrain(included.slice(half), `${suffix || 'b'}b${depth}`, depth + 1)
-}
-
-try {
 outcome = await runTrain(ONLY, '', 0)
 
 // A RED MASTER IS NEVER DEPLOYED. This condition used to be `landed.length && lastSha` alone,
@@ -1008,17 +1245,39 @@ if (landed.length && lastSha && !masterIsRed) {
 
   if (deployed === 'deployed' || deployed === 'not_needed') {
     phase('Close')
-    const where = deployed === 'not_needed'
-      ? `${REPO_KEY} has no deploy to be live in, so these are closed on the merge alone`
-      : `deployed${servingText ? ` - ${servingText}` : ''}`
-    const c = await agent(closePrompt(landed, lastSha, where), { model: 'sonnet', phase: 'Close', label: 'close', schema: CLOSED })
-    closed = (c && c.status) || 'unknown'
-    const reported = new Set(((c && c.closed) || []).map((e) => Number(e && e.pr)).filter((n) => Number.isInteger(n)))
-    unclosed = landed.filter((n) => !reported.has(n))
-    if (unclosed.length) {
-      log(`CLOSE ${closed === 'unknown' ? 'UNKNOWN - that step reported nothing, which is not the same as a refusal' : closed} - these landed and nothing confirmed the issue behind them was closed, so they are sitting in_progress with nothing reporting it: ${unclosed.map((n) => `${SLUG}#${n}`).join(' ')}\n    Check them with bd show before closing anything by hand.${c && c.notes ? `\n    ${c.notes}` : ''}`)
-    } else {
-      log(`closed ${reported.size} issue(s) - ${((c && c.closed) || []).map((e) => `${SLUG}#${e.pr} ${trimmed(e.issue) || '(no id reported)'}`).join(', ')}`)
+    const onBranch = await agent(onBranchPrompt(landed), {
+      schema: ON_BRANCH, model: 'haiku', effort: 'low', phase: 'Close', label: 'branch-survey',
+    })
+    heldOpen = [...heldByBranch(landed, onBranch).entries()].map(([number, why]) => ({ number, slug: SLUG, why }))
+    for (const h of heldOpen) {
+      log(`NOT CLOSED ${SLUG}#${h.number} - ${h.why}. What it carried is merged and deployed and stays that way; the ticket is left open because something on its branch has not landed.`)
+    }
+    if (heldOpen.length) {
+      const where = deployed === 'not_needed'
+        ? `${REPO_KEY} has no deploy to be live in`
+        : `deployed${servingText ? ` - ${servingText}` : ''}`
+      const n = await agent(heldPrompt(heldOpen, lastSha, where), { model: 'sonnet', phase: 'Close', label: 'held', schema: HELD })
+      const noted = ((n && n.noted) || []).filter((e) => e && Number.isInteger(Number(e.pr)))
+      const unnoted = heldOpen.map((h) => h.number).filter((num) => !noted.some((e) => Number(e.pr) === num))
+      if (unnoted.length) {
+        log(`HOLD NOT RECORDED ${unnoted.map((num) => `${SLUG}#${num}`).join(' ')} - ${n ? `the note step answered '${trimmed(n.status) || 'nothing'}'` : 'the note step reported nothing'}, so the tickets behind these sit in_progress with nothing on them saying the train held them, and queue.sh will read the claim as a dead lane.${n && trimmed(n.notes) ? `\n    ${trimmed(n.notes)}` : ''}`)
+      }
+      for (const e of noted) if (heldOpen.some((h) => h.number === Number(e.pr))) log(`noted the hold on ${SLUG}#${e.pr} ${trimmed(e.issue) || '(no id reported)'}`)
+    }
+    const clear = landed.filter((n) => !heldOpen.some((h) => h.number === n))
+    if (clear.length) {
+      const where = deployed === 'not_needed'
+        ? `${REPO_KEY} has no deploy to be live in, so these are closed on the merge alone`
+        : `deployed${servingText ? ` - ${servingText}` : ''}`
+      const c = await agent(closePrompt(clear, lastSha, where), { model: 'sonnet', phase: 'Close', label: 'close', schema: CLOSED })
+      closed = (c && c.status) || 'unknown'
+      const reported = new Set(((c && c.closed) || []).map((e) => Number(e && e.pr)).filter((n) => Number.isInteger(n)))
+      unclosed = clear.filter((n) => !reported.has(n))
+      if (unclosed.length) {
+        log(`CLOSE ${closed === 'unknown' ? 'UNKNOWN - that step reported nothing, which is not the same as a refusal' : closed} - these landed and nothing confirmed the issue behind them was closed, so they are sitting in_progress with nothing reporting it: ${unclosed.map((n) => `${SLUG}#${n}`).join(' ')}\n    Check them with bd show before closing anything by hand.${c && c.notes ? `\n    ${c.notes}` : ''}`)
+      } else {
+        log(`closed ${reported.size} issue(s) - ${((c && c.closed) || []).map((e) => `${SLUG}#${e.pr} ${trimmed(e.issue) || '(no id reported)'}`).join(', ')}`)
+      }
     }
   } else {
     heldBack = [...landed]
@@ -1114,6 +1373,7 @@ for (const [name, a] of Object.entries(perRepo)) {
   }
 }
 } finally {
+if (lockOwned) {
 released = await agent(
   `Release the serial merge lock. This runs however the train ended - merged, stopped or failed -
 because a lock left behind stands down every train after it for no reason.
@@ -1159,6 +1419,7 @@ if (released && released.status === 'released') {
   log(`${lockState}\n    ${(released && released.notes) || 'the release agent returned nothing'}`)
 }
 }
+}
 
 return {
   repo: REPO_KEY,
@@ -1178,6 +1439,7 @@ return {
   closed,
   unclosed,
   heldBack,
+  heldOpen,
   mergeSha: lastSha,
   stopped: outcome.stopped || null,
   notes: outcome.notes || null,

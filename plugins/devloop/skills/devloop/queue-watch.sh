@@ -28,12 +28,28 @@ while [ $# -gt 0 ]; do
 done
 cd "$root" || { echo "cannot enter $root" >&2; exit 2; }
 PFX="$(bash "$skill/config.sh" lockPrefix 2>/dev/null || echo devloop)"
+ID_PFX="$(bash "$skill/config.sh" idPrefix 2>/dev/null)"
+case "$ID_PFX" in
+  ''|*[!a-zA-Z0-9_-]*)
+    echo "queue-watch.sh: could not resolve idPrefix from the workspace config - refusing to run." >&2
+    echo "                Guessing it would build the id patterns for another project, so NEW WORK" >&2
+    echo "                and STUCK would never fire here and silence would read as idle." >&2
+    echo "                Run from the workspace root, and check the config is readable:" >&2
+    echo "                  bash $skill/config.sh --check" >&2
+    exit 3 ;;
+esac
+ID_RE="${ID_PFX}-[a-z0-9.]+"
+ID_TOKEN="$ID_RE([^a-z0-9.'/]|\$)"
+REF_RE="$ID_TOKEN|[a-z]+#[0-9]+"
+ref_ids() {
+  grep -oE "$REF_RE" | grep -oE "^($ID_RE|[a-z]+#[0-9]+)"
+}
 [ -n "$ack_file" ] || ack_file="$root/.devloop-triage-ack"
 
 # Ids currently offered as ready work. dispatchable.sh prints its "nothing dispatchable"
 # notice in parentheses, which no id matches, so an empty result needs no special case.
 dispatchable_ids() {
-  bash "$skill/dispatchable.sh" 2>/dev/null | grep -oE '^sr-[a-z0-9.]+' | sort
+  bash "$skill/dispatchable.sh" 2>/dev/null | grep -oE "^$ID_RE" | sort
 }
 
 # Pull requests a lane has finished with, across every repository that has any.
@@ -246,12 +262,12 @@ while true; do
   # train being launched and that train taking the lock, reporting "nobody is landing" about a
   # train that was already running.
   stuck=$(printf '%s\n' "$stuck" | sed '/LANDER IDLE/,$d')
-  [ -n "$(printf '%s' "$stuck" | grep -oE 'sr-[a-z0-9.]+')" ] || stuck=""
+  [ -n "$(printf '%s' "$stuck" | grep -oE "$ID_TOKEN")" ] || stuck=""
   if [ -n "$stuck" ]; then
     acked=""
-    [ -f "$ack_file" ] && acked=$(grep -oE '^(sr-[a-z0-9.]+|[a-z]+#[0-9]+)' "$ack_file" | tr '\n' ' ')
+    [ -f "$ack_file" ] && acked=$(grep -oE "^($REF_RE)" "$ack_file" | ref_ids | tr '\n' ' ')
     new_ids=""
-    for id in $(printf '%s\n' "$stuck" | grep -oE 'sr-[a-z0-9.]+|[a-z]+#[0-9]+' | sort -u); do
+    for id in $(printf '%s\n' "$stuck" | ref_ids | sort -u); do
       case " $acked " in *" $id "*) ;; *) new_ids="$new_ids $id" ;; esac
     done
     if [ -n "${new_ids// /}" ] && [ "$new_ids" != "$prev_stuck" ]; then

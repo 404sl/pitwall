@@ -3,12 +3,12 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { cpSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { WORKSPACE_FILE } from "../src/autofix.ts";
+import { LEGACY_WORKSPACE_FILE, WORKSPACE_FILE } from "../src/autofix.ts";
 import { diagnose, renderDoctor, type Check, type Diagnosis } from "../src/doctor.ts";
 import { slotsPath } from "../src/lanes.ts";
-import { nullGlobalGitConfig } from "./support/git.js";
+import { nullGlobalGitConfig, spawnGit } from "./support/git.js";
 
 nullGlobalGitConfig();
 
@@ -50,8 +50,32 @@ function tracker(dir: string): void {
 function checkout(dir: string, name: string, git = true): void {
   mkdirSync(join(dir, name), { recursive: true });
   if (git) {
-    mkdirSync(join(dir, name, ".git"), { recursive: true });
+    init(join(dir, name));
   }
+}
+
+function git(dir: string, ...args: string[]): void {
+  const ran = spawnGit(args, { cwd: dir });
+  assert.equal(ran.status, 0, ran.stderr);
+}
+
+function cloneOf(dir: string, name: string, remote: string, branch?: string): void {
+  const repo = join(dir, name);
+  mkdirSync(repo, { recursive: true });
+  git(repo, "init", "--quiet");
+  git(repo, "remote", "add", "origin", remote);
+  if (branch !== undefined) {
+    git(repo, "symbolic-ref", "refs/remotes/origin/HEAD", `refs/remotes/origin/${branch}`);
+  }
+}
+
+function init(dir: string): void {
+  git(dir, "init", "--quiet");
+}
+
+function unreadable(dir: string, name: string): void {
+  mkdirSync(join(dir, name), { recursive: true });
+  writeFileSync(join(dir, name, ".git"), `gitdir: ${join(dir, "nowhere")}\n`);
 }
 
 function describe(dir: string, workspace: Record<string, unknown>): void {
@@ -62,8 +86,8 @@ function root(): string {
   return mkdtempSync(join(tmpdir(), "pitwall-doctor-root-"));
 }
 
-function healthy(lockPrefix = "doctor"): string {
-  const dir = root();
+function healthy(lockPrefix = "doctor", dir = root()): string {
+  mkdirSync(dir, { recursive: true });
   tracker(dir);
   checkout(dir, "cli");
   describe(dir, { root: dir, idPrefix: "doc", lockPrefix, repos: { _: "ignored", site: { path: "cli" } } });
@@ -154,6 +178,31 @@ test("a repo path that is not a git checkout fails", async () => {
   assert.equal(diagnosis.code, 1);
 });
 
+test("a checkout git refuses to read fails with git's words, not as a checkout with no origin", async () => {
+  const dir = root();
+  tracker(dir);
+  unreadable(dir, "cli");
+  describe(dir, { root: dir, idPrefix: "doc", lockPrefix: "doctor", repos: { site: { path: "cli" } } });
+  const diagnosis = await diagnose(options([dir]));
+  const check = named(diagnosis, `${basename(dir)} repo site`);
+  assert.equal(check.severity, "fail");
+  assert.match(check.result, /not a git repository|gitdir/i);
+  assert.doesNotMatch(check.result, /no origin remote/);
+  assert.equal(diagnosis.code, 1);
+});
+
+test("a checkout with no origin remote still passes and says so", async () => {
+  const dir = root();
+  tracker(dir);
+  checkout(dir, "cli");
+  describe(dir, { root: dir, idPrefix: "doc", lockPrefix: "doctor", repos: { site: { path: "cli" } } });
+  const diagnosis = await diagnose(options([dir]));
+  const check = named(diagnosis, `${basename(dir)} repo site`);
+  assert.equal(check.severity, "ok");
+  assert.equal(check.result, "no origin remote · no origin/HEAD");
+  assert.equal(diagnosis.code, 0);
+});
+
 test("a repo path that is not there at all fails with the path it tried", async () => {
   const dir = root();
   tracker(dir);
@@ -162,6 +211,92 @@ test("a repo path that is not there at all fails with the path it tried", async 
   const check = named(diagnosis, `${basename(dir)} repo site`);
   assert.equal(check.severity, "fail");
   assert.match(check.result, new RegExp(`no directory at ${join(dir, "cli")}`));
+});
+
+test("a checkout with an origin but no origin/HEAD warns and names both remedies", async () => {
+  const dir = root();
+  tracker(dir);
+  cloneOf(dir, "cli", "https://github.com/acme/site.git");
+  describe(dir, { root: dir, idPrefix: "doc", lockPrefix: "doctor", repos: { site: { path: "cli" } } });
+  const diagnosis = await diagnose(options([dir]));
+  const check = named(diagnosis, `${basename(dir)} repo site`);
+  assert.equal(check.severity, "warn");
+  assert.match(check.result, /^acme\/site · no origin\/HEAD/);
+  assert.match(check.result, /set defaultBranch in \.pitwall\.json/);
+  assert.match(check.result, /git remote set-head origin -a/);
+  assert.equal(diagnosis.code, 0);
+});
+
+test("a legacy workspace names its own file in the default-branch remedy", async () => {
+  const dir = root();
+  tracker(dir);
+  cloneOf(dir, "cli", "https://github.com/acme/site.git");
+  writeFileSync(
+    join(dir, LEGACY_WORKSPACE_FILE),
+    JSON.stringify({ root: dir, idPrefix: "doc", lockPrefix: "doctor", repos: { site: { path: "cli" } } }),
+  );
+  const diagnosis = await diagnose(options([dir]));
+  const check = named(diagnosis, `${basename(dir)} repo site`);
+  assert.equal(check.severity, "warn");
+  assert.match(check.result, /set defaultBranch in \.autofix\.json/);
+  assert.doesNotMatch(check.result, /\.pitwall\.json/);
+  assert.equal(diagnosis.code, 0);
+});
+
+test("a checkout whose origin/HEAD is set reports that branch and passes", async () => {
+  const dir = root();
+  tracker(dir);
+  cloneOf(dir, "cli", "https://github.com/acme/site.git", "master");
+  describe(dir, { root: dir, idPrefix: "doc", lockPrefix: "doctor", repos: { site: { path: "cli" } } });
+  const diagnosis = await diagnose(options([dir]));
+  const check = named(diagnosis, `${basename(dir)} repo site`);
+  assert.equal(check.severity, "ok");
+  assert.equal(check.result, "acme/site · master");
+});
+
+test("a configured defaultBranch is reported and needs no origin/HEAD", async () => {
+  const dir = root();
+  tracker(dir);
+  cloneOf(dir, "cli", "https://github.com/acme/site.git");
+  describe(dir, {
+    root: dir,
+    idPrefix: "doc",
+    lockPrefix: "doctor",
+    repos: { site: { path: "cli", defaultBranch: "release/2026" } },
+  });
+  const diagnosis = await diagnose(options([dir]));
+  const check = named(diagnosis, `${basename(dir)} repo site`);
+  assert.equal(check.severity, "ok");
+  assert.equal(check.result, "acme/site · release/2026");
+});
+
+test("a configured defaultBranch that is not a branch name fails", async () => {
+  const dir = root();
+  tracker(dir);
+  cloneOf(dir, "cli", "https://github.com/acme/site.git", "master");
+  describe(dir, {
+    root: dir,
+    idPrefix: "doc",
+    lockPrefix: "doctor",
+    repos: { site: { path: "cli", defaultBranch: 7 } },
+  });
+  const diagnosis = await diagnose(options([dir]));
+  const check = named(diagnosis, `${basename(dir)} repo site`);
+  assert.equal(check.severity, "fail");
+  assert.match(check.result, /defaultBranch is not a branch name/);
+  assert.equal(diagnosis.code, 1);
+});
+
+test("a checkout with no origin at all is not told to set-head a remote it does not have", async () => {
+  const dir = root();
+  tracker(dir);
+  mkdirSync(join(dir, "cli"), { recursive: true });
+  git(join(dir, "cli"), "init", "--quiet");
+  describe(dir, { root: dir, idPrefix: "doc", lockPrefix: "doctor", repos: { site: { path: "cli" } } });
+  const diagnosis = await diagnose(options([dir]));
+  const check = named(diagnosis, `${basename(dir)} repo site`);
+  assert.equal(check.severity, "ok");
+  assert.equal(check.result, "no origin remote · no origin/HEAD");
 });
 
 test("a workspace whose root names another directory fails", async () => {
@@ -261,6 +396,70 @@ test("a workspace whose repos is not an object fails without abandoning the rest
     assert.equal(named(diagnosis, `${basename(well)} repo site`).severity, "ok");
     assert.equal(diagnosis.code, 1);
   }
+});
+
+test("two roots sharing a basename are named by the shortest suffix that tells them apart", async () => {
+  const work = healthy("work", join(root(), "pitwall"));
+  const archive = healthy("archive", join(root(), "pitwall"));
+  const diagnosis = await diagnose(options([work, archive]));
+  const workName = `${basename(dirname(work))}/pitwall`;
+  const archiveName = `${basename(dirname(archive))}/pitwall`;
+  for (const suffix of ["", " tracker", " bd", " repo site", " lanes", " root"]) {
+    assert.equal(named(diagnosis, `${workName}${suffix}`).severity, "ok");
+    assert.equal(named(diagnosis, `${archiveName}${suffix}`).severity, "ok");
+  }
+  assert.equal(
+    diagnosis.checks.filter((check) => check.name === "pitwall" || check.name.startsWith("pitwall ")).length,
+    0,
+  );
+  assert.equal(diagnosis.code, 0);
+});
+
+test("two roots sharing a basename and a parent name are told apart by the grandparent", async () => {
+  const parent = root();
+  const shorter = healthy("shorter", join(parent, "work", "pitwall"));
+  const longer = healthy("longer", join(parent, "x", "work", "pitwall"));
+  const diagnosis = await diagnose(options([shorter, longer]));
+  const names = new Set(diagnosis.checks.map((check) => check.name));
+  assert.ok(names.has(`${basename(parent)}/work/pitwall bd`), [...names].join(", "));
+  assert.ok(names.has("x/work/pitwall bd"), [...names].join(", "));
+  assert.equal(diagnosis.checks.filter((check) => check.name === "work/pitwall bd").length, 0);
+  assert.equal(diagnosis.code, 0);
+});
+
+test("a root whose whole path is the tail of another root's path is named in full, and the other by one segment more", async () => {
+  const base = root();
+  const shorter = healthy("shorter", join(base, "work", "pitwall"));
+  const longer = healthy("longer", join(base, ...base.split(sep).filter(Boolean), "work", "pitwall"));
+  const diagnosis = await diagnose(options([shorter, longer]));
+  const longerName = [basename(base), ...shorter.split(sep).filter(Boolean)].join(sep);
+  assert.equal(named(diagnosis, `${shorter} bd`).severity, "ok");
+  assert.equal(named(diagnosis, `${longerName} bd`).severity, "ok");
+  const bd = diagnosis.checks.filter((check) => check.name.endsWith(" bd")).map((check) => check.name);
+  assert.deepEqual(bd, [`${shorter} bd`, `${longerName} bd`]);
+  assert.equal(diagnosis.checks.filter((check) => check.name === `${shorter.slice(1)} bd`).length, 0);
+  assert.equal(diagnosis.code, 0);
+});
+
+test("a root is named in full only when its whole path is the tail of another root's path", async () => {
+  const tail = await diagnose(options(["/a/work/pitwall", "/x/a/work/pitwall"]));
+  assert.equal(named(tail, "/a/work/pitwall").severity, "fail");
+  assert.equal(named(tail, "x/a/work/pitwall").severity, "fail");
+  assert.equal(tail.checks.filter((check) => check.name === "/x/a/work/pitwall").length, 0);
+  const shallow = await diagnose(options(["/home/pitwall", "/srv/pitwall"]));
+  assert.equal(named(shallow, "home/pitwall").severity, "fail");
+  assert.equal(named(shallow, "srv/pitwall").severity, "fail");
+  assert.equal(shallow.checks.filter((check) => check.name.startsWith("/")).length, 0);
+});
+
+test("a colliding root listed twice is reported as listed under its disambiguated name", async () => {
+  const work = healthy("work", join(root(), "pitwall"));
+  const archive = healthy("archive", join(root(), "pitwall"));
+  const diagnosis = await diagnose(options([work, archive, work]));
+  const repeated = named(diagnosis, `${basename(dirname(work))}/pitwall listed`);
+  assert.equal(repeated.severity, "fail");
+  assert.ok(repeated.result.includes(work));
+  assert.equal(diagnosis.checks.filter((check) => check.name === "pitwall listed").length, 0);
 });
 
 test("the same root listed twice is checked once and is reported as listed twice", async () => {

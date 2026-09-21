@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { GIT_ENV, spawnGit } from "./support/git.js";
 
 const SCRIPT = join(
@@ -15,6 +15,8 @@ const SCRIPT = join(
   "devloop",
   "assign-plugin-version.sh",
 );
+
+const TIMEOUT = 30_000;
 
 const MARKETPLACE = join(".claude-plugin", "marketplace.json");
 const PLUGIN = join("plugins", "devloop", ".claude-plugin", "plugin.json");
@@ -101,12 +103,33 @@ function branch(repo: Repo, name: string, touch: () => void, message = "Work on 
   git(repo.dir, "commit", "--quiet", "-m", message);
 }
 
-function assign(repo: Repo, args: string[] = []): { status: number; out: string } {
-  const ran = spawnSync("bash", [SCRIPT, "--worktree", repo.dir, ...args], {
-    encoding: "utf8",
+interface Ran {
+  status: number;
+  signal: string | null;
+  out: string;
+  err: string;
+}
+
+function run(argv: string[], options: { timeout: number; env?: NodeJS.ProcessEnv }): Ran {
+  const [command = "", ...args] = argv;
+  const ran = spawnSync(command, args, { encoding: "utf8", timeout: options.timeout, env: options.env });
+  const out = `${ran.stdout ?? ""}${ran.stderr ?? ""}`;
+  if (ran.signal !== null) {
+    const name = basename(args[0] ?? command);
+    const why =
+      (ran.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT"
+        ? `killed after ${options.timeout} ms, the spawnSync timeout`
+        : `killed by ${ran.signal}`;
+    assert.fail(`${name} was ${why} and never produced an exit status. It did not run to completion:\n${out}`);
+  }
+  return { status: ran.status ?? -1, signal: ran.signal, out, err: ran.stderr ?? "" };
+}
+
+function assign(repo: Repo, args: string[] = []): Ran {
+  return run(["bash", SCRIPT, "--worktree", repo.dir, ...args], {
+    timeout: TIMEOUT,
     env: { ...process.env, ...GIT_ENV, PATH: `${repo.bin}:${process.env.PATH ?? ""}` },
   });
-  return { status: ran.status ?? -1, out: `${ran.stdout ?? ""}${ran.stderr ?? ""}` };
 }
 
 function entryFile(text: string): string {
@@ -445,4 +468,28 @@ test("the commit the lander writes carries nothing the handoff gate screens for"
       "branch, so nothing re-reads it before it is on public master",
   );
   assert.match(message, /^Set the plugin version 0\.1\.34$/m);
+});
+
+test("a flag that takes a value is refused when given none, not looped on forever", () => {
+  const repo = repoAt("0.1.33");
+  for (const flag of ["--worktree", "--base", "--slug", "--pr", "--entry-file"]) {
+    const { status, signal, out, err } = assign(repo, [flag]);
+
+    assert.equal(signal, null, `${flag}: the script had to be killed`);
+    assert.equal(status, 6, `${flag}: ${out}`);
+    assert.match(err, new RegExp(`${flag} needs a value`));
+  }
+});
+
+test("a script the timeout kills is reported as killed, not as an exit status it never produced", () => {
+  assert.throws(
+    () => run(["bash", "-c", "sleep 5"], { timeout: 100 }),
+    (error: unknown) => {
+      assert.ok(error instanceof assert.AssertionError, `not an assertion: ${String(error)}`);
+      assert.match(error.message, /killed after 100 ms/);
+      assert.doesNotMatch(error.message, /-1/);
+      return true;
+    },
+    "spawnSync returned status null for the child it killed, and the helper reported that as a status of -1",
+  );
 });

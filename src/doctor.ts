@@ -1,12 +1,12 @@
 import { execFile } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { LEGACY_WORKSPACE_FILE, WORKSPACE_FILE, WORKSPACE_FILES, workspaceFile } from "./autofix.js";
 import { BEADS_DIR, BEADS_DIR_VAR } from "./beads.js";
 import { describeRoots, resolveRoots, type ResolvedRoots, type RootsOptions } from "./config.js";
 import { failureOf } from "./errors.js";
-import { defaultBranchOf, remoteSlugOf } from "./git.js";
+import { defaultBranchOf, remoteOf } from "./git.js";
 import { slotsPath } from "./lanes.js";
 import { painter } from "./status.js";
 import { VERSION } from "./version.js";
@@ -18,6 +18,8 @@ const MAX_OUTPUT = 1024 * 1024;
 
 const GH_COST = "pull request state and staleness stay unchecked";
 const BD_COST = "no issue can be read and every project reads as empty";
+const NO_ORIGIN_HEAD = "no origin/HEAD";
+const REMOTE_COST = "its pull requests and imported issues go unread";
 
 export type Severity = "ok" | "warn" | "fail";
 
@@ -102,12 +104,43 @@ function timesListed(roots: ResolvedRoots): Map<string, number> {
   return counted;
 }
 
-function repeatedRootChecks(roots: ResolvedRoots, counted: ReadonlyMap<string, number>): Check[] {
+function segmentsOf(dir: string): string[] {
+  return dir.split(sep).filter((segment) => segment !== "");
+}
+
+function sharedTail(a: readonly string[], b: readonly string[]): number {
+  let shared = 0;
+  while (shared < a.length && shared < b.length && a[a.length - 1 - shared] === b[b.length - 1 - shared]) {
+    shared += 1;
+  }
+  return shared;
+}
+
+function labelsOf(dirs: readonly string[]): Map<string, string> {
+  const segments = new Map(dirs.map((dir) => [dir, segmentsOf(dir)]));
+  const labels = new Map<string, string>();
+  for (const [dir, own] of segments) {
+    let depth = 1;
+    for (const [other, theirs] of segments) {
+      if (other !== dir) {
+        depth = Math.max(depth, sharedTail(own, theirs) + 1);
+      }
+    }
+    labels.set(dir, depth > own.length ? dir : own.slice(-depth).join(sep));
+  }
+  return labels;
+}
+
+function repeatedRootChecks(
+  roots: ResolvedRoots,
+  counted: ReadonlyMap<string, number>,
+  labels: ReadonlyMap<string, string>,
+): Check[] {
   return [...counted]
     .filter(([, times]) => times > 1)
     .map(([dir, times]) => ({
       severity: "fail" as const,
-      name: `${basename(dir)} listed`,
+      name: `${labels.get(dir) ?? dir} listed`,
       tried: triedOf(roots),
       result: `${dir} is listed ${times} times · it is read once, so the extra entries do nothing`,
     }));
@@ -175,16 +208,26 @@ function repoEntries(workspace: Record<string, unknown>): [string, unknown][] {
   return Object.entries(asRecord(repos, "repos")).filter(([name]) => !name.startsWith("_"));
 }
 
-function repoCheck(id: string, dir: string, name: string, value: unknown): Check {
+function repoCheck(id: string, dir: string, file: string, name: string, value: unknown): Check {
   const label = `${id} repo ${name}`;
-  let path: unknown;
+  let declared: Record<string, unknown>;
   try {
-    path = asRecord(value, `repo ${name}`)["path"];
+    declared = asRecord(value, `repo ${name}`);
   } catch (cause) {
     return { severity: "fail", name: label, tried: `read repo ${name}`, result: messageOf(cause) };
   }
+  const path = declared["path"];
   if (typeof path !== "string") {
     return { severity: "fail", name: label, tried: `read repo ${name}`, result: "no path" };
+  }
+  const configured = declared["defaultBranch"];
+  if (configured !== undefined && (typeof configured !== "string" || configured === "")) {
+    return {
+      severity: "fail",
+      name: label,
+      tried: `read repo ${name}`,
+      result: "defaultBranch is not a branch name",
+    };
   }
   const repo = resolve(dir, path);
   const tried = `stat ${repo}`;
@@ -194,9 +237,24 @@ function repoCheck(id: string, dir: string, name: string, value: unknown): Check
   if (!existsSync(join(repo, ".git"))) {
     return { severity: "fail", name: label, tried, result: `${repo} is not a git checkout` };
   }
-  const slug = remoteSlugOf(repo) ?? "no origin remote";
-  const branch = defaultBranchOf(repo) ?? "no origin/HEAD";
-  return { severity: "ok", name: label, tried, result: `${slug} · ${branch}` };
+  const remote = remoteOf(repo);
+  if (remote.failure !== undefined) {
+    return { severity: "fail", name: label, tried, result: `${remote.failure} - ${REMOTE_COST}` };
+  }
+  const slug = remote.slug ?? "no origin remote";
+  const branch = configured ?? defaultBranchOf(repo);
+  if (branch !== undefined) {
+    return { severity: "ok", name: label, tried, result: `${slug} · ${branch}` };
+  }
+  if (remote.slug === undefined) {
+    return { severity: "ok", name: label, tried, result: `${slug} · ${NO_ORIGIN_HEAD}` };
+  }
+  return {
+    severity: "warn",
+    name: label,
+    tried,
+    result: `${slug} · ${NO_ORIGIN_HEAD} - set defaultBranch in ${file} or run git remote set-head origin -a`,
+  };
 }
 
 function rootCheck(id: string, dir: string, file: string, declared: unknown): Check {
@@ -280,11 +338,13 @@ interface WorkspaceReading {
   lockPrefix?: string;
 }
 
-async function workspaceChecks(root: string, options: DoctorOptions): Promise<WorkspaceReading> {
+async function workspaceChecks(
+  dir: string,
+  id: string,
+  options: DoctorOptions,
+): Promise<WorkspaceReading> {
   const env = options.env ?? process.env;
   const timeoutMs = options.timeoutMs ?? PROBE_TIMEOUT_MS;
-  const dir = resolve(root);
-  const id = basename(dir);
   const checks: Check[] = [];
   if (!isDirectory(dir)) {
     checks.push({ severity: "fail", name: id, tried: `stat ${dir}`, result: "no directory here" });
@@ -337,7 +397,7 @@ async function workspaceChecks(root: string, options: DoctorOptions): Promise<Wo
   });
   checks.push(await bdCheck(id, beadsDir, env, timeoutMs));
   for (const [name, value] of repos) {
-    checks.push(repoCheck(id, dir, name, value));
+    checks.push(repoCheck(id, dir, found.name, name, value));
   }
   const lanes = lanesCheck(id, found.name, workspace, options.lockRoot);
   checks.push(lanes.check);
@@ -349,17 +409,19 @@ export async function diagnose(options: DoctorOptions = {}): Promise<Diagnosis> 
   const timeoutMs = options.timeoutMs ?? PROBE_TIMEOUT_MS;
   const roots = resolveRoots(options);
   const counted = timesListed(roots);
+  const dirs = [...new Set(roots.roots.map((root) => resolve(root)))];
+  const labels = labelsOf(dirs);
   const checks: Check[] = [
     rootsCheck(roots),
-    ...repeatedRootChecks(roots, counted),
+    ...repeatedRootChecks(roots, counted, labels),
     await ghCheck(env, timeoutMs),
   ];
   const claims = new Map<string, string[]>();
-  for (const root of roots.roots) {
-    const reading = await workspaceChecks(root, options);
+  for (const dir of dirs) {
+    const reading = await workspaceChecks(dir, labels.get(dir) ?? dir, options);
     checks.push(...reading.checks);
     if (reading.lockPrefix !== undefined) {
-      claims.set(reading.lockPrefix, [...(claims.get(reading.lockPrefix) ?? []), resolve(root)]);
+      claims.set(reading.lockPrefix, [...(claims.get(reading.lockPrefix) ?? []), dir]);
     }
   }
   checks.push(...sharedPrefixChecks(claims, options.lockRoot));

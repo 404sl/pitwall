@@ -1,5 +1,446 @@
 # Changelog
 
+## 0.1.130
+
+A rework brings a dropped or retired branch up to master by merging master into it and pushing the plain fast-forward, instead of rebasing and asking for a force-push a session refuses. Nothing on the branch is rewritten, no lease is needed, and no push is left for a person. The pre-push check runs with the branch named rather than as rebased. A reworked branch that master moves under again before the lander reaches it is refused as merge-shaped and stays where it is, labelled and undispatched, until pitwall-uoxk teaches the lander to merge master into it; until then a person moves such a branch.
+
+## 0.1.129
+
+The lander no longer refuses a branch that carries a merge commit of its own and has fallen behind master. It merges master into the branch, pushes the fast-forward and waits for checks on it, exactly as it rebases a linear branch; only a merge that conflicts comes back, as the same conflict the rebase path reports. A reworked branch that is merge-shaped by design therefore lands on its own once master has moved under it, and there is no merge-shaped status for the landing step to return. A version commit an earlier round wrote that sits under the branch's merge commit is dropped by restoring its files from master before the merge, and the number is assigned again from master as it is now.
+
+## 0.1.128
+
+The lander's close step is handed a per-issue verdict as data - the config key each landed pull request was pre-flighted under, whether that key has a deploy array in the run's config, what the deploy step returned for it, and the exact `bd close` with its reason - instead of a list of deploying keys to map slugs onto. A repository with no deploy closes on the merge whatever any notes file says about which key is which; a deploying repository whose deploy did not succeed is still held.
+
+## 0.1.127
+
+A ticket the lander or the train holds open now carries a note saying which pull request (or which survey gap) held the close, what did merge for it, and that the hold was deliberate. Read that note before treating a claim older than an hour as a dead lane; a held ticket is not one. A hold the note step could not record is logged as such in the run.
+
+## 0.1.126
+
+The lander now holds a ticket's close when a pull request on the ticket's branch was put in this run's skipped list - labelled after the pre-flight, unconfigured slug, or outlasting the rounds - and names that pull request and the skip reason in the held-open line. A labelled pull request that the run neither landed nor skipped still holds nothing.
+
+## 0.1.125
+
+The triage scan's handed-off check now says on stderr which repo checkout it could not read, naming the key and the path, and says when the workspace config named no repositories at all. A stale-claim finding that follows one of those warnings should be read as "a checkout was never consulted", not as a dead lane.
+
+## 0.1.124
+
+A release train no longer closes a ticket on the label alone. Before closing, it reads the branch of everything it merged and asks every configured repository what is open on those branches. A pull request that is open on one of them without the handoff label holds that ticket open, and the run says which one held it under `heldOpen`. A survey it could not read, or a repository it cannot show it asked, holds the close too — silence from a repository is not read as nothing there. Only the affected tickets are held; the rest of the train closes as before.
+
+## 0.1.123
+
+The lander no longer closes a ticket on the label alone. Before the close step runs it surveys the branch: every configured repository is asked for its open pull requests whose head is the ticket's branch, with their labels, and a ticket whose branch still carries a pull request that is open and unlabelled **anywhere** is held open rather than closed. The run names the pull request that held it, and the final line says `HELD OPEN`.
+
+What a session should do differently now:
+
+- A two-repository ticket whose second pull request never got labelled no longer closes on the half that landed. If a run reports `HELD OPEN`, the work that merged is merged and deployed and stays that way — what is missing is the other repository's pull request, so look there rather than at the tracker.
+- `heldOpen` is not `unclosed`. `unclosed` still means merged, deployed, and nobody confirmed the close, which wants `bd show`. `heldOpen` means the lander deliberately declined to close, which wants a look at the sibling repository.
+- A survey that could not be read, or that does not report asking every configured repository about every branch, holds the close too. That is the safe direction — a survey trusted over a failed command closes a ticket wrongly and invisibly — but a hold is not a retry. The close step only ever considers what merged in the same run, so no later run revisits a held ticket: it stays `in_progress` until a sibling pull request lands on the same branch and that run finds the branch clear, or somebody closes it by hand. The `NOT CLOSED` line naming what held it and the `HELD OPEN` line at the end of the run are the only signal it leaves, so a single-repository ticket held by an unreadable survey waits for a person.
+- An open pull request that *is* labelled holds nothing — it is already in the queue.
+
+## 0.1.122
+
+A scan no longer reports a finished hand-off as a dead lane in three cases it previously always got wrong, and no longer drops a real one in three cases the first of those fixes would have introduced.
+
+The handed-off check now asks each repository inside the directory the workspace config names for it, instead of assuming the config key is the directory. In a workspace whose keys and paths differ - `site` keyed to the `cli` checkout, for instance - it was reading one wrong checkout, skipping the rest, and never asking about the repositories where lanes actually run, so every genuine hand-off there could report as a stale claim.
+
+An issue whose notes quote the number of an open pull request carrying the handoff label is now recognised as handed off even when its branch name says nothing about the issue - that fallback was documented but had never actually run. It now requires the reference to be the repository's own: the number must be followed by a non-digit, and preceded by a word the repository answers to (its checkout directory, its slug, or the name half of its slug), so `cli #77` and a pull request url count while another repository's `schema #77` does not, and `#16` no longer matches inside `#1627`. A bare `#77` with no repository beside it no longer silences a finding - when recording a hand-off in an issue's notes, quote the pull request url or put the repository word in front of the number.
+
+Branches under `autofix/`, cut before the devloop rename, are now recognised everywhere `devloop/` is, both in the handed-off set and in the orphaned-pull-request check, so a merged `autofix/` branch no longer leaves its issue reading as a stale claim. An open unlabelled one now shows up in the orphan check as well: on a project still carrying old `autofix/` refs the first scan after this lands can be both noisy and slow, because each such pull request costs one `bd show` with a 15-second timeout, up to the 50 the check lists per repository.
+
+## 0.1.121
+
+WRITING-TICKETS.md now says where a blocker belongs: in the dependency graph with `bd dep add`, with the prose explaining why. A ticket that merely mentions another is not blocked by it, a pull request number is not a blocker, and an edge must never be added to make the graph look complete, because a wrong edge hides an issue from the ready queue.
+
+## 0.1.120
+
+A request the console records - a bead labelled `unrefined` - is now refined by a run rather than by hand. `queue.sh --next` prints it as a three-field line, `<id> <slot> refine`, and the loop dispatches it with `config.sh --refine <id>`, which emits the args for `refine.js`. The run reads the request and its dropped files, measures the claim against origin following `WRITING-TICKETS.md`, and either writes the specification beside the raw text and hands the ticket to the devloop, parks it with one question for the planning session (keeping `unrefined` so an answer sends it round again), or closes it as a duplicate, done, or a note. It never rewrites the request. A workspace must declare `actor` in its config before any refine can dispatch; `config.sh --args` and `dispatchable.sh` refuse an unrefined issue.
+
+## 0.1.119
+
+A rework that ends green now takes its rework route off the tracker issue once the handoff label is on, so reopening that issue later hands it to the task path rather than to a rework against a pull request that has already merged.
+
+## 0.1.118
+
+`config.sh --check` now reports every repository whose default branch, deploy entry or branch-name field is wrong, in one run. Fix them all, then run it once to confirm, instead of fixing one and re-running to discover the next. The dispatch modes still refuse on the first problem they meet and print nothing on stdout when they do.
+
+Refs pitwall-4st8
+
+## 0.1.117
+
+`precheck.sh <id>` now works from anywhere inside a workspace: it resolves the root and lock prefix through `config.sh`, refuses rather than reading the nearest tracker when it finds no config, and its worktree check actually fires. It is a hand check for an id you are about to dispatch outside `queue.sh --next`, or one that keeps bouncing - not a gate, and nothing in the loop calls it.
+
+## 0.1.116
+
+When the configured repositories do not share a default branch, the rules block a split step receives lists each repository beside the remote branch it lands on and phrases every ref and branch flag as `<base>` and `<branch>` taken from that list, instead of rendering a placeholder that names a branch nobody has. Prompts for a single repository, and every prompt when the repositories share one default, are unchanged.
+
+Refs pitwall-gp1x.
+
+## 0.1.115
+
+A rework whose release step answers nothing, dies, or is not permitted to run now retries with two plain commands - the slot file first, then the lane lock through its owner file, each removed only when it names this run - and a release refused twice is recorded as REFUSED in the lane and slot fields with the plain command that releases each one, instead of LEAKED pointing at files the release never touched.
+
+Refs pitwall-vaqi
+
+## 0.1.114
+
+A run that stopped on a cached `blocked` or `needs_feedback` can now be continued: resume it with `retryFailed: true` added to the args object it was launched with, and that step is issued once more while everything that succeeded replays from cache. SKILL.md says plainly that a resume replays cached failures, and that a resume must never be built from a fresh `config.sh --args`.
+
+## 0.1.113
+
+A lane kills what it launched by the pid it recorded at launch, never with a pattern kill on a path or flag substring. Without a recorded pid it lists matches first, prints them, and kills only those whose command starts with the intended binary; if it cannot identify the process that way it leaves it running and says so. A permission failure that appears right after a cleanup step is to be reported as self-inflicted, not as an environment fault.
+
+## 0.1.112
+
+`slot.sh` no longer suggests `--gc` when every lane is busy, and no longer lists slots without a lane lock as "probably finished" - an absent lock says nothing about whether a run is finished. When the pool is full it says how many held slots have no lock and names `slot.sh --release <id>` for a run that has reported; a pool whose every slot holds its lock prints the one line it always did. `--gc` still frees a slot only on `lane-running.sh` answering NOT-RUNNING, and its free line now names that verdict rather than the absence of a lock and a worktree.
+
+Closes pitwall-cqs.
+
+## 0.1.111
+
+The fix brief keys its role-specific text on the configured `role`, not the repo key. A script-role repository under any key is told to branch from its own checkout, and its rule 5 names that repository's configured test command - or "the check script" when none is configured - rather than `ruby script/check.rb`. A repository keyed `docs` with another role gets that role's brief. The name fallback for the four historical keys is unchanged, so a config with no `role` set behaves as before.
+
+## 0.1.110
+
+The supervisor helpers that run from a checkout now read the repository's configured default branch: `master-watch.sh` watches it, `stranded.sh` measures every pull request against it, `deployed.sh` compares the servers with it, and `lock-check.sh` names it in its release advice. `master-watch.sh` also accepts `--base <branch>`. A workspace with no `defaultBranch` configured sees no change. `stranded.sh` no longer consults `origin/HEAD`; the config is the only source, which is what the train uses too.
+
+## 0.1.109
+
+- The landing prompts that span every repository - lock, survey, release, deploy, read-back, retire and close - now list each repository beside the remote branch it lands on when the configured default branches differ, instead of showing a placeholder in the identity command. With one shared default, or none configured, the prompts are unchanged.
+
+## 0.1.108
+
+`git push --all`, `git push --mirror` and `git push --branches`, and any abbreviation git accepts for them such as `--mirr` or `--al`, are refused by the guard from any worktree, with exit 2 and nothing run: none of them names a destination, and all three write the shared local master to the remote along with the rest. Push one branch by name instead. A push alias, a push wrapped in `sh -c` or `env`, and a refspec supplied by configuration are still not read by the guard.
+
+Refs pitwall-a809.
+
+## 0.1.107
+
+A workspace may add one `repos` entry with `"path": "."` and `"role": "workspace"`, and a ticket whose work is tracker edits or root-level files is routed there instead of being bounced. A lane dispatched to it cuts no worktree, opens no pull request and runs no suite: it applies the edits, leaves root files uncommitted for the owner, closes the issue itself with a close reason read from a file, and reports `CLOSED` with the files it touched - `CLOSED` being read from the status token on the first line of `bd show`, never from the word elsewhere. It does not edit `.pitwall.json`, `.autofix.json` or anything under `.beads/`; a ticket needing one of those comes back as `NEEDS YOU`. `applied` is an outcome for that key only, and a checkout lane returning it is refused before review. The snapshot leaves the entry out of `repos[]`. The lander, the train, the handoff survey, the queue scan, `--rework` and the console all skip the entry, and `config.sh --check` refuses a slug on it or a path that is not the root.
+
+## 0.1.106
+
+A release step that is not permitted to run, dies, or answers `refused` is logged with its reason and retried once with two plain commands that read the slot file and the lane's owner file and remove each only when it names the run, slot first. If that is refused too, `lane` and `slot` in the run's result read `REFUSED`, name the path, and each carries its own plain command to run on reading it, so a lane lock left behind after its slot was given back is released without going through the slot - a run no longer ends holding a slot with only "answered nothing" to show for it. `slot.sh --release` now says when no slot names the id and that it did not read the lane locks, instead of exiting silently.
+
+Refs pitwall-wb72
+
+## 0.1.105
+
+In the repository that ships the plugin, a commit message or pull request body that names the handoff label is compliant: the label is the subject of such a change, not a leak. In every other repository the token is still refused, and the scratch-path and authorship checks are unchanged everywhere.
+
+Closes pitwall-7ddo.
+
+## 0.1.104
+
+The fix brief now tells a lane to commit its work to the branch as soon as it compiles and again before every long-running step, and to fold those interim commits into one before the pre-push check - onto the head the remote holds when the branch is published, and onto the fork point when it is not. kill-lane.sh rescues the commits a never-pushed branch holds as a mailbox in the rescue directory, listed on stdout and replayable with git am, before it deletes the branch; a dry run names the file it would write. A fix step that is killed mid-suite leaves commits, and the cleanup keeps them.
+
+Refs pitwall-2tt2
+
+## 0.1.103
+
+A run that ends short of a handoff - blocked, needs_feedback, a dead fix step - now says in a top-level `worktree` field whether its worktree is gone, clean, or still holding uncommitted or unpushed work, naming the path, and the console line for that outcome says the same. Read that field before `kill-lane.sh` removes the worktree; `UNCOMMITTED` means work no branch protects. `release-lane.sh --worktree <path>` is what reports it, and it only reads. A git read that fails inside the checkout is `UNREAD`, never `CLEAN`, and a release step that does not answer leaves the field `UNKNOWN`, never clean.
+
+## 0.1.102
+
+The push guard now refuses the repository's configured default branch, not only master and main. Every brief and script that calls `git-guard.sh` passes `--default=<branch>`; a session writing its own guard command should pass the branch its repository lands on, and master and main stay refused either way.
+
+## 0.1.101
+
+The lander refuses a pull request that is open against a branch other than the one it was told to land on, before touching anything. The refusal names both branches and the `gh pr edit --base` that retargets the pull request; a base GitHub cannot report is refused the same way rather than assumed.
+
+Refs pitwall-hdgs
+
+## 0.1.100
+
+The handoff no longer needs GraphQL. Every read and write it makes to label a pull request goes through `gh api` on the REST budget, so a session whose `gh pr view` and `gh pr list` are being refused for a rate limit can still hand off a green branch. A REST call that is itself rate limited is retried with backoff, five attempts over 75 seconds, before the handoff reports it, and every refusal now prints what gh said. Exit 7 still means nothing could be read at all. The paginated reads need gh 2.44 or later.
+
+## 0.1.99
+
+`config.sh --args` and `--rework` now say on stderr when a root checkout's default branch is behind origin, naming the repository, the count and both shas, and say when a checkout could not be compared. The dispatch proceeds either way and nothing is fast-forwarded - read the line and fast-forward the checkout yourself. Tolerate some lag with `warnBehind` in the workspace config; the default reports any lag at all.
+
+## 0.1.98
+
+When the deploy step dies rather than answering, the lander no longer dies with it. It reads the hosts back, compares what they serve against the shas that merged, reports the deploy as unknown with the error the step died with, closes nothing, and still returns the merged list with its shas and logs the final counts line.
+
+## 0.1.97
+
+A lane now cuts its worktree from, reads its commit identity from, checks its commit range against and opens its pull request with --base set to the repository's configured default branch, and its reviewer diffs against that branch. Triage names each checkout's branch in the routing table and asks that branch rather than origin/master. A repository with no defaultBranch configured behaves exactly as before.
+
+Refs pitwall-7syh.2
+
+## 0.1.96
+
+- A dispatch that stops with `run-script.sh` exiting 3 and naming a staged copy is not a broken install: something replaced that file in `<root>/.autofix-run` since it was staged. Read the named file, then run `run-script.sh --restage` once and dispatch again. Do not copy the script by hand and do not delete the stage to get past the refusal.
+- `<root>/.autofix-run/staged-from` records which install and plugin version the staged scripts came from, when, and each file's byte count and sha256, so a stale copy is diagnosable in one read.
+
+## 0.1.95
+
+The lander's survey can no longer write a repository in its own words: its slug field is an enum of the configured slugs, and a decorated value that gets through anyway still resolves when exactly one configured owner/name appears in it. A pull request skipped by the pre-flight filter now says whether it was absent from the list or pre-flighted under a name that matches no configured repository, quoting that name, instead of asserting it was labelled after the supervisor looked. The supervisor doc describes the two reasons.
+
+## 0.1.94
+
+A fix step that finds its lane already locked can now tell whether the holder is its own run. `config.sh --args` mints a `dispatch` token for every dispatch, the lane writes it into the lock's owner file, and the claim command prints `LANE_RECLAIMED` when the owner line is exactly what this run would write - the retry then carries on in its own worktree instead of refusing. Another issue, the same issue under another dispatch, a lock with no owner file or an owner line from before tokens existed are still `LANE_BUSY`, and the lane still stops on them. Owner files gain a trailing `dispatch <token>` field; every script that reads or removes them keeps working.
+
+## 0.1.93
+
+A push whose refspec names master or main is refused by the guard even from a lane's own branch, with or without `--branch`. The refused destinations are `master`, `main`, `heads/master`, `heads/main`, `refs/heads/master` and `refs/heads/main`, so `git push origin HEAD:master`, `git push origin :master`, `git push --force origin +HEAD:main`, `git push origin master` and `git push origin HEAD:heads/master` all exit 2 and run nothing. A destination that is a pattern or empty is refused too, because it lands on the shared local master among the rest: `git push origin refs/heads/*:refs/heads/*`, `git push origin +refs/heads/*:refs/heads/*`, `git push origin :` and `git push origin +:` all exit 2 and run nothing, and so does a pattern over the lane's own namespace such as `refs/heads/devloop/*:refs/heads/devloop/*` - push one branch by name instead. A push to the lane's own branch, a bare `--force-with-lease`, and the lander's lease-and-refspec push are unaffected. `git push --all`, `git push --mirror` and a refspec that comes from configuration rather than the command line are not read and are recorded under pitwall-a809.
+
+## 0.1.92
+
+Triage now verifies a path's existence and a commit's ancestry against `origin/master`, fetched first, and never against the HEAD of the root checkout: `git -C <checkout> ls-tree --name-only origin/master <path>` and `git -C <checkout> merge-base --is-ancestor <sha> origin/master`. A root checkout that nobody has fast-forwarded no longer makes triage report a landed file as missing or a merged commit as unlanded, and no longer bounces an issue over prerequisites that already shipped.
+
+## 0.1.91
+
+The handoff gate's survey of sibling pull requests no longer uses GraphQL, so a
+handoff is no longer blocked by the shared per-account secondary rate limiter
+when the branch has no sibling. A session that previously saw the gate exit 7
+with "could not list the open pull requests of <repo>" during a limiter outage
+should re-run it rather than labelling anything by hand. Note that compliance,
+status-rollup and label calls still use GraphQL, so a total outage can still stop
+a handoff — later in the run, and with a different message.
+
+## 0.1.90
+
+- `.pitwall.json` accepts an optional `defaultBranch` per repository; absent means `master`, so nothing changes for a workspace that does not set it.
+- Every dispatch (`config.sh --args`, `--rework`, `--land`, `--train`) now asks GitHub for each repository's real default branch and refuses, naming both, when it disagrees with the configured or assumed one. A repository whose `origin/master` is stale while GitHub's default is elsewhere can no longer be dispatched, rebased or landed silently. If gh cannot answer, or does not answer within 30 seconds, the dispatch is refused rather than assumed or waited on. `config.sh --check` reports the same mismatch, and now needs gh auth and a network.
+- A `deploy-one.sh` entry in `repos.<key>.deploy` must ship the repository's default branch: add `--base <branch>` to each entry of a repository whose `defaultBranch` is not `master`, or the dispatch is refused naming the entry. Without `--base`, `deploy-one.sh` fetches and deploys `origin/master` even when it is stale, and nothing before the post-deploy read-back would notice.
+- `land-one.sh`, `land-train.sh`, `lane-handoff.sh` and `deploy-one.sh` take `--base <branch>`, defaulting to `master`; the landers pass it from the config. `land-train.sh` opens its pull request with an explicit `--base`.
+- A repository with no `slug` cannot have its default branch checked; `--check` says so as a note.
+
+## 0.1.89
+
+`queue.sh --next`, `dispatchable.sh`, `precheck.sh` and `slot.sh` now treat `needs-feedback` as parked, alongside the six labels they already parked on. Write `needs-decision` (a choice only a person can make) or `needs-access` (something only a person can run) when you park an issue - those are the labels triage writes and the console counts as yours. The queue for a person is `bd list --status open --label-any needs-decision,needs-access`; an issue still carrying `needs-feedback` is parked but not counted, so relabel it when you meet one.
+
+## 0.1.88
+
+A release train no longer loses a plugin pull request that an earlier lander round had
+already stamped with a version. The branch's version commit is dropped as it is squashed
+on, so it cannot replay a changelog entry under a number master has since used, and the
+train assigns the one version the whole set ships under.
+
+## 0.1.87
+
+**Rule 3 of every lane brief named a binary no lane could run.** `git-guard` resolved to a file
+outside any of these repositories, mode 700, which a lane can neither read nor execute: `head`
+on it exited 1 with no output and calling it exited 126 with "Interrupted system call". Every
+lane that pushes was therefore choosing between following the rule and failing, or satisfying
+the invariant some other way and doing something its brief did not say. Two of the four callers
+executed it directly - `land-one.sh` before its force-push and `land-train.sh` before pushing a
+train - so a guard that was meant to prove a push was safe was instead an unconditional refusal
+of the push.
+
+- **The guard is now `git-guard.sh`, a script beside `release-lock.sh` and `release-lane.sh`.**
+  It lives where every other shared guard in this pipeline lives, which makes it
+  version-controlled and testable like those, and it is reachable by any lane because it ships
+  with the plugin. Copying the old binary in was not an option: it could not be read.
+- **It refuses five things and runs nothing when it refuses.** A `--branch` of master or main; a
+  `--dir` git reports no worktree root for; a `--dir` that is inside a worktree but not its root;
+  a detached HEAD, which has no branch to compare; and a checkout whose HEAD is not the branch
+  the caller named. Otherwise it changes into the directory and execs the command.
+- **Paths are compared resolved, not literally.** `rev-parse --show-toplevel` answers with the
+  real path, so on a machine where the worktree root is reached through a symlink a literal
+  comparison refuses every legitimate worktree and passes where there is no symlink - wrong in
+  the direction that looks fine until it is somebody else's machine.
+- **All four call sites now name the script**, the two shell ones resolving it beside themselves
+  before they change directory, and rule 3 says "Guard pushes" rather than "Guard branch creation
+  and pushes": a HEAD-equals-branch check cannot pass on the command that creates the branch, and
+  in this pipeline branches are cut by `git worktree add -b` anyway. `plugin-prompts.test.ts`
+  holds that: the rules block has to name `git-guard.sh`, `land.js` has to name it, and no `.js`
+  or `.sh` in the skill directory may carry the bare PATH name. The scan is limited to those two
+  extensions so that this file can still say what the old binary was called.
+- **The two shell callers say which of three things went wrong, instead of one sentence for all
+  of them.** Both sent the guard's stderr to `/dev/null` and tested only zero against non-zero,
+  so a guard that was never executed came out as "push was refused" - a refusal reported for a
+  check that never looked at anything, which is exactly the misdiagnosis that cost this ticket
+  its first day. The exit status is now read: 126 and 127 are the guard not being runnable, 2
+  is a refusal, and anything else belongs to the pushed command. 2 is the weakest of the three,
+  because the guard `exec`s on success, so a pushed command that itself exits 2 arrives looking
+  the same - the guard's own stderr is passed through rather than dropped, and the line it
+  prefixes with its own name is what separates them and what goes on the summary.
+- **Nine tests cover the guard**, including the four the ticket asked for - the right branch runs
+  the command, master, main and a branch other than the one given each refuse. Every refusal
+  asserts the guard's own exit code and its own prefix on stderr, not merely that something
+  exited non-zero: with the script deleted bash answers 127 and creates no marker file, which
+  satisfies a non-zero-and-did-not-run assertion perfectly and proves nothing. Each also asserts
+  the wording of the refusal it is named for, so it cannot be satisfied by an earlier branch of
+  the guard firing instead - deleting the root check, the detached-HEAD check or the
+  no-worktree-root check fails exactly the test named for it, and nothing else. Measured both
+  ways - nine of nine red with the script removed, nine of nine green with it back. Each
+  refusal still asserts the command did not run, because a guard that reports a refusal and
+  runs the command anyway is worse than one that allows it.
+- **`lander-identity.test.ts` stubbed a permissive `git-guard` onto PATH**, so `land-one.sh` and
+  `land-train.sh` were exercising a guard that allowed everything. The stub is gone and both
+  tests now run the real guard. Three more tests there run each lander against a skill directory
+  whose guard is missing, and against one that refuses with a reason, and read the summary line
+  back: a guard that could not be run must not be reported as a refusal, and a refusal must carry
+  the guard's own sentence. All three fail against the callers as they were.
+
+## 0.1.86
+
+`queue.sh --next` now prints an issue the lander retired as `<id> <slot> rework <pr> <repo>`; dispatch that line with `config.sh --rework <id> <pr> <repo>` and `rework.js`, never `task.js`. `config.sh --args` refuses such an issue and prints the command that takes it. The lander records the route on the issue as `rework` metadata as it retires, for `red_after_rebase` and `conflict` alike, so nobody reads a pull request number out of a note. A rework that ends red after its one repair takes the route off, labels the issue `needs-decision` and sets it open, so a reopen does not run a second repair; when no step of the run could do that - the repair returned nothing, or reported a fix whose head did not move - the result's `notes` end with that one `bd update` command, and it must run before `-s open`. `config.sh --args` asks bd from the tracker root, so the refusal holds from inside a repository. On bd 1.2.2, `--metadata` merges top-level keys (the issue's `origin` survives a `rework` write) and `--unset-metadata` on an absent key is a no-op; both measured, neither in bd's own help text.
+
+## 0.1.85
+
+In the repository that ships the plugin, the handoff gate and the pre-push check no longer refuse a commit message or pull request body for naming the plugin - the name is neutralised there the same way the plugin's paths already are. Everywhere else it is still a leak, and the handoff label token and scratch paths are still leaks in every repository.
+
+## 0.1.84
+
+The repo keys in `.pitwall.json` are free choices now. Triage, split and work schemas offer exactly the keys the workspace configures, plus `unknown`, so a workspace with any number of repositories can be onboarded without renaming them, and a key the workspace does not have cannot be returned at all. A config that lists no repositories is refused before any step runs instead of reaching triage with nothing to route to.
+
+## 0.1.83
+
+Tracker notes are no longer written with `bd update --append-notes`. Write the note to a file, then record it with `bash <skillDir>/bd-note.sh <id> --note-file <path>`, passing `PITWALL_SESSION` so the stamp names your session. The script takes the write lock, stamps the note with the date and the writer, and reads the write back; a bare append loses one of two overlapping notes silently and lands undated. The text goes in a file, never in a double-quoted argument, so a backtick or a `$(` in it cannot be evaluated by the shell before bd sees it. A non-zero exit means the note did not land after the script's own retries and the text is on stderr - report that rather than reporting the note recorded. Where a note accompanies a status change, write the note first, then change the status. `bd update --notes` is still never used: it replaces the whole field and the field has no history.
+
+## 0.1.82
+
+A handoff whose tracker note the tracker altered on the way in is now reported as recorded, not
+as missing. Where a run previously saw "the note is NOT in it" with a command to append it
+again - and, following it, wrote the note twice - it now sees one warning naming the character
+the stored text diverged at, and the handoff completes. Do not append the note again on seeing
+that warning; it is already recorded. A note that genuinely never landed is unchanged: exit 5,
+and the append instruction still stands.
+
+Refs pitwall-lf4j
+
+## 0.1.81
+
+A session now reads its own commit messages back before it pushes, with
+`lane-handoff.sh --repo-path <abs> --pre-push`, instead of meeting a compliance hit at the handoff
+when the only remedy left is a force-push it may not run. The brief asks for the handoff label to
+be named in prose rather than written as its literal token, and the handoff gate now says which
+half of a refusal is fixable in place and which half needs a person.
+
+Both remedies the pre-push refusal prints now carry the commit identity on the command, taken
+from the branch being built on. Without it git invents a name and address from the hostname
+rather than refusing, and the reset-then-commit form records that as the author. The refusal also
+asks for a re-run once the message is reworded, because nothing has graded the text just written.
+
+A rebase path has its own mode. `--pre-push --rebased` offers an amend of the commit the step just
+wrote and nothing else, because a rebase renews every sha and absence from a remote stops meaning
+a commit was never reviewed. `rework.js` runs the check between the commit and each force-push, so
+a message written during a resolve or a repair is graded while the amend is still free.
+
+The pre-push check now asks the remote whether the branch is published — `git ls-remote --heads
+origin refs/heads/<branch>` — instead of inferring it from which shas a remote ref happens to
+reach. A rebase renews every sha, so the old inference read a branch that had been pushed four
+times as never pushed and offered a squash whose push is then rejected as a non-fast-forward.
+There is a third answer as a result: exit 10 means every message is clear but the remote holds
+the branch at a head the session's HEAD does not contain, so no plain push exists and only a
+person can publish it. Report it and return blocked; there is nothing to try. A remote that
+cannot be reached is exit 7 and never read as a branch that does not exist. The rebase mode is
+unchanged and asks no remote anything, because that caller republishes by design.
+
+Refs pitwall-kymz
+
+## 0.1.80
+
+The message `bd-note.sh` prints when a note cannot be recorded now states three attempts, which is what its retry loop makes. A session reading that warning can compare it against the appends in the notes field directly; previously the message named one more attempt than happened, which read as an append having been lost.
+
+Refs pitwall-sa4t
+
+## 0.1.79
+
+`bd-note.sh` now tells a note that bd transformed on the way in from a note that was
+lost, and it decides which by locating **this write's own stamp** in the notes field and
+comparing the text after it against the note as sent. Any note whose stamp survives and
+whose text differs is warned about once and recorded once - which covers a note damaged
+inside its opening characters, and a note too short to carry the 24-character run the
+old check demanded. Both of those used to be retried and appended three times. The
+script now retries only when it can find no trace of this write's stamp in what the
+field gained during this write, so a genuine loss still fails loudly. Nothing to do
+differently when writing a note. If you
+see the divergence warning, the note is in the field in some altered form, the warning
+carries the full text as sent, and writing it again will only duplicate it.
+
+Refs pitwall-6r8h.
+
+## 0.1.78
+
+`bd-note.sh` no longer reports a plain success over a note that arrived incomplete. Once its
+token is found, the read-back compares the WHOLE note against the stored field rather than just
+the first 24 characters: when the stored text diverges it prints the 1-based character position
+and quotes the first divergent characters, and says so on stdout too. It still exits 0 and still
+does not write the note again - `bd` transforms what it stores, so a mismatch is not proof of
+damage and an extra append would manufacture a duplicate. Read the issue and judge; append by
+hand only if text is genuinely gone.
+
+This catches loss between the script and `bd`. It cannot catch a note the CALLER already
+destroyed, which is the common case: pass a note containing backticks or `$(...)` through
+`--note-file` or a heredoc quoted as `<<'EOF'`, never as a double-quoted shell string, and
+re-read the issue with `bd show <id> --json` afterwards. The script's own usage block now says
+this, with a worked example.
+
+Refs pitwall-e0zb. Follow-up: pitwall-6r8h.
+
+## 0.1.77
+
+A branch that is red after a clean rebase now has somewhere to go. `rework.js` repairs a semantic break once - CI red on the rebased head, diff unchanged - by running the repository's tests in the worktree and making the branch follow what master changed, then waits for CI again. Red a second time goes to a person with the diagnosis on the issue. A branch the lander retired arrives already on master: the resolve step answers `already_clean` with an unmoved head and the run carries on to the repair rather than stopping. Dispatch a `red_after_rebase` retirement with `config.sh --rework <id> <pr> <repo>`, exactly like a dropped pull request - and only the retirement. A rework that ended `red` is not dispatched to rework again; a person picks it up from the diagnosis on the issue.
+
+Refs pitwall-7bn
+
+## 0.1.76
+
+`live.sh` and `lanes.sh` now find workflow runs written at `<session>/subagents/workflows/wf_*/` as well as directly under the project directory. A session reading `UNKNOWN - could not identify` on every row, or `no workflow transcript found` for a lane that is visibly running, should re-run them after updating rather than pointing the workflow directory environment variable at a session subdirectory by hand.
+
+## 0.1.75
+
+The rework takes its worktree detached from `origin/<branch>`, so a task lane's leftover worktree holding the branch no longer blocks it, and pushes `HEAD:refs/heads/<branch>` under a lease on the head it recorded. The resolve brief says the lane's leftover worktree holds a superseded head and must not be rebased or pushed from. Once `lane-handoff.sh` has labelled the pull request, the handoff removes the worktree still holding the branch, matched by its branch line in `git worktree list --porcelain`, never the main checkout and never the rework's own.
+
+## 0.1.74
+
+`lock-check.sh` and `lanes.sh` now read file ages correctly on Linux as well as macOS. On GNU coreutils they used to die on the first mtime read, so a session running the skill there got no lane report and no answer about the merge lock; both now answer the same way on either platform.
+
+## 0.1.73
+
+`land-one.sh` lands a branch that another worktree still has checked out. It works detached from `origin/<branch>` throughout, pushes `HEAD:refs/heads/<branch>` with a lease on the head it read, and refuses `master` or `main` as the branch to land. When a leftover worktree holds the branch it prints a `held:` line naming the path and leaves that worktree alone. A refused worktree add or push now quotes what git said instead of a bare refusal, and a checkout refusal is no longer reported as a push refusal.
+
+## 0.1.72
+
+`queue-watch.sh` announces NEW WORK and STUCK in every workspace, not only the one whose id prefix it used to hardcode - it builds its id patterns from the workspace's `idPrefix`. It refuses to start, exit 3, when that prefix cannot be read from the config, because a watcher defaulting to another project's prefix goes silent rather than wrong, and its silence reads as an idle queue. A STUCK header names only issue ids: a worktree path or a repository name that happens to share the prefix is no longer reported as one, so acknowledging the real id in a "lane died holding its worktree" finding now silences it.
+
+## 0.1.71
+
+`live.sh` names a run by the issue id in its journal labels before it reads the transcript, so a lock path or a repository name quoted early in a prompt no longer becomes the run's issue. A lander, whose labels carry no issue id, reads `no id in its labels` - the phrase the run-status script uses - rather than a repository name. A run with no journal still falls back to the transcript grep, and an unidentified run still has its UNKNOWN row.
+
+## 0.1.70
+
+`live.sh` identifies runs in every workspace, not only the one whose id prefix it used to hardcode - it builds its id pattern from the workspace's `idPrefix`. It refuses to run, exit 3, when that prefix cannot be read from the config, because a listing defaulting to another project's prefix reports every run as unidentified and names no issue at all.
+
+## 0.1.69
+
+`triage-scan.sh` recognises a live run in every workspace, not only the one whose id prefix it used to hardcode: it builds the id pattern for `_live_ids()` from the workspace's `idPrefix`, so a lane that is alive but quiet for thirty minutes, or mid-merge with its worktree already removed, is no longer reported under E or G. It refuses to scan, exit 3, when `idPrefix` cannot be read from the config, because a default here would make every run invisible and every quiet lane read as dead.
+
+## 0.1.68
+
+After `land-one.sh` rebases and pushes a branch, it waits up to three minutes for a check to register on the pushed head before reading the rollup, so a green branch that was behind master merges in the same round instead of being requeued as not_ready and landing a round later. An empty rollup on a branch the script did not push still exits 7 at once. Two new flags, `--register-wait` and `--register-interval`, set the window and the poll interval in seconds. The land brief now asks for a ten-minute tool timeout on the `land-one.sh` call, since after a rebase push the script blocks for check registration plus the full CI run and the Bash tool's two-minute default would kill it with no exit code to read.
+
+## 0.1.67
+
+A run that wants to see why a probe or cleanup command failed is now told how: run it plainly and read stderr from the transcript, or redirect stderr alone into its scratch directory and read the file. The handoff step hands over the exact worktree-removal command and says that "is not a working tree" after a successful handoff is the expected outcome, not an error to investigate.
+
+## 0.1.66
+
+A value-taking flag given as the last argument to assign-plugin-version.sh, land-train.sh, dispatchable.sh, lane-handoff.sh, land-one.sh or stranded.sh now exits 6 and names the flag, instead of spinning forever. A session that sees exit 6 from one of these with "needs a value" on stderr dropped or misplaced a flag's value in the invocation.
+
+## 0.1.65
+
+A pull request whose state gh could not read no longer stops the landing pass. The read is logged as `pr_unreadable` and the pull request is handed to `land-one.sh`, which reads master, the rollup and the label itself and exits without merging when gh still cannot answer, so the pull request is deferred to a later round rather than stopped or retired. `land-one.sh` now reports a master run list gh could not answer as `unreadable` (exit 9) instead of as a red master, so a throttled or logged-out gh no longer stops a whole pass, skips its deploy or leaves merged issues open.
+
+Refs pitwall-ud80.
+
+## 0.1.64
+
+`land-one.sh` and `lane-handoff.sh` now read a commit status (`StatusContext`: `context` + `state`) as well as a check run (`CheckRun`: `name` + `conclusion`) in a pull request's status rollup. A repository whose pull requests carry a Codecov, Vercel, Netlify or any other commit status no longer defers every round as "unreadable": all-success merges, a failed or errored status is red and names its context, and a pending or expected one is not ready.
+
+## 0.1.63
+
+The landers now take the merge lock inside the block that releases it, and release only a lock they proved they own. A run that stands down for another lander's lock, or whose lock step throws, no longer passes anywhere near `release-lock.sh`.
+
+## 0.1.62
+
+A dead lane's changes to a tracked binary file are now rescued as a GIT binary patch, so the rescue diff `git apply`s as one patch. Previously such a file was saved as the one-line `Binary files a/x and b/x differ`, which counts as rescued but cannot be replayed.
+
 ## 0.1.61
 
 Dispatch a rework with `config.sh --rework <id> <pr> <repo>` and pass the object it prints straight to `Workflow`, with the `scriptPath` it carries. That one command validates, stages `rework.js`, reserves the lane and emits it; when no lane can be reserved it prints nothing and exits non-zero, and the dispatch stops. `rework.js` now refuses an args object with no slot instead of running on slot 1, so the old two-command recipe - `--args` spread by hand with `pr` and `repo` added - no longer starts a run.

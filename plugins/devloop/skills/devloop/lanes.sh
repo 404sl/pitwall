@@ -43,7 +43,7 @@ SLOTS="/tmp/${PFX}-slots"
 # These used to be one machine's absolute paths, pinned to one project and one session of it.
 # Anywhere else that reported another project's runs as though they were this workspace's.
 # The harness names its per-project directory after the workspace path with the separators
-# swapped, so it can be computed; the session inside it is whichever ran most recently.
+# swapped, so it can be computed; the runs inside it are read from every session, nested or flat.
 CFG="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/config.sh"
 ROOT="${DEVLOOP_ROOT:-$(bash "$CFG" root 2>/dev/null)}"
 [ -n "$ROOT" ] || { echo "$(basename "${BASH_SOURCE[0]}"): no workspace resolved - refusing to guess." >&2; exit 6; }
@@ -51,6 +51,11 @@ SLUG="$(printf '%s' "$ROOT" | sed 's|/|-|g')"
 WF="${DEVLOOP_WORKFLOW_DIR:-${DEVLOOP_WF:-$HOME/.claude/projects/$SLUG}}"
 
 now=$(date +%s)
+
+mtime_of() {
+  stat -c %Y "$1" 2>/dev/null && return 0
+  stat -f %m "$1" 2>/dev/null
+}
 
 # The newest write anywhere a working lane touches, per issue id. A workflow's args are not
 # stored anywhere readable, so match on the worktree path the lane uses, which carries the id.
@@ -84,7 +89,8 @@ freshest_for() {
     for probe in "$wt" "$wt/tmp" "$wt/log" "$wt/coverage" "$wt/tmp/cache" \
                  ${gitdir:+"$gitdir" "$gitdir/index" "$gitdir/HEAD"}; do
       [ -e "$probe" ] || continue
-      m=$(stat -f %m "$probe" 2>/dev/null) || continue
+      m=$(mtime_of "$probe")
+      case "$m" in ''|*[!0-9]*) continue ;; esac
       [ "$m" -gt "$best" ] && best=$m
     done
   done
@@ -102,12 +108,13 @@ freshest_for() {
 transcript_age() {
   local id="$1" newest=0 m d
   [ -d "$WF" ] || { echo ""; return; }
-  for d in "$WF"/*/; do
+  for d in "$WF"/*/subagents/workflows/*/ "$WF"/*/; do
     [ -f "$d/journal.jsonl" ] || continue
     grep -q -- "$id" "$d/journal.jsonl" 2>/dev/null || continue
     for f in "$d"/agent-*.jsonl "$d/journal.jsonl"; do
       [ -f "$f" ] || continue
-      m=$(stat -f %m "$f" 2>/dev/null) || continue
+      m=$(mtime_of "$f")
+      case "$m" in ''|*[!0-9]*) continue ;; esac
       [ "$m" -gt "$newest" ] && newest=$m
     done
   done
@@ -131,7 +138,8 @@ for f in "$SLOTS"/*; do
     # it runs 'git worktree add', so a slot claimed moments ago always looks like this. The slot
     # file's own mtime is when the claim was written, which separates the third case from the
     # other two - without it every fresh dispatch reports itself as suspect.
-    claimed_at=$(stat -f %m "$f" 2>/dev/null || echo 0)
+    claimed_at=$(mtime_of "$f")
+    case "$claimed_at" in ''|*[!0-9]*) claimed_at=0 ;; esac
     claim_age=$(( (now - claimed_at) / 60 ))
     if [ "$claim_age" -le "$STALE" ]; then
       printf '%-5s %-15s %-13s %s\n' "$slot" "$id" "none" "claimed ${claim_age}m ago - starting up"

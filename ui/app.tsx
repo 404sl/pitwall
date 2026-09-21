@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import type { Snapshot } from "@404sl/pitwall-schema";
 import type { BuildStamp, BuildVerdict, CheckoutState, UnknownReason } from "../src/build.js";
 import {
@@ -8,13 +8,16 @@ import {
   type BuildState,
   type FilterState,
   type ProblemRow,
+  type QuestionStore,
   type RunningVersion,
+  type SortKey,
 } from "./model.js";
 import { Band } from "./components/Band.js";
 import { BuildBanner } from "./components/Build.js";
 import { Failure } from "./components/Failure.js";
 import { Filters, filterSentence } from "./components/Filters.js";
 import { Header } from "./components/Header.js";
+import { carriesFiles, Intake, type Drop } from "./components/Intake.js";
 import { NeedsYou } from "./components/NeedsYou.js";
 import { Parked } from "./components/Parked.js";
 import { Problems } from "./components/Problems.js";
@@ -23,11 +26,12 @@ import { Running, runningSummary } from "./components/Running.js";
 import { Today } from "./components/Today.js";
 import { IssuePage } from "./components/IssuePage.js";
 import { countLabel } from "./format.js";
-import { filterOf, routeOf } from "./routes.js";
+import { filterOf, routeOf, sortOf } from "./routes.js";
 import { strings } from "./strings.js";
 
 const SNAPSHOT_URL = "/api/snapshot";
 const VERSION_URL = "/api/version";
+const QUESTIONS_URL = "/api/questions";
 const POLL_MS = 30_000;
 
 class SnapshotFailure extends Error {
@@ -36,6 +40,28 @@ class SnapshotFailure extends Error {
   constructor(message: string, source: string) {
     super(message);
     this.source = source;
+  }
+}
+
+interface Taken {
+  snapshot: Snapshot;
+  questions: QuestionStore;
+}
+
+function questionsOf(body: unknown): QuestionStore {
+  if (typeof body !== "object" || body === null) {
+    return {};
+  }
+  const questions = (body as { questions?: unknown }).questions;
+  return typeof questions === "object" && questions !== null ? (questions as QuestionStore) : {};
+}
+
+async function readQuestions(signal: AbortSignal): Promise<QuestionStore> {
+  try {
+    const response = await fetch(QUESTIONS_URL, { signal, headers: { accept: "application/json" } });
+    return response.ok ? questionsOf(await response.json()) : {};
+  } catch {
+    return {};
   }
 }
 
@@ -166,17 +192,25 @@ export function App() {
   const hash = useHash();
   const route = useMemo(() => routeOf(hash), [hash]);
   const filter = useMemo<FilterState>(() => filterOf(hash), [hash]);
-  const [taken, setTaken] = useState<Snapshot | undefined>(undefined);
+  const sort = useMemo<SortKey | undefined>(() => sortOf(hash), [hash]);
+  const [taken, setTaken] = useState<Taken | undefined>(undefined);
   const [failure, setFailure] = useState<string | undefined>(undefined);
   const [refetchFailure, setRefetchFailure] = useState<ProblemRow | undefined>(undefined);
   const [loading, setLoading] = useState(true);
   const [version, setVersion] = useState("");
   const [update, setUpdate] = useState<string | undefined>(undefined);
   const [build, setBuild] = useState<BuildState>(() => buildState({ kind: "waiting" }));
-  const held = useRef<Snapshot | undefined>(undefined);
+  const [dropping, setDropping] = useState(false);
+  const [drop, setDrop] = useState<Drop | undefined>(undefined);
+  const held = useRef<Taken | undefined>(undefined);
+  const dragging = useRef(0);
 
   const load = useCallback(async (signal: AbortSignal) => {
-    const [snapshot, running] = await Promise.allSettled([readSnapshot(signal), readVersion(signal)]);
+    const [snapshot, running, questions] = await Promise.allSettled([
+      readSnapshot(signal),
+      readVersion(signal),
+      readQuestions(signal),
+    ]);
     if (signal.aborted) {
       return;
     }
@@ -189,8 +223,12 @@ export function App() {
       setBuild(buildState(answered === undefined ? { kind: "unanswered" } : { kind: "read", version: answered }));
     }
     if (snapshot.status === "fulfilled") {
-      held.current = snapshot.value;
-      setTaken(snapshot.value);
+      const read = {
+        snapshot: snapshot.value,
+        questions: questions.status === "fulfilled" ? questions.value : {},
+      };
+      held.current = read;
+      setTaken(read);
       setFailure(undefined);
       setRefetchFailure(undefined);
     } else {
@@ -223,7 +261,42 @@ export function App() {
     };
   }, [load]);
 
-  const board = useMemo(() => (taken === undefined ? undefined : buildBoard(taken, filter)), [taken, filter]);
+  const board = useMemo(
+    () => (taken === undefined ? undefined : buildBoard(taken.snapshot, filter, taken.questions, sort)),
+    [taken, filter, sort],
+  );
+
+  const onDragEnter = useCallback((event: DragEvent<HTMLElement>) => {
+    if (!carriesFiles(event)) {
+      return;
+    }
+    event.preventDefault();
+    dragging.current += 1;
+    setDropping(true);
+  }, []);
+
+  const onDragOver = useCallback((event: DragEvent<HTMLElement>) => {
+    if (carriesFiles(event)) {
+      event.preventDefault();
+    }
+  }, []);
+
+  const onDragLeave = useCallback(() => {
+    dragging.current = Math.max(0, dragging.current - 1);
+    if (dragging.current === 0) {
+      setDropping(false);
+    }
+  }, []);
+
+  const onDrop = useCallback((event: DragEvent<HTMLElement>) => {
+    if (!carriesFiles(event)) {
+      return;
+    }
+    event.preventDefault();
+    dragging.current = 0;
+    setDropping(false);
+    setDrop({ files: Array.from(event.dataTransfer.files) });
+  }, []);
 
   if (route !== undefined) {
     return (
@@ -236,6 +309,7 @@ export function App() {
             update={update}
             build={build}
             refreshFailure={board.refreshFailure}
+            projectAges={board.projectAges}
           />
         )}
         <main className="pw-console">
@@ -243,7 +317,10 @@ export function App() {
           <IssuePage
             route={route}
             filter={filter}
-            preview={taken === undefined ? undefined : previewIssue(taken, route.project, route.id)}
+            sort={sort}
+            preview={
+              taken === undefined ? undefined : previewIssue(taken.snapshot, route.project, route.id, taken.questions)
+            }
           />
         </main>
       </>
@@ -272,17 +349,41 @@ export function App() {
         update={update}
         build={build}
         refreshFailure={board.refreshFailure}
+        projectAges={board.projectAges}
       />
-      <main className="pw-console">
+      <main
+        className={dropping ? "pw-console pw-console--dropping" : "pw-console"}
+        onDragEnter={onDragEnter}
+        onDragOver={onDragOver}
+        onDragLeave={onDragLeave}
+        onDrop={onDrop}
+      >
         <BuildBanner build={build} />
-        <Filters filter={filter} options={board.options} shown={board.issueCount} total={board.totals.issues} />
+        <Filters
+          filter={filter}
+          sort={sort}
+          options={board.options}
+          shown={board.issueCount}
+          total={board.totals.issues}
+        />
+        <Intake
+          projects={board.options.project}
+          selected={filter.project}
+          drop={drop}
+          dropping={dropping}
+        />
         <Band
           id="needs"
           label={strings.band.needsYou}
           count={countLabel(board.needsYouCount, board.totals.needsYou, board.filtered)}
           alert={board.totals.needsYou > 0}
         >
-          <NeedsYou groups={board.needsYou} filter={filter} filteredEmpty={emptyOf(board.totals.needsYou)} />
+          <NeedsYou
+            groups={board.needsYou}
+            filter={filter}
+            sort={sort}
+            filteredEmpty={emptyOf(board.totals.needsYou)}
+          />
         </Band>
         <Band
           id="running"
@@ -292,7 +393,7 @@ export function App() {
             board.filtered ? board.totals.runningStates : undefined,
           )}
         >
-          <Running rows={board.running} filter={filter} filteredEmpty={emptyOf(board.totals.running)} />
+          <Running rows={board.running} filter={filter} sort={sort} filteredEmpty={emptyOf(board.totals.running)} />
         </Band>
         <Band
           id="ready"
@@ -303,6 +404,7 @@ export function App() {
             rows={board.ready}
             total={board.readyCount}
             filter={filter}
+            sort={sort}
             filteredEmpty={emptyOf(board.totals.ready)}
           />
         </Band>
@@ -310,6 +412,9 @@ export function App() {
           <Parked
             entries={board.parked}
             totals={board.filtered ? board.totals.parked : undefined}
+            rows={board.parkedRows}
+            filter={filter}
+            sort={sort}
             filteredEmpty={emptyOf(board.totals.parked.length)}
           />
         </Band>

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import { INTAKE_LABEL } from "../src/intake.ts";
 import { GIT_ENV } from "./support/git.js";
 
 const SKILL = join(import.meta.dirname, "..", "plugins", "devloop", "skills", "devloop");
@@ -17,9 +18,9 @@ type Issue = {
   labels?: readonly string[];
 };
 
-type Run = { status: number; out: string; err: string };
+type Run = { status: number; signal: string | null; out: string; err: string };
 
-function runDispatchable(cwd: string, extraPath: string, declareRoot = true): Run {
+function runDispatchable(cwd: string, extraPath: string, declareRoot = true, args: readonly string[] = []): Run {
   const env: Record<string, string | undefined> = {
     ...process.env,
     ...GIT_ENV,
@@ -29,8 +30,8 @@ function runDispatchable(cwd: string, extraPath: string, declareRoot = true): Ru
     LOCK_PREFIX: undefined,
     PATH: `${extraPath}:${process.env["PATH"] ?? ""}`,
   };
-  const ran = spawnSync("bash", [DISPATCHABLE_SH], { encoding: "utf8", cwd, env });
-  return { status: ran.status ?? -1, out: ran.stdout ?? "", err: ran.stderr ?? "" };
+  const ran = spawnSync("bash", [DISPATCHABLE_SH, ...args], { encoding: "utf8", cwd, env, timeout: 5000 });
+  return { status: ran.status ?? -1, signal: ran.signal, out: ran.stdout ?? "", err: ran.stderr ?? "" };
 }
 
 function stubBd(issues: readonly Issue[]): string {
@@ -151,6 +152,23 @@ test("dispatchable.sh counts only work the assignee gate itself withheld", () =>
   );
 });
 
+test("dispatchable.sh parks on the same labels queue.sh does, needs-feedback included", () => {
+  const root = workspace({});
+  const labels = ["needs-decision", "needs-access", "needs-feedback", "blocked-tooling", "watch", "umbrella", "roadmap"];
+  const bd = stubBd([
+    { id: "fixture-free", title: "carries no label", assignee: null },
+    ...labels.map((label) => ({ id: `fixture-${label}`, title: `parked with ${label}`, assignee: null, labels: [label] })),
+  ]);
+
+  const { status, out, err } = runDispatchable(root, bd);
+
+  assert.equal(status, 0, `${out}${err}`);
+  assert.match(out, /fixture-free/);
+  for (const label of labels) {
+    assert.doesNotMatch(out, new RegExp(`fixture-${label}\\b`), `${label} was offered for dispatch`);
+  }
+});
+
 test("dispatchable.sh refuses rather than guessing whose workspace it is reading", () => {
   const root = mkdtempSync(join(tmpdir(), "pitwall-dispatchable-noconfig-"));
 
@@ -163,4 +181,32 @@ test("dispatchable.sh refuses rather than guessing whose workspace it is reading
     "the refusal names a config field rather than the missing config file",
   );
   assert.match(err, /refusing to guess/);
+});
+
+test("dispatchable.sh refuses --limit with no value instead of looping on it forever", () => {
+  const root = mkdtempSync(join(tmpdir(), "pitwall-dispatchable-novalue-"));
+
+  const { status, signal, out, err } = runDispatchable(root, stubBd([]), true, ["--limit"]);
+
+  assert.equal(signal, null, "the script had to be killed");
+  assert.equal(status, 6, `${out}${err}`);
+  assert.match(err, /--limit needs a value/);
+});
+
+test("dispatchable.sh never offers a recorded request as a task, whatever queue it sits in", () => {
+  const root = workspace({});
+  const bd = stubBd([
+    { id: "fixture-ticket", title: "a ticket", assignee: null },
+    { id: "fixture-request", title: "the board is unreadable", assignee: null, labels: [INTAKE_LABEL] },
+  ]);
+
+  const { status, out, err } = runDispatchable(root, bd);
+
+  assert.equal(status, 0, `${out}${err}`);
+  assert.match(out, /fixture-ticket/);
+  assert.doesNotMatch(
+    out,
+    /fixture-request/,
+    "a request that names no repository and measures nothing was offered to a lane, which cannot start from it",
+  );
 });

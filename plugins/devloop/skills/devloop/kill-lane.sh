@@ -184,8 +184,8 @@ for raw in "/tmp/${PFX}-worktrees/${ID}" "/private/tmp/${PFX}-worktrees/${ID}" \
       # Emitting each against /dev/null keeps the whole file applicable as one patch.
       { echo "# rescued from $wt on $stamp"
         echo "# issue $ID, branch $(git -C "$wt" rev-parse --abbrev-ref HEAD 2>/dev/null)"
-        echo "# STAGED:"; git -C "$wt" diff --cached
-        echo "# UNSTAGED:"; git -C "$wt" diff
+        echo "# STAGED:"; git -C "$wt" diff --cached --binary
+        echo "# UNSTAGED:"; git -C "$wt" diff --binary
         echo "# UNTRACKED (new files the lane created):"
         git -C "$wt" ls-files --others --exclude-standard -z |
           while IFS= read -r -d '' f; do
@@ -213,7 +213,28 @@ if git -C "$DIR" show-ref --verify --quiet "refs/heads/${branch}"; then
     echo "         gh pr list --head ${branch} --state all"
   else
     echo "branch: ${branch} (local only, never pushed)"
-    run "git -C '$DIR' branch -D '${branch}' >/dev/null"
+    keep=""
+    ahead="$(git -C "$DIR" rev-list --count "refs/heads/${branch}" --not --remotes 2>/dev/null || echo 0)"
+    if [ "${ahead:-0}" -gt 0 ]; then
+      stamp=$(date +%Y%m%d-%H%M%S)
+      out="${RESCUE}/${ID}-${stamp}.mbox"
+      echo "  UNPUSHED COMMITS PRESENT - ${ahead} commit(s) no remote holds:"
+      git -C "$DIR" log --format='    %h %s' "refs/heads/${branch}" --not --remotes 2>/dev/null
+      if [ -z "$DRY" ]; then
+        mkdir -p "$RESCUE"
+        if git -C "$DIR" format-patch --stdout "refs/heads/${branch}" --not --remotes > "$out" 2>/dev/null; then
+          echo "  saved: $out"
+          echo "  READ IT before assuming the lane died with nothing worth keeping - git am replays it."
+        else
+          rm -f "$out"
+          echo "  COULD NOT WRITE $out - ${branch} is left in place with its commits. Rescue it by hand."
+          keep=1
+        fi
+      else
+        echo "  would save to: $out"
+      fi
+    fi
+    [ -n "$keep" ] || run "git -C '$DIR' branch -D '${branch}' >/dev/null"
   fi
 fi
 

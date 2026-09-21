@@ -23,6 +23,12 @@
 #                                   dispatch, carrying the scriptPath to dispatch, the pull
 #                                   request and the repository key. The slot is never an
 #                                   argument here: the reservation decides it.
+#   config.sh --refine <id>         stage the workflow scripts through run-script.sh, reserve a
+#                                   lane through slot.sh, and print the args object for a refine
+#                                   dispatch, carrying the scriptPath to dispatch, the slot, and
+#                                   the actor the workspace declares, which every tracker write
+#                                   the run makes carries. Refuses an issue that does not carry
+#                                   the intake label, and a workspace with no actor.
 #   config.sh --land [repo#n ...]   stage the workflow scripts and print the args object for a
 #                                   land.js run, naming the pre-flighted PRs it is allowed to
 #                                   merge, the scriptPath to dispatch, and the merge-lock token
@@ -32,7 +38,8 @@
 #                                   land-train.js run against ONE repository, carrying the
 #                                   scriptPath to dispatch and the merge-lock token that train
 #                                   writes into the holder file.
-#   config.sh --check               validate the file and report what is missing
+#   config.sh --check               validate the file and report what is missing, including a
+#                                   repository whose default branch is not what GitHub says it is
 #
 # WHERE IT LOOKS, in order: $DEVLOOP_CONFIG, then .autofix.json walking up from the cwd. Walking
 # up rather than demanding an absolute path means it works from inside any repo of the workspace,
@@ -101,9 +108,177 @@ print(node if isinstance(node, str) else json.dumps(node))
 PY
 }
 
+resolve_repos() {
+  python3 - "$CONFIG" "$@" <<'PY'
+import json, os, shlex, subprocess, sys
+cfg = json.load(open(sys.argv[1]))
+repos = cfg.get("repos") or {}
+argv = sys.argv[2:]
+every = bool(argv) and argv[0] == "--all"
+only = argv[1:] if every else argv
+gh_timeout = float(os.environ.get("DEVLOOP_GH_TIMEOUT") or 30)
+problems = []
+def refuse(msg):
+    problems.append(msg)
+    if not every:
+        sys.stderr.write(msg)
+        sys.exit(1)
+out = {}
+for name, r in repos.items():
+    r = dict(r or {})
+    declared = r.get("defaultBranch")
+    if declared is None:
+        r["defaultBranch"] = "master"
+    elif not isinstance(declared, str) or not declared.strip() or any(c.isspace() for c in declared) \
+            or declared.startswith("origin/") or declared.startswith("refs/"):
+        refuse("config.sh: repos.%s.defaultBranch is %s, which is not a branch name - it is the\n"
+               "           bare name GitHub reports, 'master' or 'main', never 'origin/...'.\n"
+               % (name, json.dumps(declared)))
+        continue
+    for entry in (r.get("deploy") or []):
+        if not isinstance(entry, str) or "deploy-one.sh" not in entry:
+            continue
+        try:
+            words = shlex.split(entry)
+        except ValueError:
+            words = entry.split()
+        base = "master"
+        label = "?"
+        for i, w in enumerate(words):
+            if w == "--base" and i + 1 < len(words):
+                base = words[i + 1]
+            if w == "--label" and i + 1 < len(words):
+                label = words[i + 1]
+        if base != r["defaultBranch"]:
+            refuse("config.sh: repos.%s.deploy entry '%s' would deploy origin/%s (%s), but the repository's\n"
+                   "           default branch is '%s'. Refusing: deploy-one.sh cuts its worktree from the\n"
+                   "           base it is handed and ships whatever that ref holds, so a stale origin/%s\n"
+                   "           would reach %s. Add --base %s to that deploy entry.\n"
+                   % (name, label, base, "--base " + base if "--base" in words else "no --base, so master",
+                      r["defaultBranch"], base, label, r["defaultBranch"]))
+    out[name] = r
+for name, r in out.items():
+    if only and name not in only:
+        continue
+    slug = r.get("slug")
+    if not slug:
+        continue
+    want = r["defaultBranch"]
+    how = "configured" if "defaultBranch" in (repos.get(name) or {}) else "assumed, no defaultBranch configured"
+    cmd = ["gh", "repo", "view", slug, "--json", "defaultBranchRef"]
+    try:
+        ran = subprocess.run(cmd, capture_output=True, text=True, timeout=gh_timeout)
+        code, stdout, stderr = ran.returncode, ran.stdout, ran.stderr
+    except subprocess.TimeoutExpired:
+        code, stdout, stderr = 124, "", "timed out after %gs with no answer" % gh_timeout
+    except OSError as e:
+        code, stdout, stderr = 127, "", str(e)
+    got = None
+    if code == 0 and stdout.strip():
+        try:
+            got = (json.loads(stdout).get("defaultBranchRef") or {}).get("name")
+        except ValueError:
+            got = None
+    if not got:
+        said = (stderr or stdout).strip().splitlines()
+        refuse("config.sh: could not read the default branch of %s (repo %s) - '%s' exited %d and\n"
+               "           said: %s\n"
+               "           Nothing is known about whether '%s' is its default, which is not the\n"
+               "           same as knowing it is. Nothing was dispatched.\n"
+               % (slug, name, " ".join(cmd), code, said[0] if said else "nothing", want))
+        continue
+    if got != want:
+        refuse("config.sh: repo %s (%s) has default branch '%s' %s, but GitHub says its\n"
+               "           default branch is '%s'. Refusing: every worktree, rebase and pull request\n"
+               "           would be measured against the wrong base. Set repos.%s.defaultBranch to\n"
+               "           '%s' in %s, or rename the branch on GitHub, then run this again.\n"
+               % (name, slug, want, how, got, name, got, sys.argv[1]))
+if problems:
+    sys.stderr.write("".join(problems))
+    sys.exit(1)
+print(json.dumps(out))
+PY
+}
+
+warn_stale_checkouts() {
+  python3 - "$CONFIG" "$1" <<'PY'
+import json, os, subprocess, sys
+cfg = json.load(open(sys.argv[1]))
+repos = json.loads(sys.argv[2])
+root = cfg.get("root") or os.path.dirname(os.path.abspath(sys.argv[1]))
+limit = cfg.get("warnBehind", 0)
+if not isinstance(limit, int) or isinstance(limit, bool) or limit < 0:
+    sys.stderr.write("config.sh: warnBehind is %s, which is not a count of commits - using 0.\n" % json.dumps(limit))
+    limit = 0
+fetch_timeout = float(os.environ.get("DEVLOOP_FETCH_TIMEOUT") or 20)
+
+def git(path, *args, timeout=None):
+    try:
+        ran = subprocess.run(["git", "-C", path, *args], capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return 124, "", "timed out after %gs" % timeout
+    except OSError as e:
+        return 127, "", str(e)
+    return ran.returncode, ran.stdout.strip(), ran.stderr.strip()
+
+for name, r in repos.items():
+    if r.get("role") == "workspace":
+        continue
+    branch = r.get("defaultBranch") or "master"
+    rel = r.get("path", name)
+    path = os.path.join(root, rel)
+    label = "config.sh: %s (%s) %s" % (name, rel, branch)
+    code, out, err = git(path, "fetch", "--quiet", "origin", branch, timeout=fetch_timeout)
+    if code != 0:
+        said = (err or out).splitlines()
+        sys.stderr.write("%s could not be compared with origin/%s - fetch exited %d: %s\n"
+                         % (label, branch, code, said[0] if said else "no output"))
+        continue
+    code, local, err = git(path, "rev-parse", "--verify", "--quiet", "--short", "refs/heads/" + branch)
+    if code != 0:
+        sys.stderr.write("%s could not be compared with origin/%s - no local branch %s in %s\n"
+                         % (label, branch, branch, path))
+        continue
+    code, remote, err = git(path, "rev-parse", "--verify", "--quiet", "--short", "refs/remotes/origin/" + branch)
+    if code != 0:
+        sys.stderr.write("%s could not be compared with origin/%s - no such ref after the fetch\n"
+                         % (label, branch))
+        continue
+    code, count, err = git(path, "rev-list", "--count", "refs/heads/%s..refs/remotes/origin/%s" % (branch, branch))
+    if code != 0 or not count.isdigit():
+        sys.stderr.write("%s could not be compared with origin/%s - rev-list said: %s\n"
+                         % (label, branch, (err or count).splitlines()[0] if (err or count) else "nothing"))
+        continue
+    behind = int(count)
+    if behind > limit:
+        sys.stderr.write("%s is %d behind origin/%s: %s local, %s origin. The dispatch proceeds; "
+                         "fast-forward the checkout yourself, nothing here touches it.\n"
+                         % (label, behind, branch, local, remote))
+PY
+}
+
+INTAKE_LABEL="unrefined"
+
+issue_is_unrefined() {
+  (cd "$1" && BEADS_DIR="${BEADS_DIR:-$1/.beads}" bd show "$2" --json) 2>/dev/null | python3 -c '
+import json, sys
+try:
+    i = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+i = i[0] if isinstance(i, list) else i
+if not isinstance(i, dict):
+    sys.exit(1)
+labels = {x if isinstance(x, str) else (x.get("name") or "") for x in (i.get("labels") or [])}
+sys.exit(0 if sys.argv[1] in labels else 1)
+' "$INTAKE_LABEL" 2>/dev/null
+}
+
 case "${1:-}" in
   --check)
-    python3 - "$CONFIG" <<'PY'
+    BRANCH_ERR="$(mktemp "${TMPDIR:-/tmp}/config-check.XXXXXX")"
+    resolve_repos --all >/dev/null 2>"$BRANCH_ERR"
+    python3 - "$CONFIG" "$BRANCH_ERR" <<'PY'
 import json, os, sys
 cfg = json.load(open(sys.argv[1]))
 bad = []
@@ -114,10 +289,23 @@ if root and not os.path.isdir(root): bad.append(f"root does not exist: {root}")
 if root and not os.path.isdir(os.path.join(root, ".beads")):
     bad.append(f"no .beads tracker at {root}")
 for name, r in (cfg.get("repos") or {}).items():
-    p = os.path.join(root, r.get("path", name))
+    p = os.path.normpath(os.path.join(root, r.get("path", name)))
+    if r.get("role") == "workspace":
+        if p != os.path.normpath(root):
+            bad.append(f"repo {name}: role workspace but path resolves to {p}, not the workspace root {root} - "
+                       f"set path to \".\"")
+        if r.get("slug"):
+            bad.append(f"repo {name}: role workspace carries a slug - the root is not a repository on GitHub, "
+                       f"nothing is pushed or labelled there, so remove it")
+        continue
     if not os.path.isdir(p): bad.append(f"repo {name}: no directory at {p}")
     elif not os.path.isdir(os.path.join(p, ".git")): bad.append(f"repo {name}: {p} is not a git repo")
     if not r.get("test"): bad.append(f"repo {name}: no test command - a lane cannot verify its own work")
+    if not r.get("slug"):
+        print(f"note: repo {name} has no slug, so its default branch ({r.get('defaultBranch') or 'master'}, "
+              f"{'configured' if 'defaultBranch' in r else 'assumed'}) cannot be checked against GitHub.")
+for line in open(sys.argv[2]).read().splitlines():
+    if line.strip(): bad.append(line.strip())
 # THE PREFIX IS KEYED TO THE APPLICATION, NOT TO THE PIPELINE, and getting that backwards is
 # the one misconfiguration here that fails silently.
 #
@@ -160,10 +348,56 @@ if bad:
 print(f"  config OK: {len(cfg.get('repos') or {})} repos, idPrefix '{cfg.get('idPrefix')}', "
       f"lockPrefix '{cfg.get('lockPrefix')}'")
 PY
+    CHECK_CODE=$?
+    rm -f "$BRANCH_ERR"
+    exit $CHECK_CODE
     ;;
   --args)
     # config.sh --args <issue-id> [slot]  ->  the args object for a task.js dispatch
     [ $# -ge 2 ] || { echo "usage: config.sh --args <issue-id> [slot]" >&2; exit 2; }
+    if command -v bd >/dev/null 2>&1; then
+      ROOT_DIR="${DEVLOOP_ROOT:-$(read_field root 2>/dev/null)}"
+      [ -n "$ROOT_DIR" ] && [ -d "$ROOT_DIR" ] || ROOT_DIR="$(dirname "$CONFIG")"
+      REWORK="$( (cd "$ROOT_DIR" && BEADS_DIR="${BEADS_DIR:-$ROOT_DIR/.beads}" bd show "$2" --json) | python3 -c '
+import json, sys
+try:
+    i = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+i = i[0] if isinstance(i, list) else i
+meta = i.get("metadata") if isinstance(i, dict) else None
+if isinstance(meta, str):
+    try:
+        meta = json.loads(meta)
+    except Exception:
+        meta = None
+r = (meta or {}).get("rework") if isinstance(meta, dict) else None
+pr = r.get("pr") if isinstance(r, dict) else None
+if isinstance(pr, str) and pr.isdigit():
+    pr = int(pr)
+if isinstance(pr, int) and not isinstance(pr, bool) and pr > 0:
+    repo = r.get("repo")
+    print("%d %s" % (pr, repo if isinstance(repo, str) and repo else "<repo>"))
+' 2>/dev/null)"
+      if [ -n "$REWORK" ]; then
+        echo "config.sh --args: $2 is a retired pull request waiting for rework, not a task - dispatch stops." >&2
+        echo "                  task.js triage bounces a pull request that is done and green. Build it with:" >&2
+        echo "                    config.sh --rework $2 ${REWORK}" >&2
+        exit 1
+      fi
+      if issue_is_unrefined "$ROOT_DIR" "$2"; then
+        echo "config.sh --args: $2 is a request that has not been refined, not a task - dispatch stops." >&2
+        echo "                  It carries the '$INTAKE_LABEL' label, so it names no repository and measures" >&2
+        echo "                  nothing; a lane cannot start from it. Refine it first:" >&2
+        echo "                    config.sh --refine $2" >&2
+        exit 1
+      fi
+    fi
+    REPOS_JSON="$(resolve_repos)" || {
+      echo "config.sh --args: the default branch of a repository could not be confirmed - dispatch stops." >&2
+      exit 1
+    }
+    warn_stale_checkouts "$REPOS_JSON"
     SCRIPT_PATH="$(PITWALL_CONFIG="$CONFIG" bash "$SKILL_DIR/run-script.sh" task.js)" || {
       echo "config.sh --args: run-script.sh could not stage task.js - dispatch stops." >&2
       exit 1
@@ -182,7 +416,13 @@ PY
       echo "                  reservation decides the lane and is not overridden from here." >&2
       exit 1
     fi
-    python3 - "$CONFIG" "$2" "$SLOT" "$SKILL_DIR" "$SCRIPT_PATH" <<'PY'
+    DISPATCH="$(od -An -N8 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')"
+    case "$DISPATCH" in
+      ''|*[!0-9a-f]*)
+        echo "config.sh --args: could not mint a dispatch token from /dev/urandom - dispatch stops." >&2
+        exit 1 ;;
+    esac
+    python3 - "$CONFIG" "$2" "$SLOT" "$SKILL_DIR" "$SCRIPT_PATH" "$REPOS_JSON" "$DISPATCH" <<'PY'
 import json, sys
 cfg = json.load(open(sys.argv[1]))
 print(json.dumps({
@@ -190,10 +430,11 @@ print(json.dumps({
     "slot": int(sys.argv[3]),
     "skillDir": sys.argv[4],
     "scriptPath": sys.argv[5],
+    "dispatch": sys.argv[7],
     "root": cfg["root"],
     "idPrefix": cfg.get("idPrefix", "sr"),
     "lockPrefix": cfg.get("lockPrefix", "devloop"),
-    "repos": cfg.get("repos", {}),
+    "repos": json.loads(sys.argv[6]),
 }))
 PY
     ;;
@@ -210,7 +451,15 @@ repos = json.load(open(sys.argv[1])).get("repos", {})
 if sys.argv[2] not in repos:
     sys.stderr.write("config.sh --rework: no repository %s in this config - have: %s\n"
                      % (sys.argv[2], ", ".join(sorted(repos)))); sys.exit(2)
+if (repos[sys.argv[2]] or {}).get("role") == "workspace":
+    sys.stderr.write("config.sh --rework: %s is the workspace root, which has no pull requests to rework\n"
+                     % sys.argv[2]); sys.exit(2)
 PY
+    REPOS_JSON="$(resolve_repos "$4")" || {
+      echo "config.sh --rework: the default branch of $4 could not be confirmed - dispatch stops." >&2
+      exit 1
+    }
+    warn_stale_checkouts "$REPOS_JSON"
     SCRIPT_PATH="$(PITWALL_CONFIG="$CONFIG" bash "$SKILL_DIR/run-script.sh" rework.js)" || {
       echo "config.sh --rework: run-script.sh could not stage rework.js - dispatch stops." >&2
       exit 1
@@ -224,7 +473,7 @@ PY
         echo "config.sh --rework: slot.sh printed '$SLOT', which is not a lane number - dispatch stops." >&2
         exit 1 ;;
     esac
-    python3 - "$CONFIG" "$2" "$3" "$4" "$SLOT" "$SKILL_DIR" "$SCRIPT_PATH" <<'PY'
+    python3 - "$CONFIG" "$2" "$3" "$4" "$SLOT" "$SKILL_DIR" "$SCRIPT_PATH" "$REPOS_JSON" <<'PY'
 import json, sys
 cfg = json.load(open(sys.argv[1]))
 print(json.dumps({
@@ -237,7 +486,66 @@ print(json.dumps({
     "root": cfg["root"],
     "idPrefix": cfg.get("idPrefix", "sr"),
     "lockPrefix": cfg.get("lockPrefix", "devloop"),
-    "repos": cfg.get("repos", {}),
+    "repos": json.loads(sys.argv[8]),
+}))
+PY
+    ;;
+  --refine)
+    [ $# -eq 2 ] || { echo "usage: config.sh --refine <issue-id>" >&2; exit 2; }
+    ACTOR="$(read_field actor 2>/dev/null)" || ACTOR=""
+    case "$ACTOR" in
+      ''|*[!A-Za-z0-9._-]*)
+        echo "config.sh --refine: this workspace's config declares no usable \"actor\" - dispatch stops." >&2
+        echo "                    Every tracker write a refine run makes carries --actor <that name>, and a" >&2
+        echo "                    refined ticket is assigned to it; without it bd would stamp the git identity" >&2
+        echo "                    and the ticket would land in a person's queue. Add \"actor\": \"<project>-devloop\"" >&2
+        echo "                    to $CONFIG and run this again." >&2
+        exit 2 ;;
+    esac
+    ROOT_DIR="${DEVLOOP_ROOT:-$(read_field root 2>/dev/null)}"
+    [ -n "$ROOT_DIR" ] && [ -d "$ROOT_DIR" ] || ROOT_DIR="$(dirname "$CONFIG")"
+    if ! command -v bd >/dev/null 2>&1; then
+      echo "config.sh --refine: bd is not on PATH, so whether $2 is an unrefined request cannot be read - dispatch stops." >&2
+      exit 1
+    fi
+    if ! issue_is_unrefined "$ROOT_DIR" "$2"; then
+      echo "config.sh --refine: $2 does not carry the '$INTAKE_LABEL' label, or could not be read - dispatch stops." >&2
+      echo "                    refine.js turns a recorded request into a ticket; an issue without that label" >&2
+      echo "                    is already a ticket and is dispatched with:" >&2
+      echo "                      config.sh --args $2" >&2
+      exit 1
+    fi
+    REPOS_JSON="$(resolve_repos)" || {
+      echo "config.sh --refine: the default branch of a repository could not be confirmed - dispatch stops." >&2
+      exit 1
+    }
+    warn_stale_checkouts "$REPOS_JSON"
+    SCRIPT_PATH="$(PITWALL_CONFIG="$CONFIG" bash "$SKILL_DIR/run-script.sh" refine.js)" || {
+      echo "config.sh --refine: run-script.sh could not stage refine.js - dispatch stops." >&2
+      exit 1
+    }
+    SLOT="$(PITWALL_CONFIG="$CONFIG" bash "$SKILL_DIR/slot.sh" "$2")" || {
+      echo "config.sh --refine: slot.sh would not reserve a lane for $2 - dispatch stops." >&2
+      exit 1
+    }
+    case "$SLOT" in
+      ''|*[!0-9]*)
+        echo "config.sh --refine: slot.sh printed '$SLOT', which is not a lane number - dispatch stops." >&2
+        exit 1 ;;
+    esac
+    python3 - "$CONFIG" "$2" "$SLOT" "$SKILL_DIR" "$SCRIPT_PATH" "$REPOS_JSON" "$ACTOR" <<'PY'
+import json, sys
+cfg = json.load(open(sys.argv[1]))
+print(json.dumps({
+    "id": sys.argv[2],
+    "slot": int(sys.argv[3]),
+    "skillDir": sys.argv[4],
+    "scriptPath": sys.argv[5],
+    "actor": sys.argv[7],
+    "root": cfg["root"],
+    "idPrefix": cfg.get("idPrefix", "sr"),
+    "lockPrefix": cfg.get("lockPrefix", "devloop"),
+    "repos": json.loads(sys.argv[6]),
 }))
 PY
     ;;
@@ -256,10 +564,14 @@ PY
       echo "config.sh --land: run-script.sh could not stage land.js - the lander does not start." >&2
       exit 1
     }
-    python3 - "$CONFIG" "$SKILL_DIR" "$SCRIPT_PATH" "$@" <<'PY'
+    REPOS_JSON="$(resolve_repos)" || {
+      echo "config.sh --land: the default branch of a repository could not be confirmed - the lander does not start." >&2
+      exit 1
+    }
+    python3 - "$CONFIG" "$SKILL_DIR" "$SCRIPT_PATH" "$REPOS_JSON" "$@" <<'PY'
 import json, os, sys, time
 cfg = json.load(open(sys.argv[1]))
-repos = cfg.get("repos", {})
+repos = json.loads(sys.argv[4])
 out = {
     "skillDir": sys.argv[2],
     "scriptPath": sys.argv[3],
@@ -273,7 +585,7 @@ out = {
 slugs = {name: (r or {}).get("slug") for name, r in repos.items()}
 known = sorted({s for s in slugs.values() if s})
 pre = []
-for a in sys.argv[4:]:
+for a in sys.argv[5:]:
     a = a.strip()
     if not a:
         continue
@@ -299,14 +611,25 @@ PY
       echo "config.sh --train: run-script.sh could not stage the train - it does not start." >&2
       exit 1
     }
-    python3 - "$CONFIG" "$SKILL_DIR" "$SCRIPT_PATH" "$2" <<'PY'
+    python3 - "$CONFIG" "$2" <<'PY' || exit 2
+import json, sys
+repos = json.load(open(sys.argv[1])).get("repos", {})
+if repos and sys.argv[2] not in repos:
+    sys.stderr.write("no repository %s in this config - have: %s\n"
+                     % (sys.argv[2], ", ".join(sorted(repos)))); sys.exit(2)
+if (repos.get(sys.argv[2]) or {}).get("role") == "workspace":
+    sys.stderr.write("config.sh --train: %s is the workspace root, which has no pull requests to land\n"
+                     % sys.argv[2]); sys.exit(2)
+PY
+    REPOS_JSON="$(resolve_repos "$2")" || {
+      echo "config.sh --train: the default branch of $2 could not be confirmed - the train does not start." >&2
+      exit 1
+    }
+    python3 - "$CONFIG" "$SKILL_DIR" "$SCRIPT_PATH" "$2" "$REPOS_JSON" <<'PY'
 import json, os, sys, time
 cfg = json.load(open(sys.argv[1]))
-repos = cfg.get("repos", {})
+repos = json.loads(sys.argv[5])
 repo = sys.argv[4]
-if repos and repo not in repos:
-    sys.stderr.write("no repository %s in this config - have: %s\n"
-                     % (repo, ", ".join(sorted(repos)))); sys.exit(2)
 print(json.dumps({
     "skillDir": sys.argv[2],
     "scriptPath": sys.argv[3],

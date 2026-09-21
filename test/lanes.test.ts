@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, mkdirSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,6 +16,7 @@ import {
   worktreePaths,
 } from "../src/lanes.ts";
 import { GIT_ENV } from "./support/git.js";
+import { gnuStatOnPath } from "./support/gnu-stat.js";
 
 const PREFIX = "fixture";
 const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), "fixtures");
@@ -316,6 +317,46 @@ test("a workspace passes its env down to the handoff read", () => {
   assert.match(project.errors[0]?.message ?? "", /ENOENT/);
 });
 
+test("a workspace-root entry is not asked for pull requests, so a root with no remote adds no error", () => {
+  const root = lockRoot();
+  claim(root, 1, "pw-rooted");
+  const workspace = mkdtempSync(join(tmpdir(), "pitwall-workspace-"));
+  const checkout = repo(workspace);
+  writeFileSync(
+    join(workspace, WORKSPACE_FILE),
+    JSON.stringify({
+      idPrefix: "pw",
+      lockPrefix: PREFIX,
+      lanes: 1,
+      repos: { site: { path: "checkout" }, workspace: { path: ".", role: "workspace" } },
+    }),
+  );
+  const asked = join(workspace, "asked-from.txt");
+  const recording = [
+    "#!/bin/sh",
+    `pwd >> "${asked}"`,
+    `case "$PWD" in`,
+    `  */checkout) echo '[{"headRefName":"autofix/pw-rooted"}]' ;;`,
+    '  *) echo "gh: not a git repository" >&2; exit 1 ;;',
+    "esac",
+    "",
+  ].join("\n");
+
+  const project = withStub("gh", recording, () => readWorkspace(workspace, { lockRoot: root }));
+
+  assert.deepEqual(
+    project.repos.map((repo) => repo.name),
+    ["site"],
+    "the root is not a repository, and the snapshot must not present it as one",
+  );
+  assert.equal(project.lanes[0]?.state, "handed-off");
+  assert.deepEqual(project.errors, []);
+  assert.deepEqual(
+    readFileSync(asked, "utf8").trim().split("\n").map((line) => line.replace(/^.*\//, "")),
+    ["checkout"],
+  );
+});
+
 test("handoff asks gh for open pull requests carrying lane-verified", () => {
   assert.deepEqual(handoffArgs(), [
     "pr",
@@ -590,6 +631,7 @@ const LANES_SH = join(
 function runLanesScript(
   cwd: string,
   args: readonly string[] = [],
+  extra: Record<string, string> = {},
 ): { status: number; signal: string | null; out: string; err: string } {
   const env: Record<string, string | undefined> = {
     ...process.env,
@@ -598,6 +640,7 @@ function runLanesScript(
     PITWALL_CONFIG: undefined,
     DEVLOOP_CONFIG: undefined,
     LOCK_PREFIX: undefined,
+    ...extra,
   };
   const ran = spawnSync("bash", [LANES_SH, ...args], { encoding: "utf8", cwd, env, timeout: 5000 });
   return { status: ran.status ?? -1, signal: ran.signal, out: ran.stdout ?? "", err: ran.stderr ?? "" };
@@ -639,4 +682,160 @@ test("lanes.sh refuses --stale-minutes with no value instead of looping on it fo
   assert.equal(status, 6, `${out}${err}`);
   assert.match(err, /--stale-minutes needs a value/);
   assert.doesNotMatch(err, /refusing to guess/);
+});
+
+interface ScriptWorkspace {
+  root: string;
+  prefix: string;
+  slots: string;
+  worktrees: string;
+  wf: string;
+}
+
+function scriptWorkspace(): ScriptWorkspace {
+  const prefix = `fixture-${process.pid}-${Date.now().toString(36)}`;
+  const root = mkdtempSync(join(tmpdir(), "pitwall-lanes-stat-"));
+  writeFileSync(
+    join(root, ".autofix.json"),
+    `${JSON.stringify({ root, idPrefix: "fixture", lockPrefix: prefix, repos: {} })}\n`,
+  );
+  const wf = join(root, "workflows");
+  mkdirSync(wf, { recursive: true });
+  const slots = `/tmp/${prefix}-slots`;
+  const worktrees = `/tmp/${prefix}-worktrees`;
+  mkdirSync(slots, { recursive: true });
+  mkdirSync(worktrees, { recursive: true });
+  return { root, prefix, slots, worktrees, wf };
+}
+
+function dropScriptWorkspace(space: ScriptWorkspace): void {
+  rmSync(space.slots, { recursive: true, force: true });
+  rmSync(space.worktrees, { recursive: true, force: true });
+}
+
+function journalFor(space: ScriptWorkspace, run: string, id: string, minutesAgo: number): void {
+  const dir = join(space.wf, run);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "journal.jsonl"), `${JSON.stringify({ type: "started", label: `fix:${id}` })}\n`);
+  writeFileSync(join(dir, "agent-a1.jsonl"), "{}\n");
+  const when = new Date(Date.now() - minutesAgo * 60_000);
+  for (const name of ["journal.jsonl", "agent-a1.jsonl"]) {
+    utimesSync(join(dir, name), when, when);
+  }
+}
+
+test("lanes.sh reads ages through GNU stat, where -f is the file-system report and not a format", () => {
+  const space = scriptWorkspace();
+  try {
+    writeFileSync(join(space.slots, "1"), "pw-present\n");
+    writeFileSync(join(space.slots, "2"), "pw-starting\n");
+    treeAt(join(space.worktrees, "pw-present"), 0);
+
+    const { status, out, err } = runLanesScript(space.root, [], {
+      PATH: gnuStatOnPath(),
+      DEVLOOP_WORKFLOW_DIR: space.wf,
+    });
+
+    assert.equal(status, 0, `${out}${err}`);
+    assert.equal(err, "");
+    assert.match(out, /^1\s+pw-present\s+present\s+0m ago$/m);
+    assert.match(out, /^2\s+pw-starting\s+none\s+claimed 0m ago - starting up$/m);
+    assert.match(out, /no suspects/);
+  } finally {
+    dropScriptWorkspace(space);
+  }
+});
+
+test("lanes.sh clears a quiet worktree by its transcript age under GNU stat, instead of calling it dead", () => {
+  const space = scriptWorkspace();
+  try {
+    writeFileSync(join(space.slots, "1"), "pw-quiet\n");
+    treeAt(join(space.worktrees, "pw-quiet"), 60);
+    journalFor(space, "wf-quiet", "pw-quiet", 0);
+
+    const { status, out, err } = runLanesScript(space.root, [], {
+      PATH: gnuStatOnPath(),
+      DEVLOOP_WORKFLOW_DIR: space.wf,
+    });
+
+    assert.equal(status, 0, `${out}${err}`);
+    assert.equal(err, "");
+    assert.match(out, /^1\s+pw-quiet\s+present\s+60m ago$/m);
+    assert.match(out, /pw-quiet \(transcript 0m ago\)/);
+    assert.match(out, /no dead lanes/);
+  } finally {
+    dropScriptWorkspace(space);
+  }
+});
+
+function suspectClaim(prefix: string, issueId: string): string {
+  const slots = `/tmp/${prefix}-slots`;
+  mkdirSync(slots, { recursive: true });
+  const claim = join(slots, "1");
+  writeFileSync(claim, `${issueId}\n`);
+  const when = new Date(Date.now() - 30 * 60_000);
+  utimesSync(claim, when, when);
+  return slots;
+}
+
+function journalAt(dir: string, issueId: string): void {
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "journal.jsonl"), `${JSON.stringify({ type: "started", issue: issueId })}\n`);
+}
+
+function runLanesAgainst(
+  wf: string,
+  prefix: string,
+): { status: number; out: string; err: string } {
+  const root = mkdtempSync(join(tmpdir(), "pitwall-lanes-wf-"));
+  const env: Record<string, string | undefined> = {
+    ...process.env,
+    ...GIT_ENV,
+    DEVLOOP_ROOT: root,
+    DEVLOOP_WF: wf,
+    LOCK_PREFIX: prefix,
+  };
+  const ran = spawnSync("bash", [LANES_SH, "--stale-minutes", "5"], {
+    encoding: "utf8",
+    cwd: root,
+    env,
+    timeout: 5000,
+  });
+  return { status: ran.status ?? -1, out: ran.stdout ?? "", err: ran.stderr ?? "" };
+}
+
+function uniquePrefix(): string {
+  return `pwtest${process.pid}${Date.now().toString(36)}`;
+}
+
+test("lanes.sh finds a transcript under a session's subagents/workflows", () => {
+  const prefix = uniquePrefix();
+  const wf = mkdtempSync(join(tmpdir(), "pitwall-lanes-nested-"));
+  journalAt(join(wf, "11111111-aaaa-4bbb-8ccc-000000000001", "subagents", "workflows", "wf_aaa"), "pw-nested");
+  const slots = suspectClaim(prefix, "pw-nested");
+  try {
+    const { status, out, err } = runLanesAgainst(wf, prefix);
+
+    assert.equal(status, 0, `${out}${err}`);
+    assert.match(out, /pw-nested \(transcript 0m ago\)/);
+    assert.doesNotMatch(out, /no workflow transcript found/);
+  } finally {
+    rmSync(slots, { recursive: true, force: true });
+  }
+});
+
+test("lanes.sh still finds a transcript under the flat layout", () => {
+  const prefix = uniquePrefix();
+  const wf = mkdtempSync(join(tmpdir(), "pitwall-lanes-flat-"));
+  journalAt(join(wf, "wf_flat"), "pw-flat");
+  const slots = suspectClaim(prefix, "pw-flat");
+  try {
+    const { status, out, err } = runLanesAgainst(wf, prefix);
+
+    assert.equal(status, 0, `${out}${err}`);
+    assert.match(out, /pw-flat \(transcript 0m ago\)/);
+    assert.doesNotMatch(out, /no workflow transcript found/);
+  } finally {
+    rmSync(slots, { recursive: true, force: true });
+  }
 });

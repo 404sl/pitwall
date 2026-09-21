@@ -14,6 +14,7 @@ import {
   DEFAULT_PORT,
   HOST,
   NOTHING_READ,
+  QUESTIONS_ROUTE,
   createConsoleServer,
   listen,
   parseServeArgs,
@@ -24,6 +25,7 @@ import {
 import type { CollectionNotice, Delivery } from "../src/notify.ts";
 import { NOTICE_SOURCE, REFRESH_SOURCE } from "../src/board.ts";
 import type { BuildCheck, BuildReport } from "../src/build.ts";
+import { writeConsoleState } from "../src/parks.ts";
 import { snapshotPath, stateHome } from "../src/state.ts";
 import { VERSION } from "../src/version.ts";
 
@@ -400,11 +402,16 @@ function trackerServer(
   issues: Array<Record<string, unknown>>,
   errors: Array<Record<string, unknown>> = [],
   extra: Record<string, string> = {},
+  parks?: Parameters<typeof writeConsoleState>[0],
 ): Server {
   const { env } = stateWith(trackerSnapshot(issues, errors));
+  if (parks !== undefined) {
+    writeConsoleState(parks, { env });
+  }
   return createConsoleServer({
     env: { ...env, PATH: `${join(BD_FIXTURES, bin)}:/usr/bin:/bin`, ...extra },
     uiDir: builtConsole(),
+    lockRoot: mkdtempSync(join(tmpdir(), "pitwall-serve-lock-")),
   });
 }
 
@@ -434,6 +441,26 @@ test("one issue is served with its body, which the snapshot never carries", asyn
   assert.equal(document.includes("The screen this product exists to show"), false);
   assert.equal(document.includes("\"description\""), false);
   assert.equal(document.includes("\"notes\""), false);
+});
+
+test("one issue is served with whose queue it is in and who asked", async (t) => {
+  const server = trackerServer("ok", [
+    indexed("mw-3", "open", "yours:decision", { owner: "mw-planning-session", reporter: "mw-devloop" }),
+    indexed("mw-1", "open", "parked:umbrella"),
+  ]);
+  t.after(() => server.close());
+  const { origin } = await started(server);
+
+  const decision = (await (await fetch(`${origin}/api/issue/mw/mw-3`)).json()) as {
+    issue: { owner?: string; reporter?: string };
+  };
+  assert.equal(decision.issue.owner, "mw-planning-session");
+  assert.equal(decision.issue.reporter, "mw-devloop");
+  const umbrella = (await (await fetch(`${origin}/api/issue/mw/mw-1`)).json()) as {
+    issue: { owner?: string; reporter?: string };
+  };
+  assert.equal(umbrella.issue.owner, undefined, "a git email under the key owner is not a queue");
+  assert.equal(umbrella.issue.reporter, "Vladimir Elchinov");
 });
 
 test("opening one ticket costs one call to the tracker, not a reading of the whole board", async (t) => {
@@ -474,6 +501,79 @@ test("an issue that is not there is a 404, told apart from one that could not be
   assert.match(unread.message, /mw-1 could not be read/);
   assert.ok(unread.tried.includes(shown));
   assert.ok(unread.tried.some((entry) => entry.endsWith(".beads")));
+});
+
+const PARKED_SINCE = "2026-08-28T10:00:00.000Z";
+
+test("the park age is served in the document and again on the issue, and the question from one store", async (t) => {
+  const stopped = { since: PARKED_SINCE, basis: "first-seen" };
+  const server = trackerServer(
+    "ok",
+    [
+      indexed("mw-3", "open", "yours:decision", { labels: ["needs-decision"], stopped }),
+      indexed("mw-1", "open", "parked:umbrella"),
+    ],
+    [],
+    {},
+    { questions: { mw: { "mw-3": "Honour the paid checkout?" } } },
+  );
+  t.after(() => server.close());
+  const { origin } = await started(server);
+
+  const board = (await (await fetch(`${origin}/api/snapshot`)).json()) as Record<string, unknown>;
+  assert.equal("console" in board || "parks" in board || "questions" in board, false, "the snapshot body is the document and nothing else");
+  const served = (board.projects as Array<{ issues: Array<Record<string, unknown>> }>)[0]?.issues ?? [];
+  assert.deepEqual(served.find((issue) => issue.id === "mw-3")?.stopped, stopped, "the document carries the age");
+  assert.equal(served.some((issue) => "park" in issue || "parkedSince" in issue || "question" in issue), false);
+
+  const questions = await fetch(`${origin}${QUESTIONS_ROUTE}`);
+  assert.equal(questions.status, 200);
+  assert.deepEqual(await questions.json(), { questions: { mw: { "mw-3": "Honour the paid checkout?" } } });
+
+  const issue = (await (await fetch(`${origin}/api/issue/mw/mw-3`)).json()) as {
+    issue: { stopped?: unknown; question?: unknown; park?: unknown };
+  };
+  assert.deepEqual(issue.issue.stopped, stopped, "the page reads the age the document carries and recomputes nothing");
+  assert.equal(issue.issue.question, "Honour the paid checkout?", "the page reads the same store as the board");
+  assert.equal("park" in issue.issue, false, "the sidecar entry is no longer served");
+
+  const umbrella = (await (await fetch(`${origin}/api/issue/mw/mw-1`)).json()) as {
+    issue: { stopped?: unknown; question?: unknown };
+  };
+  assert.equal(umbrella.issue.stopped, undefined, "a structural park has no label and so no age");
+  assert.equal(umbrella.issue.question, undefined);
+});
+
+test("the question route answers with an empty store before any collection has asked one", async (t) => {
+  const server = trackerServer("ok", [indexed("mw-3", "open", "yours:decision", { labels: ["needs-decision"] })]);
+  t.after(() => server.close());
+  const { origin } = await started(server);
+  const response = await fetch(`${origin}${QUESTIONS_ROUTE}`);
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { questions: {} });
+});
+
+test("an age the snapshot placed under a label the issue no longer carries is not served against it", async (t) => {
+  const server = trackerServer(
+    "ok",
+    [
+      indexed("mw-3", "open", "yours:access", {
+        labels: ["needs-access"],
+        stopped: { since: PARKED_SINCE, basis: "carried" },
+      }),
+    ],
+    [],
+    {},
+    { questions: { mw: { "mw-3": "Still this?" } } },
+  );
+  t.after(() => server.close());
+  const { origin } = await started(server);
+  const issue = (await (await fetch(`${origin}/api/issue/mw/mw-3`)).json()) as {
+    issue: { labels: string[]; stopped?: unknown; question?: unknown };
+  };
+  assert.deepEqual(issue.issue.labels, ["needs-decision"]);
+  assert.equal(issue.issue.stopped, undefined);
+  assert.equal(issue.issue.question, undefined, "nor is the question that was asked under it");
 });
 
 test("an issue closed since the snapshot reports both the reading and the snapshot", async (t) => {
@@ -605,6 +705,38 @@ test("the verdict one ticket reports agrees with the blocker status beside it", 
     "ready",
     "a snapshot still carrying mw-9 as open must not park a ticket the tracker has unblocked",
   );
+});
+
+test("a ticket whose only path to ready runs through a list that did not collect is unknown, not ready", async (t) => {
+  const unread = { source: join(TRACKER, ".beads"), message: "bd list --all --limit 0 --json: timed out", at: "2026-09-08T13:02:00Z" };
+  const blind = trackerServer("ok", [], [unread]);
+  t.after(() => blind.close());
+  const { origin } = await started(blind);
+  const read = async (id: string) =>
+    (await (await fetch(`${origin}/api/issue/mw/${id}`)).json()) as {
+      issue: { classification: string; reason: { rule: string; parentId?: string; childId?: string } };
+    };
+
+  const plain = await read("mw-13");
+  assert.equal(plain.issue.classification, "unknown");
+  assert.deepEqual(
+    plain.issue.reason,
+    { rule: "uncollected" },
+    "an empty list that failed to collect must not assert that nothing parks it",
+  );
+  const orphan = await read("mw-1");
+  assert.equal(orphan.issue.classification, "unknown", "a child with no parent-child edge is only visible in the list");
+
+  const parented = await read("mw-4.2");
+  assert.equal(parented.issue.classification, "blocked");
+  assert.deepEqual(parented.issue.reason, { rule: "blocked-parent-in-progress", parentId: "mw-4" });
+  const umbrella = await read("mw-5");
+  assert.equal(umbrella.issue.classification, "parked:umbrella");
+  assert.deepEqual(umbrella.issue.reason, { rule: "umbrella-open-child", childId: "mw-5.1" });
+  const labelled = await read("mw-16");
+  assert.equal(labelled.issue.classification, "parked:watch");
+  const stored = await read("mw-10");
+  assert.equal(stored.issue.classification, "parked:roadmap");
 });
 
 test("a project the snapshot does not name is a read failure, not a missing issue", async (t) => {
@@ -785,6 +917,35 @@ test("a re-collection that read nothing names the source that could not be read"
       Promise.resolve({
         read: false,
         errors: [{ source: "bd list", message: "bd: command not found", at: SNAPSHOT.generatedAt }],
+      }),
+  ]);
+  const server = createConsoleServer({ env, uiDir: builtConsole(), collect });
+  t.after(() => server.close());
+  const { origin } = await started(server);
+
+  await fetch(`${origin}/api/snapshot`);
+  await (calls[0] as Promise<Collection>);
+  await settle();
+
+  const errors = errorsOf(await (await fetch(`${origin}/api/snapshot`)).json());
+  assert.equal(errors[0]?.message, `${NOTHING_READ} bd list: bd: command not found`);
+});
+
+test("a re-collection that read nothing names the tracker, not a field a checkout could not read", async (t) => {
+  const { env } = stateWith(JSON.stringify(SNAPSHOT));
+  const { collect, calls } = collector([
+    () =>
+      Promise.resolve({
+        read: false,
+        errors: [
+          {
+            source: "/x/cli",
+            message: "no origin/HEAD, so the default branch could not be read",
+            at: SNAPSHOT.generatedAt,
+            scope: "field",
+          },
+          { source: "bd list", message: "bd: command not found", at: SNAPSHOT.generatedAt },
+        ],
       }),
   ]);
   const server = createConsoleServer({ env, uiDir: builtConsole(), collect });
@@ -1014,6 +1175,12 @@ function logged(path: string): string[] {
     : [];
 }
 
+const STAMPED = "\\n\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z \\S+\\n";
+
+function noted(id: string, text: string): RegExp {
+  return new RegExp(`^${id} ${STAMPED}${text}$`, "m");
+}
+
 function writtenTo(path: string): string[] {
   return logged(path).filter(
     (line) => line.includes("--append-notes") || line.includes("--remove-label"),
@@ -1079,7 +1246,7 @@ test("an answer lands on the ticket before the labels that park it are cleared",
   assert.equal(answered.status, 200, answered.body);
   assert.match(
     readFileSync(box.notes, "utf8"),
-    /mw-3 Answered from the console: credit the account, and record the amount on the ticket/,
+    noted("mw-3", "Answered from the console: credit the account, and record the amount on the ticket"),
   );
   const writes = writtenTo(box.log);
   assert.equal(writes.length, 2);
@@ -1096,7 +1263,7 @@ test("marking it ready clears both labels and says the console did it", async (t
   const ready = await box.post("/api/issue/mw/mw-3/ready");
 
   assert.equal(ready.status, 200, ready.body);
-  assert.match(readFileSync(box.notes, "utf8"), /mw-3 Marked ready from the console\./);
+  assert.match(readFileSync(box.notes, "utf8"), noted("mw-3", "Marked ready from the console\\."));
   assert.deepEqual((JSON.parse(ready.body) as { removedLabels: string[] }).removedLabels, [
     "needs-decision",
     "needs-access",
@@ -1112,8 +1279,55 @@ test("pushing an issue off the owner's queue records the classification it is co
   assert.equal(returned.status, 200, returned.body);
   assert.match(
     readFileSync(box.notes, "utf8"),
-    /mw-3 Not mine — the console classified this yours:decision\. Reason: any engineer can pick the refund path/,
+    noted(
+      "mw-3",
+      "Not mine — the console classified this yours:decision\\. Reason: any engineer can pick the refund path",
+    ),
   );
+});
+
+test("lifting a park writes the reason first, then removes that one label and nothing else", async (t) => {
+  const box = await acting(t, [indexed("mw-16", "open", "parked:watch", { labels: ["watch"] })]);
+  const lifted = await box.post("/api/issue/mw/mw-16/unpark", {
+    text: "schema 0.5 published this morning",
+  });
+
+  assert.equal(lifted.status, 200, lifted.body);
+  assert.match(
+    readFileSync(box.notes, "utf8"),
+    noted(
+      "mw-16",
+      "Park lifted from the console — watch removed; the console classified this parked:watch\. Reason: schema 0.5 published this morning",
+    ),
+  );
+  const writes = writtenTo(box.log);
+  assert.equal(writes.length, 2);
+  assert.match(writes[0] ?? "", /--append-notes/);
+  assert.equal(writes[1], "update mw-16 --remove-label watch", "only the park label comes off, and only after the note");
+  assert.deepEqual((JSON.parse(lifted.body) as { removedLabels: string[] }).removedLabels, ["watch"]);
+});
+
+test("a park is never lifted without a reason, and never from an issue that carries no liftable label", async (t) => {
+  const box = await acting(t, [
+    indexed("mw-16", "open", "parked:watch", { labels: ["watch"] }),
+    indexed("mw-3", "open", "yours:decision", { labels: ["needs-decision"] }),
+  ]);
+  const unsaid = await box.post("/api/issue/mw/mw-16/unpark", { text: "  " });
+  assert.equal(unsaid.status, 400);
+  assert.match(unsaid.body, /mw-16 was not changed - say why the park no longer applies/);
+
+  const owned = await box.post("/api/issue/mw/mw-3/unpark", { text: "any engineer can pick this" });
+  assert.equal(owned.status, 400);
+  assert.match(owned.body, /mw-3 was not changed - it carries no park label the console lifts/);
+  assert.match(owned.body, /blocked-tooling, watch, roadmap/);
+  assert.match(owned.body, /classifies it yours:decision/);
+
+  const stored = await box.post("/api/issue/mw/mw-10/unpark", { text: "the release is out" });
+  assert.equal(stored.status, 400);
+  assert.match(stored.body, /mw-10 was not changed - it carries no park label the console lifts/);
+  assert.match(stored.body, /classifies it parked:roadmap/);
+
+  assert.deepEqual(writtenTo(box.log), []);
 });
 
 test("an empty box cannot unpark an issue", async (t) => {
@@ -1161,7 +1375,7 @@ test("a write that got the note on but not the labels off says so, rather than '
   const tried = await box.post("/api/issue/mw/mw-3/ready");
 
   assert.equal(tried.status, 502);
-  assert.match(readFileSync(box.notes, "utf8"), /mw-3 Marked ready from the console\./);
+  assert.match(readFileSync(box.notes, "utf8"), noted("mw-3", "Marked ready from the console\\."));
   assert.match(tried.body, /mw-3 carries the note but is still parked/);
   assert.match(tried.body, /--remove-label/);
   assert.doesNotMatch(

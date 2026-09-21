@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -65,14 +65,16 @@ function stubs(root: string, bare: string, body: string | null, perPr = false, q
     join(bin, "gh"),
     `#!/bin/bash
 case "$1 $2" in
+  "repo view") echo '{"defaultBranchRef":{"name":"master"}}' ;;
   "run list")  echo '[{"status":"completed","conclusion":"success"}]' ;;
   "pr checks") exit 0 ;;
+  "api repos/"*) echo '{"total_count":1,"check_runs":[{"name":"CI"}]}' ;;
   "pr list")   printf '%s\\n' ${JSON.stringify(queue)} ;;
   "pr create") echo "https://github.com/acme/site/pull/200" ;;
   "pr view")
     case "$*" in
       *"title,body"*) ${titleBody} ;;
-      *) echo '{"labels":[{"name":"lane-verified"}],"statusCheckRollup":[{"name":"CI","conclusion":"SUCCESS"}],"headRefOid":"'"$(git --git-dir=${JSON.stringify(bare)} rev-parse "refs/heads/$BRANCH_UNDER_TEST" 2>/dev/null)"'"}' ;;
+      *) echo '{"baseRefName":"master","labels":[{"name":"lane-verified"}],"statusCheckRollup":[{"name":"CI","conclusion":"SUCCESS"}],"headRefOid":"'"$(git --git-dir=${JSON.stringify(bare)} rev-parse "refs/heads/$BRANCH_UNDER_TEST" 2>/dev/null)"'"}' ;;
     esac ;;
   *) exit 0 ;;
 esac
@@ -302,6 +304,66 @@ test("a plugin branch deferred past another landing is assigned the new next ver
   assert.match(on.log, /## 0\.1\.35/);
 });
 
+test("a plugin branch stamped, then merged with a master that used the same number, lands with the next one", () => {
+  const box = workspace("0.1.33");
+  const bin = stubs(box.root, box.bare, BODY, true);
+  lane(box.repo, "devloop/zz-buried", SKILL_DOC, "The branch that was stamped first.\n");
+  lane(box.repo, "devloop/zz-passed", join("plugins", "devloop", "README.md"), "What the plugin is.\n");
+
+  assert.equal(landOne(box.root, box.repo, bin, "devloop/zz-buried", "105").code, 0);
+  assert.equal(declared(box.bare, "devloop/zz-buried").plugin, "0.1.34");
+  assert.equal(landOne(box.root, box.repo, bin, "devloop/zz-passed", "106").code, 0);
+  git(box.repo, "fetch", "--quiet", "origin");
+  git(box.repo, "checkout", "--quiet", "master");
+  git(box.repo, "merge", "--quiet", "--ff-only", "origin/devloop/zz-passed");
+  git(box.repo, "push", "--quiet", "origin", "master");
+  assert.equal(declared(box.bare, "master").plugin, "0.1.34");
+
+  git(box.repo, "checkout", "--quiet", "devloop/zz-buried");
+  git(box.repo, "reset", "--quiet", "--hard", "origin/devloop/zz-buried");
+  const merged = spawnGit(["-c", `user.name=${AUTHOR.name}`, "-c", `user.email=${AUTHOR.email}`, "merge", "--no-ff", "master"], { cwd: box.repo });
+  assert.notEqual(merged.status, 0, "the two entries under one number did not conflict, so the fixture proves nothing");
+  write(
+    box.repo,
+    LOG,
+    "# Changelog\n\n## 0.1.34\n\nWhat pull request 106 changed.\n\n## 0.1.34\n\nWhat pull request 105 changed.\n\n## 0.1.33\n\nWhat the version before this one did.\n",
+  );
+  git(box.repo, "add", "-A");
+  git(box.repo, "commit", "--quiet", "--no-edit");
+  git(box.repo, "push", "--quiet", "origin", "devloop/zz-buried");
+  git(box.repo, "checkout", "--quiet", "master");
+  write(box.repo, join("src", "board.ts"), "export const lanes = 1;\n");
+  git(box.repo, "add", "-A");
+  git(box.repo, "commit", "--quiet", "-m", "master moves again");
+  git(box.repo, "push", "--quiet", "origin", "master");
+  const head = git(box.repo, "rev-parse", "origin/devloop/zz-buried");
+
+  const ran = landOne(box.root, box.repo, bin, "devloop/zz-buried", "105");
+
+  assert.equal(
+    ran.code,
+    0,
+    "the version commit an earlier round wrote sits under the merge commit, where the drop loop " +
+      "no longer reaches it, so the stale entry stayed in the changelog and the assignment refused " +
+      `the branch for differing from master in more than the version:\n${ran.out}\n${ran.err}`,
+  );
+  assert.match(ran.out, /^dropped: 1 version commit\(s\) an earlier round wrote sit under a merge commit/m, ran.out);
+  assert.match(ran.out, /^pushed:/m, ran.out);
+  git(box.repo, "fetch", "--quiet", "origin");
+  const after = git(box.repo, "rev-parse", "origin/devloop/zz-buried");
+  assert.equal(
+    spawnGit(["merge-base", "--is-ancestor", head, after], { cwd: box.repo }).status,
+    0,
+    "the old head is not an ancestor of the new one, so the merge commit and its resolution were rewritten",
+  );
+  const on = declared(box.bare, "devloop/zz-buried");
+  assert.equal(on.plugin, "0.1.35", `it did not take the number after master's: ${ran.out}`);
+  assert.equal(on.marketplace, "0.1.35", `the two manifests disagree, which breaks the marketplace install: ${ran.out}`);
+  assert.equal(on.log.match(/## 0\.1\.34/g)?.length, 1, `0.1.34 is in the changelog twice: ${on.log}`);
+  assert.match(on.log, /## 0\.1\.35\n\nWhat pull request 105 changed\./, on.log);
+  assert.match(on.log, /## 0\.1\.34\n\nWhat pull request 106 changed\./, on.log);
+});
+
 test("a plugin branch whose changelog text cannot be read is refused rather than assigned an empty entry", () => {
   const box = workspace("0.1.33");
   const bin = stubs(box.root, box.bare, null);
@@ -421,6 +483,77 @@ test("a train whose version cannot be assigned names the plugin changes that los
       `the pass with it:\n${ran.out}`,
   );
   assert.equal(trainOn(box.bare), "", `the refused train was left on the remote:\n${ran.out}`);
+});
+
+function versionOnly(repo: string, branch: string, version: string): void {
+  git(repo, "checkout", "--quiet", "master");
+  git(repo, "checkout", "--quiet", "-b", branch);
+  manifests(repo, version);
+  const log = readFileSync(join(repo, LOG), "utf8");
+  write(repo, LOG, log.replace("# Changelog\n", `# Changelog\n\n## ${version}\n\nWhat this one would say.\n`));
+  git(repo, "add", "-A");
+  git(repo, "commit", "-m", `Set devloop plugin version ${version}`);
+  git(repo, "push", "--quiet", "-u", "origin", branch);
+  git(repo, "checkout", "--quiet", "master");
+}
+
+test("a branch still carrying a version commit an earlier round wrote goes on the train rather than being skipped", () => {
+  const box = workspace("0.1.33");
+  const bin = stubs(box.root, box.bare, BODY, true, queued([[204, "devloop/zz-carried", "The change that waited"]]));
+  lane(box.repo, "devloop/zz-carried", SKILL_DOC, "The change that waited.\n");
+  lane(box.repo, "devloop/zz-ahead", join("plugins", "devloop", "README.md"), "What the plugin is.\n");
+
+  assert.equal(landOne(box.root, box.repo, bin, "devloop/zz-carried", "204").code, 0);
+  assert.equal(declared(box.bare, "devloop/zz-carried").plugin, "0.1.34");
+  assert.equal(landOne(box.root, box.repo, bin, "devloop/zz-ahead", "205").code, 0);
+  git(box.repo, "fetch", "--quiet", "origin");
+  git(box.repo, "checkout", "--quiet", "master");
+  git(box.repo, "merge", "--quiet", "--ff-only", "origin/devloop/zz-ahead");
+  git(box.repo, "push", "--quiet", "origin", "master");
+  assert.equal(declared(box.bare, "master").plugin, "0.1.34");
+
+  const ran = landTrain(box.root, box.repo, bin, `traincarry-${process.pid}`);
+
+  assert.equal(ran.code, 0, `${ran.out}\n${ran.err}`);
+  assert.doesNotMatch(
+    ran.out,
+    /skipped #204/,
+    "the branch was dropped from the train for conflicting on the changelog. The version commit " +
+      "is not the lane's - an earlier round wrote it and force-pushed it - so the branch replays " +
+      "an entry under a version master has since used, and a skip costs the whole pass for work " +
+      `that was green:\n${ran.out}`,
+  );
+  assert.match(ran.out, /^ {2}added {3}#204 devloop\/zz-carried/m, ran.out);
+  const train = trainOn(box.bare);
+  assert.notEqual(train, "", `no release branch reached the remote:\n${ran.out}`);
+  const on = declared(box.bare, train);
+  assert.equal(on.plugin, "0.1.35", `the train did not take the number after master's: ${ran.out}`);
+  assert.equal(on.marketplace, "0.1.35", `the two manifests disagree, which breaks the marketplace install: ${ran.out}`);
+  assert.equal(on.log.match(/## 0\.1\.34/g)?.length, 1, `0.1.34 is named twice in the train changelog: ${on.log}`);
+  assert.equal(on.log.match(/## 0\.1\.35/g)?.length, 1, `0.1.35 is not named exactly once: ${on.log}`);
+  assert.match(on.log, /What pull request 204 changed\./, `#204 has no changelog entry: ${on.log}`);
+});
+
+test("a branch whose only commit is a version commit is still carried by the train", () => {
+  const box = workspace("0.1.33");
+  const bin = stubs(box.root, box.bare, BODY, true, queued([[206, "devloop/zz-onlyver", "Only a version"]]));
+  versionOnly(box.repo, "devloop/zz-onlyver", "0.1.34");
+
+  const ran = landTrain(box.root, box.repo, bin, `trainonly-${process.pid}`);
+
+  assert.equal(ran.code, 0, `${ran.out}\n${ran.err}`);
+  assert.match(
+    ran.out,
+    /^ {2}added {3}#206 devloop\/zz-onlyver/m,
+    "dropping the version commit emptied the branch, so the train carried nothing of it and the " +
+      `pull request stayed open looking unlanded:\n${ran.out}`,
+  );
+  assert.doesNotMatch(ran.out, /skipped #206/, ran.out);
+  const train = trainOn(box.bare);
+  assert.notEqual(train, "", `no release branch reached the remote:\n${ran.out}`);
+  const on = declared(box.bare, train);
+  assert.equal(on.plugin, "0.1.34", `the train does not declare master's next version: ${ran.out}`);
+  assert.equal(on.log.match(/## 0\.1\.34/g)?.length, 1, `0.1.34 is named twice in the train changelog: ${on.log}`);
 });
 
 test("a version commit an earlier round wrote under the subject that has since changed is still dropped", () => {

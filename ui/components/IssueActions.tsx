@@ -1,5 +1,6 @@
 import { useCallback, useState } from "react";
 import { isYours } from "@404sl/pitwall-schema";
+import { liftableParkOf } from "../../src/classify.js";
 import type { IssuePreview } from "../model.js";
 import { fill } from "../format.js";
 import type { IssueRoute } from "../routes.js";
@@ -7,15 +8,33 @@ import { strings } from "../strings.js";
 
 export const ACTION_HEADER = "X-Pitwall-Action";
 
-export type ActionName = "answer" | "ready" | "not-mine";
+export type ActionName = "answer" | "ready" | "not-mine" | "unpark";
 
 export type ActionOutcome = { ok: true; action: ActionName } | { ok: false; message: string };
 
-type Panel = "answer" | "not-mine";
+type Panel = "answer" | "not-mine" | "unpark";
 
 const PANEL_ID = "pw-action-panel";
 const TEXT_ID = "pw-action-text";
 const HINT_ID = "pw-action-hint";
+
+const PANEL_TEXT: Record<Panel, { label: string; hint: string; submit: string }> = {
+  answer: {
+    label: strings.actions.answerLabel,
+    hint: strings.actions.answerHint,
+    submit: strings.actions.answerSubmit,
+  },
+  "not-mine": {
+    label: strings.actions.notMineLabel,
+    hint: strings.actions.notMineHint,
+    submit: strings.actions.notMineSubmit,
+  },
+  unpark: {
+    label: strings.actions.unparkLabel,
+    hint: strings.actions.unparkHint,
+    submit: strings.actions.unparkSubmit,
+  },
+};
 
 function actionUrl(route: IssueRoute, action: ActionName): string {
   return `/api/issue/${encodeURIComponent(route.project)}/${encodeURIComponent(route.id)}/${action}`;
@@ -79,7 +98,12 @@ export function IssueActions({
     [route, onOutcome],
   );
 
-  if (shown.closed || shown.classification === undefined || !isYours(shown.classification)) {
+  if (shown.closed || shown.classification === undefined) {
+    return null;
+  }
+  const yours = isYours(shown.classification);
+  const liftable = yours ? undefined : liftableParkOf(shown);
+  if (!yours && liftable === undefined) {
     return null;
   }
 
@@ -93,34 +117,49 @@ export function IssueActions({
   return (
     <section className="pw-actions" aria-label={strings.actions.region} aria-busy={busy}>
       <div className="pw-actions__row">
-        <button
-          type="button"
-          className="pw-button"
-          disabled={frozen}
-          aria-expanded={panel === "answer"}
-          aria-controls={PANEL_ID}
-          onClick={() => toggle("answer")}
-        >
-          {strings.actions.answer}
-        </button>
-        <button
-          type="button"
-          className="pw-button"
-          disabled={frozen}
-          onClick={() => void send("ready", "")}
-        >
-          {strings.actions.ready}
-        </button>
-        <button
-          type="button"
-          className="pw-button"
-          disabled={frozen}
-          aria-expanded={panel === "not-mine"}
-          aria-controls={PANEL_ID}
-          onClick={() => toggle("not-mine")}
-        >
-          {strings.actions.notMine}
-        </button>
+        {liftable !== undefined ? (
+          <button
+            type="button"
+            className="pw-button"
+            disabled={frozen}
+            aria-expanded={panel === "unpark"}
+            aria-controls={PANEL_ID}
+            onClick={() => toggle("unpark")}
+          >
+            {fill(strings.actions.unpark, { label: liftable })}
+          </button>
+        ) : (
+          <>
+            <button
+              type="button"
+              className="pw-button"
+              disabled={frozen}
+              aria-expanded={panel === "answer"}
+              aria-controls={PANEL_ID}
+              onClick={() => toggle("answer")}
+            >
+              {strings.actions.answer}
+            </button>
+            <button
+              type="button"
+              className="pw-button"
+              disabled={frozen}
+              onClick={() => void send("ready", "")}
+            >
+              {strings.actions.ready}
+            </button>
+            <button
+              type="button"
+              className="pw-button"
+              disabled={frozen}
+              aria-expanded={panel === "not-mine"}
+              aria-controls={PANEL_ID}
+              onClick={() => toggle("not-mine")}
+            >
+              {strings.actions.notMine}
+            </button>
+          </>
+        )}
       </div>
       <p className="pw-actions__scope">{strings.actions.scope}</p>
       {panel === undefined ? null : (
@@ -133,10 +172,10 @@ export function IssueActions({
           }}
         >
           <label className="pw-actions__label" htmlFor={TEXT_ID}>
-            {panel === "answer" ? strings.actions.answerLabel : strings.actions.notMineLabel}
+            {fill(PANEL_TEXT[panel].label, { label: liftable ?? "" })}
           </label>
           <p className="pw-actions__hint" id={HINT_ID}>
-            {panel === "answer" ? strings.actions.answerHint : strings.actions.notMineHint}
+            {PANEL_TEXT[panel].hint}
           </p>
           <textarea
             id={TEXT_ID}
@@ -147,7 +186,7 @@ export function IssueActions({
             onChange={(event) => setText(event.target.value)}
           />
           <button type="submit" className="pw-button" disabled={frozen || text.trim() === ""}>
-            {panel === "answer" ? strings.actions.answerSubmit : strings.actions.notMineSubmit}
+            {PANEL_TEXT[panel].submit}
           </button>
         </form>
       )}

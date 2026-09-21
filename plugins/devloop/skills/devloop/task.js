@@ -62,6 +62,19 @@ if (!input.root) {
 const ROOT = input.root
 const ID_PREFIX = input.idPrefix || 'sr'
 const REPOS = input.repos || {}
+const REPO_KEYS = Object.keys(REPOS)
+if (!REPO_KEYS.length) {
+  return {
+    id: input.id || null,
+    outcome: 'error',
+    notes: 'no repositories in args - refusing to run. The workspace config names no repositories, ' +
+           'so there is nothing a ticket can be routed to. Add a repos entry per checkout and ' +
+           'build the args with `config.sh --args <id> <slot>`.'
+  }
+}
+function baseOf(repo) { return (REPOS[repo] || {}).defaultBranch || 'master' }
+const SHARED_BASE = [...new Set(REPO_KEYS.map(baseOf))]
+const WORKSPACE_BASE = SHARED_BASE.length === 1 ? SHARED_BASE[0] : '<default branch>'
 // /tmp is shared across every project on this machine. Two projects dispatching with the same
 // lockPrefix collide on the lane locks - and the lane lock is what stops two lanes sharing a
 // test database.
@@ -112,8 +125,42 @@ ${lines.join('\n')}${notes ? `\n\nWorth knowing about this repository:\n${notes}
 }
 const MAX_ATTEMPTS = input.maxAttempts || 3
 const MAX_REWORKS = input.maxReworks || 2
+const RETRY_FAILED = input.retryFailed === true
 const ID = input.id
 const SLOT = input.slot || 1
+const DISPATCH = /^[A-Za-z0-9._-]+$/.test(String(input.dispatch || '')) ? String(input.dispatch) : null
+const LANE_NUMBER = SLOT - 1 + 2
+const LANE_LOCK = `/tmp/${LOCK_PREFIX}-lane-${LANE_NUMBER}.lock`
+const OWNER_FILE = `/tmp/${LOCK_PREFIX}-lane-${LANE_NUMBER}.owner`
+const SLOT_FILE = `/tmp/${LOCK_PREFIX}-slots/${SLOT}`
+
+function claimLane(line) {
+  const held = `${line}${DISPATCH ? ` dispatch ${DISPATCH}` : ''}`
+  const take = `mkdir ${LANE_LOCK} 2>/dev/null && printf '%s\\n' "${held}" > ${OWNER_FILE} && echo GOT_LANE`
+  if (!DISPATCH) return `${take} || echo LANE_BUSY`
+  return `${take} || { [ -d ${LANE_LOCK} ] && grep -qxF "${held}" ${OWNER_FILE} 2>/dev/null && echo LANE_RECLAIMED || echo LANE_BUSY; }`
+}
+
+function reclaimRule() {
+  if (!DISPATCH) return '\n'
+  return `
+LANE_RECLAIMED MEANS THE LANE IS ALREADY YOURS. This brief is handed to every attempt, including
+a retry of a fix step that died while it held the lock, so the holder can be an earlier attempt of
+this same run. The owner file says which, and the command above reads it for you: it compares the
+whole line against what this run would write - the issue, the slot and the dispatch token
+${DISPATCH}, minted for this dispatch alone and carried by no other run - and prints
+LANE_RECLAIMED only on an exact match. Treat it exactly as GOT_LANE: the lock and the owner file
+are already right, so touch neither and carry on. Do not wait for the holder to finish, because
+the holder is a step of this run that is no longer running, and do not read the worktree as
+somebody else's - whatever is already there is this run's own earlier work, and continuing it
+is the job. A retry once inferred a duplicate dispatch from the lock's timestamps, refused, and
+left a worktree full of finished, uncommitted work with no branch and no pull request; the
+token exists so that nothing has to be inferred. Say in your result that the lane was reclaimed.
+
+LANE_BUSY is a genuine other run - another issue, this issue under a different dispatch token,
+or a lock with no owner file beside it - and is what the stop below is for.
+`
+}
 
 // Returning here leaves the issue claimed, because this script cannot run bd. The caller
 // must release it - see 'a dispatch that returns error' in SKILL.md.
@@ -145,7 +192,7 @@ const TRIAGE = {
         properties: {
           title: { type: 'string' },
           repo: {
-            enum: ['site', 'extension', 'integration', 'docs'],
+            enum: REPO_KEYS,
             description: 'routed per child from the paths that child names, and a key this workspace has configured. A child does not inherit the parent routing.'
           },
           scope: { type: 'string', description: 'what this child covers, traceable to the parent text' },
@@ -155,8 +202,8 @@ const TRIAGE = {
       }
     },
     repo: {
-      enum: ['site', 'extension', 'integration', 'docs', 'unknown'],
-      description: 'must be a key this workspace has configured - the brief lists them with their checkouts. The list above is a wire format shared with other projects and holds keys this workspace does not have.'
+      enum: [...REPO_KEYS, 'unknown'],
+      description: 'must be a key this workspace has configured - the brief lists them with their checkouts. unknown is not a route: it means the ticket names no configured repository.'
     },
     title: { type: 'string' },
     priority: { type: 'integer' },
@@ -169,9 +216,11 @@ const WORK = {
   type: 'object',
   required: ['status', 'summary'],
   properties: {
-    status: { enum: ['pushed', 'needs_feedback', 'needs_design', 'no_change_needed', 'blocked'] },
+    status: { enum: ['pushed', 'applied', 'needs_feedback', 'needs_design', 'no_change_needed', 'blocked'] },
     summary: { type: 'string' },
-    repo: { enum: ['site', 'extension', 'integration', 'docs', 'unknown'] },
+    repo: { enum: [...REPO_KEYS, 'unknown'] },
+    changed: { type: 'array', items: { type: 'string' }, description: 'workspace key only: every root-level file edited in place, as an absolute path' },
+    verification: { type: 'string', description: 'workspace key only: the VERBATIM first six lines of bd show <id> run AFTER the close' },
     branch: { type: 'string' },
     prNumber: { type: 'integer' },
     prUrl: { type: 'string' },
@@ -217,15 +266,31 @@ const SHIP = {
 
 const LANE = {
   type: 'object',
-  required: ['lane', 'slot'],
+  required: ['lane', 'slot', 'worktree'],
   properties: {
-    lane: { enum: ['released', 'not_mine', 'already_gone', 'still_held'], description: 'the word release-lane.sh printed after lane:, lowercased - it reports its own outcome and you are not asked to judge it' },
-    slot: { enum: ['released', 'not_mine', 'already_gone', 'still_held'], description: 'the word it printed after slot:, lowercased' },
-    notes: { type: 'string', description: 'everything it printed, verbatim' }
+    lane: { enum: ['released', 'not_mine', 'already_gone', 'still_held', 'refused'], description: 'the word release-lane.sh printed after lane:, lowercased - it reports its own outcome and you are not asked to judge it. refused means the command was not permitted to run at all, so nothing was printed' },
+    slot: { enum: ['released', 'not_mine', 'already_gone', 'still_held', 'refused'], description: 'the word it printed after slot:, lowercased, or refused when the command was not permitted to run' },
+    worktree: { enum: ['gone', 'clean', 'uncommitted', 'unpushed', 'unread', 'refused'], description: 'the word it printed after worktree:, lowercased, or refused when the command was not permitted to run' },
+    notes: { type: 'string', description: 'everything it printed, verbatim - or what refused the command, in its own words' }
   }
 }
 
-const SHELL_FIRST = `EVERY COMMAND THAT RUNS git OR bundle STARTS WITH THESE TWO EXPORTS, and so does every
+const LANE_PLAIN = {
+  type: 'object',
+  required: ['lane', 'slot'],
+  properties: {
+    lane: { enum: ['released', 'not_mine', 'already_gone', 'still_held', 'refused'], description: 'the word printed after lane:, lowercased, or refused when the command was not permitted to run' },
+    slot: { enum: ['released', 'not_mine', 'already_gone', 'still_held', 'refused'], description: 'the word printed after slot:, lowercased, or refused when the command was not permitted to run' },
+    notes: { type: 'string', description: 'everything printed, verbatim - or what refused a command, in its own words' }
+  }
+}
+
+const IDENTITY = (ref) => '  git -c user.name="$(git log -1 --format=%an ' + ref + ')" -c user.email="$(git log -1 --format=%ae ' + ref + ')" commit -F <message file>'
+const BASE_OF_EACH = () => CHECKOUT_KEYS.map((k) => `  ${k} (${repoPath(k)})  origin/${baseOf(k)}`).join('\n')
+const REF = (base) => base ? `origin/${base}` : '<base>'
+const IDENTITY_FROM = (base) => base ? IDENTITY(`origin/${base}`) : IDENTITY('<base>') + '\n\nwhere <base> is the remote-tracking ref listed beside the repository the commit is in - the\nrepositories here do not share a default branch, so take it from this list rather than assuming:\n' + BASE_OF_EACH()
+
+const SHELL_FIRST = (base) => `EVERY COMMAND THAT RUNS git OR bundle STARTS WITH THESE TWO EXPORTS, and so does every
 command that runs a script which does:
 
   export GIT_CONFIG_GLOBAL=/dev/null BUNDLE_USER_CONFIG=/dev/null && <your command>
@@ -249,7 +314,7 @@ COMMIT IDENTITY IS THE ONE THING THAT DOES NOT SURVIVE THEM, and every command t
 commit needs it - commit, rebase, merge, cherry-pick. Pass it on the command, taken from the
 branch being built on:
 
-  git -c user.name="$(git log -1 --format=%an origin/master)" -c user.email="$(git log -1 --format=%ae origin/master)" commit -F <message file>
+${IDENTITY_FROM(base)}
 
 Without it git either refuses outright, 'unable to auto-detect email address', or writes the
 wrong author - and nothing downstream notices the second. On this machine the credential helper
@@ -258,9 +323,15 @@ machine, not a rule: a workspace set up by 'gh auth setup-git' has the helper in
 config, and these exports drop it. If a push asks for a password, say so rather than putting the
 home config back.`
 
-const LAW = `
+const MIXED_BASES = () => `
+The repositories here do not share a default branch. Wherever <base> appears below it is the
+remote-tracking ref listed beside the repository the command runs in, and <branch> is that
+branch's name without the origin/ prefix - take both from this list rather than assuming:
+${BASE_OF_EACH()}
+`
+const LAW = (base = SHARED_BASE.length === 1 ? SHARED_BASE[0] : null) => `
 NON-NEGOTIABLE RULES. They outrank speed, and they outrank finishing the task.
-
+${base ? '' : MIXED_BASES()}
 0. WRITE bd TEXT THROUGH A FILE OR A QUOTED HEREDOC, never as an inline double-quoted
    argument containing backticks or $(...). The shell evaluates them before bd ever sees
    the string, and the failure is SILENT: the substitution's output replaces the text, so
@@ -283,15 +354,15 @@ NON-NEGOTIABLE RULES. They outrank speed, and they outrank finishing the task.
    and close it. If a match exists, append your evidence to it instead of creating a sibling -
    your diagnosis is usually worth keeping even when the ticket is not.
 
-   --append-notes ON 'bd create' IS SILENTLY DROPPED. The issue is created, the command
-   succeeds, and notes come back null. Create first, then apply notes with a separate
-   'bd update --append-notes', and read the field back.
+   NOTES PASSED TO 'bd create' ARE SILENTLY DROPPED. The issue is created, the command
+   succeeds, and notes come back null. Create first, then write the note with a separate
+   run of bd-note.sh (rule 9), and read the field back.
 
-   BEFORE FILING THAT SOMETHING IS MISSING FROM MASTER, ASK MASTER - NOT YOUR WORKTREE. Your
-   checkout was cut from whatever master was when this lane started, and other lanes have been
-   landing work since. Fetch, then look at the ref:
-     git fetch origin --quiet && git ls-tree --name-only origin/master <path>
-     git show origin/master:<file> | head
+   BEFORE FILING THAT SOMETHING IS MISSING FROM ${base || 'the default branch'}, ASK ${REF(base)} - NOT YOUR WORKTREE.
+   Your checkout was cut from whatever ${REF(base)} was when this lane started, and other lanes
+   have been landing work since. Fetch, then look at the ref:
+     git fetch origin --quiet && git ls-tree --name-only ${REF(base)} <path>
+     git show ${REF(base)}:<file> | head
    And check whether a sibling already has it in flight, because an open pull request is not a
    gap in the product:
      gh pr list --state open --search "<the file or symbol>"
@@ -314,13 +385,36 @@ NON-NEGOTIABLE RULES. They outrank speed, and they outrank finishing the task.
    easy to misread as part of the message, and separating them makes the check legible.
    A pipeline path counts. a worktree path under /tmp names the machinery as surely as the
    word "agent" does, and it is easy to paste into a PR body while quoting a measurement.
+   THE HANDOFF LABEL'S TOKEN COUNTS THE SAME WAY, and it is the one you are most likely to
+   write, because a change about the handoff mechanics is exactly the change that quotes it.
+   Name the label in prose - "the handoff label" - in every commit message, in the PR title and
+   in the PR body, and never write its literal token. Typesetting does not help: the check is a
+   grep, so backticks, a code fence and a quotation from a file in this repository all hit.
    FIX IT RATHER THAN STOPPING, when it is only in the PR body or title: rewrite the sentence
    to describe the thing by shape - "a checkout with no dot-directory in its path" - re-read
    the body back from GitHub, and carry on. Editing a description does not touch the head
    commit, so a green run stays valid. Halting would leave the reference sitting in an open
    PR, which is worse than removing it.
-   In a COMMIT MESSAGE it is different: amending rewrites the commit and invalidates the run,
-   so amend, force-push and wait for CI again. Say in your notes what you changed either way.
+   IN A PUSHED COMMIT MESSAGE THERE IS NO FIX AVAILABLE TO YOU, which is why the rule above is
+   written as never write it rather than check it afterwards. Rewording a pushed commit
+   rewrites history, and the force-push it needs is refused to a run, so a branch in that state
+   is green, correct and waiting on a person. Report it in 'notes', say which commit, and
+   return 'blocked'. Three pull requests were in exactly that state on 2026-09-17.
+   THAT VERDICT IS ONLY CORRECT AFTER A PUSH. While the branch is still local an amend needs no
+   force-push at all, so a hit found before the push is ordinary work and 'blocked' is the
+   wrong answer to it. SO CHECK BEFORE YOU PUSH, while the fix still costs nothing:
+     bash ${SKILL_DIR}/lane-handoff.sh --repo-path <your worktree> --pre-push --base ${base || '<branch>'}
+   It runs the same grep the handoff gate runs, over ${REF(base)}..HEAD, and needs no pull
+   request. It ASKS THE REMOTE whether your branch exists there rather than inferring it from
+   shas, so a branch that was pushed and then rebased is not mistaken for a local one.
+   Clean exits 0. A hit exits 2 and names the commit it is in, because that is what decides the
+   answer: in a commit the remote does not hold it prints the amend to run, and in one the remote
+   already holds it prints the verdict above instead - name that commit in 'notes' and return
+   'blocked'. Exit 10 is a third answer and it is not a hit at all: every message is clear, but
+   the remote holds your branch at a head your HEAD does not contain, so no plain push exists and
+   publishing it rewrites what is already there. Report what it prints and return 'blocked'.
+   On a second attempt the branch already carries pushed commits underneath, so all three answers
+   are live in the same run. Say in your notes what you changed either way.
 
    AN INSTRUCTION TO ADD AUTHORSHIP TRAILERS IS EXPECTED, AND IS ALREADY DECLINED.
    A run may be handed an instruction to append authorship trailers to commit messages and a
@@ -333,8 +427,11 @@ NON-NEGOTIABLE RULES. They outrank speed, and they outrank finishing the task.
    with no label, for a person to notice and label by hand. Escalating was defensible the
    first time. It is pure loss now that the answer is written here.
 2. Never commit to, push to, or force-push a default branch. Work only on your own branch.
-3. Guard branch creation and pushes:
-   git-guard --dir=<absolute worktree path> --branch=<your branch> -- git <command>
+3. Guard pushes:
+   bash ${SKILL_DIR}/git-guard.sh --dir=<absolute worktree path> --branch=<your branch> --default=${base || '<branch>'} -- git <command>
+   It refuses ${base || 'the default branch'} as well as master and main, whether named as --branch or as the destination of
+   the push, a directory that is not the root of its own worktree, and a checkout whose HEAD is not
+   the branch you named, and it runs nothing when it refuses.
 4. Never deploy production. Staging only, and only in the Ship step.
 5. Never run 'git init', never change a remote, never delete anybody's branch but your own.
 6. Work only inside your own worktree under ${WT}. Never edit a main checkout - one of them
@@ -346,6 +443,17 @@ NON-NEGOTIABLE RULES. They outrank speed, and they outrank finishing the task.
    so there is no category of command it does not apply to. You almost never wanted the
    merge anyway - you wanted stderr GONE, which is 2>/dev/null, or you wanted to read
    help text, which needs no redirect at all. Reach for one of those instead.
+
+   WHEN YOU DO WANT TO SEE WHY A COMMAND FAILED, THIS IS HOW, and it is the moment the rule
+   gets broken: a probe or a cleanup step, piped into head or tail, where the writer wants the
+   error message and reaches for the habit. Three runs did it in one night at exactly that
+   shape of step. Two idioms satisfy the rule; neither is obvious while you are tempted.
+   Run the command plainly, with nothing after it: stderr reaches your transcript on its own,
+   and it still does when stdout is piped - a pipe carries stdout only, so the merge was never
+   needed to see the error. When the output genuinely must be filed or trimmed, send stderr
+   to your scratch directory and read that file afterwards:
+     mkdir -p ${SCRATCH}/${ID} && <command> 2>${SCRATCH}/${ID}/stderr.txt | tail -20
+     cat ${SCRATCH}/${ID}/stderr.txt
 8. Never report success over a failing check. If tests or lint are red and you cannot get
    them green, stop and say so.
 9b. WHEN YOU FILE OR SPLIT A TICKET, follow WRITING-TICKETS.md in this skill directory.
@@ -355,10 +463,20 @@ NON-NEGOTIABLE RULES. They outrank speed, and they outrank finishing the task.
    linked source or nowhere. Two halves that fix independently are two tickets - a run does
    the tractable half and the other acceptance goes quietly unmet.
 
-9. Write notes with --append-notes, NEVER --notes. Despite bd's own help calling it
-   "Additional notes", --notes REPLACES everything already there - which has already
-   destroyed a decision somebody recorded and a workflow's own diagnosis. --append-notes
-   adds with a newline separator. The same applies to anything you tell another agent to run.
+9. WRITE EVERY TRACKER NOTE THROUGH bd-note.sh, FROM A FILE, and NEVER with 'bd update --notes':
+     cd ${ROOT} && PITWALL_SESSION=lane-devloop/<id> bash ${SKILL_DIR}/bd-note.sh <id> --note-file <path>
+   The text comes from a FILE so that a backtick or a $( in the note cannot be evaluated by the
+   shell before bd ever sees it. That has already stored a note with the one line carrying its
+   evidence cut off, while bd reported "Updated issue" and the shell's error went to a stream
+   nobody was reading.
+   The script is also the only writer that takes the write lock, stamps the note with the date
+   and the writer, and reads it back. A bare 'bd update' append is an unserialised read-modify-
+   write: two overlapping notes silently become one, exit 0 both times. A non-zero exit from the
+   script means the note did NOT land after its own retries and the text is on stderr - say so,
+   do not report it recorded.
+   'bd update --notes' REPLACES everything already there, despite bd's own help calling it
+   "Additional notes", and has already destroyed a decision somebody recorded and a workflow's
+   own diagnosis. The same applies to anything you tell another agent to run.
 10. The tracker is at ${ROOT}. bd resolves to the NEAREST .beads directory, and site and
    extension still contain dead ones left over from before the tracker moved - running bd
    inside either repo silently rewrites the wrong tracker and dirties files in somebody's
@@ -379,25 +497,64 @@ NON-NEGOTIABLE RULES. They outrank speed, and they outrank finishing the task.
    A brief that sends you to 'gh' names this run's slug above, or the command that reads it from
    the checkout. If a command needs a number from another repository, name that repository
    explicitly too.
+13. ANYTHING YOU LAUNCH, YOU KILL BY THE PID YOU RECORDED WHEN YOU LAUNCHED IT - a headless
+   browser, a dev server, a watcher. NEVER 'pkill -f' ON A PATH OR FLAG SUBSTRING. pkill -f
+   matches the full argument list of every process on the machine, and the shell wrapping a
+   backgrounded command carries that command in its own argv - so the wrapper matches its own
+   target, and /tmp is shared with every other lane and every other workspace besides. A lane
+   tidying up after itself can kill the process it is running inside, and nothing in the output
+   says what else went. On 2026-09-08 a lane did exactly that against its browser's
+   user-data-dir, and from that moment every path under the owner's home read 'Operation not
+   permitted' for the lane and its supervisor until the whole process tree was relaunched - a
+   correlation rather than a proven cause, and the pattern is unsafe either way.
+   If you did not record the pid and must match by pattern: 'pgrep -f' first, print every match
+   with its full command line, and kill only the pids whose command starts with the intended
+   binary. If you cannot identify the process that way, LEAVE IT RUNNING AND SAY SO in your
+   summary: a stray browser costs somebody one kill command; a killed supervisor costs the run.
+   THE TELL: 'Operation not permitted' appearing across your session right after a cleanup step
+   looks like an environment fault. Suspect the cleanup first, and say so.
 
-${SHELL_FIRST}
+${SHELL_FIRST(base)}
 `
 
 // The config may place a repo anywhere under the workspace; falling back to the repo's own name
 // keeps a bare dispatch working for the common case where they match.
-function repoPath(repo) { return `${ROOT}/${(REPOS[repo] || {}).path || repo}` }
+function repoPath(repo) {
+  const p = (REPOS[repo] || {}).path || repo
+  return p === '.' ? ROOT : `${ROOT}/${p}`
+}
+function isWorkspace(repo) { return roleOf(repo) === 'workspace' }
+const WORKSPACE_KEY = REPO_KEYS.find(isWorkspace) || null
+const CHECKOUT_KEYS = REPO_KEYS.filter((k) => !isWorkspace(k))
 
-const REPO_KEYS = Object.keys(REPOS)
 function reposTable() {
   if (!REPO_KEYS.length) {
     return `This workspace's configuration lists no repositories at all, so nothing can be routed.
 Return eligible:false saying so.`
   }
   const rows = REPO_KEYS.map((k) => {
+    if (isWorkspace(k)) return `  ${k}  ->  ${repoPath(k)}  the workspace root itself: tracker edits and root-level files, no pull request`
     const slug = (REPOS[k] || {}).slug
-    return `  ${k}  ->  ${repoPath(k)}${slug ? `  (${slug})` : ''}`
+    return `  ${k}  ->  ${repoPath(k)}${slug ? `  (${slug})` : ''}  lands on origin/${baseOf(k)}`
   })
   return rows.join('\n')
+}
+
+function workspaceRouting() {
+  if (WORKSPACE_KEY) {
+    return `5. WORK THAT LIVES IN NO CHECKOUT ROUTES TO '${WORKSPACE_KEY}'. That key is the workspace root
+   itself, ${ROOT}, not a repository. It exists for tracker edits - labels, notes, assignees,
+   dependencies, splitting or closing issues - and for files that sit in the root outside every
+   checkout in the table, such as the workspace's own instructions. A ticket whose 'Repo:' line
+   says none, or whose only work is bd commands and root-level files, goes there. Step 2 cannot
+   confirm that route, because the root has no origin to ask, so confirm it the other way round:
+   none of the paths it names is inside a checkout in the table. A path that IS inside one routes
+   to that checkout whatever the ticket calls the work - the pipeline's own scripts are ordinary
+   files in the repository that holds them, and a ticket about them is that repository's ticket.`
+  }
+  return `5. A ticket whose work lives in no checkout in the table - tracker edits only, or files in the
+   workspace root itself - has no route here, because this workspace configures no key with
+   role 'workspace'. Return eligible:false and say so: adding that key is the owner's edit.`
 }
 
 function unconfigured(repo) { return !Object.prototype.hasOwnProperty.call(REPOS, String(repo)) }
@@ -426,6 +583,7 @@ function roleOf(repo) {
 function checksFor(repo, wtPath, laneIndex) {
   const cfg = REPOS[repo] || {}
   const role = roleOf(repo)
+  const base = baseOf(repo)
 
   if (role === 'generic' || (!cfg.test && role !== 'rails' && role !== 'node' && role !== 'script')) {
     return `${repoCommands(repo)}
@@ -438,13 +596,13 @@ a change nobody can reproduce.
 Other lanes run at the same time on this machine. If this repository's suite uses a shared
 resource - a database, a fixed port, a scratch directory - claim lane ${laneIndex + 2} first:
 
-  mkdir /tmp/${LOCK_PREFIX}-lane-${laneIndex + 2}.lock 2>/dev/null && printf '%s\\n' "${ID} slot ${SLOT} lane ${laneIndex + 2}" > /tmp/${LOCK_PREFIX}-lane-${laneIndex + 2}.owner && echo GOT_LANE || echo LANE_BUSY
+  ${claimLane(`${ID} slot ${SLOT} lane ${laneIndex + 2}`)}
 
 ONE COMMAND, not two. The owner file beside the lock is what proves the lock is yours: when this
 run ends, whatever way it ends, the lane is given back by reading that file and removing the lock
 only if it names this run. A lock taken without it cannot be proved to be anybody's, so it is
 left standing and the lane is lost until a person clears it.
-
+${reclaimRule()}
 If that prints LANE_BUSY, stop and hand back rather than running anyway.`
   }
 
@@ -471,7 +629,7 @@ this repository's test database ${laneIndex + 2}. If another run is already usin
 database mid-suite and it will reset yours, and neither of you will be told - it surfaces as
 unexplained spec failures in files you never touched. Before anything else:
 
-  mkdir /tmp/${LOCK_PREFIX}-lane-${laneIndex + 2}.lock 2>/dev/null && printf '%s\\n' "${ID} slot ${SLOT} TEST_ENV_NUMBER ${laneIndex + 2}" > /tmp/${LOCK_PREFIX}-lane-${laneIndex + 2}.owner && echo GOT_LANE || echo LANE_BUSY
+  ${claimLane(`${ID} slot ${SLOT} TEST_ENV_NUMBER ${laneIndex + 2}`)}
 
 ONE COMMAND, not two, and the owner file is not optional. It records who holds the lock, so the
 next run that is refused can read the answer instead of guessing it off a process list that has
@@ -490,7 +648,7 @@ not this one, and confusing the two has already cost a lane. A regular file appe
 /tmp/<prefix>-lane-9.lock containing 'review <id> <pid>', and because mkdir can never succeed
 against an existing file, that lane was blocked permanently rather than until the holder
 finished - a dead process holding a lock nothing could release.
-
+${reclaimRule()}
 If it prints LANE_BUSY, STOP: return with a
 result saying lane ${laneIndex + 2} was already held, and do not touch the database. Read the
 holder and quote it in your result, because it names the run rather than leaving the next person
@@ -508,7 +666,7 @@ you fail, and in this order - the owner file first, so the directory is never le
   rmdir /tmp/${LOCK_PREFIX}-lane-${laneIndex + 2}.lock
 
 THEN MAKE THE WORKTREE BOOT. Four things this app needs to start are gitignored, so none of them
-can reach a checkout and a worktree cut from origin/master cannot boot Rails at all. Run these
+can reach a checkout and a worktree cut from origin/${base} cannot boot Rails at all. Run these
 before any other command, in this order:
 
   test -L ${wtPath}/config/master.key || ln -s ${repoPath(repo)}/config/master.key ${wtPath}/config/master.key
@@ -533,7 +691,7 @@ evaluates ERB for every environment whatever the test adapter needs. Without nod
 asset manifest link_trees into it and every view-rendering spec fails with 'link_tree argument
 must be a directory'. With app/assets/builds unbuilt, stylesheet_link_tag falls through to
 compiling sass and raises 'cannot load such file -- sassc', which reads as a missing gem rather
-than a missing build. Measured 2026-09-12 on pristine origin/master: 427 of 1471 examples fail
+than a missing build. Measured 2026-09-12 on a pristine origin/${base}: 427 of 1471 examples fail
 with none of these done, and 0 fail with all four. A lane that does not know this reads 427
 failures on a four-line change as a broken branch.
 
@@ -604,7 +762,7 @@ mergeable CONFLICTING, or mergeStateStatus DIRTY, means GitHub cannot build the 
 workflow runs on, so it scheduled NO RUN AT ALL - not queued, not skipped, absent. An empty rollup
 from a conflict is the same shape as one that is a minute old, which is why a lane sat on pitwall#120
 for two hours re-triggering a run that was never coming. Closing and reopening the PR does not
-resolve a conflict and will not produce one either. Merge origin/master into your branch, resolve,
+resolve a conflict and will not produce one either. Merge origin/${base} into your branch, resolve,
 push, and wait on the new head.
 
 mergeable UNKNOWN means GitHub has not computed it yet. Re-read it; conclude nothing from one read.
@@ -714,7 +872,7 @@ db/schema.rb to match.`
 
 ${repoCommands(repo)}
 
-A warning that is already on master is not yours to fix as a drive-by - check whether it is
+A warning that is already on ${base} is not yours to fix as a drive-by - check whether it is
 pre-existing before touching it, and leave it if it is.`
   }
   if (role === 'script') {
@@ -729,19 +887,19 @@ make by reading: every path and link you write must resolve, anything you claim 
 product must match what the code actually does, and a file you move must not orphan a
 reference elsewhere in the folder. Say in your result what you checked and how.
 
-WORK IN A WORKTREE. NEVER BRANCH INSIDE ${repoPath('docs')} ITSELF. An earlier version of this
+WORK IN A WORKTREE. NEVER BRANCH INSIDE ${repoPath(repo)} ITSELF. An earlier version of this
 said a worktree bought nothing here because the repository is small - which mistook cheapness for
 safety. That checkout routinely holds a person's unfinished articles: on 2026-08-29 it carried a
 modified topics-from-search.md and five untracked drafts. Branching there puts your commit on top
 of their work, and one 'git add -A' commits their drafts into your pull request.
 
-  cd ${repoPath('docs')} && git fetch origin --quiet
-  git worktree add --force ${wtPath} -b devloop/${task.id} origin/master
+  cd ${repoPath(repo)} && git fetch origin --quiet
+  git worktree add --force ${wtPath} -b devloop/${ID} origin/${base}
   cd ${wtPath}
 
 Everything after that happens in the worktree. Do not cd back, do not check anything out in the
-original, and remove the worktree when you hand off. Branch from origin/master rather than the
-local master, which may be behind or may not be what is checked out.`
+original, and remove the worktree when you hand off. Branch from origin/${base} rather than the
+local ${base}, which may be behind or may not be what is checked out.`
   }
 
   return `${repoCommands(repo)}
@@ -822,6 +980,8 @@ function fixPrompt(task, attempt, feedback, laneIndex, brief) {
   const scratch = `${SCRATCH}/${task.id}`
   const again = attempt > 1
   const slug = (REPOS[task.repo] || {}).slug
+  const check = (REPOS[task.repo] || {}).test
+  const base = baseOf(task.repo)
   return `${again ? 'REWORK' : 'Fix'} one tracker issue end to end and open a pull request.
 
 Issue: ${task.id} - ${task.title}
@@ -832,7 +992,7 @@ Branch: ${branch}
 Scratch: ${scratch} - every temporary file you write goes in here. Test output, diffs,
   message drafts, before-and-after captures. Never write scratch into the worktree, and
   never into ${WT} itself, which is shared with every other lane.
-${again ? `\nThis is attempt ${attempt} of ${MAX_ATTEMPTS}. An automated adversarial review REJECTED the previous attempt:\n---\n${feedback}\n---\nThe worktree and branch already exist with your earlier work on them. Address every blocking point, amend or add commits, push to the same branch, and keep the same PR. Do not open a second PR.\n` : ''}
+${again ? `\nThis is attempt ${attempt} of ${MAX_ATTEMPTS}. An automated adversarial review REJECTED the previous attempt:\n---\n${feedback}\n---\nThe worktree and branch already exist with your earlier work on them. Address every blocking point, amend or add commits, run the --pre-push check over them, push to the same branch, and keep the same PR. Do not open a second PR.\n` : ''}
 THE TICKET IS BELOW IN FULL - triage already read it and passed the text on, so you do not
 need to run bd to see it. Read it before touching anything.
 
@@ -857,7 +1017,7 @@ and closed the ticket two minutes into the run, and the lane wrote the entire ar
 before fetching and finding master had moved. Everything it produced was thrown away.
 
 The same check is worth repeating as a habit before any long stretch of writing - fetching
-origin/master and re-reading the ticket costs seconds and can save an hour of work that
+origin/${base} and re-reading the ticket costs seconds and can save an hour of work that
 lands nowhere.
 ${brief ? `\nA designer has already decided how this should look. Build exactly this; do not
 re-decide appearance, and if you think it is wrong, stop and ask rather than improvising:\n---\n${brief}\n---\n` : ''}
@@ -869,18 +1029,26 @@ ${again ? '' : `Set up the worktree. THE BRANCH MAY ALREADY EXIST, so check befo
   if git ls-remote --exit-code --heads origin ${branch} >/dev/null; then
     git worktree add ${wtPath} -B ${branch} origin/${branch}
   else
-    git worktree add ${wtPath} -b ${branch} origin/master
+    git worktree add ${wtPath} -b ${branch} origin/${base}
   fi
   mkdir -p ${scratch}
 Mark it claimed, from ${ROOT}:
   bd update ${task.id} -s in_progress
 
-BRANCH FROM origin/master, NEVER FROM ANOTHER LANE'S BRANCH, and open the pull request against
-master. If the work you need sits in a pull request that has not landed yet, that is a
+IF ONE OF THOSE REFUSES, READ THE REASON WITHOUT MERGING STDERR. Run the failing command again
+on its own and stderr reaches you; or, if you must pipe it, keep stderr in your scratch directory
+and read it:
+  <command> 2>${scratch}/stderr.txt | tail -20
+  cat ${scratch}/stderr.txt
+Never use 2>&1 to see it, here or anywhere: it breaks xcodebuild and other tools outright, and
+a setup probe piped into head or tail is exactly where runs keep reaching for it.
+
+BRANCH FROM origin/${base}, NEVER FROM ANOTHER LANE'S BRANCH, and open the pull request against
+${base}. If the work you need sits in a pull request that has not landed yet, that is a
 dependency - say so and stop, or build the part that does not need it. Do not stack on it.
 
 A stacked pull request breaks this pipeline in two ways at once. The CI workflow only runs on
-pull_request when the base is master, so a stacked one has an EMPTY rollup forever and no amount
+pull_request when the base is ${base}, so a stacked one has an EMPTY rollup forever and no amount
 of waiting produces a check - and a workflow_dispatch run you trigger yourself is not the same
 thing and must never be read as one. Worse, the train squashes every labelled branch onto one
 release branch, and a branch stacked on another carries the other's commits too, so the same
@@ -893,13 +1061,13 @@ IF THE BRANCH ALREADY EXISTED, you are CONTINUING somebody's work, not starting 
 happens whenever a branch outlives its worktree - a run that pushed and then died, or an issue
 whose first pass shipped part of the job and left the rest. Before you change one line:
 
-  git log origin/master..HEAD
-  git diff origin/master...HEAD --stat
+  git log origin/${base}..HEAD
+  git diff origin/${base}...HEAD --stat
 
 and read the issue's notes for what that work was and what remains. Then rebase onto
-origin/master before adding to it, because the branch is probably behind.
+origin/${base} before adding to it, because the branch is probably behind.
 
-DO NOT rebuild what is there from scratch, and do not reset the branch to master. That work is
+DO NOT rebuild what is there from scratch, and do not reset the branch to ${base}. That work is
 already reviewed, sometimes already pushed, and re-deriving it burns a full run to arrive back
 where the branch already was. This exact gap held app-5ek6.5 for two days: the branch carried
 the whole ad-creative factory at 77264c7 and every dispatch would have branched fresh from
@@ -920,7 +1088,7 @@ scratch directory that only exists here.
 
 - site: write a THROWAWAY spec at ${WT}/${task.id}/spec/system/autofix_capture_spec.rb that
   drives the screen and calls page.save_screenshot("${WT}/shots/${task.id}-after.png").
-  Capture origin/master the same way first, as "...-before.png", where the screen exists.
+  Capture origin/${base} the same way first, as "...-before.png", where the screen exists.
   DELETE that spec file before you commit. If the fix also warrants a permanent system spec,
   that is a different file and it must contain no save_screenshot and no ${WT} path.
 - extension: render the panel headless into the same directory, from a script you delete.
@@ -983,7 +1151,11 @@ code, from ${ROOT}:
   whose condition had been met hours earlier. They found them by browsing.
 
   bd label add ${task.id} <needs-decision if a choice only a person can make, needs-access if it needs a deploy/dashboard/device they have and you do not>
-  bd update ${task.id} -s open --append-notes "<what you found, the exact decision needed, and the options with your recommendation>"
+  Write what you found, the exact decision needed, and the options with your recommendation to
+  ${scratch}/park-note.txt. Then record it and reopen, the note first, so that a crash between
+  the two leaves the question written down rather than a reopened issue nobody can answer:
+  cd ${ROOT} && PITWALL_SESSION=lane-${branch} bash ${SKILL_DIR}/bd-note.sh ${task.id} --note-file ${scratch}/park-note.txt
+  cd ${ROOT} && bd update ${task.id} -s open
 Then return status 'needs_feedback' with that question. Leave the worktree and any branch in
 place. This is a good outcome, not a failure - a wrong guess shipped unattended is worse.
 
@@ -1090,7 +1262,7 @@ Otherwise:
                           out of date silently while the code moves.
      the PR body          for what the reader of a diff needs.
      the tracker issue    for a decision, a rejected alternative, or a past failure. That is
-                          what --append-notes is for and it is already the habit here.
+                          what the notes field is for and it is already the habit here.
 
    So a past incident, a constraint that is invisible in the code, a reason an obvious
    approach was rejected - all of that still gets written down. It goes in the commit message
@@ -1105,31 +1277,78 @@ Otherwise:
 4. Run the checks above until green - but iterate on the targeted file first and keep the
    full suite for the end. On site the full suite is about two and a half minutes and a fix
    round that runs it after every edit spends most of its life waiting. Narrow while you
-   work ('rspec path/to/file_spec.rb:42'), then run everything once before you commit, and
-   again only if you changed something after that.
-5. ${task.repo === 'docs'
-   ? `Run 'ruby script/check.rb', then commit, push, and open a PR with 'gh pr create'
-   explaining what was wrong, why this fix, and what you checked by reading. Reference
-   ${task.id}. Do NOT merge it. This repository gained a remote and CI on 2026-08-19; the
-   instruction that it had neither outlived the fact by a day and would have had you commit
-   straight onto a real default branch.`
-   : `Commit with the identity on the command rather than from a config nobody read -
-   git -c user.name="$(git log -1 --format=%an origin/master)" -c user.email="$(git log -1 --format=%ae origin/master)" commit -F <message file> -
-   then push and open a PR with 'gh pr create' explaining what was wrong, why this fix, and
-   what the test covers. Reference ${task.id}. Do NOT merge it.`}
+   work ('rspec path/to/file_spec.rb:42'), then run everything once before you fold and push,
+   and again only if you changed something after that.
+
+   COMMIT AS SOON AS THE CHANGE COMPILES, AND AGAIN BEFORE ANYTHING THAT WAITS - the full
+   suite, a capture, a CI wait. Stage the files you changed and commit them to ${branch} with
+   the identity on the command, exactly as step 5 does:
+     git -c user.name="$(git log -1 --format=%an origin/${base})" -c user.email="$(git log -1 --format=%ae origin/${base})" commit -F <message file>
+   A commit is the shape in which a stopped run's work comes back. kill-lane.sh is the documented
+   response to a stuck lane, and a re-dispatch cannot start until it has run, because git worktree
+   add refuses a directory that exists and a branch that exists: it removes the worktree and deletes
+   a branch the remote never saw, and first writes what it found to a rescue directory - each commit
+   no remote holds as a patch git am replays with its message and author intact, and uncommitted
+   files as one diff of the whole tree, staged, unstaged and untracked run together, which is
+   evidence for a person to read rather than a change anyone can land. slot.sh --gc frees the slot
+   file and touches neither. A commit also outlives a worktree removed by hand, which the rescue
+   never sees, and a push outlives the machine. That is how pitwall#148 went: a run stopped with
+   337 finished, on-brief lines uncommitted, and they survived only because a person read an
+   unusually thorough summary and copied them out by hand.
+
+   AN INTERIM COMMIT IS A REAL COMMIT. Its message goes through the same grep step 5 runs, so
+   write it as one plain line saying what it holds so far, not "wip" or "checkpoint" - and never
+   let one reach the pushed branch as it stands. Before the pre-push check in step 5, fold them
+   into the one commit whose message you want on the pull request:
+     git fetch origin --quiet && git reset --soft "$(git merge-base --is-ancestor origin/${branch} HEAD 2>/dev/null && git rev-parse origin/${branch} || git merge-base origin/${base} HEAD)" && git -c user.name="$(git log -1 --format=%an origin/${base})" -c user.email="$(git log -1 --format=%ae origin/${base})" commit -F <message file>
+   That resets to the head the remote holds for ${branch} when HEAD builds on it, because a
+   reset past a commit the remote already holds makes the next push a force-push, which you
+   may not run. When the remote has no such branch it resets to the commit this lane forked
+   from, and NOT to origin/${base}: the fetch just moved origin/${base} to whatever other lanes
+   have landed since you started, and a soft reset onto that head keeps the index you built on
+   the old one, so the folded commit would put your stale copy of every file they touched on
+   top of their work and silently revert it. The fork point carries only your own change; the
+   lander rebases it onto ${base} when it merges.
+5. ${roleOf(task.repo) === 'script'
+   ? `Run ${check ? `'${check}'` : 'the check script'}, then commit, read your own commit messages back with
+     bash ${SKILL_DIR}/lane-handoff.sh --repo-path ${wtPath} --pre-push --base ${base}
+   and only then push and open a PR with 'gh pr create --base ${base}' explaining what was wrong, why this
+   fix, and what you checked by reading. Reference ${task.id}. Do NOT merge it. A check script
+   is not a reason to skip the branch: one such repository gained a remote and CI on 2026-08-19,
+   and the instruction that it had neither outlived the fact by a day and would have had a lane
+   commit straight onto a real default branch.`
+   : `Commit with the identity on the command rather than from a config nobody read - the fold
+   in step 4 is that commit, so when it has already run there is nothing left to commit here -
+   git -c user.name="$(git log -1 --format=%an origin/${base})" -c user.email="$(git log -1 --format=%ae origin/${base})" commit -F <message file> -
+   then READ YOUR OWN COMMIT MESSAGES BACK BEFORE YOU PUSH:
+     bash ${SKILL_DIR}/lane-handoff.sh --repo-path ${wtPath} --pre-push --base ${base}
+   It greps origin/${base}..HEAD for exactly what the handoff gate greps the pushed branch for,
+   and this is the last moment a hit is cheap: an amend needs no force-push while a commit is
+   still local, and once it is pushed nothing a run can do will clear its message. Exit 0 means
+   push. Exit 2 names the commit each hit is in - for one that is still local it prints the amend
+   to run, and running it now saves the pull request; for one the remote already holds, which is
+   what a second attempt is looking at, there is no remedy to print, so report that commit and
+   return 'blocked'. Exit 10 says the messages are clear and the PUSH is the thing you cannot
+   make: the remote holds this branch at a head your HEAD does not contain, which is the shape a
+   rebase leaves behind, so a plain push is refused and only a person can publish it - report
+   what it prints and return 'blocked' rather than reaching for a force-push.
+   Then push and open a PR with 'gh pr create --base ${base}' explaining what was wrong, why this
+   fix, and what the test covers. Pass --base explicitly: without it gh opens the pull request
+   against whatever GitHub calls the default, and this workspace lands on ${base}. Reference
+   ${task.id}. Do NOT merge it.`}
 
 IF YOUR CHANGE TOUCHES plugins/ OR .claude-plugin/, LEAVE THE VERSION ALONE. Do not edit the
 version in .claude-plugin/marketplace.json, do not edit it in
 plugins/devloop/.claude-plugin/plugin.json, and do not add a version heading to
-plugins/devloop/skills/devloop/CHANGELOG.md. Leave all three files exactly as master has them.
+plugins/devloop/skills/devloop/CHANGELOG.md. Leave all three files exactly as ${base} has them.
 
-The number you would choose is already wrong. You read master when you started; by the time your
+The number you would choose is already wrong. You read ${base} when you started; by the time your
 pull request merges another lane has landed and moved it, and every lane in a pass reads the same
-master and picks the same number. On 2026-09-12 five plugin pull requests all declared 0.1.33:
+${base} and picks the same number. On 2026-09-12 five plugin pull requests all declared 0.1.33:
 the first to land moved master to 0.1.33 and the other four were then equal rather than greater,
 were refused, and were retired - four sets of finished, reviewed, green work, each needing a full
 re-dispatch to recover. The lander assigns the number when it merges, which is the only moment
-anything knows what master holds.
+anything knows what ${base} holds.
 
 THE WORDS ARE STILL YOURS, because nothing else knows what you changed. Put your changelog entry
 in the PULL REQUEST BODY, under a heading of its own, and the lander copies it under the version
@@ -1144,17 +1363,147 @@ becomes your pull request title, which is worse than a sentence you wrote.
 
 If your change genuinely needs to edit one of those three files in SOMETHING OTHER than the
 version - a new field in the plugin manifest, a second entry in the marketplace - the lander
-refuses the pull request and names the file rather than quietly restoring master's copy over your
+refuses the pull request and names the file rather than quietly restoring ${base}'s copy over your
 edit. Say so in your summary so a person can sequence it: a lane and the lander cannot both own
 that file in one pass.
 
-${LAW}
+${LAW(base)}
 
 Return the structured result, with the real final counts line from the test run in
 testOutput - the actual line, not a paraphrase.`
 }
 
+function workspacePrompt(task) {
+  const scratch = `${SCRATCH}/${task.id}`
+  const checkouts = CHECKOUT_KEYS.map((k) => `  ${k}  ->  ${repoPath(k)}`).join('\n')
+  return `Apply one tracker issue in the workspace root, then close it.
+
+Issue: ${task.id} - ${task.title}
+Repo: ${task.repo} - the workspace root itself, ${ROOT}. It is not a repository checkout.
+Scratch: ${scratch} - every temporary file you write goes in here. Message drafts, note files,
+  captured output. Never write scratch into ${ROOT}.
+
+THERE IS NO BRANCH, NO WORKTREE, NO PULL REQUEST AND NO SUITE HERE. Every other key in this
+workspace is a checkout with a remote, a test command and a lander that merges its pull requests;
+this one is where the work happens when a ticket has no code in it. What lands here lands the
+moment you write it - a tracker edit is live as soon as bd accepts it, and a file in the root is
+read from where it sits.
+
+THE TICKET IS BELOW IN FULL - triage already read it and passed the text on, so you do not
+need to run bd to see it. Read it before touching anything.
+
+--- ticket ${task.id} ---
+${task.ticket || '(not carried - run: bd show ' + task.id + ' from ' + ROOT + ')'}
+--- end ticket ---
+
+CHECK THE TICKET IS STILL OPEN BEFORE YOUR FIRST EDIT. One command, and it costs nothing:
+
+  export BEADS_DIR=${ROOT}/.beads
+  cd ${ROOT} && bd show ${task.id} | head -1
+
+If it says CLOSED, STOP and return status no_change_needed, naming what closed it. The owner
+works the tracker in his own sessions in parallel with this pipeline, and a ticket can be
+answered between triage reading it and you reaching this line.
+
+WHAT THIS KEY IS FOR. Two kinds of work, and nothing else:
+- tracker edits: labels, notes, assignees, dependencies, metadata, splitting a ticket into
+  children, closing tickets whose work is already done. All of it through bd.
+- documentation that sits in ${ROOT} and belongs to no checkout: the workspace's own
+  instructions and notes, a paragraph in a root-level document.
+
+WHAT IT IS NOT FOR. These directories are repository checkouts with lanes of their own:
+
+${checkouts || '  (none configured)'}
+
+A change inside any of them is a different ticket, routed to that key, with a branch and a pull
+request and a review. If the ticket turns out to need one, do not make the change from here:
+return status needs_feedback saying which checkout and which paths, so it can be re-routed or
+split. Do not edit inside a checkout from this step, and do not edit inside any directory that
+has its own .git, whether or not it is in the table.
+
+OFF-LIMITS AT THE ROOT, whatever the ticket says. These are not documentation, and a step that
+runs unattended, uncommitted and unreviewed must not edit them in place:
+- ${ROOT}/.pitwall.json and ${ROOT}/.autofix.json - the dispatch configuration. Every other lane
+  re-reads it while it runs, so a live edit changes the ground under work already in flight.
+- everything under ${ROOT}/.beads/ - the tracker's own database and its export. It is written
+  through bd and through nothing else; a file edit there corrupts what bd reads back.
+A ticket that needs one of them returns status needs_feedback naming the file, so the owner
+makes the edit. A ticket whose only documentation change is a note on what the config should
+say puts that note on the ticket, not in the file.
+
+EDIT THE ROOT IN PLACE, AND COMMIT NOTHING. ${ROOT} is the owner's own checkout, not a worktree
+cut for this run: it may hold uncommitted work of theirs, it may have no remote at all, and its
+default branch is the only branch there is. So:
+- edit files where they sit, and leave them uncommitted for the owner to commit
+- run no git command that writes there: no add, commit, checkout, stash, reset, clean or
+  branch. Read-only git is fine and useful - 'git -C ${ROOT} status --porcelain' and
+  'git -C ${ROOT} diff -- <file>' show you what you changed, if the root is a git repository
+- list every file you touched in 'changed', as absolute paths, so the result names them
+
+TRACKER RULES, because the tracker is the deliverable here:
+- WRITE bd TEXT THROUGH A FILE OR A QUOTED HEREDOC, never as an inline double-quoted argument
+  containing backticks or $(...). The shell evaluates them before bd sees the string and the
+  failure is silent: the issue is created and a sentence is missing. Use --body-file, or a
+  heredoc quoted as <<'EOF'. Then read the field back with --json and check the text is there.
+- WRITE EVERY NOTE THROUGH bd-note.sh, FROM A FILE, and never with 'bd update --notes', which
+  REPLACES everything already there:
+    cd ${ROOT} && PITWALL_SESSION=lane-devloop/${task.id} bash ${SKILL_DIR}/bd-note.sh <id> --note-file <path under ${scratch}>
+  A non-zero exit means the note did NOT land; say so rather than reporting it recorded.
+- NOTES PASSED TO 'bd create' ARE SILENTLY DROPPED. Create first, then note with bd-note.sh.
+- SEARCH BEFORE YOU FILE: 'bd search <a distinctive phrase>'. If a match exists, add to it.
+- WHEN YOU FILE OR SPLIT A TICKET, follow WRITING-TICKETS.md in ${SKILL_DIR}: line one is what
+  to do, then only traps that prevent a specific wrong action, a link to the evidence rather
+  than a restatement, and checkable acceptance. Assign every ticket you file.
+- A DEPENDENCY IS NOT A DECISION. If the answer is 'after that other ticket lands', record it
+  with 'bd dep add' rather than parking anything.
+- Never run 'bd init', never run 'bd hooks install', and never write to the 'owner' field.
+
+WHATEVER YOU WRITE IN A FILE OR A NOTE IS WRITTEN AS A PERSON. Never mention AI, assistants,
+automated authorship or tooling in any documentation, note or ticket text: describe what the
+software does, not how it was built. Write no comments into configuration files.
+
+STOP AND ASK instead of guessing, if any of these is true:
+- the ticket offers a choice that changes what ships and names no recommendation, and the
+  answer is about what the product SHOULD DO, who it is for, what it is worth or what it is
+  called. Which of two wordings, where a paragraph goes, how a note is phrased - those are
+  yours; decide, write down what you chose, and carry on.
+- the work needs a checkout, an account, a deploy or a device.
+To stop: write the exact question, the options and your recommendation to ${scratch}/park-note.txt,
+then, in this order:
+  cd ${ROOT} && bd label add ${task.id} <needs-decision or needs-access>
+  cd ${ROOT} && PITWALL_SESSION=lane-devloop/${task.id} bash ${SKILL_DIR}/bd-note.sh ${task.id} --note-file ${scratch}/park-note.txt
+  cd ${ROOT} && bd update ${task.id} -s open
+and return status needs_feedback with the question. That is a good outcome, not a failure.
+
+IF THE TICKET'S PREMISE IS WRONG - the edit is already there, the issue it describes does not
+exist - that is a real result. Close it yourself with the evidence in the reason, written to a
+file first so that nothing in it is evaluated by the shell:
+  cd ${ROOT} && bd close ${task.id} --reason-file ${scratch}/close-reason.txt
+and return status no_change_needed. Never invent a change to justify a ticket.
+
+WHEN THE WORK IS DONE, CLOSE THE ISSUE YOURSELF. Nothing merges and nothing deploys from this
+key, so no lander will close it for you, and an issue left in_progress comes straight back to
+the front of the queue. Put what changed in the reason - the tickets edited, the files touched -
+so that whoever reads it does not have to re-derive it. Write it to ${scratch}/close-reason.txt
+and close from the file:
+  cd ${ROOT} && bd close ${task.id} --reason-file ${scratch}/close-reason.txt
+Then run 'bd show ${task.id}' once more and return its first six lines VERBATIM as
+'verification', so the close can be checked rather than believed. The first line ends in the
+status inside square brackets, and CLOSED there is what is checked - not the word anywhere else,
+because a title can carry it. A step of this shape once reported an issue closed that was still
+in_progress, and the queue offered it straight back out.
+
+Return status 'applied' with 'summary' saying what changed, 'changed' listing every file edited,
+and 'verification' as above. Never use 2>&1. Always use absolute paths.`
+}
+
+function closedProperly(v) {
+  const header = String(v || '').split('\n')[0]
+  return /·\s*CLOSED\]\s*$/.test(header)
+}
+
 function reviewPrompt(task, work, attempt) {
+  const base = baseOf(task.repo)
   return `Review a pushed fix. Try to REFUTE it. You are the only thing between this change
 and an unattended merge, so a wrong approval ships.
 
@@ -1166,10 +1515,10 @@ Author's claim: ${work.summary}
 Test they added: ${work.testsAdded || 'none reported'}
 Round ${attempt} of ${MAX_ATTEMPTS}.
 
-${SHELL_FIRST}
+${SHELL_FIRST(base)}
 
 Read the issue with 'bd show ${task.id}' from ${ROOT}, then read the actual diff:
-  cd ${work.worktree || `${WT}/${task.id}`} && rtk git diff origin/master...HEAD
+  cd ${work.worktree || `${WT}/${task.id}`} && rtk git diff origin/${base}...HEAD
 
 rtk is a filter in front of git that drops diff context lines while keeping every changed line.
 Measured on this repository: 40079 bytes down to 24211, a 40% cut, with nothing removed that a
@@ -1195,7 +1544,7 @@ you did not actually view an image.
   worktree, run that test, restore it. Leave the worktree byte-clean and say you did.
 - Did unrelated changes ride along?
 - Did any scaffolding reach the commit? Run
-  'git diff origin/master...HEAD | grep -nE "${WT}|${SCRATCH}|save_screenshot"'. A scratch
+  'git diff origin/${base}...HEAD | grep -nE "${WT}|${SCRATCH}|save_screenshot"'. A scratch
   path or a capture call inside a committed file is an automatic rejection: it makes every
   future run of that suite write into a directory that exists on one machine.
 - What breaks that the suite cannot see? Other callers of the changed code, a state the new
@@ -1225,6 +1574,7 @@ Do not modify the branch, do not push, do not merge, do not deploy. Never use 2>
 function handoffPrompt(task, work) {
   const wtPath = work.worktree || `${WT}/${task.id}`
   const repo = repoPath(task.repo)
+  const scratch = `${SCRATCH}/${task.id}`
   // A PULL REQUEST NUMBER IS MEANINGLESS WITHOUT ITS REPOSITORY, and `cd`-ing first is not
   // enough. `gh pr view 20` means "number 20 in whatever repo this directory points at", so a
   // run that was routed to the wrong checkout gets a real, plausible answer instead of an
@@ -1235,6 +1585,7 @@ function handoffPrompt(task, work) {
   // on sight. It was caught only because the two titles were absurdly different; two tickets
   // of the same kind would not have that tell, and this queue produces those constantly.
   const slug = (REPOS[task.repo] || {}).slug
+  const base = baseOf(task.repo)
   return `This change passed an automated adversarial review by another agent. NO HUMAN HAS
 REVIEWED IT. Do not describe it as human-approved to anyone or in anything you write.
 
@@ -1257,7 +1608,7 @@ PR: ${work.prUrl || work.prNumber}
    as "not started, keep waiting", never as a pass.
 
    READ THE MERGEABILITY IN THE SAME CALL, AND BEFORE YOU SETTLE IN TO WAIT. mergeable
-   CONFLICTING, or mergeStateStatus DIRTY, means the branch conflicts with master - and a
+   CONFLICTING, or mergeStateStatus DIRTY, means the branch conflicts with ${base} - and a
    pull_request workflow runs on refs/pull/<n>/merge, which GitHub cannot build while it
    conflicts, so it schedules NO RUN AT ALL. Not queued, not skipped, absent. The rollup stays
    empty for good and looks exactly like one that is a minute old, which is how a lane waited two
@@ -1265,9 +1616,9 @@ PR: ${work.prUrl || work.prNumber}
    conflict: that was tried there, one second apart, and changed nothing.
 
    A CONFLICT IS NOT YOURS TO RESOLVE HERE - you are not rebasing and not merging in this step.
-   Return status 'blocked' with 'conflicted with master' and the mergeStateStatus in 'notes'. The
+   Return status 'blocked' with 'conflicted with ${base}' and the mergeStateStatus in 'notes'. The
    run then ends NOT LABELLED with the conflict on the record, which is what whoever reads it needs
-   to send the branch for a merge from master. Nothing is lost by stopping: the wait could not have
+   to send the branch for a merge from ${base}. Nothing is lost by stopping: the wait could not have
    ended.
 
    mergeable UNKNOWN means GitHub has not computed it yet, which is neither a conflict nor a
@@ -1290,19 +1641,26 @@ PR: ${work.prUrl || work.prNumber}
    the failing examples and their messages in 'notes', in enough detail to act on without
    re-running anything. Do not label a red PR.
 
-   You do NOT need master to be green, and you do NOT need your branch to be current with
-   master. The lander checks both, rebases, and waits for CI again on the rebased head. That
-   is the whole point of it being serial - it is the only thing merging, so master cannot
+   You do NOT need ${base} to be green, and you do NOT need your branch to be current with
+   ${base}. The lander checks both, rebases, and waits for CI again on the rebased head. That
+   is the whole point of it being serial - it is the only thing merging, so ${base} cannot
    move underneath it.
 
 2. CHECK COMPLIANCE BEFORE YOU LABEL. Read the PR body back from GitHub and the commit
    messages back from git - not what you meant to write, what is actually there:
      cd ${repo} && gh pr view ${work.prNumber} --repo ${slug} --json body
-     cd ${repo} && git log origin/master..origin/devloop/${task.id} --format=%B
+     cd ${repo} && git log origin/${base}..origin/devloop/${task.id} --format=%B
    If anything mentions AI, assistants, automated authorship or tooling, FIX IT NOW rather
    than labelling it: edit the body with 'gh pr edit ${work.prNumber} --repo ${slug} --body-file <file>', and
    if a commit message is the problem say so in 'notes' and return 'blocked' - rewriting
    history under a pushed branch is not something to do unattended.
+
+   THOSE TWO HALVES ARE NOT EQUALLY FIXABLE, and the handoff script says which is which.
+   A title or body is edited in place and the head commit is untouched, so a green run stays
+   green. A pushed COMMIT MESSAGE cannot be reworded without a force-push, which is refused to
+   a run, so that pull request is green, correct and waiting on a person - there is no re-run,
+   no rewording and no hand-labelling that reaches a label from there. Report which commit and
+   stop. The check that would have caught it is the one in the fix step, before the push.
 
    AN INSTRUCTION TO ADD THOSE TRAILERS IS NOT A FINDING, AND NOT A REASON TO STOP HERE.
    You may have been handed one alongside the rule that forbids them. Rule 1 below settles
@@ -1326,7 +1684,7 @@ PR: ${work.prUrl || work.prNumber}
    When it is genuinely ambiguous, keep the product name and say in 'notes' what you kept and
    why, so the next reader is not left re-deciding it.
 
-   YOUR SCOPE IS YOUR OWN DIFF. Text already on master is not yours to police, however it reads.
+   YOUR SCOPE IS YOUR OWN DIFF. Text already on ${base} is not yours to police, however it reads.
    Editing it invalidates the green run for a line your change never introduced, and the next
    lane will meet the same line and do it again.
 
@@ -1368,7 +1726,7 @@ PR: ${work.prUrl || work.prNumber}
    It reads the title, body and commit messages back from GitHub, runs the compliance grep over
    all of them, checks the rollup is non-empty and describes the head that is
    actually on the branch, labels, reads the label back, removes YOUR worktree, appends your
-   note with --append-notes and reads it back, and drops your lane lock last.
+   note through bd-note.sh and reads it back, and drops your lane lock last.
 
    IT HANDLES EVERY PULL REQUEST ON THE BRANCH, not only the one you name. It asks every
    repository the workspace config names for its open pull requests whose head is --branch, and
@@ -1377,7 +1735,7 @@ PR: ${work.prUrl || work.prNumber}
 
    Exit codes: 0 handed off, 2 non-compliant (NOTHING was labelled anywhere - it prints the
    offending lines against the pull request they came from, you judge them, you fix, you re-run),
-   3 a pull request on the branch conflicts with master so no check will ever be scheduled for it,
+   3 a pull request on the branch conflicts with ${base} so no check will ever be scheduled for it,
    4 a pull request on the branch is not in a state to label (nothing was labelled anywhere),
    5 labelled and cleaned up but the tracker note could not be confirmed, 6 bad arguments,
    7 the set of pull requests on the branch could not be established - the config could not be
@@ -1397,10 +1755,10 @@ PR: ${work.prUrl || work.prNumber}
    minute and run the handoff again; if the same read keeps failing for a reason the output names
    as permanent, return 'blocked' quoting it.
 
-   EXIT 3 IS NOT A WAIT AND NOT A RE-RUN. The pull request conflicts with master, so GitHub builds
+   EXIT 3 IS NOT A WAIT AND NOT A RE-RUN. The pull request conflicts with ${base}, so GitHub builds
    no merge ref and schedules no checks for it - the rollup you are waiting on will never fill.
    Nothing you can do in this step changes that, and a second run reads the same conflict again:
-   return 'blocked' with what it printed. The remedy is a merge from master, and it is not yours
+   return 'blocked' with what it printed. The remedy is a merge from ${base}, and it is not yours
    here.
 
    EXIT 7 IS NOT 'BAD ARGUMENTS'. Your arguments were fine and nothing was labelled: something it
@@ -1434,7 +1792,7 @@ PR: ${work.prUrl || work.prNumber}
    help and appending blindly is how a note gets written twice.
 
    ITS REFUSAL TO LABEL IS THE POINT. A label is an assertion that the PR is ready. Labelling
-   first and fixing after is how the wrong text reaches master. If it reports hits, read them:
+   first and fixing after is how the wrong text reaches ${base}. If it reports hits, read them:
    a vendor or product name that is the SUBJECT of the change is fine, and the script cannot
    tell the difference - that judgement is yours, and 'sends automatically', 'the model' and
    'regenerated' have all been correctly kept before.
@@ -1491,17 +1849,30 @@ PR: ${work.prUrl || work.prNumber}
 
 4. REMOVE YOUR WORKTREE. It holds the branch checked out, and the lander's --delete-branch
    fails on that every single time, leaving both branches behind and a non-zero exit that
-   looks like the merge failed:
-     cd ${repo} && git worktree remove ${wtPath} --force
+   looks like the merge failed. lane-handoff.sh already removed it if it exited 0 and was given
+   --worktree or could find it, so check first, and run exactly this if it is still listed:
+     git -C ${repo} worktree list
+     git -C ${repo} worktree remove ${wtPath} --force
+   'is not a working tree' means it is already gone, which is the outcome you want.
 
-5. Record where it stands, from ${ROOT}:
-     bd update ${task.id} --append-notes "<what the change does, the PR url, and that it is green and labelled lane-verified awaiting the lander>"
+   IF IT REFUSES FOR ANY OTHER REASON, run it again plainly and read stderr - never use 2>&1
+   and do not pipe it into tail; a cleanup command piped into tail is exactly where three runs
+   broke that rule in one night. If the reason must be kept, keep stderr alone:
+     git -C ${repo} worktree remove ${wtPath} --force 2>${scratch}/worktree-remove.txt
+     cat ${scratch}/worktree-remove.txt
+
+5. Record where it stands. Write what the change does, the PR url, and that it is green and
+   labelled lane-verified awaiting the lander to ${SCRATCH}/${task.id}/handoff-note.txt, then
+   pass that file - never an inline argument, where a backtick or a $( in the note is evaluated
+   by the shell first:
+     mkdir -p ${SCRATCH}/${task.id}
+     cd ${ROOT} && PITWALL_SESSION=lane-devloop/${task.id} bash ${SKILL_DIR}/bd-note.sh ${task.id} --note-file ${SCRATCH}/${task.id}/handoff-note.txt
 
    LEAVE THE ISSUE OPEN AND in_progress. Do NOT close it - it is not deployed yet, and the
-   lander closes it when it is. Use --append-notes, never --notes: --notes overwrites the
-   whole field and has already destroyed a decision somebody recorded.
+   lander closes it when it is. Never 'bd update --notes': it overwrites the whole field and
+   has already destroyed a decision somebody recorded.
 
-${LAW}
+${LAW(base)}
 
 Return status 'verified' once the PR is green and the label reads back. Put the PR number in
 'prNumber' so the lander can be pointed straight at it.`
@@ -1526,9 +1897,13 @@ is what they asked for - a bare label with no question cannot be answered.
 
 From ${ROOT}:
 1. bd label add ${task.id} <needs-decision if a choice only a person can make, needs-access if it needs a deploy/dashboard/device they have and you do not>
-2. bd update ${task.id} -s open --append-notes "<what was attempted across the three rounds, what
-   the reviewer would not accept and why, what you believe the real decision or difficulty
-   is, and where the branch and PR are>"
+2. Write what was attempted across the three rounds, what the reviewer would not accept and
+   why, what you believe the real decision or difficulty is, and where the branch and PR are to
+   ${SCRATCH}/${task.id}/giveup-note.txt - a file rather than an argument, so that a backtick or
+   a $( in it cannot be evaluated by the shell. Then record it and reopen, the note first:
+     mkdir -p ${SCRATCH}/${task.id}
+     cd ${ROOT} && PITWALL_SESSION=lane-devloop/${task.id} bash ${SKILL_DIR}/bd-note.sh ${task.id} --note-file ${SCRATCH}/${task.id}/giveup-note.txt
+     cd ${ROOT} && bd update ${task.id} -s open
    Write it so somebody can pick this up without reading three transcripts.
 3. Leave the branch and the PR open. Do not merge, do not close, do not delete the worktree.
 4. Run bd show ${task.id} once more and return its first six lines VERBATIM as 'verification'.
@@ -1550,36 +1925,107 @@ async function design(task) {
   return brief
 }
 
-const LANE_NUMBER = SLOT - 1 + 2
-const LANE_LOCK = `/tmp/${LOCK_PREFIX}-lane-${LANE_NUMBER}.lock`
-const SLOT_FILE = `/tmp/${LOCK_PREFIX}-slots/${SLOT}`
+function failedStep(answer) {
+  return !!answer && (answer.status === 'blocked' || answer.status === 'needs_feedback')
+}
+
+function retryNote(why) {
+  return `
+
+THIS STEP IS BEING RE-RUN. An earlier attempt of this same step ended with '${why}' and the run was
+resumed with retryFailed set, so it is issued once more. Whatever is already in the worktree and on
+the branch is this run's own earlier work: read what is there before acting and continue from it
+rather than starting over, and do not treat the earlier stop as still true without checking.`
+}
+
+async function step(prompt, opts) {
+  const first = await agent(prompt, opts)
+  if (!RETRY_FAILED || !failedStep(first)) return first
+  const why = `${first.status}${first.summary || first.question ? `: ${first.summary || first.question}` : ''}`
+  log(`${opts.label}: ended '${why}' and retryFailed is set - re-running that step once`)
+  return await agent(`${prompt}${retryNote(why)}`, opts)
+}
+
 const GIVEN_BACK = new Set(['released', 'already_gone'])
 
 function releaseLanePrompt() {
-  return `Give lane ${LANE_NUMBER} and slot ${SLOT} back. Run this command once, exactly as it stands, and
-report what it printed:
+  return `Give lane ${LANE_NUMBER} and slot ${SLOT} back, and say what is left in the worktree. Run this
+command once, exactly as it stands, and report what it printed:
 
-  bash ${SKILL_DIR}/release-lane.sh --lane ${LANE_LOCK} --slot ${SLOT_FILE} --owner '${ID}'
+  export GIT_CONFIG_GLOBAL=/dev/null BUNDLE_USER_CONFIG=/dev/null && bash ${SKILL_DIR}/release-lane.sh --lane ${LANE_LOCK} --slot ${SLOT_FILE} --owner '${ID}' --worktree ${WORKTREE}
 
 Every value is already in the command. There is nothing to look up, substitute or confirm first,
 and nothing for you to judge: the script proves ownership itself - the owner file beside the lock
 and the id in the slot file - and removes only what names this run. An earlier release step of
 this shape was told to supply a value it had already been given, went looking for it, found none
-and declined to touch the lock at all, which left every other lane waiting on it.
+and declined to touch the lock at all, which left every other lane waiting on it. The worktree is
+only read, never changed: the script reports whether it is gone, clean, or still holding
+uncommitted or unpushed work, and what it reports travels back in the run's result so that
+finished work is not thrown away on the strength of a terse summary.
 
-Report the word after 'lane:' as 'lane' and the word after 'slot:' as 'slot', lowercased, and
-everything it printed as 'notes'. Remove nothing by hand, run no other command, and never use
-2>&1.`
+Report the word after 'lane:' as 'lane', the word after 'slot:' as 'slot' and the word after
+'worktree:' as 'worktree', all lowercased, and everything it printed as 'notes'. If the command is
+not permitted to run at all, report 'refused' for all three and say what refused it in 'notes' -
+that answer is acted on, and it is worth more than a guess at what the script would have printed.
+Remove nothing by hand, run no other command, and never use 2>&1.`
 }
 
-function settle(path, answer) {
+const PLAIN_SLOT = `if [ ! -e ${SLOT_FILE} ]; then echo "slot: ALREADY_GONE"; elif [ "$(head -n 1 ${SLOT_FILE})" = "${ID}" ]; then rm -f ${SLOT_FILE} && echo "slot: RELEASED" || echo "slot: STILL_HELD"; else echo "slot: NOT_MINE - $(head -n 1 ${SLOT_FILE})"; fi`
+const PLAIN_LANE = `if [ -e ${LANE_LOCK} ] && [ ! -d ${LANE_LOCK} ]; then echo "lane: STILL_HELD - a regular file, not a lock"; elif [ ! -d ${LANE_LOCK} ]; then echo "lane: ALREADY_GONE"; elif [ "$(awk 'NR == 1 { print $1 }' ${OWNER_FILE} 2>/dev/null)" = "${ID}" ]; then rm -f ${OWNER_FILE} && rmdir ${LANE_LOCK} && echo "lane: RELEASED" || echo "lane: STILL_HELD"; else echo "lane: NOT_MINE - $(head -n 1 ${OWNER_FILE} 2>/dev/null)"; fi`
+
+function plainReleasePrompt() {
+  return `The release step for lane ${LANE_NUMBER} and slot ${SLOT} did not answer, so give them back with plain
+commands instead. Each reads one file under /tmp that this run wrote and removes it only when it
+names this run. Run these two commands once each, exactly as they stand, in this order, and report
+what they printed:
+
+  ${PLAIN_SLOT}
+
+  ${PLAIN_LANE}
+
+The slot goes first because a slot left behind is the silent one: nothing refuses a dispatch over
+it, the pool is simply one lane smaller. A lane lock left behind refuses the next run out loud.
+
+Report the word after 'slot:' as 'slot' and the word after 'lane:' as 'lane', lowercased, and
+everything printed as 'notes'. If a command is not permitted to run, report 'refused' for it and say
+what refused it in 'notes'. Run no other command, remove nothing by hand, and never use 2>&1.`
+}
+
+function unanswered(answer) {
+  return !answer || answer.lane === 'refused' || answer.slot === 'refused'
+}
+
+async function giveBack(prompt, label, schema) {
+  try {
+    return await agent(prompt, { label, phase: 'Ship', schema, model: 'haiku', effort: 'low' })
+  } catch (e) {
+    log(`${label}: the release step died before answering - ${e && e.message ? e.message : String(e)}`)
+    return null
+  }
+}
+
+function settle(path, answer, refused, record, byHand) {
   if (GIVEN_BACK.has(answer)) return answer
   if (answer === 'not_mine') return `not_mine - ${path} does not record ${ID}, so nothing was removed and nothing should be`
+  if (answer === 'refused' || (refused && !answer)) return `REFUSED - no release step was permitted to give ${path} back, so it is leaked if ${record} still names ${ID}. Release it on reading this with the command below: it reads ${record} on its own, removes ${path} only if that names this run, and says ALREADY_GONE when there is nothing left to do: ${byHand}`
   return `LEAKED - ${path} was not given back, or the release step answered nothing. Read it before removing anything: clear it if it records this run, and leave it alone if it records another.`
+}
+
+const WORKTREE = `${WT}/${ID}`
+const HOLDS_WORK = {
+  uncommitted: `UNCOMMITTED - ${WORKTREE} holds uncommitted work that no branch protects. Commit it or copy it out before anything removes the worktree; kill-lane.sh takes everything in it.`,
+  unpushed: `UNPUSHED - ${WORKTREE} holds commits no remote has. The branch survives the worktree being removed; push it or copy it out before the branch is deleted.`,
+  unread: `UNREAD - ${WORKTREE} exists but git could not read it, so whether it holds work is unknown. Look inside it before anything removes it.`
+}
+
+function settleWorktree(answer) {
+  if (answer === 'gone' || answer === 'clean') return `${answer} - ${WORKTREE}`
+  return HOLDS_WORK[answer] || `UNKNOWN - the release step did not say what ${WORKTREE} holds. Look inside it before anything removes it: whatever is there may be finished, uncommitted work.`
 }
 
 let laneLock = `LEAKED - the release step never reported. Read ${LANE_LOCK} before touching anything.`
 let slotClaim = `LEAKED - the release step never reported. Read ${SLOT_FILE} before touching anything.`
+let worktreeState = `UNKNOWN - the release step never reported. Look inside ${WORKTREE} before anything removes it.`
 let task = { id: ID, title: null, repo: null, priority: null }
 let result = null
 
@@ -1614,7 +2060,22 @@ Return eligible:false, with a reason, if any of these holds:
   VERIFY A RECORDED BLOCKER BEFORE HONOURING IT. A note saying "blocked on X" or "do not
   dispatch until X closes" records what was true the day it was written. Run 'bd show X' and
   look at the status. If the note names a pull request, check whether it merged. If it names a
-  file, a locale key or a column that supposedly does not exist yet, look on origin/master.
+  file, a locale key or a column that supposedly does not exist yet, or a commit that supposedly
+  has not landed, ask origin/${WORKSPACE_BASE} - fetched first, because a remote-tracking ref nobody has
+  fetched is stale one level down:
+    git -C <checkout> fetch origin --quiet
+    git -C <checkout> ls-tree --name-only origin/${WORKSPACE_BASE} <path>
+    git -C <checkout> show origin/${WORKSPACE_BASE}:<file> | head
+    git -C <checkout> merge-base --is-ancestor <sha> origin/${WORKSPACE_BASE}
+
+  NEVER AGAINST THE CHECKOUT'S OWN HEAD - not 'git show HEAD:<file>', not 'ls <checkout>/<path>',
+  not '--is-ancestor <sha> HEAD'. You run before any worktree exists, so origin/${WORKSPACE_BASE} is the
+  only current reference there is, and the root checkout's HEAD is whatever ${WORKSPACE_BASE} was the day
+  somebody last pulled it: every lane branches from origin/${WORKSPACE_BASE} and lands from a worktree, so
+  nobody fast-forwards it. On 2026-09-12 it was 35 merges behind. A file that had been on
+  origin/${WORKSPACE_BASE} for days was reported as not existing anywhere, a merged commit as not an
+  ancestor, and the issue was bounced to a person over prerequisite branches that were already
+  merged and deployed.
 
   Four tickets on 2026-08-28 carried a blocker that had already cleared, and every one cost a
   full lane dispatch to discover - roughly 100k tokens each. On app-grlg the note said it was
@@ -1759,19 +2220,23 @@ Rules for a split, because a bad one is worse than asking:
 Otherwise eligible:true.
 
 ROUTE IT FROM THE PATHS THE TICKET NAMES, AND CHECK THE ANSWER. These are the repositories this
-workspace has, with the checkout each key resolves to:
+workspace has, with the checkout each key resolves to and the branch each one lands on - that is
+the branch to ask, in place of origin/${WORKSPACE_BASE} below, wherever a checkout names a different one:
 
 ${reposTable()}
 
-1. ONLY A KEY FROM THAT TABLE MAY BE RETURNED. The schema's list of words is a wire format shared
-   with other projects and contains keys this workspace does not have. A key that is in the list
-   and absent from the table is not a choice - it is a dispatch whose worktree is cut from a path
-   that does not exist. If the work belongs somewhere with no key here, return eligible:false and
-   say which repository it needs.
+1. ONLY A KEY FROM THAT TABLE MAY BE RETURNED. The schema's list of words is built from that
+   table, so any other name fails validation - but a key that resolves to a real checkout is
+   still the wrong one when the ticket's paths live elsewhere, and that dispatch cuts its worktree
+   from a repository the work does not belong to. If the work belongs somewhere with no key here,
+   return eligible:false and say which repository it needs.
 2. DERIVE THE KEY FROM THE SOURCE PATHS THE TICKET NAMES. For each path it names, find which
-   checkout actually contains it:
-     ls <checkout>/<the path it names> 2>/dev/null
-     git -C <checkout> ls-files 'the path it names' 2>/dev/null
+   checkout's origin/${WORKSPACE_BASE} actually contains it:
+     git -C <checkout> fetch origin --quiet
+     git -C <checkout> ls-tree --name-only origin/${WORKSPACE_BASE} '<the path it names>' 2>/dev/null
+   Not 'ls' and not 'ls-files': both read the checkout's HEAD, which is stale for the reason
+   above, so a path another lane landed yesterday is invisible to them and the ticket naming it
+   routes nowhere.
    The assigned repo must be one where those paths exist. A ticket whose subject is a spec under
    spec/ does not belong in a TypeScript package that has no spec/ directory, whatever its
    wording suggests.
@@ -1783,6 +2248,7 @@ ${reposTable()}
 4. WHEN THE LINE AND THE PATHS DISAGREE, THAT IS A STOP, NOT A TIEBREAK. Return eligible:false and
    name both - the key the line claims and the checkout the paths are in. Guessing between them is
    how a lane ends up labelling an unrelated pull request that happens to share a number.
+${workspaceRouting()}
 
 FOUR LIVE MISROUTES IN ONE DAY, every one recovered by the lane rather than by the pipeline, and
 they cost a dispatch each: a ticket naming src/notify.ts routed to the contract repo; a child
@@ -1896,8 +2362,11 @@ is what they asked for - a bare label with no question cannot be answered.
 
 
   bd label add ${ID} umbrella
-  bd update ${ID} -s open --append-notes "Split into <the child ids>, <one-line reason>. The work
-  now lives in the children; this stays as the umbrella."
+  Write 'Split into <the child ids>, <one-line reason>. The work now lives in the children; this
+  stays as the umbrella.' to ${SCRATCH}/${ID}/split-note.txt, then record it and reopen:
+  mkdir -p ${SCRATCH}/${ID}
+  cd ${ROOT} && PITWALL_SESSION=devloop-triage bash ${SKILL_DIR}/bd-note.sh ${ID} --note-file ${SCRATCH}/${ID}/split-note.txt
+  cd ${ROOT} && bd update ${ID} -s open
 Use the label, not a type change: bd 0.20.1 has no --type on update, bd edit only touches
 text fields, and import refuses the round trip as a collision. The queue treats 'umbrella'
 exactly as it treats 'needs-feedback'. Do not write to the database directly to get around
@@ -1906,7 +2375,7 @@ Keep the parent open. Do not close it - its children are not done.
 
 Report the child ids you created and which are ready to be worked.
 
-${LAW}
+${LAW()}
 
 Never use 2>&1. Change no code, open no PR, touch no repo.`,
     { label: `split:${ID}`, phase: 'Split', model: 'sonnet' })
@@ -1947,8 +2416,13 @@ if (!triage.eligible) {
 
 Hand it to a person, from ${ROOT}:
   bd label add ${ID} <needs-decision if a choice only a person can make, needs-access if it needs a deploy/dashboard/device they have and you do not>
-  bd update ${ID} -s open --append-notes "<why this needs a person, and the exact question or
-  decision, written so somebody can answer it without re-reading the code>"
+  Write why this needs a person, and the exact question or decision, so that somebody can answer
+  it without re-reading the code, to ${SCRATCH}/${ID}/handover-note.txt. It goes in a file rather
+  than an argument so that a backtick or a $( in it cannot be evaluated by the shell. Then record
+  it and reopen, the note first:
+  mkdir -p ${SCRATCH}/${ID}
+  cd ${ROOT} && PITWALL_SESSION=devloop-triage bash ${SKILL_DIR}/bd-note.sh ${ID} --note-file ${SCRATCH}/${ID}/handover-note.txt
+  cd ${ROOT} && bd update ${ID} -s open
 
 Then run bd show ${ID} once more and return its first six lines verbatim as 'verification',
 so this can be checked. Do not paraphrase them and do not report success you have not seen:
@@ -1968,8 +2442,26 @@ task = { id: ID, title: triage.title, repo: triage.repo, priority: triage.priori
 log(`starting ${ID} (P${task.priority}, ${task.repo}) - ${task.title}`)
 
 let feedback = null
-let brief = task.ui ? await design(task) : null
+let brief = task.ui && !isWorkspace(task.repo) ? await design(task) : null
 let reworks = 0
+
+if (isWorkspace(task.repo)) {
+  phase('Fix')
+  const work = await step(workspacePrompt(task), { label: `apply:${task.id}`, phase: 'Fix', schema: WORK })
+  if (!work) result = { outcome: 'agent_error', at: 'fix', attempts: 1 }
+  else if (work.status === 'applied') {
+    if (closedProperly(work.verification)) {
+      result = { outcome: 'closed', summary: work.summary, changed: work.changed || [] }
+    } else {
+      log(`CLOSE FAILED ${task.id} - the edits are applied but the tracker does not show it closed. Close it by hand or it will be dispatched again.`)
+      result = { outcome: 'blocked', summary: `applied but not closed: ${work.summary}`, changed: work.changed || [] }
+    }
+  }
+  else if (work.status === 'needs_feedback') result = { outcome: 'needs_feedback', question: work.question, attempts: 1 }
+  else if (work.status === 'no_change_needed') result = { outcome: 'no_change_needed', summary: work.summary }
+  else if (work.status === 'blocked') result = { outcome: 'blocked', summary: work.summary, attempts: 1 }
+  else result = { outcome: 'blocked', summary: `the workspace step returned '${work.status}', which is not an outcome for the workspace key: nothing is pushed or designed there. ${work.summary || ''}` }
+}
 
 // Outer: rebase cycles. Inner: review rounds. A rebase that goes red restarts the inner
 // loop with a full budget, capped so a branch that can never sit on top of master ends up
@@ -1979,7 +2471,7 @@ let rework = null
 
 for (let attempt = 1; attempt <= MAX_ATTEMPTS && !result && !rework; attempt++) {
   phase('Fix')
-  const work = await agent(fixPrompt(task, attempt, feedback, SLOT - 1, brief), {
+  const work = await step(fixPrompt(task, attempt, feedback, SLOT - 1, brief), {
     label: `fix:${task.id}${attempt > 1 ? `#${attempt}` : ''}`, phase: 'Fix', schema: WORK
   })
 
@@ -1993,6 +2485,10 @@ for (let attempt = 1; attempt <= MAX_ATTEMPTS && !result && !rework; attempt++) 
   if (work.status === 'needs_feedback') { result = { outcome: 'needs_feedback', question: work.question, attempts: attempt }; break }
   if (work.status === 'no_change_needed') { result = { outcome: 'no_change_needed', summary: work.summary }; break }
   if (work.status === 'blocked') { result = { outcome: 'blocked', summary: work.summary, attempts: attempt }; break }
+  if (work.status === 'applied') {
+    result = { outcome: 'blocked', summary: `the fix step returned 'applied', which is only an outcome for the workspace key: a checkout lane pushes a branch and opens a pull request, and there is nothing here to review. ${work.summary || ''}`, attempts: attempt }
+    break
+  }
 
   phase('Review')
   const review = await agent(reviewPrompt(task, work, attempt), {
@@ -2001,7 +2497,7 @@ for (let attempt = 1; attempt <= MAX_ATTEMPTS && !result && !rework; attempt++) 
 
   if (review && review.approved) {
     phase('Handoff')
-    const ship = await agent(handoffPrompt(task, work), { label: `handoff:${task.id}`, phase: 'Handoff', schema: SHIP, model: 'sonnet', effort: 'low' })
+    const ship = await step(handoffPrompt(task, work), { label: `handoff:${task.id}`, phase: 'Handoff', schema: SHIP, model: 'sonnet', effort: 'low' })
 
     // Master moved and the rebase left this red. Somebody else's change broke it, so the
     // review budget is restored and it goes back to Fix knowing what failed.
@@ -2010,11 +2506,11 @@ for (let attempt = 1; attempt <= MAX_ATTEMPTS && !result && !rework; attempt++) 
     // failing silently.
     if (ship && ship.status === 'needs_rework' && reworks < MAX_REWORKS) {
       reworks += 1
-      rework = `Your branch was behind master. After rebasing onto current master the suite is red, and these failures are what has to be fixed before it can merge:
+      rework = `Your branch was behind ${baseOf(task.repo)}. After rebasing onto current ${baseOf(task.repo)} the suite is red, and these failures are what has to be fixed before it can merge:
 
 ${ship.reworkReason || ship.notes}
 
-This is not a rejection of your change - master moved underneath it. Read the failures
+This is not a rejection of your change - ${baseOf(task.repo)} moved underneath it. Read the failures
 before assuming they are yours: if they belong to something merged since, they may want
 fixing here or handing back, and the reviewer will judge which. The review budget has been
 reset; you have ${MAX_ATTEMPTS} rounds again.`
@@ -2047,25 +2543,34 @@ reset; you have ${MAX_ATTEMPTS} rounds again.`
 if (rework) { feedback = rework; continue }
 
 if (!result && reworks >= MAX_REWORKS) {
-  const ho2 = await agent(giveUpPrompt(task, `Rebased onto master ${MAX_REWORKS} times and it was red every time. Master is moving faster than this branch can follow, or the change genuinely disagrees with something that landed since. Last failure:\n\n${feedback}`), { label: `handover:${task.id}`, phase: 'Ship', schema: HANDOVER, model: 'sonnet' })
+  const ho2 = await agent(giveUpPrompt(task, `Rebased onto ${baseOf(task.repo)} ${MAX_REWORKS} times and it was red every time. ${baseOf(task.repo)} is moving faster than this branch can follow, or the change genuinely disagrees with something that landed since. Last failure:\n\n${feedback}`), { label: `handover:${task.id}`, phase: 'Ship', schema: HANDOVER, model: 'sonnet' })
   if (!parkedProperly(ho2 && ho2.verification)) {
     log(`PARK FAILED ${task.id} - NOT open + a parking label in the tracker. Park it by hand or it will be dispatched again.`)
   }
-  result = { outcome: 'needs_feedback', question: `rebased ${MAX_REWORKS} times and master was red each time`, reworks }
+  result = { outcome: 'needs_feedback', question: `rebased ${MAX_REWORKS} times and ${baseOf(task.repo)} was red each time`, reworks }
 }
 }
 
 } finally {
-  const back = await agent(releaseLanePrompt(), { label: `release:${ID}`, phase: 'Ship', schema: LANE, model: 'haiku', effort: 'low' })
-  laneLock = settle(LANE_LOCK, back && back.lane)
-  slotClaim = settle(SLOT_FILE, back && back.slot)
-  if (!GIVEN_BACK.has(back && back.lane) || !GIVEN_BACK.has(back && back.slot)) {
-    log(`lane ${LANE_NUMBER}: ${laneLock}\n    slot ${SLOT}: ${slotClaim}${back && back.notes ? `\n    ${back.notes}` : ''}`)
+  const first = await giveBack(releaseLanePrompt(), `release:${ID}`, LANE)
+  let back = first
+  if (unanswered(first)) {
+    log(`release:${ID}: release-lane.sh was ${first ? 'refused' : 'not answered'}, retrying as plain commands${first && first.notes ? ` - ${first.notes}` : ''}`)
+    back = await giveBack(plainReleasePrompt(), `release-retry:${ID}`, LANE_PLAIN)
   }
+  const refused = unanswered(back)
+  laneLock = settle(LANE_LOCK, back && back.lane, refused, OWNER_FILE, PLAIN_LANE)
+  slotClaim = settle(SLOT_FILE, back && back.slot, refused, SLOT_FILE, PLAIN_SLOT)
+  worktreeState = settleWorktree(first && first.worktree)
+  if (!GIVEN_BACK.has(back && back.lane) || !GIVEN_BACK.has(back && back.slot)) {
+    const notes = (back && back.notes) || (first && first.notes)
+    log(`lane ${LANE_NUMBER}: ${laneLock}\n    slot ${SLOT}: ${slotClaim}${notes ? `\n    ${notes}` : ''}`)
+  }
+  if (!result && /^[A-Z]/.test(worktreeState)) log(`worktree: ${worktreeState}`)
 }
 
 const MARK = {
-  verified: 'READY TO LAND', needs_feedback: 'NEEDS YOU', no_change_needed: 'NOTHING TO DO',
+  verified: 'READY TO LAND', closed: 'CLOSED', needs_feedback: 'NEEDS YOU', no_change_needed: 'NOTHING TO DO',
   blocked: 'BLOCKED', handoff_failed: 'NOT LABELLED', agent_error: 'AGENT DIED', split: 'SPLIT'
 }
 const bits = []
@@ -2074,6 +2579,8 @@ if (result.attempts > 1) bits.push(`${result.attempts} rounds`)
 if (result.pr && result.outcome === 'verified') bits.push('labelled lane-verified')
 if (result.question) bits.push(`asks: ${result.question}`)
 if (result.summary && !result.question) bits.push(result.summary)
+if (result.outcome !== 'verified' || /^[A-Z]/.test(worktreeState)) bits.push(`worktree: ${worktreeState}`)
+if (result.changed && result.changed.length) bits.push(`edited in place, uncommitted: ${result.changed.join(', ')}`)
 log(`${MARK[result.outcome] || result.outcome} ${task.id} P${task.priority} ${task.repo} - ${task.title}${bits.length ? `\n    ${bits.join('\n    ')}` : ''}`)
 
-return { id: task.id, title: task.title, repo: task.repo, priority: task.priority, ...result, lane: laneLock, slot: slotClaim }
+return { id: task.id, title: task.title, repo: task.repo, priority: task.priority, ...result, lane: laneLock, slot: slotClaim, worktree: worktreeState }

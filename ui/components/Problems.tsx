@@ -46,7 +46,7 @@ export function Problems({ rows }: { rows: ProblemRow[] }) {
             <th scope="row" className="pw-cell pw-cell--project">
               {scopeLabel(row)}
             </th>
-            <td className="pw-cell pw-cell--id">{row.source}</td>
+            <td className="pw-cell pw-cell--source">{row.source}</td>
             <td className="pw-cell pw-cell--title">
               {row.message}
               {preventedText(row.prevented)}

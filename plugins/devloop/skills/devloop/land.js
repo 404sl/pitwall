@@ -29,10 +29,10 @@ export const meta = {
 const input = (typeof args === 'string' ? JSON.parse(args) : args) || {}
 
 const ROOT = input.root
-const CONFIGURED = input.repos || {
+const CONFIGURED = Object.fromEntries(Object.entries(input.repos || {
   site: { path: 'site' }, extension: { path: 'extension' },
   integration: { path: 'integration' }, docs: { path: 'docs' }
-}
+}).filter(([, r]) => (r || {}).role !== 'workspace'))
 // name -> absolute path, which is what the prompts below want.
 const REPOS = Object.fromEntries(
   Object.entries(CONFIGURED).map(([name, r]) => [name, `${ROOT}/${(r || {}).path || name}`])
@@ -55,6 +55,7 @@ if (UNSLUGGED.length) {
 // /tmp is shared across projects on this machine; two landing runs with the same prefix would
 // contend for one merge lock and one worktree directory.
 const LOCK_PREFIX = input.lockPrefix || 'devloop'
+const SLUGS = [...new Set(Object.values(CONFIGURED).map((r) => r.slug))]
 const MERGE_LOCK = `/tmp/${LOCK_PREFIX}-merge.lock`
 const TOKEN_SHAPE = /^[A-Za-z0-9._-]+$/
 const trimmed = (v) => String(v || '').trim()
@@ -130,16 +131,27 @@ if (!SKILL_DIR) {
 // "nothing to land". Every one of them is normalised to the SLUG, which is what the survey
 // reports and what the sets below are keyed on - a configured key is accepted as a way of
 // naming a repository, never as the identity of one.
+const UNRESOLVED_PREFLIGHT = []
 const PREFLIGHTED = Array.isArray(input.preflighted)
   ? new Set(input.preflighted.map(preflightKey))
   : null
+if (UNRESOLVED_PREFLIGHT.length) {
+  log(`pre-flighted entries naming no configured repository: ${UNRESOLVED_PREFLIGHT.map((u) => u.raw).join(' ')} - none of these can match a surveyed pull request. Name the repository as owner/name.`)
+}
 function preflightKey(p) {
   const raw = typeof p === 'string' ? p.trim() : `${(p || {}).slug || (p || {}).repo}#${(p || {}).number}`
   const cut = raw.lastIndexOf('#')
   const where = cut < 0 ? raw : raw.slice(0, cut)
   const number = cut < 0 ? '' : raw.slice(cut + 1)
-  const cfg = CONFIGURED[where] || {}
-  return `${cfg.slug || where}#${number}`
+  const slug = (CONFIGURED[where] || {}).slug || slugWithin(where)
+  if (!slug) UNRESOLVED_PREFLIGHT.push({ raw, where, number })
+  return `${slug || where}#${number}`
+}
+
+function slugWithin(text) {
+  const tokens = String(text || '').split(/[^A-Za-z0-9._/-]+/)
+  const found = SLUGS.filter((s) => tokens.includes(s))
+  return found.length === 1 ? found[0] : ''
 }
 
 function keyOf(pr) {
@@ -148,8 +160,17 @@ function keyOf(pr) {
 
 function resolveRepo(p) {
   const reported = typeof (p || {}).slug === 'string' ? p.slug.trim() : ''
-  const name = Object.keys(CONFIGURED).find((n) => (CONFIGURED[n] || {}).slug === reported)
-  return { ...p, slug: reported, repo: name }
+  const slug = slugWithin(reported)
+  const name = Object.keys(CONFIGURED).find((n) => (CONFIGURED[n] || {}).slug === slug)
+  return { ...p, slug: slug || reported, repo: name }
+}
+
+function unmatchedPreflight(p) {
+  const named = UNRESOLVED_PREFLIGHT.filter((u) => String(u.number) === String(p.number))
+  if (named.length) {
+    return `pre-flighted as ${named.map((u) => `'${u.raw}'`).join(' and ')}, which names no configured repository - could not match it to ${keyOf(p)}. Name the repository as owner/name and relaunch.`
+  }
+  return `not in the pre-flighted list - ${keyOf(p)} was not among the pull requests this run was handed, so it lands next run`
 }
 // Was 10. Dropped to 3 on 2026-08-23, when lanes finishing faster than the ~8-minute land
 // cycle left production five merges and an hour behind master with everything green. Ten
@@ -162,7 +183,11 @@ const DEPLOY_EVERY = input.deployEvery || 3
 const MAX_ROUNDS = 4
 const WT = `/tmp/${LOCK_PREFIX}-worktrees`
 
-const SHELL_FIRST = `EVERY COMMAND THAT RUNS git OR bundle STARTS WITH THESE TWO EXPORTS, and so does every
+const IDENTITY = (ref) => '  git -c user.name="$(git log -1 --format=%an ' + ref + ')" -c user.email="$(git log -1 --format=%ae ' + ref + ')" commit -F <message file>'
+const BASE_OF_EACH = () => Object.keys(CONFIGURED).map((name) => `  ${slug(name)}  origin/${baseOf(name)}`).join('\n')
+const IDENTITY_FROM = (base) => base ? IDENTITY(`origin/${base}`) : IDENTITY('<base>') + '\n\nwhere <base> is the remote-tracking ref listed beside the repository the commit is in - the\nrepositories here do not share a default branch, so take it from this list rather than assuming:\n' + BASE_OF_EACH()
+
+const SHELL_FIRST = (base) => `EVERY COMMAND THAT RUNS git OR bundle STARTS WITH THESE TWO EXPORTS, and so does every
 command that runs a script which does:
 
   export GIT_CONFIG_GLOBAL=/dev/null BUNDLE_USER_CONFIG=/dev/null && <your command>
@@ -186,7 +211,7 @@ COMMIT IDENTITY IS THE ONE THING THAT DOES NOT SURVIVE THEM, and every command t
 commit needs it - commit, rebase, merge, cherry-pick. Pass it on the command, taken from the
 branch being built on:
 
-  git -c user.name="$(git log -1 --format=%an origin/master)" -c user.email="$(git log -1 --format=%ae origin/master)" commit -F <message file>
+${IDENTITY_FROM(base)}
 
 Without it git either refuses outright, 'unable to auto-detect email address', or writes the
 wrong author - and nothing downstream notices the second. On this machine the credential helper
@@ -195,7 +220,8 @@ machine, not a rule: a workspace set up by 'gh auth setup-git' has the helper in
 config, and these exports drop it. If a push asks for a password, say so rather than putting the
 home config back.`
 
-const LAW = `
+const SHARED_BASE = [...new Set(Object.values(CONFIGURED).map((r) => (r || {}).defaultBranch || 'master'))]
+const LAW = (base = SHARED_BASE.length === 1 ? SHARED_BASE[0] : null) => `
 Never use 2>&1 - it makes some commands fail outright.
 Use absolute paths, never relative ones.
 Nothing you write anywhere may mention AI, assistants, automated authorship or tooling:
@@ -204,7 +230,7 @@ wrote from the thing that stored it - GitHub and git both add and rewrite text -
 it rather than trusting what you meant to write.
 Never force-push a default branch, and never commit to one directly.
 
-${SHELL_FIRST}`
+${SHELL_FIRST(base)}`
 
 const SURVEY = {
   type: 'object',
@@ -221,7 +247,10 @@ const SURVEY = {
           // this workspace chose - 'site' is the CLI checkout here and is also how a model
           // describes the website repo - and pull request numbers repeat across repositories, so
           // a key and a number together still name two different pull requests.
-          slug: { type: 'string', description: "the repository's owner/name, exactly as gh reports it" },
+          slug: {
+            ...(SLUGS.length ? { enum: SLUGS } : { type: 'string' }),
+            description: "the repository's owner/name, exactly as the brief lists it"
+          },
           number: { type: 'number' },
           title: { type: 'string' },
           branch: { type: 'string' },
@@ -243,7 +272,7 @@ const LAND = {
   properties: {
     // conflict: the rebase surfaced a disagreement about what the code should do, rather
     // than two edits to nearby lines. That is a decision, and it goes back to a person.
-    status: { enum: ['merged', 'red_after_rebase', 'conflict', 'merge_shaped', 'master_red', 'blocked'] },
+    status: { enum: ['merged', 'red_after_rebase', 'conflict', 'master_red', 'blocked'] },
     mergeSha: { type: 'string', description: 'the sha of the commit the merge produced ON THE DEFAULT BRANCH - the squash commit gh pr merge reports, never the pull request head, because a deployed host is compared against this' },
     masterGreen: { type: 'boolean' },
     failureDetail: { type: 'string', description: 'the failing examples and their messages, in enough detail to act on without re-running anything' },
@@ -259,7 +288,7 @@ const VERSION = {
     fetched: { type: 'boolean', description: "the FETCH, and nothing else: true only when the git fetch printed FETCHED. False when it did not, whatever the commands after it printed - every ref this step and the merge after it read is then whatever the checkout already held." },
     status: { enum: ['read', 'no_manifest', 'unreadable'], description: "the MANIFEST read, and nothing else: 'read' only when both git show calls printed a manifest you could copy a version string out of. What gh printed does not touch this field." },
     prStatus: { enum: ['read', 'unreadable'], description: "the PULL REQUEST read: 'read' when gh api printed the pull request, 'unreadable' when it failed for any reason - a rate limit, a network error, no authentication. Say which in notes." },
-    masterVersion: { type: 'string', description: `the "version" string in origin/master's ${PLUGIN_MANIFEST}, verbatim. An empty string when you could not read one.` },
+    masterVersion: { type: 'string', description: `the "version" string in the default branch's ${PLUGIN_MANIFEST} - the origin/<branch> the prompt names - verbatim. An empty string when you could not read one.` },
     branchVersion: { type: 'string', description: `the "version" string in the branch's ${PLUGIN_MANIFEST}, verbatim. An empty string when you could not read one.` },
     touchesPlugin: { type: 'boolean', description: 'true when the branch changes any file under plugins/ or .claude-plugin/ - that is what the marketplace serves. True when the diff could not be read at all, because an unknown answer here must not read as out of scope.' },
     labelled: { type: 'boolean', description: `true when gh api printed ${LABEL} among the pull request's labels just now. Meaningless unless prStatus is 'read' - report false when gh printed nothing.` },
@@ -341,6 +370,52 @@ const CLOSED = {
   }
 }
 
+const HELD = {
+  type: 'object',
+  required: ['status', 'noted'],
+  properties: {
+    status: { enum: ['noted', 'partial', 'none'] },
+    noted: { type: 'array', items: { type: 'string' }, description: 'the tracker ids whose bd-note.sh exited 0, one per issue - an empty array when none did' },
+    notes: { type: 'string' }
+  }
+}
+
+const BRANCHES = {
+  type: 'object',
+  required: ['status', 'asked', 'prs'],
+  properties: {
+    status: { enum: ['read', 'unreadable'] },
+    asked: {
+      type: 'array',
+      description: 'one entry per command you actually ran and read an answer from - one repository and one branch each, so every repository in the list times every branch in the list. A pair missing from here is read as a repository nobody asked about that branch, and the run holds the close rather than reading silence as nothing there.',
+      items: {
+        type: 'object',
+        required: ['slug', 'branch'],
+        properties: {
+          slug: { type: 'string', description: "the repository's owner/name, copied from the list you were given" },
+          branch: { type: 'string', description: 'the branch you passed to --head, copied from the list you were given' }
+        }
+      }
+    },
+    prs: {
+      type: 'array',
+      description: 'every OPEN pull request on any of the branches you were given, in any of the repositories, labelled or not. An empty array only when every repository answered and none of them held one.',
+      items: {
+        type: 'object',
+        required: ['slug', 'number', 'branch', 'labelled'],
+        properties: {
+          slug: { type: 'string', description: "the repository's owner/name, copied from the list you were given" },
+          number: { type: 'number' },
+          branch: { type: 'string', description: 'the headRefName gh printed, copied exactly - it is how this run matches a pull request back to a ticket' },
+          title: { type: 'string' },
+          labelled: { type: 'boolean', description: `true only when gh printed ${LABEL} among that pull request's labels. A label list you could not read is not a false - report status 'unreadable' instead.` }
+        }
+      }
+    },
+    notes: { type: 'string' }
+  }
+}
+
 const LOCK = {
   type: 'object',
   required: ['status', 'holder'],
@@ -408,7 +483,7 @@ Return 'taken' once mkdir succeeded and you have written the holder file, and re
 printed as 'holder' whether or not it matches the token. You are not asked to judge ownership:
 the run compares the holder file against the token it was launched with, stands down on a
 mismatch, and the file is the fact while the value you report is a claim about it.
-${LAW}`
+${LAW()}`
 }
 
 function releasePrompt(token) {
@@ -451,7 +526,7 @@ NOT_MINE IS A CORRECT OUTCOME, not a failure to clean up. It says the holder fil
 this run's token, so nothing was removed and nothing should be - whoever holds it gives it back
 themselves. ALREADY_GONE likewise: there is nothing to release. Report what it printed and stop.
 Change nothing else.
-${LAW}`
+${LAW()}`
 }
 
 function surveyPrompt() {
@@ -509,7 +584,7 @@ went red, and the lander then refused - correctly - to merge into a red master, 
 unable to land the fix for the red master. A person had to break the deadlock by hand.
 
 Change nothing. Do not merge, do not rebase, do not label, do not deploy.
-${LAW}`
+${LAW()}`
 }
 
 // The `owner/name` that `--repo` wants. IT MUST BE CONFIGURED. There is no fallback, and the
@@ -546,6 +621,8 @@ function slug(repo) {
   )
 }
 
+function baseOf(repo) { return (CONFIGURED[repo] || {}).defaultBranch || 'master' }
+
 // UNUSED - see the note on the VERIFY schema above.
 function verifyPrompt(pr) {
   const path = REPOS[pr.repo]
@@ -570,14 +647,14 @@ Report the conclusions you actually saw in 'checks', and the head sha in 'headRe
 run's log says what was true rather than only whether it liked it.`
 }
 
-function versionVerdict(read) {
+function versionVerdict(read, base) {
   if (!read) {
     return { why: 'version_unreadable', detail: 'the version step answered nothing, and a number nobody read is not a number the next one can be counted from' }
   }
   if (read.fetched !== true) {
     return {
       why: 'fetch_failed',
-      detail: `the version step did not fetch origin - ${trimmed(read.notes) || 'FETCHED did not print'}. Every ref read after that is whatever the checkout already held, so origin/master may be behind what has already merged: the manifest read, the diff that decides whether the version guard applies, and the rebase land-one.sh does not do when it reads the branch as not behind. Nothing was merged and the label was left on, so the next run takes it when the fetch works.`
+      detail: `the version step did not fetch origin - ${trimmed(read.notes) || 'FETCHED did not print'}. Every ref read after that is whatever the checkout already held, so origin/${base} may be behind what has already merged: the manifest read, the diff that decides whether the version guard applies, and the rebase land-one.sh does not do when it reads the branch as not behind. Nothing was merged and the label was left on, so the next run takes it when the fetch works.`
     }
   }
   if (read.status === 'no_manifest') return null
@@ -592,18 +669,15 @@ function versionVerdict(read) {
   if (!SEMVER.test(master)) {
     return {
       why: 'version_unreadable',
-      detail: `origin/master declares devloop plugin version '${master}' in ${PLUGIN_MANIFEST}, which is not three numbers, and the number this merge lands is counted up from it - so nothing can be incremented and ${MARKETPLACE_MANIFEST} cannot be made to agree with it. The branch's own number is not used.`
+      detail: `origin/${base} declares devloop plugin version '${master}' in ${PLUGIN_MANIFEST}, which is not three numbers, and the number this merge lands is counted up from it - so nothing can be incremented and ${MARKETPLACE_MANIFEST} cannot be made to agree with it. The branch's own number is not used.`
     }
   }
   return null
 }
 
-function prVerdict(read) {
+function prUnreadable(read) {
   if (!read || read.prStatus !== 'unreadable') return null
-  return {
-    why: 'pr_unreadable',
-    detail: `gh could not read pull request state - ${trimmed(read.notes) || 'the version step reported no answer from gh api'}. Nothing is known about the version here: this says the PULL REQUEST could not be read, not that a number could not be. Nothing was merged, the label was left on, and the next run picks it up when gh answers again.`
-  }
+  return `pr_unreadable - gh could not read pull request state - ${trimmed(read.notes) || 'the version step reported no answer from gh api'}. This says the PULL REQUEST could not be read, not that a number could not be, so the version raises no objection and land-one.sh decides in shell: it reads the rollup and the label itself, and exits without merging when gh still cannot answer, so the pull request goes back for a later round rather than being retired.`
 }
 
 const REFUSED_WHATEVER_THE_ROUND = [
@@ -624,6 +698,7 @@ function refusalVerdict(detail) {
 
 function versionPrompt(pr) {
   const path = REPOS[pr.repo]
+  const base = baseOf(pr.repo)
   return `Read two version numbers and report them. Nothing merges here, nothing is edited, and
 the working tree of ${path} is not yours to move - a person works in that checkout and may be
 mid-edit on their own branch.
@@ -631,15 +706,15 @@ mid-edit on their own branch.
 Repo: ${pr.repo} - ${path}
 Branch: ${pr.branch}
 
-FETCH FIRST, EVERY TIME. What matters is the number origin/master holds RIGHT NOW, not the one it
+FETCH FIRST, EVERY TIME. What matters is the number origin/${base} holds RIGHT NOW, not the one it
 held when this branch was pushed. Master moves between pull requests inside this very run, so a
 number read once at the top of the run is stale by the second merge.
 
   cd ${path} && git fetch origin --quiet && echo FETCHED
-  cd ${path} && git ls-tree --name-only origin/master ${PLUGIN_MANIFEST}
-  cd ${path} && git show origin/master:${PLUGIN_MANIFEST}
+  cd ${path} && git ls-tree --name-only origin/${base} ${PLUGIN_MANIFEST}
+  cd ${path} && git show origin/${base}:${PLUGIN_MANIFEST}
   cd ${path} && git show origin/${pr.branch}:${PLUGIN_MANIFEST}
-  cd ${path} && git diff --name-only origin/master...origin/${pr.branch}
+  cd ${path} && git diff --name-only origin/${base}...origin/${pr.branch}
   gh api repos/${pr.slug}/pulls/${pr.number} --jq '{labels: [.labels[].name], state, draft, merged}'
 
 THE PULL REQUEST IS READ OVER REST, AND ONLY OVER REST. Do not substitute 'gh pr view' for that
@@ -668,7 +743,7 @@ THE FETCH HAS ITS OWN FIELD TOO. Report fetched true when the first command prin
 false when it did not, and say in notes what it printed instead. A failed fetch does not move
 status: the commands after it still run, and status reports what THEY printed. It is reported
 separately because it is the one failure that makes every other answer here quietly stale - the
-refs are whatever this checkout already held, so origin/master can be behind work that has already
+refs are whatever this checkout already held, so origin/${base} can be behind work that has already
 merged, and a branch that looks up to date against it has never been tested against master at all.
 
 status IS ABOUT THE MANIFEST AND NOTHING ELSE. gh has its own field, prStatus, and what gh printed
@@ -703,11 +778,12 @@ false and open false, and say in notes what gh printed instead, because a refusa
 takes a pull request out of the queue and reopens somebody's tracker issue, and neither is safe to
 do to a pull request that is no longer in the queue to refuse.
 
-${LAW}`
+${LAW(base)}`
 }
 
 function landPrompt(pr, position, total) {
   const path = REPOS[pr.repo]
+  const base = baseOf(pr.repo)
   return `Land one pull request. You are ${position} of ${total}, and you are the only thing
 merging anywhere right now - no other process will move master while you work. That is what
 makes this worth doing carefully: you can rebase, wait for CI, and merge knowing the ground
@@ -748,9 +824,14 @@ a report to the supervisor, not a problem for you to solve.
 
 0. STEPS 1 TO 5 ARE ONE COMMAND NOW. RUN IT FIRST.
 
-     bash ${SKILL_DIR}/land-one.sh --repo-path ${path} --slug ${slug(pr.repo)} --pr ${pr.number} --branch ${pr.branch}
+     bash ${SKILL_DIR}/land-one.sh --repo-path ${path} --slug ${slug(pr.repo)} --pr ${pr.number} --branch ${pr.branch} --base ${base}
 
-   It checks master is green, rebases onto master only if the branch is behind, assigns the next
+   Pass timeout: 600000 on the tool call. The Bash tool's default is two minutes, and after a
+   rebase push this script now blocks for check registration plus the full CI run.
+
+   It checks master is green, brings master in only if the branch is behind - a rebase for a
+   linear branch, a merge for one that carries a merge commit of its own, because a rebase would
+   drop whatever exists only in that merge's resolution - assigns the next
    devloop plugin version when the branch ships a file under plugins/ or .claude-plugin/,
    force-pushes with the guard, and waits for CI on the pushed head by BLOCKING rather than
    polling. Then it re-reads the rollup, refuses an empty one, and refuses one that describes a
@@ -759,7 +840,7 @@ a report to the supervisor, not a problem for you to solve.
    Read its EXIT CODE, not its prose:
 
      0  ready       steps 1 to 5 are done. Go straight to step 6. Do not redo them.
-     3  conflict    the rebase disagreed. It has already aborted and cleaned up. Read step 4,
+     3  conflict    the rebase or merge disagreed. It has already aborted and cleaned up. Read step 4,
                     decide whether this is two edits to nearby lines or a real disagreement
                     about what the code should do, and return status 'conflict' if it is the
                     second. THIS is the one part of landing that needs you.
@@ -771,18 +852,13 @@ a report to the supervisor, not a problem for you to solve.
                     the line it printed in 'notes', VERBATIM - the run puts it back for a later
                     round instead of retiring it, and that line is the only record of why. Do
                     NOT report this as red.
-     8  merge_shaped the branch already carries a merge commit of its own, and rebasing it onto
-                    master would drop whatever exists only in that merge's resolution. Nothing
-                    was touched. NOT a failure and NOT a conflict: return status 'merge_shaped'
-                    with the line it printed in 'notes', VERBATIM - the label stays on and the
-                    branch goes back for rework onto master. Do NOT rebase, merge or push it by
-                    hand, and do not report this as a conflict.
-     9  unreadable  the rollup could not be READ - gh failed, was throttled, or returned
-                    something that did not parse. Nothing is known about the checks, which is
-                    not the same as knowing they failed. Return status 'blocked' with the
-                    sentences it printed, and do NOT report this as red or as a failing build:
-                    secondary rate limits read as full in 'gh api rate_limit', so a throttled
-                    read looks like nothing at all from here.
+     9  unreadable  the rollup, or master's latest run before it, could not be READ - gh
+                    failed, was throttled, or returned something that did not parse. Nothing
+                    is known about the checks or about master, which is not the same as
+                    knowing either failed. Return status 'blocked' with the sentences it
+                    printed, and do NOT report this as red, as a failing build or as a red
+                    master: secondary rate limits read as full in 'gh api rate_limit', so a
+                    throttled read looks like nothing at all from here.
      5  master_red  master was not green. Nothing was touched. Return status 'master_red'.
      6  usage       the arguments, the repository or the plugin version it had to assign are
                     wrong. Return status 'blocked' with the line it printed in 'notes',
@@ -800,7 +876,7 @@ a report to the supervisor, not a problem for you to solve.
 
 1. MASTER MUST BE GREEN BEFORE YOU START. You cannot merge into a red master whatever else is
    true, and landing on top of a break makes it harder to untangle, not easier:
-     cd ${path} && gh run list --branch master --limit 1 --json headSha,status,conclusion
+     cd ${path} && gh run list --branch ${base} --limit 1 --json headSha,status,conclusion
    If it is red, stop and return status 'master_red', NAMING THE FAILING SPEC so the next
    reader does not have to open the run to find out.
 
@@ -838,7 +914,7 @@ a report to the supervisor, not a problem for you to solve.
 
 3. IS THE BRANCH ALREADY CURRENT? Do not rebase for the sake of it:
      cd ${path} && git fetch origin --quiet
-     cd ${path} && git merge-base --is-ancestor origin/master origin/${pr.branch} && echo current
+     cd ${path} && git merge-base --is-ancestor origin/${base} origin/${pr.branch} && echo current
    If that prints 'current', skip to step 5 - the checks that ran are the checks that count.
 
 4. REBASE ONTO MASTER. Work in a worktree; never check master out in these repositories,
@@ -848,7 +924,7 @@ a report to the supervisor, not a problem for you to solve.
    than making another - a lane may have left one holding exactly this branch, which is a
    favour and not a mess. 'git worktree list' says where it is.
 
-     cd <worktree> && git -c user.name="$(git log -1 --format=%an origin/master)" -c user.email="$(git log -1 --format=%ae origin/master)" rebase origin/master
+     cd <worktree> && git -c user.name="$(git log -1 --format=%an origin/${base})" -c user.email="$(git log -1 --format=%ae origin/${base})" rebase origin/${base}
 
    TEXTUAL CONFLICTS IN THE SAME REGION are yours to resolve when the intent of both sides is
    plain - two additions to one list, an import added on both sides, a spec file gaining
@@ -862,7 +938,7 @@ a report to the supervisor, not a problem for you to solve.
    reword that commit, so git falls back to $EDITOR and a run with no terminal hangs or dies on
    it. Both halves, every time the rebase stops:
      cd <worktree> && git add <the files you resolved>
-     cd <worktree> && git -c user.name="$(git log -1 --format=%an origin/master)" -c user.email="$(git log -1 --format=%ae origin/master)" -c core.editor=true rebase --continue
+     cd <worktree> && git -c user.name="$(git log -1 --format=%an origin/${base})" -c user.email="$(git log -1 --format=%ae origin/${base})" -c core.editor=true rebase --continue
    A rebase can stop more than once. Repeat both until it reports it has finished. Do not take
    git's own hint to set a --global identity: that is the file the exports exist to ignore.
 
@@ -873,7 +949,7 @@ a report to the supervisor, not a problem for you to solve.
    is green on both sides breaks the product.
 
    Then push the rebased branch. Never force-push a default branch; this is not one:
-     cd <worktree> && git-guard --dir=<worktree> --branch=${pr.branch} -- git push --force-with-lease
+     bash ${SKILL_DIR}/git-guard.sh --dir=<worktree> --branch=${pr.branch} --default=${base} -- git push --force-with-lease
 
 5. WAIT FOR CI ON THE HEAD THAT IS ACTUALLY THERE NOW. Poll; do not assume:
      cd ${path} && gh pr view ${pr.number} --json headRefOid,statusCheckRollup
@@ -906,7 +982,7 @@ a report to the supervisor, not a problem for you to solve.
 6. CHECK COMPLIANCE, then merge. Read the body back from GitHub and the commits back from git -
    what is actually there, not what was meant:
      cd ${path} && gh pr view ${pr.number} --json body
-     cd ${path} && git log origin/master..origin/${pr.branch} --format=%B
+     cd ${path} && git log origin/${base}..origin/${pr.branch} --format=%B
    Anything saying or implying that an agent, assistant or tool wrote, reviewed or generated
    this change stops the merge - including a Co-Authored-By trailer. Return 'blocked' saying
    which line.
@@ -959,7 +1035,7 @@ a report to the supervisor, not a problem for you to solve.
 7. CONFIRM YOU DID NOT BREAK MASTER. A green branch says nothing about the merge result - two
    changes can agree line by line and contradict in meaning, which is how master broke once
    already:
-     cd ${path} && gh run list --branch master --limit 1 --json headSha,status,conclusion
+     cd ${path} && gh run list --branch ${base} --limit 1 --json headSha,status,conclusion
    Wait for that run to finish. Report it in 'masterGreen'. If it went red, say so as the
    first thing in 'notes' and put the failing spec in 'failureDetail' - the deploy that would
    have followed is cancelled, and the next PR in the queue will stop on it.
@@ -968,7 +1044,7 @@ a report to the supervisor, not a problem for you to solve.
    run has landed. Deploying between merges is what made a server change live in staging and
    not production, which as far as a tester is concerned is live in neither.
 
-${LAW}
+${LAW(base)}
 
 Return 'merged' only once state reads MERGED and you have looked at the master run that
 followed.`
@@ -1131,7 +1207,7 @@ The extension changed too. Rebuild it into the main checkout so it can be reload
 dist/ is gitignored so building writes no tracked file, but the branch the checkout sits on
 decides what gets built. If ${REPOS.extension} is on master and clean, pull and 'npm run
 build'. If it is on any other branch or has uncommitted work, do NOT switch and do NOT stash -
-build origin/master in a detached worktree and copy dist/ across. Do not package a release zip
+build origin/${baseOf('extension')} in a detached worktree and copy dist/ across. Do not package a release zip
 and do not submit anything to the store.` : ''}
 ${landed.some((l) => l.repo === 'integration') ? `
 The integration package changed. Rebuild and confirm dist/ is in step - CI fails if dist/ was
@@ -1139,11 +1215,11 @@ not rebuilt from src/. Do NOT publish to npm and do NOT push a tag: releasing is
 because the npm account has two-factor authentication and a one-time code cannot be given to
 a workflow.` : ''}
 ${landed.some((l) => l.repo === 'docs') ? `
-docs has no deploy target of its own. The change is on origin/master and visible to anyone who
+docs has no deploy target of its own. The change is on origin/${baseOf('docs')} and visible to anyone who
 pulls, but an ARTICLE is not live until publish.rb sends it, and a cover image is not live
 until the SITE is deployed. Say which of those still apply.` : ''}
 
-${LAW}`
+${LAW()}`
 }
 
 function livePrompt(landed) {
@@ -1176,7 +1252,7 @@ taken once already. Report what you read. Guess nothing, and fill nothing in.
 
 DO NOT DEPLOY, whatever you find. A deploy is somebody's decision once they know what is live,
 and this step is how they find out.
-${LAW}`
+${LAW()}`
 }
 
 // RETIRING A PULL REQUEST THE LANDER CANNOT LAND.
@@ -1192,23 +1268,33 @@ ${LAW}`
 // repeat inside one run and does nothing across runs.
 //
 // So a stop is recorded where it survives: the label comes off, the finding goes onto the
-// tracker issue, and the issue goes back to open so a lane can pick up the rework with the
-// diagnosis already written down. Nothing is force-pushed and no branch is deleted - the
-// author's work is left exactly as it was, only un-queued.
+// tracker issue, the pull request number goes onto it as rework metadata, and the issue goes
+// back to open so queue.sh hands it to rework.js with the diagnosis already written down.
+// Nothing is force-pushed and no branch is deleted - the author's work is left exactly as it
+// was, only un-queued.
 //
 // NOT retired: 'master_red' (nothing is wrong with the PR), 'blocked' (CI simply had not
-// finished - a timing accident that the next round should retry), 'merge_shaped' (the branch
-// needs rebuilding onto master, and un-queueing it would reopen an issue whose work is fine),
-// 'version_unreadable' (the number could not be read at all, which is ignorance rather than a
-// finding), 'pr_unreadable' (gh could not be asked about the PR, which is the same ignorance
-// about a different read), 'fetch_failed' (the refs everything else was read from may be stale,
-// which is ignorance about all of them at once), and 'agent_error' (we do not know what
-// happened, and un-queueing on ignorance loses work silently).
+// finished - a timing accident that the next round should retry), 'version_unreadable' (the number could not be read at all, which is ignorance rather than a
+// finding), 'fetch_failed' (the refs everything else was read from may be stale, which is
+// ignorance about all of them at once), and 'agent_error' (we do not know what happened, and
+// un-queueing on ignorance loses work silently).
 const RETIRE = { type: 'object', required: ['status'], additionalProperties: false, properties: {
   status: { enum: ['retired', 'partial', 'nothing_to_do'] },
   retired: { type: 'array', items: { type: 'string' } },
   notes: { type: 'string' },
 } }
+
+function routes(dead) {
+  const named = dead.filter((d) => d.issue)
+  if (!named.length) return '     (none of these named a tracker issue, so there is nowhere to record it - skip this step)'
+  return named.map((d) => `     cd ${ROOT} && bd update ${d.issue} --metadata '${JSON.stringify({ rework: { pr: Number(d.number), repo: d.repo || null, why: d.why } })}'`).join('\n')
+}
+
+function reopens(dead) {
+  const named = dead.filter((d) => d.issue)
+  if (!named.length) return '     (no tracker issue named - nothing to reopen)'
+  return named.map((d) => `     cd ${ROOT} && bd update ${d.issue} --status open`).join('\n')
+}
 
 function retirePrompt(dead) {
   return `Take these pull requests out of the merge queue. They were attempted this run and
@@ -1218,22 +1304,36 @@ lander run attempts them again and rediscovers the same thing, at six to ten min
 ${dead.map((d) => `  ${d.slug}#${d.number} in ${REPOS[d.repo]} - ${d.why}${d.issue ? ` (tracker ${d.issue})` : ' (no tracker issue named)'}
     ${(d.detail || '').split('\n').join('\n    ').slice(0, 1200)}`).join('\n\n')}
 
-FOR EACH ONE, three things, in this order:
+FOR EACH ONE, four things, in this order:
 
 1. Append the finding to its tracker issue, if it named one. Write the text to a file first and
-   pass it with --append-notes, never --notes and never an inline double-quoted string:
-     cd ${ROOT} && bd update <id> --append-notes "$(cat <file>)"
-   --notes overwrites the whole field and has already destroyed a decision somebody recorded.
+   pass the file to bd-note.sh, never 'bd update --notes' and never an inline double-quoted
+   string - a backtick or a $( inside one is evaluated by the shell before bd sees it:
+     cd ${ROOT} && PITWALL_SESSION=lander bash ${SKILL_DIR}/bd-note.sh <id> --note-file <file>
+   The script takes the write lock, stamps the note and reads it back; a bare append is an
+   unserialised read-modify-write and loses one of two overlapping notes silently. --notes
+   overwrites the whole field and has already destroyed a decision somebody recorded.
    Include: that the pull request was attempted and not landed, the reason above in full, that
    the label was removed, and that the branch was left untouched. Somebody reworking this needs
    the diagnosis more than they need the verdict.
 
-2. Set the issue back to open, so the queue offers it again:
-     cd ${ROOT} && bd update <id> --status open
+2. Record where the issue goes next, exactly as written here - one command per issue, nothing
+   to substitute:
+${routes(dead)}
+   This is what takes the issue to rework.js rather than to task.js: queue.sh --next reads the
+   rework metadata and hands the issue out as a rework with its pull request number, and
+   config.sh --args refuses to build task.js arguments for an issue that carries it. --metadata
+   merges into what is already there, so the issue's origin is kept. Without this record the
+   queue offers the issue as ordinary work, and task.js triage bounces a pull request that is
+   done and green - the number would then exist only as prose in the note above, for a person
+   to read.
+
+3. Set the issue back to open, so the queue offers it again:
+${reopens(dead)}
    An issue left in_progress behind a dead pull request is invisible to the queue and stalls
    forever. That has stranded work here before.
 
-3. Remove the label, LAST, so a crash between steps leaves the finding recorded rather than a
+4. Remove the label, LAST, so a crash between steps leaves the finding recorded rather than a
    pull request silently un-queued with no explanation anywhere:
      cd <that repo's checkout> && gh pr edit <number> --repo <owner/name> --remove-label ${LABEL}
 
@@ -1246,7 +1346,7 @@ note that did not land is worse than one never attempted, because the label is g
 
 Return status 'retired' with the ids you un-queued, 'partial' if some failed, naming which and
 why, or 'nothing_to_do' if there were none.
-${LAW}`
+${LAW()}`
 }
 
 // Which repositories this workspace can actually deploy. Read from the config rather than
@@ -1337,11 +1437,138 @@ function readHosts(landed, back) {
   return { status, confirmed, mismatched, contradicted, echoed, silent, repos }
 }
 
-function closePrompt(landed, deployed) {
+function branchesToSurvey(landed) {
+  return [...new Set(landed.filter((l) => l.issue).map((l) => trimmed(l.branch)).filter(Boolean))]
+}
+
+function branchesPrompt(branches) {
+  return `Report every OPEN pull request on these branches, and whether each one carries '${LABEL}'.
+
+${branches.map((b) => `  ${b}`).join('\n')}
+
+Ask EVERY one of these repositories about EVERY one of those branches:
+${Object.entries(REPOS).map(([name, path]) => `  ${slug(name)}  ${path}`).join('\n')}
+
+  cd <path> && gh pr list --repo <that repository's owner/name> --state open --head <branch> --json number,headRefName,title,labels
+
+REPORT EVERY PAIR YOU RAN IT FOR IN 'asked' - one entry per repository per branch, whether it
+printed a pull request or nothing. That list is checked against the one above: any pair missing
+from it holds the close, because a repository nobody asked about and a repository with nothing on
+the branch both print nothing here, and reading the first as the second is the whole defect this
+step exists to catch.
+
+A DIRECTORY THAT IS NOT THERE IS NOT A REASON TO SKIP A REPOSITORY. --repo names the repository
+and gh needs no checkout to list it, so run the command from ${ROOT} instead.
+
+WHY YOU ARE BEING ASKED. A ticket that spans two repositories opens a pull request in each, both
+on the same branch name, and the handoff labels all of them in one pass. When that pass fails
+part-way the first is labelled and the rest are not - and ${LABEL} is the only thing this run's
+queue reads, so the labelled half merges, nothing anywhere reads the second half, and the ticket
+closes on the half that landed. Two tickets closed that way on 2026-09-10, and in one of them the
+orphan was the artwork generator, which left shipped images unreproducible from master while
+every dashboard stayed green.
+
+REPORT WHAT YOU FIND, LABELLED OR NOT, and decide nothing about it. An unlabelled pull request is
+not yours to label, close or judge - it may be a lane's work in progress - and this run only
+needs to know that it is there.
+
+IF ANY COMMAND FAILED - a rate limit, an expired token, a slug gh did not recognise - REPORT
+status 'unreadable' AND NAME WHAT FAILED. A failed list and a branch with no second half both
+print nothing, this step cannot tell them apart, and an empty read is not a clean read. The run
+holds the close rather than guessing which one it got: 'unreadable' costs a ticket one more
+cycle, and 'read' over a failed command closes it wrongly and invisibly.
+
+Change nothing. Do not label, do not merge, do not close, do not comment.
+${LAW()}`
+}
+
+function heldByBranch(closable, read, notLanded = []) {
+  const held = new Map()
+  const branches = new Set(branchesToSurvey(closable))
+  if (!branches.size) return held
+  const hold = (branch, why) => {
+    for (const l of closable) if (l.issue && trimmed(l.branch) === branch) held.set(l.issue, why)
+  }
+  const heldBySkipped = () => {
+    for (const s of notLanded) {
+      const branch = trimmed((s || {}).branch)
+      if (!branches.has(branch)) continue
+      hold(branch, `${keyOf(s)} is on ${branch} and this run put it in skipped rather than landing it (${trimmed(s.why) || 'no reason recorded'}), so half of this ticket has not landed`)
+    }
+    return held
+  }
+  if (!read || read.status !== 'read') {
+    const why = `the branch survey ${read ? `answered '${read.status}'` : 'reported nothing'}, so whether a pull request on this branch is open and unlabelled in some other repository was never established${read && read.notes ? ` - ${read.notes}` : ''}`
+    for (const b of branches) hold(b, why)
+    return heldBySkipped()
+  }
+  const asked = new Set()
+  for (const a of (read.asked || [])) {
+    if (!a || typeof a.slug !== 'string' || typeof a.branch !== 'string') continue
+    asked.add(`${a.slug.trim()}\u0000${trimmed(a.branch)}`)
+  }
+  const configured = [...new Set(Object.keys(CONFIGURED).map((name) => slug(name)))]
+  for (const b of branches) {
+    const unasked = configured.filter((s) => !asked.has(`${s}\u0000${b}`))
+    if (unasked.length) {
+      hold(b, `the survey did not report asking ${unasked.join(' ')} about ${b}, and a repository ` +
+        `nobody asked about is one whose orphan nobody looked for - an unasked repository and a ` +
+        `clean one both come back empty, so this close is held rather than taken on a survey that ` +
+        `may never have looked where the orphan sits`)
+    }
+  }
+  for (const p of (read.prs || [])) {
+    if (!p || p.labelled === true) continue
+    const branch = trimmed(p.branch)
+    if (!branches.has(branch)) continue
+    hold(branch, p.labelled === false
+      ? `${keyOf(p)} is open on ${branch} and does not carry ${LABEL}, so this run's queue never saw it and half of this ticket has not landed`
+      : `${keyOf(p)} is open on ${branch} and the survey did not report whether it carries ${LABEL}`)
+  }
+  return heldBySkipped()
+}
+
+function closeVerdict(l, deployed, serving) {
+  const key = l.repo || '(no configured key)'
+  if (!DEPLOYS.has(l.repo)) {
+    return {
+      key,
+      deploy: `${key} has no deploy array in this run's config - nothing to deploy`,
+      reason: `Landed in ${l.slug}#${l.number} - ${key} has no deploy configured, closed on the merge`,
+      verdict: 'merged, nothing to deploy - CLOSE',
+    }
+  }
+  return {
+    key,
+    deploy: `${key} has a deploy array in this run's config, and this run's deploy step came back ${deployed}${serving ? ` - ${serving}` : ''}`,
+    reason: `Landed in ${l.slug}#${l.number} and deployed`,
+    verdict: deployed === 'deployed' ? 'merged, deploy succeeded - CLOSE' : 'merged, deploy not confirmed - HOLD',
+  }
+}
+
+function closeLine(l, deployed, serving) {
+  const v = closeVerdict(l, deployed, serving)
+  return `  ${l.issue}  ${l.slug}#${l.number}  merged at ${(l.mergeSha || '').slice(0, 12) || '(sha not recorded)'}
+    config key: ${v.key}
+    deploy: ${v.deploy}
+    verdict: ${v.verdict}
+    cd ${ROOT} && BEADS_DIR=${ROOT}/.beads bd close ${l.issue} --reason "${v.reason}"`
+}
+
+function closePrompt(landed, deployed, serving) {
   return `Close the tracker issues for work that is now merged and deployed, and only those.
 
-From ${ROOT} - the tracker is at the root, not inside any repository:
-${landed.filter((l) => l.issue).map((l) => `  bd close ${l.issue} --reason "Landed in ${l.slug}#${l.number}${DEPLOYS.has(l.repo) ? ' and deployed' : ' - NOT deployed, see below'}"`).join('\n')}
+THE VERDICT ON EACH ISSUE IS ALREADY MADE, and it is printed beside it as data: the config key
+the pull request was pre-flighted under, whether that key has a deploy array in the configuration
+this run was launched with, and what this run's deploy step returned for it. Merged with no deploy
+array is CLOSE. Merged with a deploy array and a deploy that succeeded is CLOSE. Anything else is
+HOLD, and an issue in that state was kept out of this list before this step started. The slug names
+the repository and the key names its entry in the config; both were resolved by this run, and
+neither is re-derived from any file, note, pull request or mapping between names.
+
+One bd close per issue, exactly as printed - the tracker is at ${ROOT}, not inside any repository:
+
+${landed.filter((l) => l.issue).map((l) => closeLine(l, deployed, serving)).join('\n\n')}
 
 THAT LIST IS THE WHOLE JOB. Do not survey the tracker for other issues, and do not read pull
 requests this run did not land. On 2026-08-28 this step was handed ONE issue and went looking
@@ -1356,28 +1583,29 @@ supervisor decides what happens to them. Naming them costs one line; closing the
 invisible, which is the failure this whole step is written around.
 
 NOT EVERY REPOSITORY HAS A DEPLOY, and saying one deployed when it did not is a false claim
-written into a closed issue where somebody will believe it later. Only these repositories have a
-deploy command configured, and only their issues may be closed as deployed:
-${[...DEPLOYS].join(', ') || '(none)'}
-
-For anything else - an extension that ships through a store review, a package published by hand -
-say MERGED and say what still has to happen for it to reach a user. A site deploy in the same run
-is unrelated to it and must not be quoted as though it covered it. A safety check refused this
-step on 2026-08-25 for exactly that: three issues were about to be closed as "landed and
+written into a closed issue where somebody will believe it later. The --reason printed for each
+issue already says which it is, so use it as written: a key with no deploy array is closed as
+merged and not as deployed, whatever still has to happen for it to reach a user - an extension
+that ships through a store review, a package published by hand. A deploy of some other key in the
+same run is unrelated to it and must not be quoted as though it covered it. A safety check refused
+this step on 2026-08-25 for exactly that: three issues were about to be closed as "landed and
 deployed", two of them extension changes that a store release had not carried, on the strength of
 a site deploy that happened in the same run.
 
 READ EACH PR's BODY BEFORE CLOSING ITS ISSUE, and honour what it says about itself.
 
-  cd <path> && gh pr view <number> --json body
+${landed.filter((l) => l.issue).map((l) => `  gh pr view ${l.number} --repo ${l.slug} --json body`).join('\n')}
 
 Lanes state plainly when a change does NOT finish its ticket - the wording varies but the
 meaning does not: "this PR does not finish the ticket", "that acceptance criterion stays open",
 "the remaining half is a person's". WHERE A PR SAYS THAT, DO NOT CLOSE THE ISSUE. Append to it
 instead, naming the merge and what is still outstanding:
 
-  BEADS_DIR=${ROOT}/.beads bd update <id> --append-notes "Merged as <repo> #<n>, <sha>, and
-  deployed. NOT closed: the PR states <what remains>."
+  Write 'Merged as <slug>#<n>, <sha>, <and deployed - or, where the --reason printed above says the
+  key has no deploy configured, exactly that>. NOT closed: the PR states <what remains>.' to a
+  file, then:
+
+  cd ${ROOT} && BEADS_DIR=${ROOT}/.beads PITWALL_SESSION=lander bash ${SKILL_DIR}/bd-note.sh <id> --note-file <that file>
 
 MERGED AND DONE ARE DIFFERENT FACTS AND YOU ONLY KNOW ONE OF THEM. On 2026-08-26 this step
 closed app-w23d.11 when PR #509 merged. Its acceptance criteria required scoring the real
@@ -1394,10 +1622,6 @@ again; an issue closed wrongly is invisible.
 Write a reason that says what landed and where, so somebody reading the closed issue in a
 month knows what happened without opening a PR.
 
-Deploy result: ${deployed}
-
-IF THE DEPLOY DID NOT SUCCEED, CLOSE NOTHING. A merge that is not live is not done, and an
-issue closed early is one nobody looks at again. Say so and return instead.
 ${landed.filter((l) => !l.issue).length ? `
 These landed but named no tracker issue, so there is nothing to close for them - report them
 so a person can decide whether one was missed:
@@ -1411,7 +1635,50 @@ were. Anything in the list above that you do not name comes back as drift a pers
 on 2026-09-09 this step was killed mid-run and four merged-and-deployed issues sat in_progress
 for hours with nothing anywhere reporting it. An id you closed and did not name reads the same
 way, so name them - and do not name one you did not close.
-${LAW}`
+${LAW()}`
+}
+
+function heldNote(h, merged) {
+  const what = merged.map((l) => `${keyOf(l)} at ${l.mergeSha || '(sha not recorded)'}${DEPLOYS.has(l.repo) ? ', deployed' : ' (this repository has no deploy)'}`).join(' and ')
+  return `Merged as ${what}. NOT closed: ${h.why}. Held open by the lander on purpose - this is not a dead lane. Close it when what is still open on this ticket's branch has landed.`
+}
+
+function heldPrompt(held) {
+  return `Record on each of these tracker issues why this run did NOT close it, and do nothing else to them.
+
+What landed for each is merged and stays merged; the ticket stays exactly where it is - in_progress,
+assigned to whoever holds it, labelled as it was. Without this note a person arriving at the ticket
+sees a claim older than an hour and reads it as a lane that died. The note is what tells them the
+lander held it deliberately, and why.
+
+For each issue below, write the text between the markers to a file VERBATIM - a file rather than an
+argument, so a backtick or a $( in it cannot be evaluated by the shell before bd sees it - then
+append it with exactly this, one run per issue, from ${ROOT} - the tracker is at the root, not
+inside any repository:
+
+${held.map(({ h, merged }) => `  ${h.issue}:
+    ---
+    ${heldNote(h, merged)}
+    ---
+    cd ${ROOT} && BEADS_DIR=${ROOT}/.beads PITWALL_SESSION=lander bash ${SKILL_DIR}/bd-note.sh ${h.issue} --note-file <that file>`).join('\n\n')}
+
+ONE NOTE PER ISSUE, THROUGH bd-note.sh. Never 'bd update --notes': it replaces every note already
+on the issue and has already destroyed a decision somebody recorded. Never a bare append by hand
+either - the script is the only writer that takes the write lock, stamps the note and reads it
+back, and two overlapping bare appends silently become one.
+
+DO NOT CLOSE, REOPEN, REASSIGN OR RELABEL ANYTHING. Not a close, not a status change, not an
+assignee change, not a label. The hold is the outcome of this run and the ticket is somebody
+else's until the rest of its branch lands; a note is the only thing this step is allowed to write.
+
+THAT LIST IS THE WHOLE JOB. Do not read the tracker for other issues and do not read pull requests
+this run did not land.
+
+REPORT THE IDS YOU ACTUALLY WROTE ON, one per bd-note.sh that exited 0, and an empty list if none
+did. A non-zero exit means the note did NOT land and its text is on stderr - name that id in 'notes'
+with what the script printed, not in the list. An id you wrote on and did not name comes back as a
+hold nobody recorded, so name them - and do not name one you did not write on.
+${LAW()}`
 }
 
 phase('Survey')
@@ -1420,23 +1687,6 @@ for (const name of DEPLOYS) {
   const { commands, unconfirmable, why } = readBacks(name)
   if (!unconfirmable) continue
   log(`BEFORE ANYTHING MERGES - ${why}. ${commands.length ? 'An environment nobody can ask rests' : `Anything landing in ${name} rests`} on whatever the deploy step says, with no revision this lander read back - it closes on that word unless a revision the step itself names is not the sha that merged, and then nothing closes.`)
-}
-
-// Taken before anything is surveyed and given back in the finally below, whatever happened.
-// A person merges by hand in these repositories - twice in one session, most recently while a
-// supervisor was mid-investigation - so being the only lander is not the same as being the
-// only thing merging.
-const lock = await agent(lockPrompt(), { label: 'lock', phase: 'Survey', schema: LOCK, model: 'haiku', effort: 'low' })
-const holder = trimmed(lock && lock.holder)
-if (!lock || lock.status !== 'taken') {
-  log(`merge lock held by ${holder || 'somebody'} - not landing anything this run`)
-  return { landed: [], stopped: [], skipped: [], deployed: 'not_needed', lockedOutBy: lock ? holder : null }
-}
-
-if (holder !== LOCK_TOKEN) {
-  const unproven = `LEAKED - the lock step reported taken, but ${MERGE_LOCK}/holder reads [${holder}] against a token of [${LOCK_TOKEN}], so this run cannot prove the lock is its own. Nothing was landed and nothing was removed. Read ${MERGE_LOCK}/holder: if it names a run that has finished, clear it; if it names another lander, it is theirs and they give it back themselves.`
-  log(unproven)
-  return { landed: [], stopped: [], skipped: [], deployed: 'not_needed', lock: unproven, lockedOutBy: holder }
 }
 
 const landed = []
@@ -1455,9 +1705,29 @@ let masterBroken = false
 let deployed = 'not_needed'
 let closed = null
 let unclosed = []
+let heldOpen = []
 let lockState = `LEAKED - the release step never reported. Read ${MERGE_LOCK}/holder before touching anything.`
+let lockOwned = false
 
 try {
+  // Taken before anything is surveyed and given back in the finally below, whatever happened.
+  // A person merges by hand in these repositories - twice in one session, most recently while a
+  // supervisor was mid-investigation - so being the only lander is not the same as being the
+  // only thing merging.
+  const lock = await agent(lockPrompt(), { label: 'lock', phase: 'Survey', schema: LOCK, model: 'haiku', effort: 'low' })
+  const holder = trimmed(lock && lock.holder)
+  if (!lock || lock.status !== 'taken') {
+    log(`merge lock held by ${holder || 'somebody'} - not landing anything this run`)
+    return { landed: [], stopped: [], skipped: [], deployed: 'not_needed', lockedOutBy: lock ? holder : null }
+  }
+
+  if (holder !== LOCK_TOKEN) {
+    const unproven = `LEAKED - the lock step reported taken, but ${MERGE_LOCK}/holder reads [${holder}] against a token of [${LOCK_TOKEN}], so this run cannot prove the lock is its own. Nothing was landed and nothing was removed. Read ${MERGE_LOCK}/holder: if it names a run that has finished, clear it; if it names another lander, it is theirs and they give it back themselves.`
+    log(unproven)
+    return { landed: [], stopped: [], skipped: [], deployed: 'not_needed', lock: unproven, lockedOutBy: holder }
+  }
+  lockOwned = true
+
   // Drained rather than surveyed once: a lane can label a PR while this run is working, and
   // "deploy when lane-verified is empty" is only true if we look again before believing it.
   // Capped because a queue that refills forever should hand back rather than never return.
@@ -1511,8 +1781,9 @@ try {
       for (const p of known) {
         if (PREFLIGHTED.has(keyOf(p))) { matchedPreflight.add(keyOf(p)); continue }
         seen.add(keyOf(p))
-        skipped.push({ ...p, why: 'not pre-flighted - labelled after the supervisor surveyed the queue' })
-        log(`SKIPPED ${keyOf(p)} - not pre-flighted, lands next run`)
+        const why = unmatchedPreflight(p)
+        skipped.push({ ...p, why })
+        log(`SKIPPED ${keyOf(p)} - ${why}`)
       }
     }
 
@@ -1556,24 +1827,28 @@ try {
       const declared = await agent(versionPrompt(pr), {
         label: `version:${keyOf(pr)}`, phase: 'Land', schema: VERSION, model: 'haiku', effort: 'low'
       })
-      const stale = versionVerdict(declared) || prVerdict(declared)
+      const stale = versionVerdict(declared, baseOf(pr.repo))
       if (stale) {
         stopped.push({ ...pr, why: stale.why, detail: stale.detail })
         log(`STOPPED ${keyOf(pr)} - ${stale.why}\n    ${stale.detail}`)
         continue
       }
-      if (declared && (declared.labelled === false || declared.open === false)) {
+      const unreadPr = prUnreadable(declared)
+      if (unreadPr) {
+        log(`${keyOf(pr)} - ${unreadPr}`)
+      }
+      if (declared && declared.prStatus !== 'unreadable' && (declared.labelled === false || declared.open === false)) {
         log(`${keyOf(pr)} - the version step reports it is no longer the pull request this run was asked to merge (${LABEL} ${declared.labelled === false ? 'is gone' : 'still on'}, ${declared.open === false ? 'closed, merged or draft' : 'open'}), and its declared version raises no objection, so land-one.sh decides in shell whether it still merges`)
       }
       if (declared && declared.status !== 'no_manifest' && !declared.touchesPlugin) {
         const unread = declared.status === 'read' ? '' : `, and the manifest read reported '${declared.status}'${trimmed(declared.notes) ? `: ${trimmed(declared.notes)}` : ''}`
-        log(`${keyOf(pr)} - declares devloop plugin version ${trimmed(declared.branchVersion) || '(none)'} against origin/master's ${trimmed(declared.masterVersion) || '(none)'}, and its diff lists no path under plugins/ or .claude-plugin/, so the versions are not compared${unread}`)
+        log(`${keyOf(pr)} - declares devloop plugin version ${trimmed(declared.branchVersion) || '(none)'} against origin/${baseOf(pr.repo)}'s ${trimmed(declared.masterVersion) || '(none)'}, and its diff lists no path under plugins/ or .claude-plugin/, so the versions are not compared${unread}`)
       }
       if (declared && declared.status === 'read' && declared.touchesPlugin) {
-        log(`${keyOf(pr)} - ships a plugin file and declares devloop plugin version ${trimmed(declared.branchVersion) || '(none)'}; that number is not used. land-one.sh assigns the one after origin/master's ${trimmed(declared.masterVersion)} when it pushes, so two plugin pull requests in one pass get consecutive versions instead of the same one`)
+        log(`${keyOf(pr)} - ships a plugin file and declares devloop plugin version ${trimmed(declared.branchVersion) || '(none)'}; that number is not used. land-one.sh assigns the one after origin/${baseOf(pr.repo)}'s ${trimmed(declared.masterVersion)} when it pushes, so two plugin pull requests in one pass get consecutive versions instead of the same one`)
       }
       if (declared.status === 'no_manifest') {
-        log(`${keyOf(pr)} - origin/master carries no ${PLUGIN_MANIFEST}, so this repository has no published plugin version to walk backwards`)
+        log(`${keyOf(pr)} - origin/${baseOf(pr.repo)} carries no ${PLUGIN_MANIFEST}, so this repository has no published plugin version to walk backwards`)
       }
 
       const r = await agent(landPrompt(pr, i + 1, queue.length), {
@@ -1604,7 +1879,8 @@ try {
       const detail = trimmed(r && (r.failureDetail || r.notes))
 
       // 'blocked' carries every reason land-one.sh exits without merging and nothing is wrong
-      // with the pull request: an empty, stale or unreadable rollup, and every usage refusal too.
+      // with the pull request: an empty, stale or unreadable rollup, a master run gh could not
+      // answer for, and every usage refusal too.
       // Only the attempt knows which, so its own sentences are what gets logged. Keeping it in
       // `seen` retires it from this whole run, and the rebase it already did is thrown away.
       // Put it back so a later round finds the run finished - but only when a later round could
@@ -1624,9 +1900,7 @@ try {
       }
 
       stopped.push({ ...pr, why, detail })
-      log(why === 'merge_shaped'
-        ? `NEEDS REWORK ${keyOf(pr)} - the branch carries a merge commit of its own, so the lander will not rebase it. The label stays on, the issue stays as it is, and nothing was touched - rebuild the branch onto master.\n    ${detail || 'the agent returned nothing'}`
-        : `STOPPED ${keyOf(pr)} - ${why}\n    ${detail || 'the agent returned nothing'}`)
+      log(`STOPPED ${keyOf(pr)} - ${why}\n    ${detail || 'the agent returned nothing'}`)
 
       // A red master blocks everything behind it, so there is no point trying the rest.
       //
@@ -1673,7 +1947,14 @@ try {
 
   if (landed.length && !masterBroken) {
     phase('Deploy')
-    const d = await agent(deployPrompt(landed), { label: 'deploy', phase: 'Deploy', schema: DEPLOYED })
+    let d = null
+    let died = ''
+    try {
+      d = await agent(deployPrompt(landed), { label: 'deploy', phase: 'Deploy', schema: DEPLOYED })
+    } catch (e) {
+      died = trimmed(e && e.message) || String(e)
+      log(`the deploy step died before it reported - ${died}. Every merge below is already on its default branch and stays there; whether the hosts are serving it is what the read-back settles:\n    merged: ${landed.map((l) => `${l.repo} ${(l.mergeSha || '').slice(0, 12) || '(sha not recorded)'}`).join(', ')}`)
+    }
     const reportedStatus = (d && d.status) || 'unknown'
     deployed = reportedStatus
     let servingText = ''
@@ -1704,7 +1985,7 @@ try {
     }
 
     const unsettled = reportedStatus !== 'deployed'
-      ? 'the deploy step reported nothing'
+      ? died ? `the deploy step died before it reported (${died})` : 'the deploy step reported nothing'
       : refuted
         ? ownMismatched
           ? 'the deploy step reported deployed and named a revision that is not what merged'
@@ -1773,15 +2054,35 @@ try {
     const closable = landed.filter((l) => !DEPLOYS.has(l.repo) || deployed === 'deployed')
     const heldBack = landed.filter((l) => !closable.includes(l))
 
-    if (closable.length) {
+    const toSurvey = branchesToSurvey(closable)
+    if (toSurvey.length) {
       phase('Deploy')
-      const where = deployed === 'deployed'
-        ? `deployed${servingText ? ` - ${servingText}` : ''}`
-        : 'these repositories have no deploy to be live in, so they are closed on the merge alone'
-      const c = await agent(closePrompt(closable, where), { label: 'close', phase: 'Deploy', model: 'sonnet', effort: 'low', schema: CLOSED })
+      const onBranch = await agent(branchesPrompt(toSurvey), { label: 'branch-survey', phase: 'Deploy', model: 'haiku', effort: 'low', schema: BRANCHES })
+      heldOpen = [...heldByBranch(closable, onBranch, skipped).entries()].map(([issue, why]) => ({ issue, why }))
+      for (const h of heldOpen) {
+        log(`NOT CLOSED ${h.issue} - ${h.why}. What landed for it is merged and deployed and stays that way; the ticket is left open because something on its branch has not.`)
+      }
+    }
+    if (heldOpen.length) {
+      phase('Deploy')
+      const held = heldOpen.map((h) => ({ h, merged: closable.filter((l) => l.issue === h.issue) }))
+      const n = await agent(heldPrompt(held), { label: 'held', phase: 'Deploy', model: 'sonnet', effort: 'low', schema: HELD })
+      const noted = new Set((n && n.noted) || [])
+      const unnoted = heldOpen.map((h) => h.issue).filter((issue) => !noted.has(issue))
+      if (unnoted.length) {
+        log(`HOLD NOT RECORDED ${unnoted.join(' ')} - ${n ? `the note step answered '${n.status}'` : 'the note step reported nothing'}, so these sit in_progress with nothing on them saying the lander held them, and queue.sh will read the claim as a dead lane.${n && n.notes ? `\n    ${n.notes}` : ''}`)
+      }
+      for (const issue of heldOpen.map((h) => h.issue).filter((issue) => noted.has(issue))) log(`noted the hold on ${issue}`)
+    }
+    const heldIssues = new Set(heldOpen.map((h) => h.issue))
+    const clear = closable.filter((l) => !l.issue || !heldIssues.has(l.issue))
+
+    if (clear.length) {
+      phase('Deploy')
+      const c = await agent(closePrompt(clear, deployed, servingText), { label: 'close', phase: 'Deploy', model: 'sonnet', effort: 'low', schema: CLOSED })
       closed = (c && c.status) || 'unknown'
       const reported = new Set((c && c.closed) || [])
-      unclosed = closable.filter((l) => l.issue && !reported.has(l.issue)).map((l) => l.issue)
+      unclosed = clear.filter((l) => l.issue && !reported.has(l.issue)).map((l) => l.issue)
       if (unclosed.length) {
         log(`CLOSE ${closed === 'unknown' ? 'UNKNOWN - that step reported nothing, which is not the same as a refusal' : closed} - these merged and deployed and nothing confirmed they were closed, so they are sitting in_progress with nothing reporting it: ${unclosed.join(' ')}\n    Check them with bd show before closing anything by hand.${c && c.notes ? `\n    ${c.notes}` : ''}`)
       } else if (reported.size) {
@@ -1802,20 +2103,22 @@ try {
     log('master is red - nothing deployed and nothing closed')
   }
 } finally {
-  // However this ended. A run that merged and then died before releasing held every other
-  // lane up for twenty minutes with nothing behind it.
-  const released = await agent(releasePrompt(LOCK_TOKEN), { label: 'release', phase: 'Deploy', model: 'haiku', effort: 'low', schema: RELEASE })
-  if (released && released.status === 'released') {
-    lockState = 'released'
-  } else if (released && released.status === 'not_mine') {
-    lockState = `not_mine - ${MERGE_LOCK}/holder did not hold ${LOCK_TOKEN}, so nothing was removed and nothing should be`
-    log(`${lockState}.\n    ${released.notes || 'the script reported NOT_MINE and says what the holder file read instead'}`)
-  } else if (released && released.status === 'already_gone') {
-    lockState = `already_gone - ${MERGE_LOCK} was not there to release`
-    log(`${lockState}. Something removed this run's lock while it was working, so another lander may have been running beside it.\n    ${released.notes || ''}`)
-  } else {
-    lockState = `LEAKED - ${MERGE_LOCK} still held ${LOCK_TOKEN} after the release step, or the step answered nothing. Check ${MERGE_LOCK}/holder still reads ${LOCK_TOKEN} before removing it - if it reads anything else, another lander has it and it is not yours.`
-    log(`${lockState}\n    ${(released && released.notes) || 'the release agent returned nothing'}`)
+  if (lockOwned) {
+    // However this ended. A run that merged and then died before releasing held every other
+    // lane up for twenty minutes with nothing behind it.
+    const released = await agent(releasePrompt(LOCK_TOKEN), { label: 'release', phase: 'Deploy', model: 'haiku', effort: 'low', schema: RELEASE })
+    if (released && released.status === 'released') {
+      lockState = 'released'
+    } else if (released && released.status === 'not_mine') {
+      lockState = `not_mine - ${MERGE_LOCK}/holder did not hold ${LOCK_TOKEN}, so nothing was removed and nothing should be`
+      log(`${lockState}.\n    ${released.notes || 'the script reported NOT_MINE and says what the holder file read instead'}`)
+    } else if (released && released.status === 'already_gone') {
+      lockState = `already_gone - ${MERGE_LOCK} was not there to release`
+      log(`${lockState}. Something removed this run's lock while it was working, so another lander may have been running beside it.\n    ${released.notes || ''}`)
+    } else {
+      lockState = `LEAKED - ${MERGE_LOCK} still held ${LOCK_TOKEN} after the release step, or the step answered nothing. Check ${MERGE_LOCK}/holder still reads ${LOCK_TOKEN} before removing it - if it reads anything else, another lander has it and it is not yours.`
+      log(`${lockState}\n    ${(released && released.notes) || 'the release agent returned nothing'}`)
+  }
   }
 }
 
@@ -1830,5 +2133,5 @@ if (PREFLIGHTED) {
   }
 }
 
-log(`landed ${landed.length}, stopped ${stopped.length}, skipped ${skipped.length}, deploy ${deployed}${unclosed.length ? `, NOT CONFIRMED CLOSED ${unclosed.join(' ')}` : ''}`)
-return { landed, stopped, skipped, deployed, closed, unclosed, masterBroken, lock: lockState }
+log(`landed ${landed.length}, stopped ${stopped.length}, skipped ${skipped.length}, deploy ${deployed}${unclosed.length ? `, NOT CONFIRMED CLOSED ${unclosed.join(' ')}` : ''}${heldOpen.length ? `, HELD OPEN ${heldOpen.map((h) => h.issue).join(' ')}` : ''}`)
+return { landed, stopped, skipped, deployed, closed, unclosed, heldOpen, masterBroken, lock: lockState }

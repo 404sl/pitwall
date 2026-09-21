@@ -1,8 +1,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
-import { Project, type RepoKind } from "@404sl/pitwall-schema";
+import { Project, type CollectionError, type RepoKind } from "@404sl/pitwall-schema";
 import { collectionError } from "./errors.js";
-import { defaultBranchOf } from "./git.js";
+import { defaultBranchOf, remoteOf } from "./git.js";
 import { readLanes } from "./lanes.js";
 
 export const WORKSPACE_FILE = ".pitwall.json";
@@ -49,6 +49,17 @@ function repoPath(root: string, name: string, repo: Record<string, unknown>): st
   return resolve(root, path);
 }
 
+function defaultBranchIn(name: string, repo: Record<string, unknown>): string | undefined {
+  const branch = repo["defaultBranch"];
+  if (branch === undefined) {
+    return undefined;
+  }
+  if (typeof branch !== "string" || branch === "") {
+    throw new TypeError(`repo ${name} defaultBranch is not a branch name`);
+  }
+  return branch;
+}
+
 interface WorkspaceRepo {
   name: string;
   path: string;
@@ -56,21 +67,46 @@ interface WorkspaceRepo {
   defaultBranch?: string;
 }
 
-function reposOf(root: string, workspace: Record<string, unknown>): WorkspaceRepo[] {
+function unreadDefaultBranch(path: string, file: string): CollectionError | undefined {
+  if (remoteOf(path).slug === undefined) {
+    return undefined;
+  }
+  return {
+    source: path,
+    message: `no origin/HEAD, so the default branch could not be read - set defaultBranch in ${file} or run git remote set-head origin -a`,
+    at: new Date().toISOString(),
+    scope: "field",
+  };
+}
+
+function reposOf(
+  root: string,
+  file: string,
+  workspace: Record<string, unknown>,
+  errors: CollectionError[],
+): WorkspaceRepo[] {
   const repos = workspace["repos"];
   if (repos === undefined) {
     return [];
   }
   return Object.entries(asRecord(repos, "repos"))
     .filter(([name]) => !name.startsWith("_"))
-    .map(([name, value]) => {
-      const repo = asRecord(value, `repo ${name}`);
+    .map(([name, value]): [string, Record<string, unknown>] => [name, asRecord(value, `repo ${name}`)])
+    .filter(([, repo]) => repo["role"] !== "workspace")
+    .map(([name, repo]) => {
       const path = repoPath(root, name, repo);
+      const defaultBranch = defaultBranchIn(name, repo) ?? defaultBranchOf(path);
+      if (defaultBranch === undefined) {
+        const unread = unreadDefaultBranch(path, file);
+        if (unread !== undefined) {
+          errors.push(unread);
+        }
+      }
       return {
         name,
         path,
         kind: repoKind(repo["deploy"]),
-        defaultBranch: defaultBranchOf(path),
+        ...(defaultBranch !== undefined && { defaultBranch }),
       };
     });
 }
@@ -96,11 +132,18 @@ export function readWorkspace(root: string, options: WorkspaceOptions = {}): Pro
   const found = workspaceFile(dir);
   const name = found?.name ?? WORKSPACE_FILE;
   const file = found?.path ?? join(dir, WORKSPACE_FILE);
-  const skeleton = { id: basename(dir), name: basename(dir), root: dir, metrics: {} };
+  const skeleton = {
+    id: basename(dir),
+    name: basename(dir),
+    root: dir,
+    metrics: {},
+    ...(found && { workspaceFile: found.name }),
+  };
   try {
     const workspace = asRecord(JSON.parse(readFileSync(file, "utf8")), name);
     const lockPrefix = lockPrefixOf(workspace);
-    const repos = reposOf(dir, workspace);
+    const unread: CollectionError[] = [];
+    const repos = reposOf(dir, name, workspace, unread);
     const reading =
       lockPrefix === undefined
         ? { lanes: [], errors: [] }
@@ -115,7 +158,7 @@ export function readWorkspace(root: string, options: WorkspaceOptions = {}): Pro
       authority: { kind: "beads", idPrefix: workspace["idPrefix"] },
       repos,
       lanes: reading.lanes,
-      errors: reading.errors,
+      errors: [...unread, ...reading.errors],
     });
   } catch (cause) {
     return Project.parse({

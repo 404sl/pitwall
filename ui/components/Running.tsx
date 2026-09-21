@@ -5,6 +5,7 @@ import {
   type RunningRow,
   type RunningState,
   type RunningTotal,
+  type SortKey,
 } from "../model.js";
 import { elapsed, ofParts } from "../format.js";
 import { issueHref } from "../routes.js";
@@ -52,25 +53,45 @@ function chipLabel(chip: LaneChip): string {
   return chip.id ?? `${strings.lane.unassigned} ${chip.slot}`;
 }
 
-function ChipId({ chip, projectId, filter }: { chip: LaneChip; projectId: string; filter?: FilterState }) {
+function ChipId({
+  chip,
+  projectId,
+  filter,
+  sort,
+}: {
+  chip: LaneChip;
+  projectId: string;
+  filter?: FilterState;
+  sort?: SortKey;
+}) {
   if (chip.id === undefined) {
     return <span className="pw-chip__id">{chipLabel(chip)}</span>;
   }
   return (
-    <a className="pw-chip__id pw-link pw-link--chip" href={issueHref(projectId, chip.id, filter)}>
+    <a className="pw-chip__id pw-link pw-link--chip" href={issueHref(projectId, chip.id, filter, sort)}>
       {chip.id}
     </a>
   );
 }
 
-function Chips({ chips, projectId, filter }: { chips: LaneChip[]; projectId: string; filter?: FilterState }) {
+function Chips({
+  chips,
+  projectId,
+  filter,
+  sort,
+}: {
+  chips: LaneChip[];
+  projectId: string;
+  filter?: FilterState;
+  sort?: SortKey;
+}) {
   const shown = chips.slice(0, LANE_CHIP_LIMIT);
   const rest = chips.length - shown.length;
   return (
     <span className="pw-chips">
       {shown.map((chip) => (
         <span key={`${chip.slot}`} className="pw-chip">
-          <ChipId chip={chip} projectId={projectId} filter={filter} />
+          <ChipId chip={chip} projectId={projectId} filter={filter} sort={sort} />
           <span
             className="pw-chip__elapsed"
             title={chip.elapsedMs === undefined ? strings.lane.noActivity : undefined}
@@ -87,10 +108,11 @@ function Chips({ chips, projectId, filter }: { chips: LaneChip[]; projectId: str
 interface RunningProps {
   rows: RunningRow[];
   filter?: FilterState;
+  sort?: SortKey;
   filteredEmpty?: string;
 }
 
-export function Running({ rows, filter, filteredEmpty }: RunningProps) {
+export function Running({ rows, filter, sort, filteredEmpty }: RunningProps) {
   if (rows.length === 0) {
     return <p className="pw-empty">{filteredEmpty ?? strings.empty.running}</p>;
   }
@@ -114,7 +136,7 @@ export function Running({ rows, filter, filteredEmpty }: RunningProps) {
               <Count count={row.count} total={row.total} /> {STATE_WORD[row.state]}
             </td>
             <td className="pw-cell pw-cell--chips">
-              <Chips chips={row.chips} projectId={row.projectId} filter={filter} />
+              <Chips chips={row.chips} projectId={row.projectId} filter={filter} sort={sort} />
             </td>
           </tr>
         ))}
