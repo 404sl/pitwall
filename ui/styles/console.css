@@ -995,6 +995,12 @@ button.pw-link {
     display: block;
   }
 
+  .pw-table--problems,
+  .pw-table--problems tbody,
+  .pw-table--problems tbody > tr {
+    display: block;
+  }
+
   .pw-row {
     padding-block: 6px;
   }

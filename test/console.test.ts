@@ -1787,6 +1787,11 @@ test("the problems table bounds its source column so a long source wraps inside 
     "above 640px a long source wraps inside its bounded column instead of widening it",
   );
   assert.match(narrow, /\.pw-cell--source \{\n\s+white-space: normal;\n\s+overflow-wrap: anywhere;\n\s+\}/);
+  assert.match(
+    narrow,
+    /\.pw-table--problems,\n\s+\.pw-table--problems tbody,\n\s+\.pw-table--problems tbody > tr \{\n\s+display: block;\n\s+\}/,
+    "below 640px the problems rows become blocks again, so the row padding and the rails have a box to paint on",
+  );
 });
 
 test("a count under a filter says what it is counting, and an unfiltered one stays a plain number", () => {
