@@ -84,6 +84,23 @@ const cases: Case[] = [
     expected: "parked:roadmap",
   },
   {
+    name: "needs-call is a decision, but not the person's, so it parks on call",
+    issue: anIssue("pitwall-a", { labels: ["needs-call"] }),
+    expected: "parked:call",
+    because: { rule: "label", label: "needs-call" },
+  },
+  {
+    name: "needs-call beats needs-decision, so a call never lands in the inbox",
+    issue: anIssue("pitwall-a", { labels: ["needs-decision", "needs-call"] }),
+    expected: "parked:call",
+    because: { rule: "label", label: "needs-call" },
+  },
+  {
+    name: "needs-call beats a parked label",
+    issue: anIssue("pitwall-a", { labels: ["blocked-tooling", "needs-call"] }),
+    expected: "parked:call",
+  },
+  {
     name: "needs-decision beats watch",
     issue: anIssue("pitwall-a", { labels: ["watch", "needs-decision"] }),
     expected: "yours:decision",
@@ -377,7 +394,7 @@ test("a reason names the blocker it read rather than one it could not", () => {
   assert.deepEqual(classify(issue, context).reason, { rule: "blocked-open", ids: ["pitwall-b"] });
 });
 
-const NOT_YET_PRODUCED: Classification[] = ["parked:call", "parked:unrefined"];
+const NOT_YET_PRODUCED: Classification[] = ["parked:unrefined"];
 
 test("every classification in the contract is produced by a case, except the ones the classifier does not know yet", () => {
   const produced = [...new Set(cases.map((scenario) => scenario.expected))].sort();

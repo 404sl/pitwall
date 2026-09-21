@@ -42,6 +42,7 @@ const AGE = {
 
 const EMPTY = {
   needsYou: "Nothing needs you.",
+  calls: "No call is waiting.",
   running: "No lane is running.",
   ready: "Nothing is ready to pick up.",
   parked: "Nothing parked.",
@@ -177,9 +178,14 @@ function section(paint: Paint, label: string, count: string | undefined, body: s
   return ["", count === undefined ? head : `${head} ${paint(count, "2")}`, ...body];
 }
 
-function needsYouLines(groups: NeedsYouGroup[], paint: Paint, width: number | undefined): string[] {
+function needsYouLines(
+  groups: NeedsYouGroup[],
+  paint: Paint,
+  width: number | undefined,
+  empty = EMPTY.needsYou,
+): string[] {
   if (groups.length === 0) {
-    return [`  ${EMPTY.needsYou}`];
+    return [`  ${empty}`];
   }
   const rows = groups.flatMap((group) => group.rows);
   const idWidth = widest(rows.map((row) => row.id));
@@ -349,8 +355,12 @@ export function renderStatus(snapshot: Snapshot, options: StatusOptions = {}): s
     return `${lines.join("\n")}\n`;
   }
   const needsCount = board.needsYouCount === 0 ? undefined : String(board.needsYouCount);
+  const callCount = board.callCount === 0 ? undefined : String(board.callCount);
   const readyCount = board.readyCount === 0 ? undefined : String(board.readyCount);
   lines.push(...section(paint, "Needs you", needsCount, needsYouLines(board.needsYou, paint, width)));
+  lines.push(
+    ...section(paint, "Needs a call", callCount, needsYouLines(board.calls, paint, width, EMPTY.calls)),
+  );
   lines.push(
     ...section(paint, "Running", runningCount(board, ageMs, width), runningLines(board.running, paint, width)),
   );

@@ -320,7 +320,7 @@ async function preconditionNowHolds(
   return { ran, fired, evidence, failures };
 }
 
-const NEVER_CONCLUDED = ["yours:", "blocked", "parked:umbrella", "landing"];
+const NEVER_CONCLUDED = ["yours:", "blocked", "parked:call", "parked:umbrella", "landing"];
 
 function machineMayConclude(record: ParkedRecord, context: StalenessContext): boolean {
   if (record.structurallyBlocked) {

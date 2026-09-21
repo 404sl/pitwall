@@ -53,15 +53,24 @@ interface NeedsYouProps {
   filter?: FilterState;
   sort?: SortKey;
   filteredEmpty?: string;
+  caption?: string;
+  empty?: string;
 }
 
-export function NeedsYou({ groups, filter, sort, filteredEmpty }: NeedsYouProps) {
+export function NeedsYou({
+  groups,
+  filter,
+  sort,
+  filteredEmpty,
+  caption = strings.caption.needsYou,
+  empty = strings.empty.needsYou,
+}: NeedsYouProps) {
   if (groups.length === 0) {
-    return <p className="pw-empty">{filteredEmpty ?? strings.empty.needsYou}</p>;
+    return <p className="pw-empty">{filteredEmpty ?? empty}</p>;
   }
   return (
     <table className="pw-table pw-table--needs">
-      <caption className="pw-sr">{strings.caption.needsYou}</caption>
+      <caption className="pw-sr">{caption}</caption>
       <thead className="pw-sr">
         <tr>
           <th scope="col">{strings.column.issue}</th>

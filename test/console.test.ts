@@ -357,11 +357,15 @@ test("parked is counted per reason and never summed", () => {
   );
 });
 
-test("parked reasons come from the contract enum rather than a local list", () => {
+test("parked reasons come from the contract enum rather than a local list, less call, which has a band of its own", () => {
   const fromContract = Classification.options
     .filter((option) => option.startsWith("parked:"))
     .map((option) => option.slice("parked:".length));
-  assert.deepEqual(parkedReasons(), [...fromContract, "blocked", "unknown"]);
+  assert.ok(fromContract.includes("call"), "the contract carries parked:call");
+  assert.deepEqual(
+    parkedReasons(),
+    [...fromContract.filter((reason) => reason !== "call"), "blocked", "unknown"],
+  );
 });
 
 test("blocked is counted with the parked reasons and appears in no other band", () => {
@@ -1654,6 +1658,7 @@ test("a failed check is counted under the kind its message names, and an uncount
 });
 
 const { Band } = await import("../ui/components/Band.tsx");
+const { Calls } = await import("../ui/components/Calls.tsx");
 const { Filters, filterSentence } = await import("../ui/components/Filters.tsx");
 const { NeedsYou } = await import("../ui/components/NeedsYou.tsx");
 const { Ready } = await import("../ui/components/Ready.tsx");
@@ -1830,6 +1835,138 @@ test("every band count under a filter reads as a subset of the figure it came fr
   assert.equal(countLabel(board.readyCount, board.totals.ready, board.filtered), "2 of 3");
   assert.equal(countLabel(board.runningCount, board.totals.running, board.filtered), "2 of 2");
   assert.equal(countLabel(board.issueCount, board.totals.issues, board.filtered), "4 of 5");
+});
+
+const CALLS = snapshotOf([
+  project("pitwall", {
+    issues: [
+      issue("pitwall-c2", "parked:call", {
+        labels: ["needs-call"],
+        priority: 0,
+        issueType: "bug",
+        owner: "pitwall-devloop",
+        reporter: "pitwall-planning-session",
+        stopped: stoppedAt(2 * DAY),
+      }),
+      issue("pitwall-c1", "parked:call", {
+        labels: ["needs-call", "needs-decision"],
+        priority: 2,
+        issueType: "task",
+        stopped: stoppedAt(9 * DAY),
+      }),
+      issue("pitwall-d1", "yours:decision", { labels: ["needs-decision"], issueType: "bug", owner: "pitwall-devloop" }),
+      issue("pitwall-a1", "yours:access", { labels: ["needs-access"], issueType: "task" }),
+      issue("pitwall-t1", "parked:tooling", { labels: ["blocked-tooling"], issueType: "task" }),
+    ],
+  }),
+  project("maas", {
+    issues: [issue("maas-c1", "parked:call", { labels: ["needs-call"], issueType: "task" })],
+  }),
+]);
+
+function callsMarkup(board: Board, filter?: FilterState): string {
+  const emptied = board.filtered ? filterSentence(filter ?? {}, board.options) : undefined;
+  return renderToStaticMarkup(
+    createElement(Band, {
+      id: "calls",
+      label: strings.band.calls,
+      count: countLabel(board.callCount, board.totals.calls, board.filtered),
+      children: createElement(Calls, {
+        groups: board.calls,
+        filter,
+        filteredEmpty: board.totals.calls > 0 ? emptied : undefined,
+      }),
+    }),
+  );
+}
+
+test("a call is its own band, counted, and never the owner's queue", () => {
+  const board = buildBoard(CALLS, {});
+  assert.deepEqual(
+    board.calls.map((group) => [group.projectId, group.rows.map((row) => row.id)]),
+    [
+      ["pitwall", ["pitwall-c1", "pitwall-c2"]],
+      ["maas", ["maas-c1"]],
+    ],
+    "grouped by project, most first, oldest park first within",
+  );
+  assert.equal(board.callCount, 3);
+  assert.equal(board.totals.calls, 3);
+  assert.deepEqual(
+    board.needsYou.flatMap((group) => group.rows.map((row) => row.id)),
+    ["pitwall-a1", "pitwall-d1"],
+    "the inbox holds only what is the owner's",
+  );
+  assert.equal(board.needsYouCount, 2);
+  for (const row of board.calls.flatMap((group) => group.rows)) {
+    assert.equal(row.kind, "call");
+    assert.equal(row.misfiled, false, "a call states no question and is never misfiled for it");
+  }
+  assert.equal(board.calls.flatMap((group) => group.rows).find((row) => row.id === "pitwall-c1")?.park.suspect, true);
+});
+
+test("a call is listed in no parked table and counted under no parked reason", () => {
+  const board = buildBoard(CALLS, {});
+  assert.deepEqual(board.parked, [{ reason: "tooling", count: 1 }]);
+  assert.deepEqual(board.totals.parked, [{ reason: "tooling", count: 1 }]);
+  const listed = [...board.parkedRows.suspect, ...board.parkedRows.rest].flatMap((group) => group.rows.map((row) => row.id));
+  assert.deepEqual(listed, ["pitwall-t1"]);
+  assert.equal(parkedSummary(board.parked).includes("call"), false);
+});
+
+test("the calls band renders beside needs you, with the call kind, and never as an alert", () => {
+  const board = buildBoard(CALLS, {});
+  const markup = callsMarkup(board);
+  assert.ok(markup.includes('aria-labelledby="band-calls"'));
+  assert.ok(markup.includes(strings.band.calls));
+  assert.ok(markup.includes(strings.caption.calls));
+  assert.equal(markup.match(/pw-cell--kind">call</g)?.length, 3, "the band shows exactly the counted rows");
+  assert.ok(markup.includes(">3<"), "the head carries the count");
+  assert.equal(markup.includes("pw-band--alert"), false, "a call is not the owner's, so it never paints red");
+  assert.equal(markup.includes('pw-cell--kind">decision<'), false);
+  const needs = renderToStaticMarkup(
+    createElement(Band, {
+      id: "needs",
+      label: strings.band.needsYou,
+      count: countLabel(board.needsYouCount, board.totals.needsYou, board.filtered),
+      alert: board.totals.needsYou > 0,
+      children: createElement(NeedsYou, { groups: board.needsYou }),
+    }),
+  );
+  assert.ok(needs.includes("pw-band--alert"), "needs you still paints when something is the owner's");
+  assert.equal(needs.includes("pitwall-c1"), false);
+  assert.ok(needs.includes(">2<"));
+});
+
+test("the calls band follows the board's sort by the same rule as needs you", () => {
+  const plain = buildBoard(CALLS, {});
+  assert.deepEqual(rowsOf(plain.calls), [["pitwall-c1", "pitwall-c2"], ["maas-c1"]], "oldest park first by default");
+  assert.deepEqual(rowsOf(plain.needsYou), [["pitwall-a1", "pitwall-d1"]]);
+  for (const sort of ["owner", "reporter"] as const) {
+    const sorted = buildBoard(CALLS, {}, {}, sort);
+    assert.equal(sorted.sort, sort);
+    assert.deepEqual(rowsOf(sorted.calls), [["pitwall-c2", "pitwall-c1"], ["maas-c1"]], `${sort}: the named row first, the unrecorded last`);
+    assert.equal(sorted.callCount, plain.callCount, sort);
+    assert.deepEqual(sorted.totals, plain.totals, sort);
+  }
+  assert.deepEqual(rowsOf(buildBoard(CALLS, {}, {}, "owner").needsYou), [["pitwall-d1", "pitwall-a1"]]);
+  const markup = renderToStaticMarkup(createElement(Calls, { groups: buildBoard(CALLS, {}, {}, "owner").calls, sort: "owner" }));
+  assert.match(markup, /href="#\/issue\/pitwall\/pitwall-c2\?sort=owner"/, "opening a call keeps the sort");
+  assert.equal(markup.match(/pw-cell--who/g)?.length, 6, "the queue and reporter cells render for every call");
+});
+
+test("the calls band under a filter reads as a subset, and an empty one says which is which", () => {
+  const filtered = buildBoard(CALLS, { project: "maas" });
+  assert.equal(countLabel(filtered.callCount, filtered.totals.calls, filtered.filtered), "1 of 3");
+  const filter: FilterState = { project: "pitwall", type: "chore" };
+  const emptied = buildBoard(CALLS, filter);
+  assert.equal(emptied.callCount, 0);
+  const markup = callsMarkup(emptied, filter);
+  assert.ok(markup.includes("0 of 3"));
+  assert.ok(markup.includes("type chore"), "a filtered-empty band names the filter that emptied it");
+  assert.equal(markup.includes(strings.empty.calls), false);
+  const none = buildBoard(snapshotOf([project("pitwall")]));
+  assert.ok(callsMarkup(none).includes(strings.empty.calls));
 });
 
 test("an issue with no type, no priority or no epic stays reachable rather than dropped", () => {
