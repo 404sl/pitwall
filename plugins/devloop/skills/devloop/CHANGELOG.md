@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.130
+
+A rework brings a dropped or retired branch up to master by merging master into it and pushing the plain fast-forward, instead of rebasing and asking for a force-push a session refuses. Nothing on the branch is rewritten, no lease is needed, and no push is left for a person. The pre-push check runs with the branch named rather than as rebased. A reworked branch that master moves under again before the lander reaches it is refused as merge-shaped and stays where it is, labelled and undispatched, until pitwall-uoxk teaches the lander to merge master into it; until then a person moves such a branch.
+
 ## 0.1.129
 
 The lander no longer refuses a branch that carries a merge commit of its own and has fallen behind master. It merges master into the branch, pushes the fast-forward and waits for checks on it, exactly as it rebases a linear branch; only a merge that conflicts comes back, as the same conflict the rebase path reports. A reworked branch that is merge-shaped by design therefore lands on its own once master has moved under it, and there is no merge-shaped status for the landing step to return. A version commit an earlier round wrote that sits under the branch's merge commit is dropped by restoring its files from master before the merge, and the number is assigned again from master as it is now.
