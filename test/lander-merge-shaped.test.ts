@@ -6,7 +6,6 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 
 import { GIT_ENV, spawnGit } from "./support/git.js";
-import { runScript, type Call } from "./support/workflow.js";
 
 const SKILL = join(import.meta.dirname, "..", "plugins", "devloop", "skills", "devloop");
 
@@ -91,9 +90,9 @@ function workspace() {
   return { root, bare, repo, bin: stubs(root, bare) };
 }
 
-function onMaster(repo: string, body: string, subject: string): void {
+function onMaster(repo: string, body: string, subject: string, file = WORK): void {
   git(repo, "checkout", "--quiet", "master");
-  write(repo, WORK, body);
+  write(repo, file, body);
   git(repo, "add", "-A");
   git(repo, "commit", "-m", subject);
   git(repo, "push", "--quiet", "origin", "master");
@@ -142,32 +141,69 @@ function landOne(root: string, repo: string, bin: string, branch: string, pr: st
   return { code: ran.status, out: ran.stdout || "", err: ran.stderr || "" };
 }
 
-test("land-one.sh defers a merge-shaped branch instead of rebasing the resolution away", () => {
+test("land-one.sh merges master into a merge-shaped branch that fell behind and pushes the fast-forward", () => {
   const box = workspace();
   lane(box.repo, "devloop/zz-merged", WORK, "export const lanes = 2;\n");
   onMaster(box.repo, "export const lanes = 3;\n", "master moves under the branch");
   resolveMasterInto(box.repo, "devloop/zz-merged", "export const lanes = 2 + 3;\n");
-  onMaster(box.repo, "export const lanes = 3;\nexport const pits = 1;\n", "master moves again");
+  onMaster(box.repo, "export const pit = 1;\n", "master moves again", join("src", "pit.ts"));
 
   const head = git(box.repo, "rev-parse", "origin/devloop/zz-merged");
+  const master = git(box.repo, "rev-parse", "origin/master");
   const ran = landOne(box.root, box.repo, box.bin, "devloop/zz-merged", "301");
 
   assert.equal(
     ran.code,
-    8,
-    "a branch whose only copy of the resolution lives inside a merge commit was handed to the " +
-      `rebase, which replays the branch's own commits and drops it silently:\n${ran.out}\n${ran.err}`,
+    0,
+    "a branch that carries a merge commit of its own and fell behind was refused instead of having " +
+      "master merged in. Nothing dispatches that refusal - the label stays on, no tracker item is " +
+      `written, and the branch is re-logged and skipped every round until a person moves it:\n${ran.out}\n${ran.err}`,
   );
-  assert.match(ran.out, /^merge_shaped:/m, ran.out);
-  assert.ok(!/^(conflict|red):/m.test(ran.out), `the deferral was reported as the failure family land.js retires: ${ran.out}`);
+  assert.match(ran.out, /^pushed:/m, ran.out);
+  assert.doesNotMatch(ran.out, /^(merge_shaped|conflict|red):/m, ran.out);
   git(box.repo, "fetch", "--quiet", "origin");
-  assert.equal(git(box.repo, "rev-parse", "origin/devloop/zz-merged"), head, "the branch was touched before it was deferred");
+  const after = git(box.repo, "rev-parse", "origin/devloop/zz-merged");
+  assert.notEqual(after, head, "the branch was not pushed");
+  assert.equal(
+    tryGit(box.repo, "merge-base", "--is-ancestor", head, after).status,
+    0,
+    "the old head is not an ancestor of the new one, so the branch was rewritten rather than fast-forwarded",
+  );
+  assert.equal(
+    tryGit(box.repo, "merge-base", "--is-ancestor", master, after).status,
+    0,
+    "the pushed head does not contain master, so the branch is still behind",
+  );
   assert.equal(
     git(box.repo, "show", "origin/devloop/zz-merged:" + WORK),
     "export const lanes = 2 + 3;",
     "the resolution that exists only inside the merge commit is gone",
   );
-  assert.equal(existsSync(join("/tmp", `${PREFIX}-worktrees`, "land-301")), false, "a worktree was left behind by a run that touched nothing");
+  assert.equal(git(box.repo, "show", "origin/devloop/zz-merged:" + join("src", "pit.ts")), "export const pit = 1;");
+  assert.equal(existsSync(join("/tmp", `${PREFIX}-worktrees`, "land-301")), false, "the worktree was left behind");
+});
+
+test("land-one.sh reports a merge-shaped branch whose merge with master conflicts as a conflict, untouched", () => {
+  const box = workspace();
+  lane(box.repo, "devloop/zz-clash", WORK, "export const lanes = 2;\n");
+  onMaster(box.repo, "export const lanes = 3;\n", "master moves under the branch");
+  resolveMasterInto(box.repo, "devloop/zz-clash", "export const lanes = 2 + 3;\n");
+  onMaster(box.repo, "export const lanes = 3;\nexport const pits = 1;\n", "master moves again on the same lines");
+
+  const head = git(box.repo, "rev-parse", "origin/devloop/zz-clash");
+  const ran = landOne(box.root, box.repo, box.bin, "devloop/zz-clash", "305");
+
+  assert.equal(ran.code, 3, `${ran.out}\n${ran.err}`);
+  assert.match(ran.out, new RegExp(`^conflict: devloop/zz-clash conflicts with master in: ${WORK}`, "m"), ran.out);
+  assert.doesNotMatch(ran.out, /^(merge_shaped|pushed|usage):/m, ran.out);
+  git(box.repo, "fetch", "--quiet", "origin");
+  assert.equal(git(box.repo, "rev-parse", "origin/devloop/zz-clash"), head, "the branch was pushed with a conflict half-merged");
+  assert.equal(
+    git(box.repo, "show", "origin/devloop/zz-clash:" + WORK),
+    "export const lanes = 2 + 3;",
+    "the resolution that exists only inside the merge commit is gone",
+  );
+  assert.equal(existsSync(join("/tmp", `${PREFIX}-worktrees`, "land-305")), false, "the worktree was left behind after the merge was aborted");
 });
 
 test("land-one.sh rebases a linear branch that is behind master exactly as before", () => {
@@ -223,98 +259,5 @@ test("land-one.sh refuses to rebase when it cannot count the branch's merge comm
     existsSync(join("/tmp", `${PREFIX}-worktrees`, "land-304")),
     false,
     "the run reached the worktree it only creates on its way to the rebase",
-  );
-});
-
-const ARGS = {
-  skillDir: "/skill",
-  root: "/root",
-  lockToken: "lander-1788964650-29574",
-  repos: { site: { path: "cli", slug: "404sl/pitwall" } },
-};
-
-const PR = {
-  slug: "404sl/pitwall",
-  number: 80,
-  title: "Verify the lane rescue diff before removing the worktree",
-  branch: "devloop/pitwall-maz",
-  issue: "pitwall-maz",
-};
-
-const DECLARED = {
-  fetched: true,
-  status: "read",
-  prStatus: "read",
-  masterVersion: "0.1.21",
-  branchVersion: "0.1.22",
-  touchesPlugin: true,
-  labelled: true,
-  open: true,
-  notes: "",
-};
-
-type Result = {
-  landed: { number?: number }[];
-  stopped: { number?: number; why?: string; detail?: string }[];
-};
-
-function lander(land: unknown) {
-  return runScript("land.js", ARGS, (call: Call, n: number) => {
-    if (n === 1) return { status: "taken", token: ARGS.lockToken, holder: ARGS.lockToken };
-    if (call.label.startsWith("survey")) return { prs: [PR] };
-    if (call.label.startsWith("version:")) return DECLARED;
-    if (call.label.startsWith("land:")) return land;
-    return { status: "released" };
-  }) as { calls: Call[]; logs: string[]; done: Promise<Result> };
-}
-
-function labels(calls: Call[]) {
-  return calls.map((c) => c.label).join(", ");
-}
-
-test("land.js hands a merge-shaped pull request back for rework rather than retiring it", async () => {
-  const { calls, logs, done } = lander({ status: "merge_shaped", masterGreen: true, notes: "land-one.sh exit 8" });
-  const out = await done;
-
-  assert.equal(
-    calls.filter((c) => c.label.startsWith("retire:")).length,
-    0,
-    "a branch the lander declined to rebase was retired - the label comes off, the finding is " +
-      "appended to the tracker issue and the issue is reopened, which discards work that is " +
-      `green and only needs rebuilding onto master: ${labels(calls)}`,
-  );
-  assert.equal(out.landed.length, 0);
-  assert.deepEqual(
-    out.stopped.map((s) => s.why),
-    ["merge_shaped"],
-    `the run did not record why the pull request was handed back: ${labels(calls)}`,
-  );
-  assert.equal(
-    calls.filter((c) => c.label.startsWith("land:")).length,
-    1,
-    "the pull request was attempted again in a later round. A merge-shaped branch answers the " +
-      `same way every time, so retrying it spends a whole attempt on a settled answer: ${labels(calls)}`,
-  );
-  assert.ok(
-    logs.some((l) => /NEEDS REWORK/.test(l) && /label stays on/.test(l)),
-    `the run log does not say the label was kept, so a reader cannot tell this from a retirement:\n${logs.join("\n")}`,
-  );
-});
-
-test("the land agent is allowed to report a merge-shaped branch at all", async () => {
-  const { calls, done } = lander({ status: "merge_shaped", masterGreen: true, notes: "land-one.sh exit 8" });
-  await done;
-
-  const land = calls.find((c) => c.label.startsWith("land:"));
-  assert.ok(land, `no merge attempt was made: ${labels(calls)}`);
-  assert.ok(
-    (land.schema?.properties?.status?.enum || []).includes("merge_shaped"),
-    "the schema the merge agent answers against has no value for a branch it must not rebase, so " +
-      "the honest answer is unavailable and it has to pick 'conflict' - which is retired.",
-  );
-  assert.match(
-    land.prompt,
-    /8\s+merge_shaped/,
-    "the merge agent is never told what exit 8 means, so it has to guess which status to return",
   );
 });
