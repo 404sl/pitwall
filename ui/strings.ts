@@ -46,6 +46,7 @@ export const strings = {
   },
   band: {
     needsYou: "Needs you",
+    calls: "Needs a call",
     running: "Running",
     ready: "Ready",
     parked: "Parked",
@@ -55,6 +56,7 @@ export const strings = {
   empty: {
     loading: "Reading the snapshot…",
     needsYou: "Nothing needs you.",
+    calls: "No call is waiting.",
     running: "No lane is running.",
     ready: "Nothing is ready to pick up.",
     parked: "Nothing parked.",
@@ -85,6 +87,7 @@ export const strings = {
   },
   caption: {
     needsYou: "Issues waiting on a decision or an access grant, by project.",
+    calls: "Issues waiting on an engineering call - a decision, but not yours - by project.",
     running: "Lanes in flight, by project and state.",
     ready: "Issues ready to pick up, by project.",
     problems: "Failures a person can act on.",
@@ -94,6 +97,7 @@ export const strings = {
   kind: {
     decision: "decision",
     access: "access",
+    call: "call",
     misfiled: "misfiled",
   },
   parkReason: {

@@ -144,6 +144,32 @@ test("needs you carries the id, priority, title and staleness of each of yours, 
   assert.doesNotMatch(needs, /sr-park|sr-block|sr-ready/);
 });
 
+test("a call has a section of its own between needs you and running, and shows under parked nowhere", () => {
+  const out = render(
+    snapshotOf([
+      project("pitwall", {
+        issues: [
+          issue("pitwall-c1", "parked:call", { labels: ["needs-call"], priority: 1 }),
+          issue("pitwall-d1", "yours:decision", { labels: ["needs-decision"], priority: 0 }),
+          issue("pitwall-t1", "parked:tooling", { labels: ["blocked-tooling"] }),
+        ],
+      }),
+    ]),
+  );
+  const order = ["NEEDS YOU", "NEEDS A CALL", "RUNNING"].map((band) => out.indexOf(band));
+  assert.deepEqual(order, [...order].sort((a, b) => a - b));
+  const needs = out.slice(out.indexOf("NEEDS YOU"), out.indexOf("NEEDS A CALL"));
+  assert.match(needs, /^NEEDS YOU 1$/m);
+  assert.doesNotMatch(needs, /pitwall-c1/);
+  const calls = out.slice(out.indexOf("NEEDS A CALL"), out.indexOf("RUNNING"));
+  assert.match(calls, /^NEEDS A CALL 1$/m);
+  assert.match(calls, /pitwall-c1 +P1 +call +unchecked +title for pitwall-c1/);
+  const parked = out.slice(out.indexOf("PARKED"), out.indexOf("PROBLEMS"));
+  assert.match(parked, /^ {2}tooling +1$/m);
+  assert.doesNotMatch(parked, /call/);
+  assert.match(render(snapshotOf([project("pitwall", { issues: [issue("pitwall-r", "ready")] })])), /No call is waiting\./);
+});
+
 test("parked is counted per reason and never summed into a total", () => {
   const out = render(BUSY);
   const parked = out.slice(out.indexOf("PARKED"), out.indexOf("PROBLEMS"));
