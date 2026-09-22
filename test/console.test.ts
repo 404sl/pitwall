@@ -28,6 +28,7 @@ import type {
   FilterState,
   IssuePayload,
   IssuePreview,
+  ProblemRow,
   ProjectAge,
   QuestionStore,
 } from "../ui/model.ts";
@@ -1768,6 +1769,37 @@ test("problems render whole under every filter, because a hidden collection fail
   assert.ok(markup.includes(strings.filters.notFiltered), "a filtered board must say problems are not filtered");
 });
 
+test("the problems table names its table roles, because a grid layout can drop the implicit ones", () => {
+  const board = buildBoard(
+    snapshotOf([
+      project("pitwall", {
+        issues: [],
+        errors: [{ source: "bd list --json", message: "exited 1", at: "2026-09-20T09:00:00Z" }],
+      }),
+    ]),
+  );
+  const consoleRow: ProblemRow = {
+    scope: "console",
+    name: strings.problems.console,
+    source: "/api/snapshot",
+    message: "HTTP 502",
+    at: "2026-09-20T09:01:00Z",
+  };
+  const markup = renderToStaticMarkup(createElement(Problems, { rows: [...board.problems, consoleRow] }));
+  assert.match(markup, /<table class="pw-table pw-table--problems" role="table">/);
+  assert.match(markup, /<thead class="pw-sr" role="rowgroup"><tr role="row"><th scope="col" role="columnheader">/);
+  assert.match(markup, /<tbody role="rowgroup">/);
+  assert.match(markup, /<tr class="pw-row" role="row"><th scope="row" class="pw-cell pw-cell--project" role="rowheader">pitwall<\/th>/);
+  assert.match(
+    markup,
+    /<tr class="pw-row" role="row" aria-live="polite" aria-atomic="true"><th scope="row" class="pw-cell pw-cell--project" role="rowheader">/,
+    "the console row keeps its live announcement as properties, since row is now its role",
+  );
+  assert.ok(!markup.includes('role="status"'), "a status role on a tr replaces the row role the grid layout needs");
+  assert.equal(markup.match(/role="cell"/g)?.length, 6);
+  assert.equal(markup.match(/role="columnheader"/g)?.length, 4);
+});
+
 test("the problems table bounds its source column so a long source wraps inside it and the message keeps its width", () => {
   const source = "/Users/somebody/Documents/work/pitwall/.beads";
   assert.equal(source.length, 45);
@@ -1780,7 +1812,7 @@ test("the problems table bounds its source column so a long source wraps inside 
     ]),
   );
   const problems = renderToStaticMarkup(createElement(Problems, { rows: board.problems }));
-  assert.ok(problems.includes(`<td class="pw-cell pw-cell--source">${source}</td>`));
+  assert.ok(problems.includes(`<td class="pw-cell pw-cell--source" role="cell">${source}</td>`));
   assert.ok(!problems.includes("pw-cell--id"), "the id cell means one line everywhere it appears");
   const ready = renderToStaticMarkup(createElement(Ready, { rows: board.ready, total: board.ready.length }));
   assert.ok(ready.includes('<td class="pw-cell pw-cell--id">pitwall-4b5.2</td>'));
