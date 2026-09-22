@@ -47,7 +47,7 @@ bd list --status open --json > "$tmp" 2>/dev/null || { echo "bd list failed" >&2
 python3 - "$root" "$tmp" <<'PY'
 import json, subprocess, sys
 
-PARK = {"needs-access", "needs-decision", "blocked-tooling"}
+PARK = {"needs-access", "needs-decision", "needs-call", "blocked-tooling"}
 root, path = sys.argv[1], sys.argv[2]
 
 with open(path) as handle:

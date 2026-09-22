@@ -890,9 +890,8 @@ not the speed. Judge a long-running task by which round it is on, not by the clo
 
 ## Where it stops and asks
 
-Any of these puts `needs-decision` on the issue (or `needs-access`, when what is missing is
-a deploy, a dashboard or a device rather than an answer), writes the question and the options
-into it, and leaves the branch and PR alone:
+Any of these parks the issue with a label, writes the question and the options into it, and
+leaves the branch and PR alone:
 
 - the issue offers a choice that changes what ships, and splitting would not resolve it
 - billing, payments, Stripe, pricing - money is never moved unattended
@@ -907,6 +906,20 @@ into it, and leaves the branch and PR alone:
 - the real fix is much larger than the issue implies
 - tests will not go green without weakening an assertion
 - three review rounds did not converge
+
+Which label is decided by one test, and the brief carries it verbatim:
+**would the owner's answer differ from any competent engineer's?**
+If yes, `needs-decision` - it is about what the product should do, who it is for, what it is
+worth, what it is called, and it sits in the owner's queue. If no, `needs-call` - it is which
+of three shapes, whether an old review still binds, whether a refactor is in scope; the console
+shows it as `parked:call`, outside the inbox, and any engineer may settle it. A run that can
+make the call makes it and carries on;
+`needs-call` is for a call it cannot make from here, not for every call it meets. The park is
+recorded, reopened and reported the same way under either label. `needs-access` is unchanged:
+what is missing is a deploy, a dashboard or a device rather than an answer, and only a person
+can supply it. Before this split, three settled engineering questions went back onto the
+owner's board in one day, and pitwall-3jq - which of three lock-release structures to take -
+reached the owner, who had no stake in the answer.
 
 A question written onto the issue is a success. A guess merged unattended is not.
 

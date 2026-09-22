@@ -183,7 +183,7 @@ try:
     prs = json.load(sys.stdin)
 except Exception:
     sys.exit(0)
-PARK = {"needs-decision", "needs-access", "roadmap", "blocked-tooling", "watch", "umbrella"}
+PARK = {"needs-decision", "needs-call", "needs-access", "roadmap", "blocked-tooling", "watch", "umbrella"}
 BRANCH_PREFIXES = ("devloop/", "autofix/")
 
 def parked(issue_id):
@@ -259,7 +259,7 @@ for _line in (sys.argv[6] if len(sys.argv) > 6 else "").splitlines():
     _bits = _line.split("\t", 1)
     if len(_bits) == 2 and _bits[1]:
         REPO_PATHS.append((_bits[0], _bits[1]))
-PARK = {"needs-decision", "needs-access", "blocked-tooling", "watch", "umbrella", "roadmap"}
+PARK = {"needs-decision", "needs-call", "needs-access", "blocked-tooling", "watch", "umbrella", "roadmap"}
 
 def load(p):
     try: d = json.load(open(p))
@@ -401,8 +401,9 @@ for i in op:
 
     # B - parked, but an answer was recorded after the question
     #
-    # ONLY needs-decision. B asks "was the question answered and the label left behind?", and
-    # that only makes sense for a label that represents a QUESTION. The other parking labels
+    # ONLY needs-decision and needs-call. B asks "was the question answered and the label left
+    # behind?", and that only makes sense for a label that represents a QUESTION - the owner's
+    # under needs-decision, any competent engineer's under needs-call. The other parking labels
     # are not questions and no answer resolves them: needs-access wants somebody to run a
     # command, open a dashboard or hold a device; blocked-tooling wants a gap in this pipeline
     # closed; watch wants time to pass. An issue can be fully decided and still be every bit as
@@ -412,7 +413,7 @@ for i in op:
     # answered and recorded, the code was written and green, and the only thing left was the
     # owner running --acknowledge on the manifest guard. Removing its label would have handed a
     # lane an issue no lane can finish.
-    if "needs-decision" in parked:
+    if parked & {"needs-decision", "needs-call"}:
         raw = (i.get("notes") or "")
         hb = max((t.rfind(p) for p in HANDBACK), default=-1)
         an = -1
@@ -1017,7 +1018,7 @@ done
 if [ "$_free" -gt 0 ]; then
   echo
   echo "LANES: $_free of $_lanes free -- DISPATCH BEFORE ENDING THE TICK."
-  echo "  bd ready, drop park labels (umbrella needs-access needs-decision watch"
+  echo "  bd ready, drop park labels (umbrella needs-access needs-decision needs-call watch"
   echo "  blocked-tooling roadmap) and ids that already carry a labelled PR, then"
   echo "  slot.sh <id> and launch task.js at the highest-priority remainder."
   echo "  Widening the search is the job; 'nothing that does not collide' is not"

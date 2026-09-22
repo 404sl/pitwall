@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -12,7 +12,14 @@ const SKILL = join(import.meta.dirname, "..", "plugins", "devloop", "skills", "d
 interface PullRequests {
   openLabelledNumbers?: readonly number[];
   openLabelledRefs?: readonly string[];
+  openUnlabelledRefs?: readonly string[];
   mergedRefs?: readonly string[];
+}
+
+interface OpenIssue {
+  id: string;
+  labels?: readonly string[];
+  notes?: string;
 }
 
 interface Shape {
@@ -20,6 +27,7 @@ interface Shape {
   inProgress: readonly string[];
   liveTranscript: string;
   notes?: Readonly<Record<string, string>>;
+  open?: readonly OpenIssue[];
   pullRequests?: Readonly<Record<string, PullRequests>>;
   repos?: Readonly<Record<string, { path: string; slug: string }>>;
 }
@@ -62,26 +70,43 @@ function workspace(shape: Shape): Space {
       "",
     ].join("\n"),
   );
-  const issues = JSON.stringify(
-    shape.inProgress.map((id) => ({
-      id,
-      title: `work on ${id}`,
-      description: "",
-      notes: shape.notes?.[id] ?? "",
-      priority: 2,
-      status: "in_progress",
-      issue_type: "task",
-      labels: [],
-    })),
-  );
+  const running = shape.inProgress.map((id) => ({
+    id,
+    title: `work on ${id}`,
+    description: "",
+    notes: shape.notes?.[id] ?? "",
+    priority: 2,
+    status: "in_progress",
+    issue_type: "task",
+    labels: [],
+  }));
+  const open = (shape.open ?? []).map((issue) => ({
+    id: issue.id,
+    title: `work on ${issue.id}`,
+    description: "",
+    notes: issue.notes ?? "",
+    priority: 2,
+    status: "open",
+    issue_type: "task",
+    labels: [...(issue.labels ?? [])],
+  }));
   writeFileSync(
     join(bin, "bd"),
     [
       "#!/bin/bash",
       'case " $* " in',
-      '  *" open "*|*" closed "*) echo "[]" ;;',
+      '  *" closed "*) echo "[]" ;;',
+      `  *" open "*) cat <<'JSON'`,
+      JSON.stringify(open),
+      "JSON",
+      "  ;;",
+      `  *" in_progress "*) cat <<'JSON'`,
+      JSON.stringify(running),
+      "JSON",
+      "  ;;",
+      ...open.flatMap((issue) => [`  *" show ${issue.id} "*) cat <<'JSON'`, JSON.stringify(issue), "JSON", "  ;;"]),
       `  *) cat <<'JSON'`,
-      issues,
+      JSON.stringify([...running, ...open]),
       "JSON",
       "  ;;",
       "esac",
@@ -96,17 +121,27 @@ function workspace(shape: Shape): Space {
       arms.push(`  ${JSON.stringify(`${dir}:number`)}) ${emit(prs.openLabelledNumbers)} ;;`);
       arms.push(`  ${JSON.stringify(`${dir}:merged`)}) ${emit(prs.mergedRefs)} ;;`);
       arms.push(`  ${JSON.stringify(`${dir}:open`)}) ${emit(prs.openLabelledRefs)} ;;`);
+      const slug = Object.values(shape.repos ?? {}).find((r) => r.path === dir)?.slug;
+      if (slug !== undefined && prs.openUnlabelledRefs !== undefined) {
+        const listed = prs.openUnlabelledRefs.map((headRefName, n) => ({ number: 900 + n, headRefName, labels: [] }));
+        arms.push(`  ${JSON.stringify(`${slug}:orphans`)}) cat <<'JSON'`, JSON.stringify(listed), "JSON", "  ;;");
+      }
     }
     writeFileSync(
       join(bin, "gh"),
       [
         "#!/bin/bash",
+        'slug=""; prev=""',
+        'for a in "$@"; do [ "$prev" = "--repo" ] && slug="$a"; prev="$a"; done',
         'case " $* " in',
+        '  *" --json number,headRefName,labels "*) kind=orphans ;;',
         '  *" merged "*) kind=merged ;;',
         '  *" number "*) kind=number ;;',
         "  *) kind=open ;;",
         "esac",
-        'case "${PWD##*/}:$kind" in',
+        'key="${PWD##*/}:$kind"',
+        '[ "$kind" = orphans ] && key="$slug:$kind"',
+        'case "$key" in',
         ...arms,
         "  *) true ;;",
         "esac",
@@ -322,4 +357,73 @@ test("no id prefix literal remains in _live_ids", () => {
   const end = src.indexOf("\n\n#", start);
   assert.ok(start > 0 && end > start);
   assert.doesNotMatch(src.slice(start, end), /sr-/);
+});
+
+const CALL_HANDBACK = "handed back for a person: which of three lock-release shapes to take";
+
+test("an open issue parked with needs-call is a park, not an unlabelled hand-back", () => {
+  const space = workspace({
+    idPrefix: "pitwall",
+    inProgress: [],
+    liveTranscript: TRANSCRIPT,
+    open: [
+      { id: "pitwall-call", labels: ["needs-call"], notes: CALL_HANDBACK },
+      { id: "pitwall-bare", notes: CALL_HANDBACK },
+    ],
+  });
+  const out = scan(space);
+  assert.equal(out.status, 1, out.stderr);
+  assert.match(out.stdout, /^\[A unlabelled hand-back\] pitwall-bare P2/m);
+  assert.doesNotMatch(
+    out.stdout,
+    /pitwall-call/,
+    "a needs-call park was raised as unlabelled, which sends it to triage to be relabelled needs-decision",
+  );
+});
+
+test("a needs-call park whose call was recorded afterwards is answered but parked", () => {
+  const space = workspace({
+    idPrefix: "pitwall",
+    inProgress: [],
+    liveTranscript: TRANSCRIPT,
+    open: [{ id: "pitwall-call", labels: ["needs-call"], notes: `${CALL_HANDBACK}\nDECIDED: take the second shape` }],
+  });
+  const out = scan(space);
+  assert.equal(out.status, 1, out.stderr);
+  assert.match(out.stdout, /^\[B answered but parked\] pitwall-call P2/m);
+});
+
+test("an open pull request whose issue is parked with needs-call is held on purpose, not stranded", () => {
+  const space = workspace({
+    idPrefix: "pitwall",
+    inProgress: [],
+    liveTranscript: TRANSCRIPT,
+    open: [{ id: "pitwall-call", labels: ["needs-call"] }, { id: "pitwall-bare" }],
+    pullRequests: { cli: { openUnlabelledRefs: ["devloop/pitwall-call", "devloop/pitwall-bare"] } },
+    repos: REPOS,
+  });
+  const out = scan(space);
+  assert.match(out.stdout, /^STUCK: an open PR the lander will never see/m);
+  assert.match(out.stdout, /pitwall #901 \(devloop\/pitwall-bare\) - open, unlabelled, and no lane holds it/);
+  assert.doesNotMatch(
+    out.stdout,
+    /devloop\/pitwall-call/,
+    "a needs-call park with its pull request still open would be reported as stranded on every tick",
+  );
+});
+
+test("every park set in the skill that names needs-decision names needs-call beside it", () => {
+  const missing: string[] = [];
+  for (const file of readdirSync(SKILL).filter((f) => f.endsWith(".sh"))) {
+    const src = readFileSync(join(SKILL, file), "utf8");
+    for (const line of src.split("\n")) {
+      if (!/^\s*PARK(ED)?\s*=\s*\{/.test(line)) continue;
+      if (line.includes("needs-decision") && !line.includes("needs-call")) missing.push(`${file}: ${line.trim()}`);
+    }
+  }
+  assert.deepEqual(
+    missing,
+    [],
+    "a set that parks on needs-decision but not needs-call treats a call nobody has made as ready work",
+  );
 });
