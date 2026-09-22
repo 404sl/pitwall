@@ -174,7 +174,7 @@ test("the branch survey is read-only, and asks every configured repository", asy
   assert.ok(survey, `no branch survey ran: ${calls.map((c) => c.label).join(", ")}`);
   assert.match(survey.prompt, /site {2}404sl\/pitwall/);
   assert.match(survey.prompt, /docs {2}404sl\/pitwall-site/);
-  assert.match(survey.prompt, /--head <branch>/);
+  assert.match(survey.prompt, /\.head\.ref == "<branch>"/);
   for (const forbidden of [/gh pr merge/, /gh pr close/, /--add-label/, /--remove-label/]) {
     assert.doesNotMatch(
       survey.prompt,

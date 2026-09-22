@@ -321,7 +321,7 @@ test("the survey step is given every configured repository by key and owner/name
   assert.ok(survey, "no survey step ran");
   assert.match(survey.prompt, /site {2}404sl\/pitwall/);
   assert.match(survey.prompt, /docs {2}404sl\/pitwall-site/);
-  assert.match(survey.prompt, /--label lane-verified/);
+  assert.match(survey.prompt, /\.name == "lane-verified"/);
   for (const forbidden of [/gh pr merge/, /gh pr close/, /--add-label/, /--remove-label/]) {
     assert.doesNotMatch(
       survey.prompt,

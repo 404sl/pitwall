@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.134
+
+The release train reads pull requests over REST: the survey of the other repositories and the sibling search list open pull requests with `gh api` and filter in `--jq`; the close check, the branch and the body come from `repos/{slug}/pulls/{n}`; the train's checks are read as the head sha's check runs, never the commit status endpoint. A step judges green as every check run `completed` with conclusion `success` and total_count above zero, and judges a retired pull request as state `closed`, since REST spells both in lower case. The merge step's evidence line is unchanged.
+
 ## 0.1.133
 
 A run that stops on a question now chooses its label with one test, carried in the brief verbatim: would the owner's answer differ from any competent engineer's? If yes it writes `needs-decision`; if no, and it still cannot settle the call from here, it writes `needs-call`, which the console shows as parked:call outside the inbox. A call a run can make it still makes and carries on. `needs-access` is unchanged. Every reader of park labels - `queue.sh`, `dispatchable.sh`, `precheck.sh`, `slot.sh`, the triage step and its handover, `triage-scan.sh` and its TRIAGE.md guidance, `answered.sh`, `blockers.sh` and `dupes.sh` - now treats `needs-call` as parked, so an issue waiting on a call is neither dispatched, counted as the owner's, reported as stranded, nor re-parked by triage as `needs-decision`; `queue.sh` lists it on its own line as not on you.
