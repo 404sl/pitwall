@@ -342,7 +342,7 @@ const DEPLOYED = {
       description: "one entry per read-back line in the list you were given, whether or not it answered. A 'deployed' is compared against these, and the status on its own confirms nothing.",
       items: HOST
     },
-    notes: { type: 'string' }
+    notes: { type: 'string', description: "what did not go to plan, quoted from the command that said it. A 'deploy.lock' or 'another deployment is ongoing' refusal goes here verbatim, because clearing it is a person's step and this is how they learn of it." }
   }
 }
 
@@ -1180,6 +1180,29 @@ another is live in neither as far as a tester is concerned - which is the whole 
 one step and not two.
 
 ${deployCommands(landed)}
+
+RUN EACH OF THOSE IN THE FOREGROUND, one Bash call each, with timeout: 600000 on the call -
+the ceiling the tool allows - and not in the background. Never pass
+run_in_background, and NEVER END YOUR TURN while a deploy command is running: a backgrounded
+command is killed the moment the step gives its final answer, and on 2026-09-22 that killed a
+production deploy after it had written deploy.lock on the host and before it had fetched
+anything, so every later deploy refused with 'another deployment is ongoing' until a person
+cleared the lock by hand. Run the environments one after the other, in the order listed, in
+this same turn - a staging deploy measured about three minutes end to end on 2026-09-22 and
+production is the same shape, so a foreground call finishes well inside the ceiling.
+
+IF A FOREGROUND CALL IS CUT BY THE TOOL'S TEN-MINUTE CEILING, run the SAME deploy-one.sh
+command once more, unchanged. That is safe: the verdict comes from the revision it reads back
+off the host after the deploy command, not from the deploy tool's exit code, and the deploy
+tool's own deploy.lock refuses a genuinely concurrent deploy rather than running two at once.
+Do not shorten --timeout in the command, and do not run the deploy tool directly. If the
+second call is cut too, report that environment with an empty revision and return status
+'partial'.
+
+A 'deploy.lock' or 'another deployment is ongoing' refusal IS NOT YOURS TO CLEAR. Do not run
+any unlock or force-unlock command, on the host or through the deploy tool. Quote the refusal
+verbatim in 'notes', report the environment with what the host actually serves, and return
+'partial' - clearing a lock is a person's step, and the supervisor hands it to one.
 
 DO NOT TOUCH THE MAIN CHECKOUT'S WORKING TREE. A person works in it, on their own branch, with
 their own uncommitted edits, and it being on a feature branch is normal. Deploy tools generally
