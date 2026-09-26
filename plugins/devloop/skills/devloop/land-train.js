@@ -1163,11 +1163,6 @@ async function runTrain(only, suffix, depth) {
     return { stopped: 'merge_refused', notes: merged ? merged.notes : 'merge agent returned nothing' }
   }
 
-  // AN UNREADABLE ROLLUP IS NOT A RED ONE, AND ONLY 'red' REACHES THE PATH BELOW. Everything the
-  // verify step can answer other than green and red is ignorance about the checks: 'unknown', and
-  // a verdict of null when the step returned nothing at all. Retiring, bisecting or rejecting on
-  // ignorance throws away work that is probably fine - a bisect over checks nobody could read
-  // cuts a release branch per half and learns nothing from either.
   if (!verdict || verdict.status !== 'red') {
     const said = trimmed(verdict && verdict.notes) || 'verify agent returned nothing'
     log(`#${built.trainPr} checks UNREADABLE - nothing is wrong with the pull requests it carried (${included.join(', ')}) and nothing was read that says otherwise. They keep their labels and the next train takes them. Not retired, not bisected, nothing handed back: ${built.trainBranch} and #${built.trainPr} are left open with their checks unread, so what they report can still be read by hand.\n    ${said}`)
