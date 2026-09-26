@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.135
+
+The deploy step is told to run each `deploy-one.sh` in the foreground with `timeout: 600000` on the call, not in the background, and never to end its turn while a deploy is running; environments run one after the other in the same turn. A call cut by the ten-minute ceiling is re-run once, unchanged, and a second cut is reported as an empty revision with status `partial`. A `deploy.lock` refusal is quoted verbatim in `notes` and never cleared by the step.
+
+Refs pitwall-4l8m
+
 ## 0.1.134
 
 The release train reads pull requests over REST: the survey of the other repositories and the sibling search list open pull requests with `gh api` and filter in `--jq`; the close check, the branch and the body come from `repos/{slug}/pulls/{n}`; the train's checks are read as the head sha's check runs, never the commit status endpoint. A step judges green as every check run `completed` with conclusion `success` and total_count above zero, and judges a retired pull request as state `closed`, since REST spells both in lower case. The merge step's evidence line is unchanged.
