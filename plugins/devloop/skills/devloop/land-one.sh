@@ -15,7 +15,7 @@
 #
 # Usage:
 #   land-one.sh --repo-path <abs> --slug <owner/name> --pr <n> --branch <name> [--prefix devloop]
-#               [--base master] [--register-wait 180] [--register-interval 15]
+#               [--base master] [--register-wait 180] [--register-interval 15] [--checks-wait 480]
 #
 # Exit codes, which are the interface - stdout is for a human, the code is for the caller:
 #   0  ready      rebased or merged if needed, pushed, CI green on the pushed head. Merge it.
@@ -46,7 +46,7 @@ PREFIX="$(bash "$HERE/config.sh" lockPrefix 2>/dev/null || echo devloop)"
 GUARD="$HERE/git-guard.sh"
 LABEL=lane-verified
 REPO_PATH=""; SLUG=""; PR=""; BRANCH=""; BASE=master
-REGISTER_WAIT=180; REGISTER_INTERVAL=15
+REGISTER_WAIT=180; REGISTER_INTERVAL=15; CHECKS_WAIT=480
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -77,6 +77,9 @@ while [ $# -gt 0 ]; do
     --register-interval)
       [ $# -ge 2 ] || { echo "--register-interval needs a value" >&2; exit 6; }
       REGISTER_INTERVAL="${2:-}"; shift 2 ;;
+    --checks-wait)
+      [ $# -ge 2 ] || { echo "--checks-wait needs a value" >&2; exit 6; }
+      CHECKS_WAIT="${2:-}"; shift 2 ;;
     *) echo "unknown argument: $1" >&2; exit 6 ;;
   esac
 done
@@ -89,11 +92,32 @@ done
 case "$PR" in ''|*[!0-9]*) echo "--pr must be a number, got: $PR" >&2; exit 6 ;; esac
 case "$REGISTER_WAIT" in ''|*[!0-9]*) echo "--register-wait must be a number of seconds, got: $REGISTER_WAIT" >&2; exit 6 ;; esac
 case "$REGISTER_INTERVAL" in ''|*[!0-9]*) echo "--register-interval must be a number of seconds, got: $REGISTER_INTERVAL" >&2; exit 6 ;; esac
+case "$CHECKS_WAIT" in ''|*[!0-9]*) echo "--checks-wait must be a number of seconds, got: $CHECKS_WAIT" >&2; exit 6 ;; esac
 [ -n "$BASE" ] || { echo "usage: --base must name a branch" >&2; exit 6; }
 case "$BRANCH" in master|main|"$BASE") echo "usage: ${BRANCH} is a default branch and is never landed onto itself" >&2; exit 6 ;; esac
 
 WT="/tmp/${PREFIX}-worktrees/land-${PR}"
 say() { printf '%s\n' "$*"; }
+
+REST_TRIES="${LAND_ONE_REST_TRIES:-5}"
+REST_BACKOFF="${LAND_ONE_REST_BACKOFF:-5}"
+case "$REST_TRIES" in ''|*[!0-9]*|0) REST_TRIES=1 ;; esac
+case "$REST_BACKOFF" in ''|*[!0-9]*) REST_BACKOFF=5 ;; esac
+
+gh_rest() {
+  local _out="$1" _err="$2" _try=1 _rc _wait
+  shift 2
+  while :; do
+    timeout "${DEVLOOP_GH_TIMEOUT:-30}" gh api "$@" >"$_out" 2>"$_err"; _rc=$?
+    [ "$_rc" -eq 0 ] && return 0
+    [ "$_try" -lt "$REST_TRIES" ] || return "$_rc"
+    grep -qiE 'rate limit|secondary rate|abuse detection|HTTP 429' "$_err" || return "$_rc"
+    _wait=$(( REST_BACKOFF << (_try - 1) ))
+    echo "land-one.sh: gh api $* was rate limited on attempt ${_try} of ${REST_TRIES} - waiting ${_wait}s" >&2
+    sleep "$_wait"
+    _try=$((_try + 1))
+  done
+}
 
 guard_verdict() {
   local rc=$1 errf=$2 what=$3 ref=$4 reason=""
@@ -133,11 +157,18 @@ if [ "$github_default" != "$BASE" ]; then
   exit 6
 fi
 
-PR_BASE_ATTEMPT="gh pr view ${PR} --repo ${SLUG} --json baseRefName"
-pr_base=$(timeout "${DEVLOOP_GH_TIMEOUT:-30}" gh pr view "$PR" --repo "$SLUG" --json baseRefName 2>/dev/null \
-  | python3 -c "import json,sys; print(json.load(sys.stdin).get('baseRefName') or '')" 2>/dev/null)
+read_dir=$(mktemp -d "/tmp/${PREFIX}-rollup-XXXXXX" 2>/dev/null) || {
+  echo "usage: could not create a scratch directory under /tmp/${PREFIX}-rollup- to read ${SLUG}#${PR} through - nothing touched"; exit 6; }
+trap 'rm -rf "$read_dir" 2>/dev/null' EXIT
+gh_err="$read_dir/gh.err"; py_err="$read_dir/python.err"; gh_out="$read_dir/gh.out"
+
+PR_BASE_ATTEMPT="gh api repos/${SLUG}/pulls/${PR}"
+gh_rest "$gh_out" "$gh_err" "repos/${SLUG}/pulls/${PR}"
+gh_code=$?
+pr_base=$(python3 -c "import json,sys; print((json.load(open(sys.argv[1])).get('base') or {}).get('ref') or '')" "$gh_out" 2>/dev/null)
 if [ -z "$pr_base" ]; then
-  echo "usage: could not read the base branch of ${SLUG}#${PR} from '${PR_BASE_ATTEMPT}' within ${DEVLOOP_GH_TIMEOUT:-30}s, so nothing is known about whether it is open against ${BASE} - nothing touched"
+  said=$(head -n 1 "$gh_err" 2>/dev/null)
+  echo "usage: could not read the base branch of ${SLUG}#${PR} from '${PR_BASE_ATTEMPT}' within ${DEVLOOP_GH_TIMEOUT:-30}s, so nothing is known about whether it is open against ${BASE} - nothing touched. gh exited ${gh_code} and said: ${said:-nothing on stderr}"
   exit 6
 fi
 if [ "$pr_base" != "$BASE" ]; then
@@ -157,14 +188,6 @@ git_with_identity() {
 
 # 1. MASTER MUST BE GREEN FIRST. Landing on top of a break makes it harder to untangle, not
 #    easier, and the lander cannot merge the fix for a red master while master is red.
-read_dir=$(mktemp -d "/tmp/${PREFIX}-rollup-XXXXXX" 2>/dev/null) || read_dir=""
-trap 'rm -rf "$read_dir" 2>/dev/null' EXIT
-if [ -n "$read_dir" ]; then
-  gh_err="$read_dir/gh.err"; py_err="$read_dir/python.err"
-else
-  gh_err=/dev/null; py_err=/dev/null
-fi
-
 MASTER_ATTEMPT="gh run list --branch ${BASE} --limit 1 --json status,conclusion"
 runs_json=$(gh run list --branch "$BASE" --limit 1 --json status,conclusion 2>"$gh_err")
 gh_code=$?
@@ -351,89 +374,111 @@ else
   fi
 fi
 
-registered_checks() {
-  gh api "repos/${SLUG}/commits/${1}/check-runs" 2>/dev/null | python3 -c "
-import json,sys
-d=json.load(sys.stdin)
-print(d.get('total_count') or len(d.get('check_runs') or []))
-" 2>/dev/null
-}
-
-if [ -n "$pushed_sha" ]; then
-  register_started=$(date +%s)
-  while :; do
-    registered=$(registered_checks "$pushed_sha")
-    case "$registered" in ''|*[!0-9]*) registered=0 ;; esac
-    [ "$registered" -gt 0 ] && break
-    register_elapsed=$(( $(date +%s) - register_started ))
-    if [ "$register_elapsed" -ge "$REGISTER_WAIT" ]; then
-      say "not_ready: no check registered on ${pushed_sha} within ${REGISTER_WAIT}s of the push - nothing has run yet, which is not a pass"
-      exit 7
-    fi
-    sleep "$REGISTER_INTERVAL"
-  done
-  say "registered: ${registered} check(s) on ${pushed_sha} after $(( $(date +%s) - register_started ))s"
-fi
-
-# 3. WAIT FOR CI ON THE HEAD THAT IS ACTUALLY THERE NOW, and wait by blocking rather than by
-#    polling. gh streams the result, so this costs one call and no interval latency; the old
-#    loop asked every few seconds and noticed late. --fail-fast returns as soon as one fails.
-gh pr checks "$PR" --repo "$SLUG" --watch --fail-fast >/dev/null 2>/dev/null
-checks_code=$?
-if [ "$checks_code" -ne 0 ]; then
-  say "checks: gh pr checks exited ${checks_code} for ${SLUG}#${PR} - reading the rollup to find out why"
-fi
-
-# 4. Read the rollup back rather than trusting the exit code, and refuse an EMPTY one. Every
+# 3. WAIT FOR CI ON THE HEAD THAT IS ACTUALLY THERE NOW, and refuse an EMPTY rollup. Every
 #    reader of a rollup in this pipeline has to be told this: "every entry is green" is
 #    vacuously true of an empty array and reads as a pass forever.
 git fetch origin --quiet 2>/dev/null
 head_sha=$(git rev-parse "origin/${BRANCH}" 2>/dev/null)
-READ_ATTEMPT="gh pr view ${PR} --repo ${SLUG} --json labels,statusCheckRollup,headRefOid"
-rollup_json=$(gh pr view "$PR" --repo "$SLUG" --json labels,statusCheckRollup,headRefOid 2>"$gh_err")
+CHECKS_ATTEMPT="gh api repos/${SLUG}/commits/${head_sha}/check-runs"
+wait_started=$(date +%s)
+registered_at=""
+while :; do
+  gh_rest "$gh_out" "$gh_err" "repos/${SLUG}/commits/${head_sha}/check-runs" --paginate --slurp
+  gh_code=$?
+  checks_json=$(cat "$gh_out" 2>/dev/null)
+  if [ "$gh_code" -ne 0 ] || [ -z "$checks_json" ]; then
+    said=$(head -n 1 "$gh_err" 2>/dev/null)
+    say "unreadable: could not read the status rollup for ${SLUG}#${PR} - nothing is known about its checks"
+    say "attempted: ${CHECKS_ATTEMPT}"
+    say "gh exited ${gh_code} and said: ${said:-nothing on stderr}"
+    say "This is NOT a red pull request and it was not merged. Retry it in a later round."
+    exit 9
+  fi
+
+  state=$(python3 -c "
+import json,sys
+p=json.load(open(sys.argv[1]))
+pages=p if isinstance(p,list) else [p]
+runs=[c for page in pages for c in (page.get('check_runs') or [])]
+if not runs:
+    print('EMPTY|0'); raise SystemExit
+def read(c):
+    label=c.get('name') or 'unnamed'
+    if str(c.get('status') or '').lower()!='completed': return label, 'PENDING'
+    k=str(c.get('conclusion') or '').lower()
+    return label, 'PENDING' if not k else 'GREEN' if k in ('success','neutral','skipped') else 'BAD'
+read_all=[read(c) for c in runs]
+bad=[l for l,v in read_all if v=='BAD']
+pending=[l for l,v in read_all if v=='PENDING']
+print('%s|%d' % ('BAD:'+','.join(bad) if bad else 'PENDING:'+','.join(pending) if pending else 'GREEN', len(runs)))
+" "$gh_out" 2>"$py_err")
+  py_code=$?
+  if [ "$py_code" -ne 0 ] || [ -z "$state" ]; then
+    said=$(tail -n 1 "$py_err" 2>/dev/null)
+    began=$(printf '%s' "$checks_json" | head -c 120 | tr '\n\t' '  ')
+    say "unreadable: the status rollup for ${SLUG}#${PR} did not parse - nothing is known about its checks"
+    say "attempted: ${CHECKS_ATTEMPT}"
+    say "the reader exited ${py_code} and said: ${said:-nothing on stderr}"
+    say "gh returned ${#checks_json} bytes beginning: ${began}"
+    say "This is NOT a red pull request and it was not merged. Retry it in a later round."
+    exit 9
+  fi
+
+  registered=${state##*|}; state=${state%|*}
+  elapsed=$(( $(date +%s) - wait_started ))
+  if [ "$state" != EMPTY ] && [ -n "$pushed_sha" ] && [ -z "$registered_at" ]; then
+    registered_at=$elapsed
+    say "registered: ${registered} check(s) on ${head_sha} after ${registered_at}s"
+  fi
+  case "$state" in
+    EMPTY)
+      [ -n "$pushed_sha" ] || break
+      if [ "$elapsed" -ge "$REGISTER_WAIT" ]; then
+        say "not_ready: no check registered on ${head_sha} within ${REGISTER_WAIT}s of the push - nothing has run yet, which is not a pass"
+        exit 7
+      fi ;;
+    PENDING:*)
+      [ "$elapsed" -lt "$CHECKS_WAIT" ] || break ;;
+    *) break ;;
+  esac
+  sleep "$REGISTER_INTERVAL"
+done
+
+# 4. Read the label and the head the pull request carries NOW, after the wait: a lane can pull
+#    the label back while CI runs, and the rollup has to describe the commit on the branch.
+PULL_ATTEMPT="gh api repos/${SLUG}/pulls/${PR}"
+gh_rest "$gh_out" "$gh_err" "repos/${SLUG}/pulls/${PR}"
 gh_code=$?
-if [ "$gh_code" -ne 0 ] || [ -z "$rollup_json" ]; then
+pull_json=$(cat "$gh_out" 2>/dev/null)
+if [ "$gh_code" -ne 0 ] || [ -z "$pull_json" ]; then
   said=$(head -n 1 "$gh_err" 2>/dev/null)
-  say "unreadable: could not read the status rollup for ${SLUG}#${PR} - nothing is known about its checks"
-  say "attempted: ${READ_ATTEMPT}"
+  say "unreadable: could not read the labels and head of ${SLUG}#${PR} - nothing is known about whether it is still to be merged"
+  say "attempted: ${PULL_ATTEMPT}"
   say "gh exited ${gh_code} and said: ${said:-nothing on stderr}"
   say "This is NOT a red pull request and it was not merged. Retry it in a later round."
   exit 9
 fi
 
-verdict=$(printf '%s' "$rollup_json" | python3 -c "
+pull_read=$(python3 -c "
 import json,sys
-d=json.load(sys.stdin)
-rollup=d.get('statusCheckRollup') or []
-labels=[l['name'] for l in d.get('labels') or []]
-if not rollup:
-    print('EMPTY|%s|%s' % (d.get('headRefOid',''), ','.join(labels))); raise SystemExit
-def read(c):
-    label=c.get('name') or c.get('context') or c.get('__typename') or 'unnamed'
-    if c.get('__typename')=='StatusContext' or ('state' in c and 'conclusion' not in c):
-        s=str(c.get('state') or '').upper()
-        return label, 'GREEN' if s=='SUCCESS' else 'PENDING' if s in ('PENDING','EXPECTED','') else 'BAD'
-    k=str(c.get('conclusion') or '').upper()
-    return label, 'PENDING' if not k else 'GREEN' if k in ('SUCCESS','NEUTRAL','SKIPPED') else 'BAD'
-read_all=[read(c) for c in rollup]
-bad=[l for l,v in read_all if v=='BAD']
-pending=[l for l,v in read_all if v=='PENDING']
-state='BAD:'+','.join(bad) if bad else 'PENDING:'+','.join(pending) if pending else 'GREEN'
-print('%s|%s|%s' % (state, d.get('headRefOid',''), ','.join(labels)))
-" 2>"$py_err")
+d=json.load(open(sys.argv[1]))
+if not isinstance(d,dict): raise SystemExit(1)
+labels=[l.get('name') or '' for l in d.get('labels') or []]
+print('%s|%s' % ((d.get('head') or {}).get('sha') or '', ','.join(labels)))
+" "$gh_out" 2>"$py_err")
 py_code=$?
-if [ "$py_code" -ne 0 ] || [ -z "$verdict" ]; then
+if [ "$py_code" -ne 0 ] || [ -z "$pull_read" ]; then
   said=$(tail -n 1 "$py_err" 2>/dev/null)
-  began=$(printf '%s' "$rollup_json" | head -c 120 | tr '\n\t' '  ')
-  say "unreadable: the status rollup for ${SLUG}#${PR} did not parse - nothing is known about its checks"
-  say "attempted: ${READ_ATTEMPT}"
+  began=$(printf '%s' "$pull_json" | head -c 120 | tr '\n\t' '  ')
+  say "unreadable: the pull request ${SLUG}#${PR} did not parse - nothing is known about whether it is still to be merged"
+  say "attempted: ${PULL_ATTEMPT}"
   say "the reader exited ${py_code} and said: ${said:-nothing on stderr}"
-  say "gh returned ${#rollup_json} bytes beginning: ${began}"
+  say "gh returned ${#pull_json} bytes beginning: ${began}"
   say "This is NOT a red pull request and it was not merged. Retry it in a later round."
   exit 9
 fi
 
-state=${verdict%%|*}; rest=${verdict#*|}; rollup_head=${rest%%|*}; labels=${rest#*|}
+rollup_head=${pull_read%%|*}; labels=${pull_read#*|}
 
 case "$state" in
   GREEN)     ;;

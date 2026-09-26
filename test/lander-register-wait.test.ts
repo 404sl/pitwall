@@ -35,18 +35,12 @@ function stubs(root: string, bare: string, rollup: string, registersOnPoll: numb
 case "$1 $2" in
   "repo view") echo '{"defaultBranchRef":{"name":"master"}}' ;;
   "run list")  echo '[{"status":"completed","conclusion":"success"}]' ;;
-  "pr checks") exit 0 ;;
-  "pr view")
-    if [ -f ${JSON.stringify(polls)} ] && [ "$(wc -l < ${JSON.stringify(polls)})" -ge ${registersOnPoll} ]; then
-      registered='${rollup}'
-    else
-      registered='[]'
-    fi
-    echo '{"baseRefName":"master","labels":[{"name":"lane-verified"}],"statusCheckRollup":'"$registered"',"headRefOid":"'"$(git --git-dir=${JSON.stringify(bare)} rev-parse refs/heads/${BRANCH} 2>/dev/null)"'"}' ;;
-  "api repos/"*)
+  "api "*/pulls/*)
+    echo '{"base":{"ref":"master"},"labels":[{"name":"lane-verified"}],"head":{"sha":"'"$(git --git-dir=${JSON.stringify(bare)} rev-parse refs/heads/${BRANCH} 2>/dev/null)"'"}}' ;;
+  "api "*/check-runs)
     echo "$2" >> ${JSON.stringify(polls)}
     if [ "$(wc -l < ${JSON.stringify(polls)})" -ge ${registersOnPoll} ]; then
-      echo '{"total_count":1,"check_runs":[{"name":"CI","status":"queued"}]}'
+      echo '{"total_count":1,"check_runs":${rollup}}'
     else
       echo '{"total_count":0,"check_runs":[]}'
     fi ;;
@@ -98,7 +92,7 @@ function workspace(masterMoves: boolean) {
   return { root, bare, repo, polls: join(root, "polls.log") };
 }
 
-function run(root: string, repo: string, bin: string, wait: string) {
+function run(root: string, repo: string, bin: string, wait: string, checksWait = "30") {
   const ran = spawnSync(
     "bash",
     [
@@ -117,6 +111,8 @@ function run(root: string, repo: string, bin: string, wait: string) {
       wait,
       "--register-interval",
       "0",
+      "--checks-wait",
+      checksWait,
     ],
     {
       cwd: root,
@@ -138,7 +134,7 @@ function pollsOf(file: string): string[] {
 
 test("a rebase push waits for a check to register on the pushed head, then merges in the same round", () => {
   const box = workspace(true);
-  const bin = stubs(box.root, box.bare, '[{"name":"CI","conclusion":"SUCCESS"}]', 3);
+  const bin = stubs(box.root, box.bare, '[{"name":"CI","status":"completed","conclusion":"success"}]', 3);
 
   const ran = run(box.root, box.repo, bin, "30");
 
@@ -175,12 +171,50 @@ test("a rebase push whose checks never register is not ready when the wait runs 
 
 test("an empty rollup on a branch that was not pushed is still not ready, with no wait", () => {
   const box = workspace(false);
-  const bin = stubs(box.root, box.bare, "[]", 1);
+  const bin = stubs(box.root, box.bare, "[]", 1000);
 
   const ran = run(box.root, box.repo, bin, "30");
 
   assert.match(ran.out, /^current:/m, ran.out);
   assert.match(ran.out, /^not_ready: rollup is empty on 101 - no check has registered, which is not a pass$/m, ran.out);
   assert.equal(ran.code, 7, `${ran.out}\n${ran.err}`);
-  assert.deepEqual(pollsOf(box.polls), [], "a branch the script did not push was polled for registration anyway");
+  const head = git(box.bare, "rev-parse", `refs/heads/${BRANCH}`);
+  assert.deepEqual(
+    pollsOf(box.polls),
+    [`repos/acme/site/commits/${head}/check-runs`],
+    "a branch the script did not push was polled for registration instead of being read once",
+  );
+});
+
+test("a check that registered but has not concluded is waited for, then read as ready", () => {
+  const box = workspace(true);
+  const bin = stubs(box.root, box.bare, '[{"name":"CI","status":"completed","conclusion":"success"}]', 3);
+  const polls = join(box.root, "polls.log");
+  write(box.root, "polls.log", "");
+  const gh = readFileSync(join(bin, "gh"), "utf8").replace(
+    `echo '{"total_count":0,"check_runs":[]}'`,
+    `echo '{"total_count":1,"check_runs":[{"name":"CI","status":"in_progress","conclusion":null}]}'`,
+  );
+  writeFileSync(join(bin, "gh"), gh);
+
+  const ran = run(box.root, box.repo, bin, "30");
+
+  assert.match(ran.out, /^registered: 1 check\(s\) on [0-9a-f]{40} after \d+s$/m, ran.out);
+  assert.doesNotMatch(ran.out, /^not_ready:/m, `a check still running when first read was requeued instead of waited for:\n${ran.out}`);
+  assert.match(ran.out, /^ready: acme\/site#101/m, ran.out);
+  assert.equal(ran.code, 0, `${ran.out}\n${ran.err}`);
+  assert.equal(pollsOf(polls).length, 3, `the check-runs endpoint was not polled until the run concluded: ${pollsOf(polls).join(", ")}`);
+});
+
+test("a check that never concludes is not ready when the checks wait runs out", () => {
+  const box = workspace(true);
+  const bin = stubs(box.root, box.bare, '[{"name":"CI","status":"queued","conclusion":null}]', 1);
+
+  const ran = run(box.root, box.repo, bin, "30", "2");
+
+  assert.match(ran.out, /^registered: 1 check\(s\)/m, ran.out);
+  assert.match(ran.out, /^not_ready: CI on 101 has not concluded yet/m, ran.out);
+  assert.doesNotMatch(ran.out, /^red:/m, `a check still queued was reported as red:\n${ran.out}`);
+  assert.equal(ran.code, 7, `${ran.out}\n${ran.err}`);
+  assert.ok(pollsOf(box.polls).length >= 2, "the checks wait gave up after a single poll");
 });

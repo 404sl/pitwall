@@ -36,7 +36,7 @@ test("land-one.sh refuses a value-taking flag given no value instead of looping 
   refusesTrailing(
     "land-one.sh",
     ["--repo-path", "/nowhere", "--slug", "acme/site", "--pr", "1", "--branch", "lane/x"],
-    ["--repo-path", "--slug", "--pr", "--branch", "--prefix", "--label"],
+    ["--repo-path", "--slug", "--pr", "--branch", "--prefix", "--label", "--register-wait", "--register-interval", "--checks-wait"],
   );
 });
 
