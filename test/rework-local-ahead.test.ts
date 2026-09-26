@@ -372,7 +372,7 @@ test("a commit origin holds in no form is reported as diverged, and only the fil
   );
 });
 
-test("a divergence with no commit origin lacks does not override a resolve step that finished", async () => {
+test("a divergence reported with no commit origin lacks is handed back rather than read as a rebase", async () => {
   const { root, localHead, remoteHead } = fixture("rebased");
   const args = {
     id: ID,
@@ -391,15 +391,24 @@ test("a divergence with no commit origin lacks does not override a resolve step 
     return { lane: "released", slot: "released" };
   });
   const result = await done;
-  assert.notEqual(
+  assert.equal(
     result.outcome,
     "blocked",
-    "the word alone stops the rework, so a resolve step that looked, found every local commit already " +
-      "upstream and finished the work is still handed back for a person to settle",
+    "a resolve step that said the local ref diverged and named no sha was carried on to the handoff, " +
+      "so a run that honestly found a commit origin holds in no form and put the shas in its prose " +
+      "rather than the array gets its pull request labelled and squashed over",
   );
+  assert.match(
+    String(result.notes),
+    /LOCAL_SUPERSEDED/,
+    "the result does not say why the word alone is not the shape a rebase leaves behind, so a person " +
+      "reading the hand-back cannot tell an unnamed unpublished commit from an answer nothing measured",
+  );
+  assert.ok(String(result.notes).includes(localHead), "the result does not name the local sha");
+  assert.ok(String(result.notes).includes(remoteHead), "the result does not name the remote sha");
   assert.equal(
     calls.filter((call) => call.label.startsWith("handoff:")).length,
-    1,
-    "the handoff never ran on a branch with nothing unpublished on it",
+    0,
+    "the handoff ran on a branch whose comparison the run reported as a divergence",
   );
 });

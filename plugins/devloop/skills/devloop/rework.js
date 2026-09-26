@@ -562,7 +562,10 @@ if (!resolved || resolved.status === 'blocked') {
 
 const UNPUBLISHED = (resolved && resolved.unpublished) || []
 
-if (!result && UNPUBLISHED.length) {
+if (!result && (UNPUBLISHED.length || resolved.localBranch === 'diverged')) {
+  const found = UNPUBLISHED.length
+    ? `carries ${UNPUBLISHED.length} commit(s) origin holds in no form - ${UNPUBLISHED.join(', ')} - while origin's head carries commits it lacks, so no push publishes one without discarding the other and which side is right is a person's call.`
+    : `was reported as diverged and no commit origin lacks was named, which no comparison produces: the comparison prints LOCAL_SUPERSEDED for the head a rebase leaves behind and the brief reports that as 'superseded', so this is either an unpublished commit whose sha went unnamed or a word nothing measured, and neither is safe to merge origin's head over.`
   result = {
     pr: PR,
     id: ID,
@@ -570,12 +573,8 @@ if (!result && UNPUBLISHED.length) {
     localBranch: resolved.localBranch || 'not_reported',
     localHead: resolved.localHead || null,
     unpublished: UNPUBLISHED,
-    notes: `the local ref of the branch in ${REPO_PATH} carries ${UNPUBLISHED.length} commit(s) origin holds in no form - ${UNPUBLISHED.join(', ')} - while origin's head carries commits it lacks, so no push publishes one without discarding the other and which side is right is a person's call. local ${resolved.localHead || 'unreported'}, remote ${resolved.oldHead || 'unreported'}; resolve reported ${resolved.status}, and this is handed back unlabelled whatever it did next. ${resolved.notes || ''}`.trim(),
+    notes: `the local ref of the branch in ${REPO_PATH} ${found} local ${resolved.localHead || 'unreported'}, remote ${resolved.oldHead || 'unreported'}; resolve reported ${resolved.status}, and this is handed back unlabelled whatever it did next. ${resolved.notes || ''}`.trim(),
   }
-}
-
-if (!result && resolved.localBranch === 'diverged') {
-  log(`${OWNER}: resolve called the local ref diverged and named no commit origin lacks, which is the shape a rebased branch leaves behind rather than unpublished work, so the rework was not stopped for it`)
 }
 
 if (!result && !resolved.localBranch) {
