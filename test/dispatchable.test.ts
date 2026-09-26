@@ -152,9 +152,9 @@ test("dispatchable.sh counts only work the assignee gate itself withheld", () =>
   );
 });
 
-test("dispatchable.sh parks on the same labels queue.sh does, needs-feedback included", () => {
+test("dispatchable.sh parks on the same labels queue.sh does, needs-call and needs-feedback included", () => {
   const root = workspace({});
-  const labels = ["needs-decision", "needs-access", "needs-feedback", "blocked-tooling", "watch", "umbrella", "roadmap"];
+  const labels = ["needs-decision", "needs-call", "needs-access", "needs-feedback", "blocked-tooling", "watch", "umbrella", "roadmap"];
   const bd = stubBd([
     { id: "fixture-free", title: "carries no label", assignee: null },
     ...labels.map((label) => ({ id: `fixture-${label}`, title: `parked with ${label}`, assignee: null, labels: [label] })),

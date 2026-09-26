@@ -139,6 +139,7 @@ test("queue.sh --next claims as the actor it filtered on", () => {
 
 const PARK_LABELS = [
   "needs-decision",
+  "needs-call",
   "needs-access",
   "needs-feedback",
   "blocked-tooling",
@@ -175,6 +176,8 @@ test("queue.sh parks every label the skill tells a person to write, needs-feedba
   }
   assert.match(out, /needs-feedback\s+1\s+/, "a needs-feedback issue is somebody's question, not an unexplained park");
   assert.doesNotMatch(out, /parked: needs-feedback/);
+  assert.match(out, /needs-call\s+1\s+.*not on you/, "a needs-call issue is a call any engineer can make, and the line must say it is not the owner's");
+  assert.doesNotMatch(out, /parked: needs-call/);
 });
 
 test("queue.sh --next never claims an issue labelled needs-feedback", () => {

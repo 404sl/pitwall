@@ -29,6 +29,12 @@ Decide which it is:
 - Genuinely a person's call -> add the label that says WHICH person-thing it needs:
   `needs-decision` (a choice), `needs-access` (a deploy, a dashboard, a device), `watch` (an
   observation over time). Add a one-line recommendation so it can be answered in a word.
+- A real call that nothing written settles, and NOT the owner's -> `needs-call`. The test is
+  the one the briefs carry: would the owner's answer differ from any competent engineer's? If
+  no - which of three shapes, whether an old review still binds, whether a refactor is in
+  scope - it is a call any competent engineer could make and nobody has, and it parks outside
+  the owner's inbox. Writing `needs-decision` on it puts an engineering question in the
+  owner's queue, which is how three settled questions reached the owner's board in one day.
 - **Answerable from what is already recorded** -> answer it, record the reasoning, leave it
   unlabelled so the queue picks it up. Do this whenever the evidence is already on the ticket
   or in the code. Handing back a question you can answer is how a queue fills with things
@@ -107,8 +113,8 @@ What you CAN do, and should:
   BLOCKED with the branch as the deliverable" and "died" want different responses.
 - Hand it back in your return as a supervisor action item, naming the repo and PR number.
 
-If the PR is being held deliberately rather than stranded, **park its issue** - `needs-decision`
-or `needs-access`, whichever is true. That is the acknowledgment path for this category: a
+If the PR is being held deliberately rather than stranded, **park its issue** - `needs-decision`,
+`needs-call` or `needs-access`, whichever is true. That is the acknowledgment path for this category: a
 parked issue's PR is skipped, so the scan stops re-reporting it. Without that, a deliberate hold
 re-fires every tick and spends an agent each time to rediscover something already known.
 

@@ -710,3 +710,84 @@ test("the triage brief asks the configured branch, and names each checkout's own
   );
   assert.ok(!mixed.includes("ls-tree --name-only origin/trunk '<the path it names>'"), "the routing command picked one repository's branch for every checkout");
 });
+
+const OWNERS_TEST = /would the owner's answer differ from any competent engineer's\?/i;
+
+test("the briefs that stop pick the park label with the owner's-answer test, and name all three labels", () => {
+  const source = readFileSync(join(SKILL, "task.js"), "utf8");
+  for (const name of ["fixPrompt", "workspacePrompt"]) {
+    const brief = promptTemplate(source, name);
+    const from = brief.indexOf("STOP AND ASK");
+    assert.notEqual(from, -1, `${name} no longer has a STOP AND ASK block`);
+    const until = brief.indexOf("needs_feedback", from);
+    assert.notEqual(until, -1, `${name}'s STOP AND ASK block never returns needs_feedback`);
+    const stop = brief.slice(from, brief.indexOf("\n", until));
+    const lines = stop.split("\n").filter((line) => OWNERS_TEST.test(line));
+    assert.ok(
+      lines.length > 0,
+      `${name} does not carry the test verbatim on one line - would the owner's answer differ from any ` +
+        "competent engineer's? A run with no test for which label to write reaches for needs-decision " +
+        "every time, and three settled engineering questions went onto the owner's board in one day that way",
+    );
+    for (const label of ["needs-decision", "needs-call", "needs-access"]) {
+      assert.ok(stop.includes(label), `${name} tells a run how to stop without naming ${label}`);
+    }
+    const labelLine = stop.split("\n").find((line) => line.includes("bd label add ${task.id}"));
+    assert.ok(labelLine, `${name} never tells a run the label command`);
+    assert.ok(labelLine.includes("needs-call"), `${name}'s label command offers no needs-call:\n${labelLine}`);
+    assert.ok(
+      labelLine.includes("needs-access if it needs") || labelLine.includes("needs-access>"),
+      `${name}'s label command changed what needs-access means:\n${labelLine}`,
+    );
+    const ticks = stop.split("\n").filter((line) => line.includes("`"));
+    assert.deepEqual(ticks, [], `a backtick inside ${name} closes its template literal early:\n${ticks.join("\n")}`);
+  }
+});
+
+test("the stopping section of the skill carries the same test and both labels", () => {
+  const skill = readFileSync(join(SKILL, "SKILL.md"), "utf8");
+  const start = skill.indexOf("## Where it stops and asks");
+  assert.notEqual(start, -1, "the stopping section moved - update this test rather than deleting it");
+  const end = skill.indexOf("\n## ", start + 1);
+  const section = skill.slice(start, end === -1 ? undefined : end);
+  assert.match(section, OWNERS_TEST, "the skill's stopping section does not carry the test the brief carries");
+  for (const label of ["needs-decision", "needs-call", "needs-access"]) {
+    assert.ok(section.includes(`\`${label}\``), `the stopping section no longer names ${label}`);
+  }
+});
+
+test("a park verified as open with needs-call is a park, not a failure, and the handover offers the label", async () => {
+  const seen: string[] = [];
+  for (const label of ["needs-call", "needs-decision"]) {
+    const { calls, logs, done } = runScript(
+      "task.js",
+      { id: "zz-aaa5", slot: 1, root: "/root", skillDir: "/skill", lockPrefix: "pw", repos: HANDOFF_REPOS },
+      (_call, n) => {
+        if (n === 1) {
+          return { eligible: false, repo: "site", title: "needs a call", priority: 2, ui: false, reason: "a call", ticket: "" };
+        }
+        return { verification: `zz-aaa5 [BUG] OPEN ${label}`, notes: "" };
+      },
+    );
+    await done;
+    seen.push(...logs);
+    const handover = calls.find((c) => c.label.startsWith("handover:"));
+    assert.ok(handover, `no handover step ran. Steps seen: ${calls.map((c) => c.label || "?").join(", ")}`);
+    const labelLine = handover.prompt.split("\n").find((line) => line.includes("bd label add zz-aaa5"));
+    assert.ok(labelLine, `the handover never tells the run the label command:\n${handover.prompt}`);
+    assert.ok(
+      labelLine.includes("needs-call"),
+      `the handover verifies a needs-call park but its label command cannot produce one:\n${labelLine}`,
+    );
+    assert.ok(
+      handover.prompt.split("\n").some((line) => OWNERS_TEST.test(line)),
+      "the handover offers needs-call without the one test that picks it",
+    );
+    assert.ok(
+      !logs.some((line) => line.includes("PARK FAILED")),
+      `an issue reopened with ${label} was reported as not parked, so a person is told to park by hand ` +
+        `what is already parked:\n${logs.join("\n")}`,
+    );
+  }
+  assert.ok(seen.length > 0, "the handover path logged nothing at all - the check may no longer run");
+});

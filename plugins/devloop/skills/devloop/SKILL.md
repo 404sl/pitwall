@@ -164,11 +164,11 @@ queue could not read the first time.
 gh pr list --state open --label lane-verified --json number   # in each repo
 
 # Then, FOR EVERY PR that listed - not just the first, not just the ones you doubt:
-gh pr view <n> --repo 404sl/<slug> --json labels,statusCheckRollup
+gh pr view <n> --repo <org>/<name> --json labels,statusCheckRollup
 
 # Then hand it the list you just looked at. It merges those and nothing else.
 args=$(bash ${CLAUDE_PLUGIN_ROOT}/skills/devloop/config.sh --land \
-         404sl/pitwall#588 404sl/pitwall-schema#111)
+         <org>/<name>#588 <org>/<other-name>#111)
 
 Workflow({ scriptPath: <the scriptPath that object carries>,
            args: <the object config.sh printed> })
@@ -210,6 +210,20 @@ request number requesting `labels` and `statusCheckRollup`". A subagent running 
 own transcript does not appear to satisfy that - on 2026-08-25/26 six merges were refused in a
 row for exactly this, each naming the PR number whose query was missing. The one clean drain
 of that night was eight PRs queried here first and then landed with zero refusals.
+
+**That same allow rule is scoped by organisation, and the scope is not written anywhere a run
+can read it.** Unattended merge and deploy depend on the merge and deploy exceptions in the
+machine's `autoMode` allow rules naming, as `--repo <org>/`, the org of EVERY slug configured
+under `repos` - a rule written for one org covers nothing in another, however green and however
+carefully pre-flighted the pull request is. A refusal reading `[Merge Without Review]` on a pull
+request that was queried in this transcript and is labelled and green means exactly that and
+nothing else: the org is missing from the rule. Do not retry it, do not re-query and relaunch,
+and do not rebase it - none of those change the answer, and one pass spent 22 runs and a
+million tokens reaching a refusal that was decidable before the first lane was dispatched. Tell
+the owner which org is missing and stop; the rule is a permission setting on their machine and
+only they edit it.
+`config.sh --check` prints the set of orgs the configured slugs live under and, when it can read
+the settings file, warns on any org the rules do not name.
 
 The ordering matters as much as the doing. A PR that gains its label AFTER a lander run has
 started will be refused however carefully it was checked, because the check has to precede the
@@ -876,9 +890,8 @@ not the speed. Judge a long-running task by which round it is on, not by the clo
 
 ## Where it stops and asks
 
-Any of these puts `needs-decision` on the issue (or `needs-access`, when what is missing is
-a deploy, a dashboard or a device rather than an answer), writes the question and the options
-into it, and leaves the branch and PR alone:
+Any of these parks the issue with a label, writes the question and the options into it, and
+leaves the branch and PR alone:
 
 - the issue offers a choice that changes what ships, and splitting would not resolve it
 - billing, payments, Stripe, pricing - money is never moved unattended
@@ -893,6 +906,20 @@ into it, and leaves the branch and PR alone:
 - the real fix is much larger than the issue implies
 - tests will not go green without weakening an assertion
 - three review rounds did not converge
+
+Which label is decided by one test, and the brief carries it verbatim:
+**would the owner's answer differ from any competent engineer's?**
+If yes, `needs-decision` - it is about what the product should do, who it is for, what it is
+worth, what it is called, and it sits in the owner's queue. If no, `needs-call` - it is which
+of three shapes, whether an old review still binds, whether a refactor is in scope; the console
+shows it as `parked:call`, outside the inbox, and any engineer may settle it. A run that can
+make the call makes it and carries on;
+`needs-call` is for a call it cannot make from here, not for every call it meets. The park is
+recorded, reopened and reported the same way under either label. `needs-access` is unchanged:
+what is missing is a deploy, a dashboard or a device rather than an answer, and only a person
+can supply it. Before this split, three settled engineering questions went back onto the
+owner's board in one day, and pitwall-3jq - which of three lock-release structures to take -
+reached the owner, who had no stake in the answer.
 
 A question written onto the issue is a success. A guess merged unattended is not.
 

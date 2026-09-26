@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.1.135
+
+The deploy step is told to run each `deploy-one.sh` in the foreground with `timeout: 600000` on the call, not in the background, and never to end its turn while a deploy is running; environments run one after the other in the same turn. A call cut by the ten-minute ceiling is re-run once, unchanged, and a second cut is reported as an empty revision with status `partial`. A `deploy.lock` refusal is quoted verbatim in `notes` and never cleared by the step.
+
+Refs pitwall-4l8m
+
+## 0.1.134
+
+The release train reads pull requests over REST: the survey of the other repositories and the sibling search list open pull requests with `gh api` and filter in `--jq`; the close check, the branch and the body come from `repos/{slug}/pulls/{n}`; the train's checks are read as the head sha's check runs, never the commit status endpoint. A step judges green as every check run `completed` with conclusion `success` and total_count above zero, and judges a retired pull request as state `closed`, since REST spells both in lower case. The merge step's evidence line is unchanged.
+
+## 0.1.133
+
+A run that stops on a question now chooses its label with one test, carried in the brief verbatim: would the owner's answer differ from any competent engineer's? If yes it writes `needs-decision`; if no, and it still cannot settle the call from here, it writes `needs-call`, which the console shows as parked:call outside the inbox. A call a run can make it still makes and carries on. `needs-access` is unchanged. Every reader of park labels - `queue.sh`, `dispatchable.sh`, `precheck.sh`, `slot.sh`, the triage step and its handover, `triage-scan.sh` and its TRIAGE.md guidance, `answered.sh`, `blockers.sh` and `dupes.sh` - now treats `needs-call` as parked, so an issue waiting on a call is neither dispatched, counted as the owner's, reported as stranded, nor re-parked by triage as `needs-decision`; `queue.sh` lists it on its own line as not on you.
+
+## 0.1.132
+
+- A refusal reading `[Merge Without Review]` on a pull request that was queried in the transcript, labelled and green means the org of that repository's slug is missing from the machine's merge and deploy allow rules, and nothing else. Do not retry, re-query or rebase; tell the owner which org is missing and stop. The lander section of SKILL.md now says so, and its examples use `<org>/<name>` rather than one org.
+- `config.sh --check` prints the orgs the configured slugs live under and states that the merge and deploy exceptions must name each. When it can read the harness settings file (`PITWALL_HARNESS_SETTINGS`, then the harness's configuration directory, then the home directory) it warns on any org the rules do not mention, read-only, and says which case it took; when it cannot, it prints the reminder unconditionally. A miss is a warning, never a refusal.
+
+Refs pitwall-ok98.1
+
 ## 0.1.131
 
 The lander's survey and version steps read pull requests over REST (`gh api repos/{slug}/pulls`) rather than `gh pr list` and `gh pr view`, so a GraphQL secondary rate limit no longer stops every pull request in a pass as `pr_unreadable` while REST answers. A survey that cannot list a repository says so in the run log instead of reporting the queue empty.

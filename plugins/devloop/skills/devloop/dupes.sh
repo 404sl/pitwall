@@ -58,7 +58,7 @@ import json, re, sys
 
 THRESH = float(sys.argv[1])
 PFX = sys.argv[2] if len(sys.argv) > 2 else "devloop"
-PARKED = {"needs-decision","needs-access","blocked-tooling","watch","umbrella","roadmap"}
+PARKED = {"needs-decision","needs-call","needs-access","blocked-tooling","watch","umbrella","roadmap"}
 STOP = set("""the a an and or of to in on for with that this is are was were be been it its as
 at by from not no we our you your they them site page when what which how all any two more
 still into put raw only same other""".split())

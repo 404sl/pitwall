@@ -306,7 +306,7 @@ const ON_BRANCH = {
         required: ['slug', 'branch'],
         properties: {
           slug: { type: 'string', description: "the repository's owner/name, copied from the list you were given" },
-          branch: { type: 'string', description: 'the branch you passed to --head, copied from the branch you found' },
+          branch: { type: 'string', description: 'the branch you filtered on, copied from the branch you found' },
         },
       },
     },
@@ -506,13 +506,29 @@ ${SHELL_FIRST}
   cd ${REPO_PATH} && gh pr checks ${trainPr} --repo ${SLUG} --watch --fail-fast
 
 That call BLOCKS until the checks finish - it does not poll and you must not wrap it in a loop
-or a sleep. When it returns, read the rollup back rather than trusting the exit code:
+or a sleep. When it returns, read the check runs back rather than trusting the exit code - the
+head sha first, then the runs on that sha:
 
-  gh pr view ${trainPr} --repo ${SLUG} --json statusCheckRollup,headRefOid
+  gh api repos/${SLUG}/pulls/${trainPr} --jq '{headSha: .head.sha, state, merged}'
+  gh api repos/${SLUG}/commits/<that headSha>/check-runs --jq '{total_count, names: [.check_runs[].name], statuses: [.check_runs[].status], conclusions: [.check_runs[].conclusion]}'
 
-AN EMPTY ROLLUP IS NOT A PASS. "Every entry is green" is vacuously true of an empty array. If it
-is empty, wait for the checks to register and read it again; report "unknown" only if it stays
-empty after a second look.
+THOSE ARE REST READS, AND THEY ARE THE ONLY ONES TO USE. Do not substitute 'gh pr view' for
+either: it goes over GraphQL, which a secondary limit throttles independently of the number
+'gh api rate_limit' shows - on 2026-09-12 every 'gh pr view' in a run was refused with 'API rate
+limit already exceeded' while rate_limit reported 5000 of 5000 and every REST read answered.
+
+GREEN IS: total_count above zero, every status "completed" and every conclusion "success". REST
+spells both in lower case - there is no SUCCESS here to compare against. A conclusion of
+"failure", "cancelled" or "timed_out" is red; a status still "queued" or "in_progress" means the
+watch returned early, so read again rather than judging it.
+
+AN EMPTY check_runs ARRAY IS NOT A PASS. "Every entry is green" is vacuously true of an empty
+array. If total_count is 0, wait for the checks to register and read it again; report "unknown"
+only if it stays empty after a second look.
+
+NEVER READ repos/${SLUG}/commits/<sha>/status INSTEAD. That endpoint reports state "pending" with
+total_count 0 on these repositories forever, green commits included, because they publish check
+runs and no commit statuses at all. Only check-runs answers here.
 
 ON RED, RE-RUN ONCE BEFORE BELIEVING IT. This suite has a known intermittent-failure problem -
 five instances are recorded on app-nnpg, most of them "the element was there but not yet
@@ -570,7 +586,13 @@ Then confirm master, and confirm the pull requests actually closed:
 
   git fetch origin --quiet && git log -1 --format='%H' origin/${BASE}
   gh run list --branch ${BASE} --limit 1 --json status,conclusion
-  gh pr view <n> --repo ${SLUG} --json state    for each of ${included.join(', ')}
+  gh api repos/${SLUG}/pulls/<n> --jq '{state, merged}'    for each of ${included.join(', ')}
+
+That is a REST read; do not substitute 'gh pr view' for it, which goes over GraphQL and is
+refused by a secondary limit while REST still answers. REST spells state in lower case: a pull
+request the train retired prints state "closed" - with merged true when GitHub merged it and
+merged false when the Closes line closed it - and one still printing state "open" is NOT closed.
+Do not compare against OPEN or MERGED; neither is a value here.
 
 Report mergeSha, masterGreen, and in notes: any of those pull requests that is NOT closed. Do
 not close them by hand here - just say which, so it is visible rather than quietly patched.
@@ -801,7 +823,7 @@ ${landed.map((n) => `  ${SLUG}#${n}`).join('\n')}
 
 FIRST, read the branch of each one:
 
-  gh pr view <n> --repo ${SLUG} --json number,headRefName
+  gh api repos/${SLUG}/pulls/<n> --jq '{number, headRefName: .head.ref}'
 
 Report every number and the headRefName it printed in 'branches', copied exactly. A number you
 cannot get a branch for is a number you leave out - say so in notes.
@@ -809,10 +831,17 @@ cannot get a branch for is a number you leave out - say so in notes.
 THEN, for EVERY branch you just read, ask EVERY one of these repositories about it:
 ${lines}
 
-  gh pr list --repo <that repository's owner/name> --state open --head <branch> --json number,headRefName,title,labels
+  gh api "repos/<that repository's owner/name>/pulls?state=open&per_page=100" --jq 'map(if .head.ref == "<branch>" then {number, headRefName: .head.ref, title, labels: [.labels[].name]} else empty end)'
 
-Run it from ${ROOT}. --repo names the repository and gh needs no checkout to list it, so a
+Run it from ${ROOT}. The path names the repository and gh needs no checkout to list it, so a
 directory that is not there is not a reason to skip a repository.
+
+THOSE ARE REST READS, AND THEY ARE THE ONLY ONES TO USE. Do not substitute 'gh pr view' or
+'gh pr list': both go over GraphQL, which a secondary limit throttles independently of the number
+'gh api rate_limit' shows, and a refused list here reads as a repository with nothing on the
+branch. The branch filter is applied by the --jq above because the REST list's own head parameter
+wants owner:branch rather than a branch name; do not drop it and report every open pull request as
+a sibling.
 
 REPORT EVERY PAIR YOU RAN IT FOR IN 'asked' - one entry per repository per branch, whether it
 printed a pull request or nothing. That list is checked against the one above: any pair missing
@@ -911,7 +940,7 @@ had already happened to two extension issues.
 It only bites the small-numbered repositories. The site is past #780, so its numbers collide with
 nothing; docs, extension and integration are all in double digits and collide with each other.
 
-  gh pr view <n> --repo ${SLUG} --json headRefName,body,title
+  gh api repos/${SLUG}/pulls/<n> --jq '{headRefName: .head.ref, body, title}'
 
 Close the tracker issues they came from. Run bd from
 the workspace root - not from inside a repository.
@@ -966,7 +995,7 @@ belongs to and hands you a different project's pull request with the same number
 For each pull request, find its issue - the branch is devloop/<issue-id>, and the issue is also named
 in the pull request body:
 
-  gh pr view <n> --repo ${SLUG} --json headRefName,body,title
+  gh api repos/${SLUG}/pulls/<n> --jq '{headRefName: .head.ref, body, title}'
 
 Then write the text between that pull request's markers to a file VERBATIM - a file rather than an
 argument, so a backtick or a $( in it cannot be evaluated by the shell before bd sees it - and
@@ -1012,7 +1041,13 @@ ${lines}
 
 For each line, run exactly this and nothing else:
 
-  gh pr list --repo <that repository's owner/name> --state open --label lane-verified --json number
+  gh api "repos/<that repository's owner/name>/pulls?state=open&per_page=100" --jq 'map(if any(.labels[]; .name == "lane-verified") then .number else empty end)'
+
+THAT IS A REST READ, AND IT IS THE ONLY ONE TO USE. Do not substitute 'gh pr list' for it: that
+goes over GraphQL, which a secondary limit throttles independently of the number 'gh api
+rate_limit' shows, and a refused list here would be reported as an empty queue. The label filter
+is applied by the --jq above because the REST list carries no label parameter; do not drop it
+and report unlabelled work as queued.
 
 RETURN ONE ENTRY PER LINE ABOVE, INCLUDING ${REPO_KEY} ITSELF, and use the KEY from the left column
 as 'repo' - not the owner/name, and not a name of your own. A repository you leave out is one the

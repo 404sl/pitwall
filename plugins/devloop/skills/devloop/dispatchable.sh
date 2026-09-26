@@ -142,7 +142,7 @@ except Exception:
 limit = int(os.environ["LIMIT"] or 0)
 actor = os.environ["ACTOR"]
 
-park = {"umbrella", "needs-access", "needs-decision", "needs-feedback", "watch", "blocked-tooling", "roadmap"}
+park = {"umbrella", "needs-access", "needs-decision", "needs-call", "needs-feedback", "watch", "blocked-tooling", "roadmap"}
 
 def read_ids(name):
     try:

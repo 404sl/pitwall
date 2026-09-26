@@ -1132,14 +1132,27 @@ STOP AND ASK instead of guessing, if any of these is true:
 - You cannot get tests green without weakening an assertion.
 To stop: write the question onto the issue so a person can answer it without re-reading the
 code, from ${ROOT}:
-  BEFORE YOU APPLY needs-decision, ASK: WOULD THE OWNER'S ANSWER DIFFER FROM ANY COMPETENT
-  ENGINEER'S? If no, IT IS NOT THEIRS. Decide it, write down what you chose and why, and carry
-  on. Which of three shapes, whether an old review still binds, where to dedupe, what a fallback
-  value should be, how a report formats a collision - none of those are the owner's, however
-  real the question is.
+  BEFORE YOU APPLY A LABEL, ASK: WOULD THE OWNER'S ANSWER DIFFER FROM ANY COMPETENT ENGINEER'S?
+  If no, IT IS NOT THEIRS. Decide it, write down what you chose and why, and carry on. Which of
+  three shapes, whether an old review still binds, where to dedupe, what a fallback value should
+  be, how a report formats a collision - none of those are the owner's, however real the
+  question is.
 
   It is theirs when the answer is about what the product SHOULD DO, who it is for, what it is
   worth, or what it is called. That is a much smaller set than "somebody must decide".
+
+  THE SAME TEST PICKS THE LABEL when you do stop. Would the owner's answer differ from any
+  competent engineer's? Yes: needs-decision - it is about what the product should do, who it is
+  for, what it is worth, what it is called, and it sits in the owner's queue. No: needs-call - it
+  is which of three shapes, whether an old review still binds, whether a refactor is in scope, and
+  you still cannot settle it from here because nothing written backs either option. A needs-call
+  park is recorded, reopened and reported exactly as a needs-decision park is; only the label
+  differs, and it keeps the question out of the owner's inbox where any engineer can take it.
+  needs-access is neither and is unchanged: a person must do something a run cannot - a deploy, a
+  dashboard, a device - and that is genuinely theirs. In one day three settled engineering
+  questions went back onto the owner's board as needs-decision because it was the only label a
+  run knew for "somebody must decide"; pitwall-3jq asked which of three lock-release structures
+  to take, a real and blocking question in which the owner had no stake.
 
   A DEPENDENCY IS NOT A DECISION. If the answer is "after that other ticket lands", record it
   with bd dep add and do not park it - the tracker holds ordering natively and a label puts a
@@ -1150,7 +1163,7 @@ code, from ${ROOT}:
   of them needed the owner: eight were engineering calls, one was a dependency, one was a park
   whose condition had been met hours earlier. They found them by browsing.
 
-  bd label add ${task.id} <needs-decision if a choice only a person can make, needs-access if it needs a deploy/dashboard/device they have and you do not>
+  bd label add ${task.id} <needs-decision if the owner's answer would differ from any competent engineer's, needs-call if any competent engineer could settle it, needs-access if it needs a deploy/dashboard/device they have and you do not>
   Write what you found, the exact decision needed, and the options with your recommendation to
   ${scratch}/park-note.txt. Then record it and reopen, the note first, so that a crash between
   the two leaves the question written down rather than a reopened issue nobody can answer:
@@ -1469,8 +1482,11 @@ STOP AND ASK instead of guessing, if any of these is true:
   yours; decide, write down what you chose, and carry on.
 - the work needs a checkout, an account, a deploy or a device.
 To stop: write the exact question, the options and your recommendation to ${scratch}/park-note.txt,
-then, in this order:
-  cd ${ROOT} && bd label add ${task.id} <needs-decision or needs-access>
+then, in this order. One test picks the label: WOULD THE OWNER'S ANSWER DIFFER FROM ANY COMPETENT ENGINEER'S?
+Yes is needs-decision. No, and you still cannot settle it from here, is needs-call - any engineer
+may make that call and it stays out of the owner's inbox. needs-access is unchanged: something
+only a person can run.
+  cd ${ROOT} && bd label add ${task.id} <needs-decision, needs-call or needs-access>
   cd ${ROOT} && PITWALL_SESSION=lane-devloop/${task.id} bash ${SKILL_DIR}/bd-note.sh ${task.id} --note-file ${scratch}/park-note.txt
   cd ${ROOT} && bd update ${task.id} -s open
 and return status needs_feedback with the question. That is a good outcome, not a failure.
@@ -2055,7 +2071,7 @@ left ("<- app-xxxx") is an issue THIS one blocks, which is no impediment. Only a
 that this one depends on is a blocker.
 
 Return eligible:false, with a reason, if any of these holds:
-- it is already labelled needs-decision, needs-access, blocked-tooling or watch, is an epic, or genuinely depends on an open issue
+- it is already labelled needs-decision, needs-call, needs-access, blocked-tooling or watch, is an epic, or genuinely depends on an open issue
 
   VERIFY A RECORDED BLOCKER BEFORE HONOURING IT. A note saying "blocked on X" or "do not
   dispatch until X closes" records what was true the day it was written. Run 'bd show X' and
@@ -2408,14 +2424,17 @@ const HANDOVER = {
 
 function parkedProperly(v) {
   const t = String(v || '')
-  return /needs-(decision|access)|blocked-tooling|watch/i.test(t) && /\bopen\b/i.test(t)
+  return /needs-(decision|call|access)|blocked-tooling|watch/i.test(t) && /\bopen\b/i.test(t)
 }
 
 if (!triage.eligible) {
   const handover = await agent(`Issue ${ID} cannot be done unattended: ${triage.reason}
 
-Hand it to a person, from ${ROOT}:
-  bd label add ${ID} <needs-decision if a choice only a person can make, needs-access if it needs a deploy/dashboard/device they have and you do not>
+Hand it to a person, from ${ROOT}. One test picks the label:
+WOULD THE OWNER'S ANSWER DIFFER FROM ANY COMPETENT ENGINEER'S? Yes is needs-decision. No, and
+nothing written settles it, is needs-call - any engineer may make that call and it stays out of
+the owner's inbox. needs-access is unchanged: something only a person can run.
+  bd label add ${ID} <needs-decision if the owner's answer would differ from any competent engineer's, needs-call if any competent engineer could settle it, needs-access if it needs a deploy/dashboard/device they have and you do not>
   Write why this needs a person, and the exact question or decision, so that somebody can answer
   it without re-reading the code, to ${SCRATCH}/${ID}/handover-note.txt. It goes in a file rather
   than an argument so that a backtick or a $( in it cannot be evaluated by the shell. Then record

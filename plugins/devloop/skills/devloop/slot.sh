@@ -194,7 +194,7 @@ ID="$1"
 
 # A PARKED ISSUE IS NOT DISPATCHABLE, and this is the moment to say so.
 #
-# A lane meeting needs-decision, needs-access, needs-feedback, roadmap or blocked-tooling bounces without doing
+# A lane meeting needs-decision, needs-call, needs-access, needs-feedback, roadmap or blocked-tooling bounces without doing
 # anything - the label is a gate and that is what it is for. The waste is upstream: a slot is
 # reserved, a workflow starts, several minutes go by, and the answer is "this is parked".
 #
@@ -214,7 +214,7 @@ except Exception:
     sys.exit(0)
 i = i[0] if isinstance(i, list) else i
 labs = {x if isinstance(x, str) else x.get("name", "") for x in (i.get("labels") or [])}
-print(" ".join(sorted(labs & {"needs-decision", "needs-access", "needs-feedback", "roadmap", "blocked-tooling"})))
+print(" ".join(sorted(labs & {"needs-decision", "needs-call", "needs-access", "needs-feedback", "roadmap", "blocked-tooling"})))
 ' 2>/dev/null)"
   if [ -n "$parked" ]; then
     echo "$ID is parked: $parked" >&2

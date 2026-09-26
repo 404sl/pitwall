@@ -1352,3 +1352,27 @@ test("an unreadable environment whose reported revision agrees is not said to le
   );
   assert.match(said, /own word/, "the log does not say the unreadable environment rests on the step's assertion");
 });
+
+test("the deploy step is told to run each deploy in the foreground and never to end its turn mid-deploy", async () => {
+  const { calls, done } = landOnce({ args: TWO_ENV, deploy: null, check: null });
+  await done;
+
+  const deploy = calls.find((c) => c.label === "deploy");
+  assert.ok(deploy);
+  for (const phrase of ["not in the background", "timeout: 600000", "deploy.lock"]) {
+    assert.ok(
+      deploy.prompt.includes(phrase),
+      `the deploy brief does not say '${phrase}'. A backgrounded deploy is killed the moment the step ends its turn, ` +
+        `which on 2026-09-22 stopped a production deploy after it had taken the server's lock and before it fetched ` +
+        `anything, so every later deploy refused until a person cleared the lock. Asked:\n${deploy.prompt}`,
+    );
+  }
+  assert.match(deploy.prompt, /in the foreground/i, deploy.prompt);
+  assert.match(deploy.prompt, /never end (the|your) turn/i, deploy.prompt);
+  assert.doesNotMatch(
+    deploy.prompt,
+    /idempotent/i,
+    "the brief claims deploy-one.sh short-circuits when the server already serves the sha, and it does not: " +
+      "it always runs the deploy command first and reads the server afterwards",
+  );
+});
