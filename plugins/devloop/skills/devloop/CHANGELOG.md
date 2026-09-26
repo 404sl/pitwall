@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.138
+
+A train that could not give the merge lock back now says which of two things happened. A release
+step whose command was refused, or which answered nothing, is reported as UNATTEMPTED together
+with the release-lock.sh command carrying this run's token - safe to re-run, because the script
+removes the lock only if the holder file names this run. LEAKED now means only that the script ran
+and could not remove the lock, which is the case that needs a person.
+
 ## 0.1.137
 
 The release train no longer treats checks it could not read as checks that failed. Only a verify verdict that positively says `red` retires the train, bisects the set or hands branches back; `unknown`, and a verify step that reports nothing, stop the run with `checks_unreadable` and leave every pull request the train carried labelled for the next train, with the train branch and its pull request left open so their checks can still be read. The verify brief now passes `timeout: 600000` on the watch, says that a call cut by that ceiling is not an answer, and tells the step to re-read the check runs over REST and run the same watch again on the same pull request while anything is still queued or running - rather than concluding anything. It also says what `unknown` is for: the reads were refused, did not parse, or stayed empty, and never a check that is merely still running.
