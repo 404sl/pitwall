@@ -112,3 +112,56 @@ test("the release step is told to report unattempted when its command is not per
     `the release schema has no value for a command that never ran: ${schema.properties.status.enum.join(", ")}`,
   );
 });
+
+const SHA = "e1a54123ca4d0b6a32479f49da4d26893f648206";
+
+function merged(release: (call: Call) => unknown) {
+  return runScript("land-train.js", ARGS, (call: Call, n: number) => {
+    if (n === 1) return { status: "taken", holder: TOKEN };
+    if (call.label.startsWith("build:")) {
+      return { status: "built", trainPr: 120, trainBranch: "release/train-1", included: [1287], skipped: [] };
+    }
+    if (call.label.startsWith("verify:")) return { status: "green", failingSpecs: [] };
+    if (call.label.startsWith("version:")) {
+      return { status: "no_manifest", masterVersion: "", branchVersion: "", touchesPlugin: false, notes: "no manifest" };
+    }
+    if (call.label.startsWith("merge:")) return { status: "merged", mergeSha: SHA, masterGreen: true, notes: "" };
+    if (call.label === "branch-survey") {
+      return { status: "read", branches: [{ number: 1287, branch: "devloop/pitwall-80o" }], asked: [], open: [] };
+    }
+    if (call.label === "left-behind") return { repos: [{ repo: "site", status: "read", labelled: [] }] };
+    if (call.label === "release") return release(call);
+    return null;
+  });
+}
+
+test("a release step that throws does not take the train's own result with it", async () => {
+  const { logs, done } = merged(() => {
+    throw new Error("the release step was killed before it answered");
+  });
+  const result = (await done) as { landed?: number[]; mergeSha?: string; stopped?: string | null; lock?: string };
+
+  assert.deepEqual(result.landed, [1287], "a train that merged reported nothing it landed");
+  assert.equal(result.mergeSha, SHA, "the merge sha was lost to the release step throwing");
+  assert.equal(result.stopped, null, "a train that did not stop reported a stop reason");
+
+  const lock = result.lock || "";
+  assert.match(lock, /^UNATTEMPTED - /, `a release step that threw before answering read nothing about the lock: ${lock}`);
+  assert.ok(lock.includes("killed before it answered"), `the lock field does not name what the release step threw: ${lock}`);
+  assert.ok(lock.endsWith(COMMAND), `the lock field does not end with the command that releases the lock: ${lock}`);
+  assert.doesNotMatch(lock, /LEAKED/, `a release that never ran reads as a leak: ${lock}`);
+  assert.ok(
+    logs.some((l) => l.startsWith("UNATTEMPTED - ") && l.includes("killed before it answered")),
+    `the journal never said the release step died: ${logs.join(" | ")}`,
+  );
+});
+
+test("a step in the train that threw still surfaces its own error when the release step throws too", async () => {
+  const { calls, done } = runScript("land-train.js", ARGS, (call: Call, n: number) => {
+    if (n === 1) return { status: "taken", holder: TOKEN };
+    if (call.label === "release") throw new Error("the release step was killed");
+    throw new Error("the build agent died mid-run");
+  });
+  await assert.rejects(done, /build agent died mid-run/);
+  assert.equal(calls.filter((c) => c.label === "release").length, 1, "the lock was never given back");
+});
