@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.143
+
+A train that stops on `checks_unreadable` must **not** be resumed. The verify step
+answered `unknown`, that is a completed step, and a resume replays it from cache
+and stops in the same place having read nothing. Read the checks by hand over REST
+rather than `gh pr view`, close the train pull request with `--delete-branch`
+since only a red train is retired for you, and let the next ordinary
+`config.sh --train` launch carry the passengers — they kept their labels and the
+lock was released. The warning about cutting a second release branch applies to
+`merge_refused`, where the first train may still merge, not to this stop.
+
 ## 0.1.142
 
 A release train whose release step dies or is killed mid-call now still reports
