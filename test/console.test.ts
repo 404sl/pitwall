@@ -1332,14 +1332,14 @@ test("a park age leads with the number, flags a suspect one in words, and never 
 test("the needs-you band shows how long each park has waited between the title and the verdict", () => {
   const board = buildBoard(AGED, {}, AGED_QUESTIONS);
   const markup = renderToStaticMarkup(createElement(NeedsYouBand, { groups: board.needsYou }));
-  assert.match(markup, /<th scope="col">Title<\/th><th scope="col">Parked<\/th><th scope="col">Staleness<\/th>/);
-  assert.match(markup, /<th colSpan="8" scope="rowgroup">pitwall<\/th>/);
+  assert.match(markup, /<th scope="col" role="columnheader">Title<\/th><th scope="col" role="columnheader">Parked<\/th><th scope="col" role="columnheader">Staleness<\/th>/);
+  assert.match(markup, /<th colSpan="8" scope="rowgroup" role="rowheader">pitwall<\/th>/);
   const old = markup.indexOf("pitwall-old");
   const mute = markup.indexOf("pitwall-mute");
   assert.ok(old > -1 && old < mute, "the oldest park is read first");
-  assert.match(markup, /pitwall-old.*?<td class="pw-cell pw-cell--at"><span class="pw-age pw-age--suspect"[^>]*>11d0h<\/span><span class="pw-age__flag">not re-examined<\/span><\/td>/);
-  assert.match(markup, /pitwall-mute.*?<td class="pw-cell pw-cell--kind" title="Labelled needs-decision, but no line states the question\.">misfiled<\/td>/);
-  assert.match(markup, /pitwall-new.*?<td class="pw-cell pw-cell--at"><span class="pw-age" title="[^"]*next collection\.">—<\/span><\/td>/);
+  assert.match(markup, /pitwall-old.*?<td class="pw-cell pw-cell--at" role="cell"><span class="pw-age pw-age--suspect"[^>]*>11d0h<\/span><span class="pw-age__flag">not re-examined<\/span><\/td>/);
+  assert.match(markup, /pitwall-mute.*?<td class="pw-cell pw-cell--kind" role="cell" title="Labelled needs-decision, but no line states the question\.">misfiled<\/td>/);
+  assert.match(markup, /pitwall-new.*?<td class="pw-cell pw-cell--at" role="cell"><span class="pw-age" title="[^"]*next collection\.">—<\/span><\/td>/);
   assert.equal(markup.match(/>misfiled</g)?.length, 1);
   assert.doesNotMatch(markup, /pw-row--alert|pw-row--signal/, "the red rail is the band's, not a row's");
 });
@@ -1350,7 +1350,7 @@ test("the parked band lists the suspect parks in the open and the rest behind a 
     createElement(ParkedBand, { entries: board.parked, rows: board.parkedRows }),
   );
   assert.match(markup, /^<p class="pw-parked">tooling 1 · watch 1 · umbrella 2 · roadmap 1<\/p><p class="pw-parked pw-parked--blocked">blocked 1<\/p>/);
-  const suspect = markup.indexOf('<table class="pw-table pw-table--parked"><caption class="pw-sr">Parked issues past the threshold');
+  const suspect = markup.indexOf('<table class="pw-table pw-table--parked" role="table"><caption class="pw-sr">Parked issues past the threshold');
   const disclosure = markup.indexOf('<details class="pw-disclosure">');
   assert.ok(suspect > -1 && disclosure > suspect, "the suspect table is in the open, above the rest");
   assert.doesNotMatch(markup, /<details[^>]* open/);
@@ -1362,7 +1362,7 @@ test("the parked band lists the suspect parks in the open and the rest behind a 
   const t4 = markup.indexOf("pitwall-t4");
   assert.ok(t1 > suspect && t3 > t1 && t3 < disclosure, "9d before 8d, both suspect");
   assert.ok(t2 > disclosure && t4 > t2, "2d then the unknown, inside the disclosure");
-  assert.match(markup, /pitwall-t1.*?<td class="pw-cell pw-cell--kind">tooling<\/td><td class="pw-cell pw-cell--title"><a class="pw-link" href="#\/issue\/pitwall\/pitwall-t1">/);
+  assert.match(markup, /pitwall-t1.*?<td class="pw-cell pw-cell--kind" role="cell">tooling<\/td><td class="pw-cell pw-cell--title" role="cell"><a class="pw-link" href="#\/issue\/pitwall\/pitwall-t1">/);
   assert.doesNotMatch(markup, /pitwall-epic|pitwall-dep/, "a structural park has nothing to re-examine");
   assert.doesNotMatch(markup, /\b5\b/, "the five parked issues are never summed");
 
@@ -1815,7 +1815,7 @@ test("the problems table bounds its source column so a long source wraps inside 
   assert.ok(problems.includes(`<td class="pw-cell pw-cell--source" role="cell">${source}</td>`));
   assert.ok(!problems.includes("pw-cell--id"), "the id cell means one line everywhere it appears");
   const ready = renderToStaticMarkup(createElement(Ready, { rows: board.ready, total: board.ready.length }));
-  assert.ok(ready.includes('<td class="pw-cell pw-cell--id">pitwall-4b5.2</td>'));
+  assert.ok(ready.includes('<td class="pw-cell pw-cell--id" role="cell">pitwall-4b5.2</td>'));
 
   const css = readFileSync(new URL("../ui/styles/console.css", import.meta.url), "utf8");
   const phone = css.indexOf("@media (max-width: 640px)");
@@ -1967,10 +1967,10 @@ test("the calls band renders beside needs you, with the call kind, and never as 
   assert.ok(markup.includes('aria-labelledby="band-calls"'));
   assert.ok(markup.includes(strings.band.calls));
   assert.ok(markup.includes(strings.caption.calls));
-  assert.equal(markup.match(/pw-cell--kind">call</g)?.length, 3, "the band shows exactly the counted rows");
+  assert.equal(markup.match(/pw-cell--kind" role="cell">call</g)?.length, 3, "the band shows exactly the counted rows");
   assert.ok(markup.includes(">3<"), "the head carries the count");
   assert.equal(markup.includes("pw-band--alert"), false, "a call is not the owner's, so it never paints red");
-  assert.equal(markup.includes('pw-cell--kind">decision<'), false);
+  assert.equal(markup.includes('pw-cell--kind" role="cell">decision<'), false);
   const needs = renderToStaticMarkup(
     createElement(Band, {
       id: "needs",
@@ -2170,18 +2170,18 @@ test("the sort control sits last, says default rather than priority, and keeps t
 test("every issue row shows whose queue it is in and who asked, and absent reads as absent in words", () => {
   const board = buildBoard(SORTED, {}, {}, "owner");
   const needs = renderToStaticMarkup(createElement(NeedsYou, { groups: board.needsYou, sort: board.sort }));
-  assert.match(needs, /<th scope="col">Priority<\/th><th scope="col">Queue<\/th><th scope="col">Asked by<\/th><th scope="col">Kind<\/th>/);
-  assert.match(needs, /pitwall-2<\/td><td class="pw-cell pw-cell--data">P1<\/td><td class="pw-cell pw-cell--data pw-cell--who" title="pitwall-planning-session">pitwall-planning-session<\/td><td class="pw-cell pw-cell--data pw-cell--who" title="pitwall-devloop">pitwall-devloop<\/td><td class="pw-cell pw-cell--kind">decision<\/td>/);
-  assert.match(needs, /pitwall-1<\/td><td class="pw-cell pw-cell--data">P0<\/td><td class="pw-cell pw-cell--who"><span class="pw-absent">unassigned<\/span><\/td><td class="pw-cell pw-cell--who"><span class="pw-absent">not recorded<\/span><\/td>/);
+  assert.match(needs, /<th scope="col" role="columnheader">Priority<\/th><th scope="col" role="columnheader">Queue<\/th><th scope="col" role="columnheader">Asked by<\/th><th scope="col" role="columnheader">Kind<\/th>/);
+  assert.match(needs, /pitwall-2<\/td><td class="pw-cell pw-cell--data" role="cell">P1<\/td><td class="pw-cell pw-cell--data pw-cell--who" role="cell" title="pitwall-planning-session">pitwall-planning-session<\/td><td class="pw-cell pw-cell--data pw-cell--who" role="cell" title="pitwall-devloop">pitwall-devloop<\/td><td class="pw-cell pw-cell--kind" role="cell">decision<\/td>/);
+  assert.match(needs, /pitwall-1<\/td><td class="pw-cell pw-cell--data" role="cell">P0<\/td><td class="pw-cell pw-cell--who" role="cell"><span class="pw-absent">unassigned<\/span><\/td><td class="pw-cell pw-cell--who" role="cell"><span class="pw-absent">not recorded<\/span><\/td>/);
   assert.match(needs, /href="#\/issue\/pitwall\/pitwall-1\?sort=owner"/, "opening a ticket keeps the sort");
   assert.doesNotMatch(needs, /pw-row--signal|pw-row--alert|pw-row--hold|pw-chip/, "a queue name is not a signal");
   const ready = renderToStaticMarkup(createElement(Ready, { rows: board.ready, total: board.readyCount, sort: board.sort }));
-  assert.match(ready, /<th scope="col">Priority<\/th><th scope="col">Queue<\/th><th scope="col">Asked by<\/th><th scope="col">Title<\/th>/);
-  assert.match(ready, /pitwall-5<\/td><td class="pw-cell pw-cell--data">P0<\/td><td class="pw-cell pw-cell--who"><span class="pw-absent">unassigned<\/span><\/td><td class="pw-cell pw-cell--who"><span class="pw-absent">not recorded<\/span><\/td><td class="pw-cell pw-cell--title">/);
+  assert.match(ready, /<th scope="col" role="columnheader">Priority<\/th><th scope="col" role="columnheader">Queue<\/th><th scope="col" role="columnheader">Asked by<\/th><th scope="col" role="columnheader">Title<\/th>/);
+  assert.match(ready, /pitwall-5<\/td><td class="pw-cell pw-cell--data" role="cell">P0<\/td><td class="pw-cell pw-cell--who" role="cell"><span class="pw-absent">unassigned<\/span><\/td><td class="pw-cell pw-cell--who" role="cell"><span class="pw-absent">not recorded<\/span><\/td><td class="pw-cell pw-cell--title" role="cell">/);
   const parked = renderToStaticMarkup(createElement(ParkedBand, { entries: board.parked, rows: board.parkedRows, sort: board.sort }));
-  assert.match(parked, /<th scope="col">Priority<\/th><th scope="col">Queue<\/th><th scope="col">Asked by<\/th><th scope="col">Kind<\/th>/);
-  assert.match(parked, /<th colSpan="8" scope="rowgroup">pitwall<\/th>/);
-  assert.match(parked, /pitwall-9<\/td><td class="pw-cell pw-cell--data">P1<\/td><td class="pw-cell pw-cell--data pw-cell--who" title="pitwall-planning-session">pitwall-planning-session<\/td><td class="pw-cell pw-cell--who"><span class="pw-absent">not recorded<\/span><\/td>/);
+  assert.match(parked, /<th scope="col" role="columnheader">Priority<\/th><th scope="col" role="columnheader">Queue<\/th><th scope="col" role="columnheader">Asked by<\/th><th scope="col" role="columnheader">Kind<\/th>/);
+  assert.match(parked, /<th colSpan="8" scope="rowgroup" role="rowheader">pitwall<\/th>/);
+  assert.match(parked, /pitwall-9<\/td><td class="pw-cell pw-cell--data" role="cell">P1<\/td><td class="pw-cell pw-cell--data pw-cell--who" role="cell" title="pitwall-planning-session">pitwall-planning-session<\/td><td class="pw-cell pw-cell--who" role="cell"><span class="pw-absent">not recorded<\/span><\/td>/);
 });
 
 test("an empty result names the filters that emptied it", () => {
@@ -2673,6 +2673,47 @@ test("a page with nothing to act on renders exactly as it did before", () => {
       ),
       renderToStaticMarkup(createElement(IssueDetail, { shown: shownOf(view), view })),
       `${over.classification} with labels ${JSON.stringify(over.labels ?? [])} gains nothing`,
+    );
+  }
+});
+
+test("every other console table names its row groups, because Chrome 153 ignores an unlabelled tbody", () => {
+  const board = buildBoard(SORTED, {}, {}, "owner");
+  const running = buildBoard(RUNNING_MIX);
+  const tables: Array<[string, string]> = [
+    ["ready", renderToStaticMarkup(createElement(Ready, { rows: board.ready, total: board.readyCount }))],
+    ["needs you", renderToStaticMarkup(createElement(NeedsYou, { groups: board.needsYou }))],
+    ["calls", renderToStaticMarkup(createElement(Calls, { groups: board.needsYou }))],
+    ["parked", renderToStaticMarkup(createElement(Parked, { entries: board.parked, rows: board.parkedRows }))],
+    ["running", renderToStaticMarkup(createElement(Running, { rows: running.running }))],
+    [
+      "dependencies",
+      detailMarkup({
+        blockedBy: [{ id: "sr-tot5", title: "Settle the refund window", status: "open" }],
+        blocks: [],
+      }),
+    ],
+  ];
+  for (const [band, markup] of tables) {
+    assert.match(markup, /<table class="pw-table[^"]*" role="table">/, band);
+    assert.match(markup, /<thead class="pw-sr" role="rowgroup">/, band);
+    const bodies = markup.match(/<tbody\b[^>]*>/g) ?? [];
+    assert.ok(bodies.length > 0, `${band} renders no tbody`);
+    for (const body of bodies) {
+      assert.match(body, /role="rowgroup"/, `${band}: ${body}`);
+    }
+    const rows = markup.match(/<tr\b[^>]*>/g) ?? [];
+    assert.ok(rows.length > 1, `${band} renders no body row`);
+    for (const row of rows) {
+      assert.match(row, / role="row"/, `${band}: ${row}`);
+      assert.equal(row.match(/ role="/g)?.length, 1, `${band} gives a row a second role: ${row}`);
+    }
+    assert.match(markup, /<th scope="col" role="columnheader">/, band);
+    assert.match(markup, / role="cell"/, band);
+    assert.match(
+      markup,
+      /<th scope="row" [^>]*role="rowheader">|<th colSpan="\d+" scope="rowgroup" role="rowheader">/,
+      `${band} leaves its row header without a rowheader role`,
     );
   }
 });
