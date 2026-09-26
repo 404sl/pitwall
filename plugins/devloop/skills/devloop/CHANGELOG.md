@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.142
+
+A release train whose release step dies or is killed mid-call now still reports
+what the train did. Read the `lock` field for what happened to the merge lock: an
+`UNATTEMPTED` value means nothing on disk was read or removed and carries the
+command to run, and `landed`, `mergeSha` and `stopped` beside it are the train's
+real result rather than an empty object.
+
+Refs pitwall-1iir.
+
 ## 0.1.141
 
 `land.js` now tells a merge lock release that never ran apart from one that leaked. A release step whose command is refused reports `unattempted` with the refusal's own words, and a session reading a landing run's result sees `UNATTEMPTED` - the release command with this run's token in it, and why re-running it is safe - rather than `LEAKED`. Only a reported `STILL_HELD` is `LEAKED` now, and only that case needs a person to look at the lock. Do not clear a lock by hand on an `UNATTEMPTED`: run the command the result names and let the script decide.
