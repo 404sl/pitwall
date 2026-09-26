@@ -505,9 +505,20 @@ ${SHELL_FIRST}
 
   cd ${REPO_PATH} && gh pr checks ${trainPr} --repo ${SLUG} --watch --fail-fast
 
-That call BLOCKS until the checks finish - it does not poll and you must not wrap it in a loop
-or a sleep. When it returns, read the check runs back rather than trusting the exit code - the
-head sha first, then the runs on that sha:
+That call BLOCKS until the checks finish - it streams rather than polls, so ONE call does the
+waiting and you must not wrap it in a loop or a sleep. Pass timeout: 600000 on the tool call. The
+Bash tool's default is two minutes, and a full run here is longer than that.
+
+A CUT CALL IS NOT AN ANSWER. 600000 ms is the Bash tool's ceiling, so a suite that runs longer
+than ten minutes has the watch cut out from under it - the call comes back on the ceiling rather
+than on a result, and nothing about the checks has been read. When that happens, read the check
+runs back over REST exactly as below; if total_count is 0, or any status is still "queued" or
+"in_progress", RUN THE SAME WATCH AGAIN ON THE SAME PULL REQUEST and read them back again after
+it. Repeat that until the reads conclude. A cut watch is not a red train, not an empty rollup and
+not "unknown" - it is a call to make again.
+
+When the watch returns, read the check runs back rather than trusting the exit code - the head
+sha first, then the runs on that sha:
 
   gh api repos/${SLUG}/pulls/${trainPr} --jq '{headSha: .head.sha, state, merged}'
   gh api repos/${SLUG}/commits/<that headSha>/check-runs --jq '{total_count, names: [.check_runs[].name], statuses: [.check_runs[].status], conclusions: [.check_runs[].conclusion]}'
@@ -525,6 +536,15 @@ watch returned early, so read again rather than judging it.
 AN EMPTY check_runs ARRAY IS NOT A PASS. "Every entry is green" is vacuously true of an empty
 array. If total_count is 0, wait for the checks to register and read it again; report "unknown"
 only if it stays empty after a second look.
+
+"unknown" MEANS YOU COULD NOT READ THE CHECKS, AND NOTHING ELSE. Report it when gh refused the
+reads, when what came back did not parse, or when total_count stayed 0 after a second look - and
+put what you attempted and what it said in notes, verbatim, because those sentences are the whole
+record of why this train stopped. A check still running is not "unknown" and neither is a watch
+the ceiling cut: both mean watch again. Do not report "unknown" as a way of saying a run looks
+unhappy, and do not report "red" for anything you did not read a failing conclusion for. The train
+treats "unknown" as its own outcome: it stops, the pull requests it carried keep their labels for
+the next train, and nothing is retired or handed back on it.
 
 NEVER READ repos/${SLUG}/commits/<sha>/status INSTEAD. That endpoint reports state "pending" with
 total_count 0 on these repositories forever, green commits included, because they publish check
@@ -1141,6 +1161,17 @@ async function runTrain(only, suffix, depth) {
       return { stopped: null }
     }
     return { stopped: 'merge_refused', notes: merged ? merged.notes : 'merge agent returned nothing' }
+  }
+
+  // AN UNREADABLE ROLLUP IS NOT A RED ONE, AND ONLY 'red' REACHES THE PATH BELOW. Everything the
+  // verify step can answer other than green and red is ignorance about the checks: 'unknown', and
+  // a verdict of null when the step returned nothing at all. Retiring, bisecting or rejecting on
+  // ignorance throws away work that is probably fine - a bisect over checks nobody could read
+  // cuts a release branch per half and learns nothing from either.
+  if (!verdict || verdict.status !== 'red') {
+    const said = trimmed(verdict && verdict.notes) || 'verify agent returned nothing'
+    log(`#${built.trainPr} checks UNREADABLE - nothing is wrong with the pull requests it carried (${included.join(', ')}) and nothing was read that says otherwise. They keep their labels and the next train takes them. Not retired, not bisected, nothing handed back: ${built.trainBranch} and #${built.trainPr} are left open with their checks unread, so what they report can still be read by hand.\n    ${said}`)
+    return { stopped: 'checks_unreadable', notes: said }
   }
 
   // RED, SO THE TRAIN IS OVER - RETIRE IT BEFORE DOING ANYTHING ELSE. A merged train is removed
