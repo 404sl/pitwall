@@ -26,32 +26,34 @@ export function Problems({ rows }: { rows: ProblemRow[] }) {
     return <p className="pw-empty">{strings.empty.problems}</p>;
   }
   return (
-    <table className="pw-table pw-table--problems">
+    <table className="pw-table pw-table--problems" role="table">
       <caption className="pw-sr">{strings.caption.problems}</caption>
-      <thead className="pw-sr">
-        <tr>
-          <th scope="col">{strings.column.scope}</th>
-          <th scope="col">{strings.column.source}</th>
-          <th scope="col">{strings.column.message}</th>
-          <th scope="col">{strings.column.at}</th>
+      <thead className="pw-sr" role="rowgroup">
+        <tr role="row">
+          <th scope="col" role="columnheader">{strings.column.scope}</th>
+          <th scope="col" role="columnheader">{strings.column.source}</th>
+          <th scope="col" role="columnheader">{strings.column.message}</th>
+          <th scope="col" role="columnheader">{strings.column.at}</th>
         </tr>
       </thead>
-      <tbody>
+      <tbody role="rowgroup">
         {rows.map((row) => (
           <tr
             key={problemKey(row)}
             className="pw-row"
-            role={row.scope === "console" ? "status" : undefined}
+            role="row"
+            aria-live={row.scope === "console" ? "polite" : undefined}
+            aria-atomic={row.scope === "console" ? true : undefined}
           >
-            <th scope="row" className="pw-cell pw-cell--project">
+            <th scope="row" className="pw-cell pw-cell--project" role="rowheader">
               {scopeLabel(row)}
             </th>
-            <td className="pw-cell pw-cell--source">{row.source}</td>
-            <td className="pw-cell pw-cell--title">
+            <td className="pw-cell pw-cell--source" role="cell">{row.source}</td>
+            <td className="pw-cell pw-cell--title" role="cell">
               {row.message}
               {preventedText(row.prevented)}
             </td>
-            <td className="pw-cell pw-cell--at" title={stamp(row.at)}>
+            <td className="pw-cell pw-cell--at" role="cell" title={stamp(row.at)}>
               {clock(row.at)}
             </td>
           </tr>
