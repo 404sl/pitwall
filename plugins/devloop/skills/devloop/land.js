@@ -1052,7 +1052,10 @@ followed.`
 
 // Deploy is the one part of this file with no generic version, so it comes from the config
 // rather than from here. A repo with no deploy command simply has nothing to deploy - which is
-// true of a docs repo or a library - and saying so is better than inventing a step.
+// true of a docs repo or a library - and saying so is better than inventing a step. Each entry
+// is rendered exactly as configured and runs with NO working directory guaranteed, so a command
+// that needs a repository path must carry its own: the deploy step is forbidden to touch the
+// main checkout's working tree, and a cd into it would be that.
 function deployCommands(landed) {
   const repos = [...new Set(landed.map((l) => l.repo))]
   const out = []
@@ -1061,7 +1064,7 @@ function deployCommands(landed) {
     const cmds = cfg.deploy || []
     if (!cmds.length) continue
     out.push(`  # ${name}`)
-    for (const c of cmds) out.push(`  cd ${REPOS[name]} && ${c}`)
+    for (const c of cmds) out.push(`  ${c}`)
   }
   return out.length
     ? out.join('\n')

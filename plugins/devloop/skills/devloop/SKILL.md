@@ -953,6 +953,14 @@ plugin.
 
 ## Deploy behaviour
 
+**Every command in a repo's `deploy` array runs exactly as configured, with no working
+directory guaranteed, so each one must name its own repository path.** The lander and the
+train used to prefix each with a `cd` into the shared checkout a person works in; a deploy
+tool that reads the working tree then shipped whatever branch and uncommitted edits that
+checkout happened to hold rather than the sha that merged, and a deploy-config guard
+comparing the checkout against the default branch failed on a checkout somebody had edited.
+The `cd` is gone. Write the path into the command - `deploy-one.sh` takes `--repo-path`.
+
 - **site** - `mina staging deploy`, never production. mina ships `origin/master`, so it
   deploys exactly what was merged.
 - **extension** - rebuilds so it can be reloaded in Chrome. If the main checkout is on

@@ -1376,3 +1376,28 @@ test("the deploy step is told to run each deploy in the foreground and never to 
       "it always runs the deploy command first and reads the server afterwards",
   );
 });
+
+test("the deploy step is handed each configured command with no cd into the shared checkout", async () => {
+  const { calls, done } = landOnce({ args: TWO_ENV, deploy: null, check: null });
+  await done;
+
+  const deploy = calls.find((c) => c.label === "deploy");
+  assert.ok(deploy, `no deploy step was spawned. Steps: ${calls.map((c) => c.label).join(", ")}`);
+  const lines = deploy.prompt.split("\n");
+  for (const command of TWO_ENV.repos.docs.deploy) {
+    const line = lines.find((l) => l.includes(command));
+    assert.ok(line, `the configured deploy command is not in the brief:\n${deploy.prompt}`);
+    assert.equal(
+      line.trim(),
+      command,
+      "a configured deploy command was rendered with something in front of it. It used to be a cd into the shared " +
+        "checkout a person works in, so a deploy tool that reads the working tree shipped that checkout's branch and " +
+        "uncommitted edits rather than the sha that merged - in the same brief that spends a paragraph forbidding " +
+        "any touch of that working tree.",
+    );
+  }
+  assert.ok(
+    !deploy.prompt.includes("cd /root/site"),
+    `the deploy brief still cds into the shared checkout:\n${deploy.prompt}`,
+  );
+});
