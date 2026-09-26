@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.140
+
+A rework run now compares the branch's local ref in the main checkout against origin's head of it before it merges anything, and says which it found ahead. A local ref that is ahead - a unit of work that committed and died before it could publish - is fast-forwarded into the rework worktree, so the one push at the end publishes it with the merge on top, and its commit message is read back by the same check as every other. When each ref holds commits the other lacks, `git cherry` decides what that means: every local commit already upstream under another sha is a branch some rebase rewrote, which is the ordinary case and is carried on as if the refs were equal, while a commit the remote holds in no form stops the run with its sha and the files it touches. A branch name that does not resolve against the remote stops it too. The comparison is reported either way, because "no local commits ahead" and "never looked" used to read the same.
+
+A run that reports a divergence is now handed back on the word alone, whether or not it also names the sha. Nothing legitimate reports that word without one - a rebased ref reports as superseded - so a divergence with nothing named is a report that disagrees with itself, and it is handed back rather than read as the harmless case and merged over.
+
 ## 0.1.139
 
 A deploy command configured in a repo's `deploy` array now runs with no working
