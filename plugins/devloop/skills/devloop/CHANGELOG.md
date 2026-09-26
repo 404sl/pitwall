@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.141
+
+`land.js` now tells a merge lock release that never ran apart from one that leaked. A release step whose command is refused reports `unattempted` with the refusal's own words, and a session reading a landing run's result sees `UNATTEMPTED` - the release command with this run's token in it, and why re-running it is safe - rather than `LEAKED`. Only a reported `STILL_HELD` is `LEAKED` now, and only that case needs a person to look at the lock. Do not clear a lock by hand on an `UNATTEMPTED`: run the command the result names and let the script decide.
+
 ## 0.1.140
 
 A rework run now compares the branch's local ref in the main checkout against origin's head of it before it merges anything, and says which it found ahead. A local ref that is ahead - a unit of work that committed and died before it could publish - is fast-forwarded into the rework worktree, so the one push at the end publishes it with the merge on top, and its commit message is read back by the same check as every other. When each ref holds commits the other lacks, `git cherry` decides what that means: every local commit already upstream under another sha is a branch some rebase rewrote, which is the ordinary case and is carried on as if the refs were equal, while a commit the remote holds in no form stops the run with its sha and the files it touches. A branch name that does not resolve against the remote stops it too. The comparison is reported either way, because "no local commits ahead" and "never looked" used to read the same.
