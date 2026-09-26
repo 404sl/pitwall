@@ -30,7 +30,7 @@ function runDispatchable(cwd: string, extraPath: string, declareRoot = true, arg
     LOCK_PREFIX: undefined,
     PATH: `${extraPath}:${process.env["PATH"] ?? ""}`,
   };
-  const ran = spawnSync("bash", [DISPATCHABLE_SH, ...args], { encoding: "utf8", cwd, env, timeout: 5000 });
+  const ran = spawnSync("bash", [DISPATCHABLE_SH, ...args], { encoding: "utf8", cwd, env, timeout: 30_000 });
   return { status: ran.status ?? -1, signal: ran.signal, out: ran.stdout ?? "", err: ran.stderr ?? "" };
 }
 

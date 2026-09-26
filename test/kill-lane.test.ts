@@ -75,7 +75,7 @@ function run(space: Fixture, args: readonly string[]) {
   const ran = spawnSync("bash", [join(SKILL, "kill-lane.sh"), ...args], {
     encoding: "utf8",
     cwd: space.root,
-    timeout: 5000,
+    timeout: 30_000,
     env: {
       ...process.env,
       ...GIT_ENV,

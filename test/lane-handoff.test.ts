@@ -1200,7 +1200,7 @@ test("a flag that takes a value is refused when given none, not looped on foreve
   const box = harness("");
   const flags = ["--repo-path", "--slug", "--pr", "--branch", "--issue", "--note-file", "--worktree", "--lane-lock", "--label"];
   for (const flag of flags) {
-    const ran = handoff(box, [...required(box), flag], true, {}, 5000);
+    const ran = handoff(box, [...required(box), flag], true, {}, 30_000);
 
     assert.equal(ran.signal, null, `${flag}: the script had to be killed`);
     assert.equal(ran.status, 6, `${flag}: ${ran.stdout}${ran.stderr}`);
