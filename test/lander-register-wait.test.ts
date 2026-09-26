@@ -210,7 +210,7 @@ test("a check that never concludes is not ready when the checks wait runs out", 
   const box = workspace(true);
   const bin = stubs(box.root, box.bare, '[{"name":"CI","status":"queued","conclusion":null}]', 1);
 
-  const ran = run(box.root, box.repo, bin, "30", "2");
+  const ran = run(box.root, box.repo, bin, "30", "10");
 
   assert.match(ran.out, /^registered: 1 check\(s\)/m, ran.out);
   assert.match(ran.out, /^not_ready: CI on 101 has not concluded yet/m, ran.out);
