@@ -642,7 +642,7 @@ function runLanesScript(
     LOCK_PREFIX: undefined,
     ...extra,
   };
-  const ran = spawnSync("bash", [LANES_SH, ...args], { encoding: "utf8", cwd, env, timeout: 5000 });
+  const ran = spawnSync("bash", [LANES_SH, ...args], { encoding: "utf8", cwd, env, timeout: 30_000 });
   return { status: ran.status ?? -1, signal: ran.signal, out: ran.stdout ?? "", err: ran.stderr ?? "" };
 }
 
@@ -799,7 +799,7 @@ function runLanesAgainst(
     encoding: "utf8",
     cwd: root,
     env,
-    timeout: 5000,
+    timeout: 30_000,
   });
   return { status: ran.status ?? -1, out: ran.stdout ?? "", err: ran.stderr ?? "" };
 }

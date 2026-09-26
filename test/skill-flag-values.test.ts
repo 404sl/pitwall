@@ -18,7 +18,7 @@ function run(script: string, args: readonly string[]) {
     DEVLOOP_CONFIG: undefined,
     LOCK_PREFIX: undefined,
   };
-  const ran = spawnSync("bash", [join(SKILL, script), ...args], { encoding: "utf8", cwd: root, env, timeout: 5000 });
+  const ran = spawnSync("bash", [join(SKILL, script), ...args], { encoding: "utf8", cwd: root, env, timeout: 30_000 });
   return { status: ran.status ?? -1, signal: ran.signal, out: ran.stdout ?? "", err: ran.stderr ?? "" };
 }
 

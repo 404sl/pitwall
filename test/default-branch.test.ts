@@ -222,20 +222,23 @@ test("a deploy-one.sh entry that would ship a branch other than the repository's
   }
 });
 
+function sleeps(seconds: number, finished: string): string {
+  return `sleep ${seconds} && date +%s > ${JSON.stringify(finished)}`;
+}
+
 test("a gh that never answers is refused within the bound rather than waited on", () => {
-  const box = workspace(
-    { site: { path: "repo", test: "npm test", slug: "acme/site" } },
-    { "acme/site": "exec sleep 5" },
-  );
+  const box = workspace({ site: { path: "repo", test: "npm test", slug: "acme/site" } }, {});
+  const finished = join(box.root, "gh-finished");
+  ghStub(box.bin, { "acme/site": sleeps(5, finished) });
   try {
     const started = Date.now();
     const ran = configWith(box, { DEVLOOP_GH_TIMEOUT: "1" }, "--args", "zz-aaa1");
     const took = Date.now() - started;
+    assert.equal(existsSync(finished), false, `config.sh let a gh bounded to 1s sleep its full 5s before refusing (${took}ms in all)`);
     assert.notEqual(ran.status, 0, "a dispatch proceeded on a default branch gh never reported");
     assert.equal(ran.stdout, "", "an args object was printed alongside the refusal");
     assert.match(ran.stderr, /could not read the default branch of acme\/site/);
     assert.match(ran.stderr, /timed out after 1s/, `the refusal does not say gh timed out:\n${ran.stderr}`);
-    assert.ok(took < 4000, `config.sh waited ${took}ms on a gh bounded to 1s`);
     assert.equal(existsSync(slotsPath(box.prefix)), false, "a refused dispatch left a lane reserved");
   } finally {
     clean(box);
@@ -427,19 +430,20 @@ test("land-one.sh and land-train.sh give up on a gh that never answers, before c
   const box = checkout("main");
   const prefix = `pwbranchhang${process.pid}`;
   try {
-    ghStub(box.bin, { "acme/site": "exec sleep 5" });
     const runs = [
       ["land-one.sh", ["--repo-path", box.repo, "--slug", "acme/site", "--pr", "7", "--branch", "devloop/zz-aaa1", "--prefix", prefix, "--base", "main"]],
       ["land-train.sh", ["--repo-path", box.repo, "--slug", "acme/site", "--prefix", prefix, "--base", "main"]],
     ] as const;
     for (const [name, argv] of runs) {
+      const finished = join(box.root, `gh-finished-${name}`);
+      ghStub(box.bin, { "acme/site": sleeps(5, finished) });
       const started = Date.now();
       const ran = script(box.root, box.bin, name, [...argv], { DEVLOOP_GH_TIMEOUT: "1" });
       const took = Date.now() - started;
+      assert.equal(existsSync(finished), false, `${name} let a gh bounded to 1s sleep its full 5s before refusing (${took}ms in all)`);
       assert.equal(ran.code, 6, `${name}: expected a usage refusal, got ${ran.code}:\n${ran.out}\n${ran.err}`);
       assert.match(ran.out, /could not read the default branch of acme\/site/, `${name}:\n${ran.out}`);
       assert.match(ran.out, /within 1s/, `${name} does not say how long it waited:\n${ran.out}`);
-      assert.ok(took < 4000, `${name} waited ${took}ms on a gh bounded to 1s`);
     }
     assert.equal(existsSync(join("/tmp", `${prefix}-worktrees`)), false, "a worktree was cut before the refusal");
   } finally {

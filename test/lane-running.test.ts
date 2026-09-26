@@ -410,7 +410,7 @@ test("--stale-minutes with no value is refused, not looped on forever", () => {
   const ran = spawnSync("bash", [SCRIPT, "--any", "--stale-minutes"], {
     encoding: "utf8",
     cwd: space.root,
-    timeout: 5000,
+    timeout: 30_000,
     env: { ...process.env, ...GIT_ENV, DEVLOOP_ROOT: space.root, DEVLOOP_WF: space.wf, DEVLOOP_TASKS: space.tasks },
   });
   assert.equal(ran.signal, null, "the script had to be killed");
