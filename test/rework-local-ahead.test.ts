@@ -37,7 +37,9 @@ function sh(command: string, cwd: string, env: NodeJS.ProcessEnv = {}) {
   });
 }
 
-function fixture(diverged = false) {
+type Shape = "unpushed" | "reset_diverged" | "rebased" | "rebased_over_unpushed";
+
+function fixture(shape: Shape = "unpushed") {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "pitwall-rework-local-")));
   const origin = join(root, "origin.git");
   git(root, "init", "--quiet", "--bare", "--initial-branch=master", origin);
@@ -53,15 +55,25 @@ function fixture(diverged = false) {
   git(lane, "push", "--quiet", "-u", "origin", BRANCH);
   const pushedHead = git(lane, "rev-parse", "HEAD");
 
-  if (diverged) git(lane, "reset", "--quiet", "--hard", "HEAD~1");
-  commit(lane, "lane.ts", "lane = 2\n", "Give the lane file its second value");
+  if (shape === "reset_diverged") git(lane, "reset", "--quiet", "--hard", "HEAD~1");
+  if (shape !== "rebased") commit(lane, "lane.ts", "lane = 2\n", "Give the lane file its second value");
   const localHead = git(lane, "rev-parse", "HEAD");
 
   commit(repo, "other.ts", "other = 1\n", "Move master on");
   git(repo, "push", "--quiet", "origin", "master");
   git(repo, "fetch", "--quiet", "origin");
 
-  return { root, repo, lane, pushedHead, localHead, wt: join(root, `${ID}-rework`) };
+  let remoteHead = pushedHead;
+  if (shape === "rebased" || shape === "rebased_over_unpushed") {
+    const landing = join(root, "landing");
+    git(repo, "worktree", "add", "--quiet", "--detach", landing, `refs/remotes/origin/${BRANCH}`);
+    git(landing, "rebase", "origin/master");
+    git(landing, "push", "--quiet", "--force-with-lease", "origin", `HEAD:refs/heads/${BRANCH}`);
+    remoteHead = git(landing, "rev-parse", "HEAD");
+    git(repo, "fetch", "--quiet", "origin");
+  }
+
+  return { root, repo, lane, pushedHead, localHead, remoteHead, wt: join(root, `${ID}-rework`) };
 }
 
 function onlyLine(prompt: string, what: RegExp, describe: string): string {
@@ -100,6 +112,10 @@ function compares(prompt: string): string {
 
 function takesTheLocalRef(prompt: string): string {
   return onlyLine(prompt, /^ {2}cd \S+ && git .*\bmerge --ff-only\b/, "takes the local ref into the rework worktree");
+}
+
+function namesTheFiles(prompt: string): string {
+  return onlyLine(prompt, /^ {2}git -C \S+ cherry\b/, "names the files the commits origin lacks touch");
 }
 
 function bringsMasterIn(prompt: string): string {
@@ -185,7 +201,7 @@ test("the brief compares the local ref against origin's head and takes a lane's 
 });
 
 test("a local ref that has diverged from origin's head stops the rework instead of merging over it", async () => {
-  const { root, repo, localHead, pushedHead, wt } = fixture(true);
+  const { root, repo, localHead, pushedHead, wt } = fixture("reset_diverged");
   const brief = (await resolveCall(root)).prompt;
 
   const compared = sh(compares(brief), repo, { branch: BRANCH });
@@ -195,10 +211,9 @@ test("a local ref that has diverged from origin's head stops the rework instead 
 
   const diverged = brief.slice(brief.indexOf("DIVERGED"));
   assert.match(diverged, /\bblocked\b/, "the brief does not tell a run with a diverged local ref to report blocked");
-  const differing = onlyLine(brief, /^ {2}git -C \S+ diff --name-only\b/, "names the files that differ between the two refs");
-  const listed = sh(differing, repo, { branch: BRANCH });
-  assert.equal(listed.status, 0, `the command that names the differing files failed:\n${listed.stderr}`);
-  assert.equal(listed.stdout.trim(), "lane.ts", `the differing file was not named:\n${listed.stdout}`);
+  const listed = sh(namesTheFiles(brief), repo, { branch: BRANCH });
+  assert.equal(listed.status, 0, `the command that names the files of the unpublished commits failed:\n${listed.stderr}`);
+  assert.equal(listed.stdout.trim(), "lane.ts", `the unpublished commit's file was not named:\n${listed.stdout}`);
 
   const add = onlyLine(brief, /^ {2}git worktree add\b/, "adds the rework worktree");
   assert.equal(sh(add, repo, { branch: BRANCH }).status, 0, "the setup command was refused");
@@ -208,8 +223,8 @@ test("a local ref that has diverged from origin's head stops the rework instead 
   assert.notEqual(localHead, pushedHead, "the fixture did not diverge, so nothing here is testing a diverged ref");
 });
 
-test("a resolve step that reports a diverged local ref is handed back however it reports its own status", async () => {
-  const { root, localHead, pushedHead } = fixture(true);
+test("a resolve step that reports a commit origin holds in no form is handed back however it reports its own status", async () => {
+  const { root, localHead, pushedHead } = fixture("reset_diverged");
   const args = {
     id: ID,
     pr: 739,
@@ -223,15 +238,15 @@ test("a resolve step that reports a diverged local ref is handed back however it
   };
   const { calls, done } = runScript("rework.js", args, (_call, n) =>
     n === 1
-      ? { status: "resolved", branch: BRANCH, localBranch: "diverged", localHead, oldHead: pushedHead, newHead: "f".repeat(40), files: ["lane.ts"] }
+      ? { status: "resolved", branch: BRANCH, localBranch: "diverged", localHead, unpublished: [localHead], oldHead: pushedHead, newHead: "f".repeat(40), files: ["lane.ts"] }
       : { lane: "released", slot: "released" },
   );
   const result = await done;
   assert.equal(
     result.outcome,
     "blocked",
-    "a rework that found the two refs diverged was carried on to the handoff, which labels the " +
-      "pull request and lets the lander squash whichever side the merge happened to take",
+    "a rework that found a local commit origin holds in no form was carried on to the handoff, " +
+      "which labels the pull request and lets the lander squash whichever side the merge happened to take",
   );
   assert.ok(String(result.notes).includes(localHead), "the result does not name the local sha, so a person cannot see what was not published");
   assert.ok(String(result.notes).includes(pushedHead), "the result does not name the remote sha");
@@ -266,5 +281,125 @@ test("a resolve step that reports no comparison at all says so in the result", a
     "not_reported",
     "a rework that never said what the local ref held reads exactly like one that found nothing " +
       "ahead of the remote, which is the half of this defect that hides the other half",
+  );
+});
+
+test("a branch that was rebased and pushed from a detached worktree is not read as diverged", async () => {
+  const { root, repo, localHead, pushedHead, remoteHead } = fixture("rebased");
+  const brief = (await resolveCall(root)).prompt;
+
+  assert.equal(localHead, pushedHead, "the fixture moved the local ref, so it is not the pre-rebase head a rebase leaves behind");
+  assert.notEqual(remoteHead, pushedHead, "the fixture did not rebase the published branch, so nothing here is testing the shape the lander leaves");
+
+  const compared = sh(compares(brief), repo, { branch: BRANCH });
+  assert.equal(compared.status, 0, `the comparison the brief names failed:\n${compared.stderr}`);
+  assert.match(
+    compared.stdout,
+    /LOCAL_SUPERSEDED/,
+    "a local ref left at the pre-rebase head is not reported as superseded, so the ordinary retirement " +
+      `of a rebased branch reads as a disagreement a person has to settle:\n${compared.stdout}`,
+  );
+  assert.doesNotMatch(
+    compared.stdout,
+    /DIVERGED/,
+    "the comparison calls a rebased branch diverged, which stops every rework of one - four of the " +
+      `eleven branches measured on 2026-09-26 are this shape, two of them dead lanes:\n${compared.stdout}`,
+  );
+  assert.doesNotMatch(
+    compared.stdout,
+    /^\+/m,
+    `origin holds a rebased branch's commits under new shas, so nothing on it is unpublished:\n${compared.stdout}`,
+  );
+
+  const superseded = brief.slice(brief.indexOf("LOCAL_SUPERSEDED  "), brief.indexOf("DIVERGED  "));
+  assert.match(superseded, /'superseded'/, "the brief does not say what to report for a rebased local ref");
+  assert.doesNotMatch(superseded, /\bblocked\b/, "the brief stops a rework whose branch was merely rebased");
+});
+
+test("a rebased local ref is carried on to the handoff rather than handed back", async () => {
+  const { root, localHead, remoteHead } = fixture("rebased");
+  const args = {
+    id: ID,
+    pr: 739,
+    repo: "site",
+    slot: 3,
+    root,
+    skillDir: "/skill",
+    lockPrefix: "pw",
+    worktrees: root,
+    repos: { site: { slug: "acme/site", path: "repo", test: "npm test" } },
+  };
+  const { calls, done } = runScript("rework.js", args, (_call, n) => {
+    if (n === 1) return { status: "resolved", branch: BRANCH, localBranch: "superseded", localHead, oldHead: remoteHead, newHead: "b".repeat(40), files: ["shared.ts"] };
+    if (n === 2) return { status: "verified", ciConclusion: "SUCCESS" };
+    return { lane: "released", slot: "released" };
+  });
+  const result = await done;
+  assert.notEqual(result.outcome, "blocked", "a rework whose branch had only been rebased was handed back for a person to settle");
+  assert.equal(result.localBranch, "superseded", "the result does not carry what the comparison found");
+  assert.equal(
+    calls.filter((call) => call.label.startsWith("handoff:")).length,
+    1,
+    "the handoff never ran, so the pull request stays unlabelled and the next train drops it again",
+  );
+});
+
+test("a commit origin holds in no form is reported as diverged, and only the files it touches are named", async () => {
+  const { root, repo } = fixture("rebased_over_unpushed");
+  const brief = (await resolveCall(root)).prompt;
+
+  const compared = sh(compares(brief), repo, { branch: BRANCH });
+  assert.equal(compared.status, 0, `the comparison the brief names failed:\n${compared.stderr}`);
+  assert.match(
+    compared.stdout,
+    /DIVERGED/,
+    "a commit no remote holds in any form, sitting under a branch the lander has since rebased, is " +
+      `not reported as a divergence at all:\n${compared.stdout}`,
+  );
+  assert.doesNotMatch(compared.stdout, /LOCAL_SUPERSEDED/, `the same comparison reports both answers:\n${compared.stdout}`);
+
+  const listed = sh(namesTheFiles(brief), repo, { branch: BRANCH });
+  assert.equal(listed.status, 0, `the command that names the files of the unpublished commits failed:\n${listed.stderr}`);
+  assert.equal(
+    listed.stdout.trim(),
+    "lane.ts",
+    `the report names files no unpublished commit touches:\n${listed.stdout}`,
+  );
+  assert.ok(
+    git(repo, "diff", "--name-only", `refs/remotes/origin/${BRANCH}`, `refs/heads/${BRANCH}`).includes("other.ts"),
+    "the two refs no longer sit on different bases, so this fixture no longer catches a report that " +
+      "diffs the two heads against each other and names everything master moved",
+  );
+});
+
+test("a divergence with no commit origin lacks does not override a resolve step that finished", async () => {
+  const { root, localHead, remoteHead } = fixture("rebased");
+  const args = {
+    id: ID,
+    pr: 739,
+    repo: "site",
+    slot: 3,
+    root,
+    skillDir: "/skill",
+    lockPrefix: "pw",
+    worktrees: root,
+    repos: { site: { slug: "acme/site", path: "repo", test: "npm test" } },
+  };
+  const { calls, done } = runScript("rework.js", args, (_call, n) => {
+    if (n === 1) return { status: "resolved", branch: BRANCH, localBranch: "diverged", localHead, oldHead: remoteHead, newHead: "b".repeat(40), files: ["shared.ts"] };
+    if (n === 2) return { status: "verified", ciConclusion: "SUCCESS" };
+    return { lane: "released", slot: "released" };
+  });
+  const result = await done;
+  assert.notEqual(
+    result.outcome,
+    "blocked",
+    "the word alone stops the rework, so a resolve step that looked, found every local commit already " +
+      "upstream and finished the work is still handed back for a person to settle",
+  );
+  assert.equal(
+    calls.filter((call) => call.label.startsWith("handoff:")).length,
+    1,
+    "the handoff never ran on a branch with nothing unpublished on it",
   );
 });

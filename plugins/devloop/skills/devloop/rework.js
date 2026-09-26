@@ -137,8 +137,9 @@ const RESOLVE = {
   properties: {
     status: { type: 'string', enum: ['resolved', 'already_clean', 'blocked'] },
     branch: { type: 'string' },
-    localBranch: { type: 'string', enum: ['equal', 'behind', 'ahead_included', 'diverged', 'absent'], description: "what the comparison of refs/heads/<branch> in the main checkout against refs/remotes/origin/<branch> found BEFORE the merge: equal, behind (the superseded head of an earlier round), ahead_included (it was ahead and the worktree was fast-forwarded onto it, so the push publishes it), diverged (each holds commits the other lacks, so you stopped), absent (there is no local ref). Omitting it says nothing was looked at, which reads the same as nothing being there" },
+    localBranch: { type: 'string', enum: ['equal', 'behind', 'ahead_included', 'superseded', 'diverged', 'absent'], description: "what the comparison of refs/heads/<branch> in the main checkout against refs/remotes/origin/<branch> found BEFORE the merge: equal, behind (a strict ancestor of the remote head), ahead_included (it was ahead and the worktree was fast-forwarded onto it, so the push publishes it), superseded (both sides held commits the other lacked and every local-only one is patch-equivalent to a commit already upstream, so the local ref is a head some rebase left behind and nothing is unpublished), diverged (the local ref carries commits no remote holds in any form, so you stopped), absent (there is no local ref). Omitting it says nothing was looked at, which reads the same as nothing being there" },
     localHead: { type: 'string', description: 'the sha refs/heads/<branch> held in the main checkout, whenever there was one' },
+    unpublished: { type: 'array', items: { type: 'string' }, description: "the shas 'git cherry' marked '+' when both refs held commits the other lacked - the local commits no remote holds in any form. This is what makes 'diverged' different from 'superseded' and it is empty for every other answer" },
     oldHead: { type: 'string' },
     newHead: { type: 'string' },
     files: { type: 'array', items: { type: 'string' } },
@@ -301,9 +302,9 @@ round is about to replace or an earlier round already did, or the last commit of
 before it could push, which the comparison takes into this worktree rather than leaving behind.
 Never merge in it and never push from it either way. A merge there builds on whatever head that
 worktree happens to hold, and a push from it is refused as a non-fast-forward once a round has moved
-the remote - or,
-on the first round, moves the branch from a checkout this run does not hold and the repair step never
-sees. Leave it alone. The handoff step removes it once the label is on, and not before.
+the remote - or, on the first round, moves the branch from a checkout this run does not hold and the
+repair step never sees. Leave it alone. The handoff step removes it once the label is on, and not
+before.
 
 Record the branch head BEFORE you touch it - you will need to prove it moved. This is the head the
 remote holds:
@@ -317,7 +318,7 @@ words. Merging origin's head without looking is how that commit is dropped: the 
 remote head, the lander squashes what it can see, and the commit is gone from the pull request with
 nothing erroring anywhere.
 
-  if ! remote_head=$(git -C ${REPO_PATH} rev-parse -q --verify "refs/remotes/origin/$branch"); then echo NO_REMOTE_REF; elif local_head=$(git -C ${REPO_PATH} rev-parse -q --verify "refs/heads/$branch"); then set -- $(git -C ${REPO_PATH} rev-list --left-right --count "$local_head...$remote_head"); echo "local $local_head ahead $1 / remote $remote_head ahead $2"; case "$1 $2" in "0 0") echo EQUAL;; "0 "*) echo LOCAL_BEHIND;; *" 0") echo LOCAL_AHEAD;; *) echo DIVERGED;; esac; else echo "remote $remote_head, no local ref"; echo NO_LOCAL_REF; fi
+  if ! remote_head=$(git -C ${REPO_PATH} rev-parse -q --verify "refs/remotes/origin/$branch"); then echo NO_REMOTE_REF; elif local_head=$(git -C ${REPO_PATH} rev-parse -q --verify "refs/heads/$branch"); then set -- $(git -C ${REPO_PATH} rev-list --left-right --count "$local_head...$remote_head"); echo "local $local_head ahead $1 / remote $remote_head ahead $2"; case "$1 $2" in "0 0") echo EQUAL;; "0 "*) echo LOCAL_BEHIND;; *" 0") echo LOCAL_AHEAD;; *) cherry=$(git -C ${REPO_PATH} cherry "$remote_head" "$local_head"); echo "$cherry"; if printf '%s\\n' "$cherry" | grep -q '^+'; then echo DIVERGED; else echo LOCAL_SUPERSEDED; fi;; esac; else echo "remote $remote_head, no local ref"; echo NO_LOCAL_REF; fi
 
 The word it prints decides what happens next, and it goes in your report whichever it is. Report it
 as 'localBranch', with the local sha as 'localHead' whenever there was one: "no local commits ahead"
@@ -334,8 +335,8 @@ here.
                         local": that is the drop this step exists to stop, wearing a word that says
                         it looked.
 
-  LOCAL_BEHIND          the local ref is the superseded head an earlier round replaced. Carry on as
-                        below and report 'behind'.
+  LOCAL_BEHIND          the local ref is an ancestor of the remote head - the superseded head an
+                        earlier round replaced. Carry on as below and report 'behind'.
 
   LOCAL_AHEAD           the lane committed and died before it could publish. Take that commit into this
                         worktree NOW, before the merge, and the one push at the end publishes it
@@ -354,13 +355,31 @@ here.
                         it, and the branch then no longer contains master, which is the one thing
                         the lander reads it for.
 
-  DIVERGED              STOP. Each ref holds commits the other does not, so no head keeps both and
-                        nothing may be published over either, and which side is right is a person's
-                        call rather than a guess. Merge nothing, push nothing, and report status
-                        "blocked" and localBranch 'diverged' with both shas and the files that
-                        differ:
+  LOCAL_SUPERSEDED      both sides hold commits the other lacks, and 'git cherry' found every
+                        local-only one to be patch-equivalent to a commit already upstream - the
+                        marks are all '-'. That is a rebase: this branch was rebased in a detached
+                        worktree and pushed from there, which leaves refs/heads/$branch in the main
+                        checkout at the PRE-rebase head, so the two refs disagree while nothing is
+                        unpublished. It is the ordinary shape of a branch retired after a rebase and
+                        it is most of what reaches this step. Carry on exactly as for EQUAL and
+                        report 'superseded' with the local sha. Nothing is taken in: every commit it
+                        holds is already in the remote head under another sha, and taking it would
+                        put a second copy of each on the branch.
 
-  git -C ${REPO_PATH} diff --name-only "refs/remotes/origin/$branch" "refs/heads/$branch"
+  DIVERGED              STOP. Both sides hold commits the other lacks AND 'git cherry' marked at
+                        least one local commit '+', which means the remote holds it in no form at
+                        all - not rebased, not squashed. So no head keeps both, nothing may be
+                        published over either, and which side is right is a person's call rather
+                        than a guess. Merge nothing, push nothing, and report status "blocked" and
+                        localBranch 'diverged' with both shas, the '+' shas as 'unpublished', and
+                        the files those commits touch:
+
+  git -C ${REPO_PATH} cherry "refs/remotes/origin/$branch" "refs/heads/$branch" | awk '$1=="+"{print $2}' | xargs -I{} git -C ${REPO_PATH} diff-tree --no-commit-id --name-only -r {} | sort -u
+
+                        Take the files from the '+' commits like that rather than diffing the two
+                        heads against each other: they sit on different bases, so a two-head diff
+                        reports everything master moved as well and buries the disagreement in a
+                        list of files nobody on this branch touched.
 ${railsSetup}
 TAKE THE LABEL OFF WHILE YOU WORK. lane-verified is the lander's signal that a branch is ready,
 and it is currently sitting on a head that cannot merge. Remove it now and let the handoff step
@@ -516,8 +535,9 @@ the words a person would use, never mention the pipeline, lanes, labels, trains,
 temporary paths, or any tooling or assistance, and read it back from git afterwards and check it
 yourself.
 
-REPORT: status, the branch name, what the local ref comparison found, the old head, the new head,
-and the files you resolved. If the
+REPORT: status, the branch name, what the local ref comparison found - 'localBranch', 'localHead',
+and 'unpublished' when the comparison marked any commit '+' - the old head, the new head, and the
+files you resolved. If the
 merge brings nothing in - because the lander already pushed the rebased head before retiring it,
 or because something else brought the branch up to master in the meantime - HEAD after the merge
 equals the head you recorded, the merge pushed nothing, and that is status "already_clean" with oldHead
@@ -540,15 +560,22 @@ if (!resolved || resolved.status === 'blocked') {
   }
 }
 
-if (!result && resolved.localBranch === 'diverged') {
+const UNPUBLISHED = (resolved && resolved.unpublished) || []
+
+if (!result && UNPUBLISHED.length) {
   result = {
     pr: PR,
     id: ID,
     outcome: 'blocked',
-    localBranch: resolved.localBranch,
+    localBranch: resolved.localBranch || 'not_reported',
     localHead: resolved.localHead || null,
-    notes: `the local ref of the branch in ${REPO_PATH} and origin's head of it have diverged - each carries commits the other does not, so no push publishes one without discarding the other, and which side is right is a person's call. local ${resolved.localHead || 'unreported'}, remote ${resolved.oldHead || 'unreported'}; resolve reported ${resolved.status}, and this is handed back unlabelled whatever it did next. ${resolved.notes || ''}`.trim(),
+    unpublished: UNPUBLISHED,
+    notes: `the local ref of the branch in ${REPO_PATH} carries ${UNPUBLISHED.length} commit(s) origin holds in no form - ${UNPUBLISHED.join(', ')} - while origin's head carries commits it lacks, so no push publishes one without discarding the other and which side is right is a person's call. local ${resolved.localHead || 'unreported'}, remote ${resolved.oldHead || 'unreported'}; resolve reported ${resolved.status}, and this is handed back unlabelled whatever it did next. ${resolved.notes || ''}`.trim(),
   }
+}
+
+if (!result && resolved.localBranch === 'diverged') {
+  log(`${OWNER}: resolve called the local ref diverged and named no commit origin lacks, which is the shape a rebased branch leaves behind rather than unpublished work, so the rework was not stopped for it`)
 }
 
 if (!result && !resolved.localBranch) {
