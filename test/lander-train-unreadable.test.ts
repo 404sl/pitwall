@@ -1,7 +1,11 @@
 import { strict as assert } from "node:assert";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import test from "node:test";
 
 import { runScript, type Call } from "./support/workflow.js";
+
+const SKILL = join(import.meta.dirname, "..", "plugins", "devloop", "skills", "devloop");
 
 const ARGS = {
   skillDir: "/skill",
@@ -117,4 +121,52 @@ test("the verify step is told what to do when the tool ceiling cuts the watch", 
     "the verify step runs a GraphQL read",
   );
   assert.equal(verify.prompt.includes("`"), false, "a backtick in the verify brief closes its template literal early");
+});
+
+test("both places a supervisor reads say what to do after stopped=checks_unreadable", async () => {
+  const whenToUse = (readFileSync(join(SKILL, "land-train.js"), "utf8").match(/^\s*whenToUse: '(.*)',$/m) || [])[1] || "";
+
+  assert.match(
+    whenToUse,
+    /checks_unreadable/,
+    "whenToUse documents recovery for merge_refused and never names checks_unreadable, so a " +
+      "supervisor meeting that stop reads the merge_refused sentence as the nearest advice",
+  );
+  assert.match(
+    whenToUse,
+    /DO NOT RESUME/,
+    "whenToUse does not say that checks_unreadable is not resumed. A verify step that answered " +
+      "'unknown' is a completed step, so a resume replays it from cache and stops in the same " +
+      "place having read no check - the merge_refused recovery does nothing here",
+  );
+  assert.match(
+    whenToUse,
+    /--delete-branch/,
+    "whenToUse does not say what to do with the train branch and pull request the stop leaves " +
+      "open. Only the red path retires a train, so nothing else ever removes them",
+  );
+
+  const skill = readFileSync(join(SKILL, "SKILL.md"), "utf8");
+  const section = skill.indexOf("## Launching a train");
+  const next = skill.indexOf("\n## ", section + 1);
+  const launching = skill.slice(section, next > 0 ? next : undefined);
+
+  assert.ok(section > 0, "SKILL.md no longer has a Launching a train section to read the recovery from");
+  assert.match(
+    launching,
+    /checks_unreadable/,
+    "the Launching a train section writes out the merge_refused recovery and names no other stop, " +
+      "so checks_unreadable has no guidance where a supervisor looks for it",
+  );
+  assert.match(
+    launching,
+    /gh pr close <trainPr> --repo <slug> --delete-branch/,
+    "the section does not name the by-hand retire of the train left open by checks_unreadable",
+  );
+  assert.doesNotMatch(
+    launching.slice(launching.indexOf("checks_unreadable")),
+    /resumeFromRunId/,
+    "the checks_unreadable guidance points at a resume, which replays the cached 'unknown' verdict " +
+      "rather than re-reading the checks",
+  );
 });

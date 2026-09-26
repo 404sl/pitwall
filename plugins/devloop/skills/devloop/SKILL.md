@@ -515,6 +515,37 @@ replays that step only when the prompt matches: a new token misses the cache, ta
 second time and cuts a second release branch for the same pull requests - the outcome the resume
 after `merge_refused` exists to avoid. Keep the object the launch used and hand it back unchanged.
 
+**`stopped=checks_unreadable` is the one stop that is NOT resumed**, and the reason is the same
+cache the paragraph above relies on. A verify step that reports `unknown` has answered: it is a
+completed step, an unchanged prompt replays instantly, and `land-train.js` has no `retryFailed` to
+re-issue one with. So a resume replays that `unknown`, stops on `checks_unreadable` again and reads
+no check - the recovery that is right after `merge_refused` does nothing at all here.
+
+What the stop leaves behind needs no recovery. Nothing was retired, nothing was bisected, every
+pull request the train carried kept its label, and the merge lock was released on the way out, so
+the passengers are already queued for the next train. Two things are left for a person, in this
+order. **Read the checks by hand, over REST** - the GraphQL secondary limit is one of the reasons a
+rollup goes unread, so `gh pr view` is the wrong tool for the read that just failed:
+
+```
+gh api repos/<slug>/pulls/<trainPr> --jq '{headSha: .head.sha, state, merged}'
+gh api repos/<slug>/commits/<that headSha>/check-runs \
+  --jq '{total_count, statuses: [.check_runs[].status], conclusions: [.check_runs[].conclusion]}'
+```
+
+**Then retire the train the way the red path would**, because only the red path does it and nothing
+else removes that branch - it was left open solely so those checks could still be read:
+
+```
+gh pr close <trainPr> --repo <slug> --delete-branch
+```
+
+**The next train is then an ordinary `config.sh --train` launch, and here that is correct rather
+than the hazard.** After `merge_refused` the first train may still merge, so a second release
+branch would apply the same work twice; after `checks_unreadable` the first train will never merge
+- nothing is resuming it - so once it is retired a fresh release branch carries those same
+passengers exactly once.
+
 The train's token is prefixed `land-train-`, which is what tells a holder file apart from
 `land.js`'s `lander-` and from a person merging by hand. The repository is named on the command
 because the train refuses to guess one; run it again per repository, and its result names the
