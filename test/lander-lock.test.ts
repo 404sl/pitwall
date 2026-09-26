@@ -261,23 +261,42 @@ test("land.js does not tell a supervisor to clear a lock another run holds", asy
   );
 });
 
-test("land.js reports a lock it could not give back as leaked", async () => {
-  for (const reply of [{ status: "still_held" }, {}, undefined]) {
-    const { done } = runScript("land.js", landArgs(TOKEN), (call, n) => {
-      if (n === 1) return { status: "taken", holder: TOKEN };
-      if (call.label && call.label.startsWith("survey")) return { prs: [] };
-      if (call.label === "release") return reply;
-      return {};
-    });
+function landReleasing(reply: unknown) {
+  return runScript("land.js", landArgs(TOKEN), (call, n) => {
+    if (n === 1) return { status: "taken", holder: TOKEN };
+    if (call.label && call.label.startsWith("survey")) return { prs: [] };
+    if (call.label === "release") return reply;
+    return {};
+  });
+}
+
+test("land.js reports a lock the script ran against and could not remove as leaked", async () => {
+  const { done } = landReleasing({ status: "still_held" });
+  const result = (await done) as { lock?: string };
+
+  assert.match(
+    result.lock || "",
+    /LEAKED/,
+    "a release step that reported STILL_HELD left the lock standing, and the run still has to " +
+      "say so in its result - the reported incident is a lander returning success while holding " +
+      "the lock.",
+  );
+});
+
+test("land.js does not report a release step that answered nothing as leaked", async () => {
+  for (const reply of [{}, undefined, null]) {
+    const { done } = landReleasing(reply);
     const result = (await done) as { lock?: string };
 
-    assert.match(
+    assert.doesNotMatch(
       result.lock || "",
       /LEAKED/,
-      `a release step that answered ${JSON.stringify(reply)} left the lock standing, and the ` +
-        "run still has to say so in its result - the reported incident is a lander returning " +
-        "success while holding the lock.",
+      `a release step that answered ${JSON.stringify(reply)} said nothing about the lock on ` +
+        "disk: nothing asked it to let go and nothing read it, so this is not the state that " +
+        "sends a person to clear a lock another lander may legitimately hold. This assertion " +
+        "used to read LEAKED for all three replies alongside still_held.",
     );
+    assert.match(result.lock || "", /^UNATTEMPTED - /, result.lock || "");
   }
 });
 

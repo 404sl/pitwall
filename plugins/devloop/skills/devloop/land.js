@@ -430,8 +430,8 @@ const RELEASE = {
   type: 'object',
   required: ['status'],
   properties: {
-    status: { enum: ['released', 'not_mine', 'already_gone', 'still_held'], description: 'the first word release-lock.sh printed, lowercased - it reports its own outcome and you are not asked to judge it' },
-    notes: { type: 'string', description: 'every other line it printed' }
+    status: { enum: ['released', 'not_mine', 'already_gone', 'still_held', 'unattempted'], description: "the first word release-lock.sh printed, lowercased - it reports its own outcome and you are not asked to judge it - or unattempted when the command was not permitted to run, so it printed nothing" },
+    notes: { type: 'string', description: 'every other line it printed, or what refused the command, in its own words' }
   }
 }
 
@@ -486,6 +486,8 @@ mismatch, and the file is the fact while the value you report is a claim about i
 ${LAW()}`
 }
 
+const releaseCommand = (token) => `bash ${SKILL_DIR}/release-lock.sh --lock ${MERGE_LOCK} --token '${token}'`
+
 function releasePrompt(token) {
   return `Give the merge lock back. This runs however the landing run ended - merged, stopped,
 or failed - because a lock left behind blocks everything afterwards for no reason. One run merged
@@ -494,7 +496,7 @@ nothing behind it.
 
 RUN THIS ONE COMMAND, EXACTLY AS IT STANDS, AND NOTHING ELSE:
 
-  bash ${SKILL_DIR}/release-lock.sh --lock ${MERGE_LOCK} --token '${token}'
+  ${releaseCommand(token)}
 
 It reads the holder file, removes the lock only if that file holds this run's token, and prints
 what it did on its first line: RELEASED, NOT_MINE, ALREADY_GONE or STILL_HELD. Report that word
@@ -526,6 +528,13 @@ NOT_MINE IS A CORRECT OUTCOME, not a failure to clean up. It says the holder fil
 this run's token, so nothing was removed and nothing should be - whoever holds it gives it back
 themselves. ALREADY_GONE likewise: there is nothing to release. Report what it printed and stop.
 Change nothing else.
+
+IF THE COMMAND IS NOT PERMITTED TO RUN AT ALL, report 'unattempted' and put what refused it, in
+its own words, in 'notes'. Report 'unattempted' as well if the command printed REFUSED, which it
+does when it will not act on the token it was given: nothing was read and nothing was removed
+either way. Do not work around a refusal - run no other command, remove nothing by hand, and
+report no other status. A step that says its command never ran is told apart from a lock that is
+genuinely stuck, and the command above is then run by whoever reads the result.
 ${LAW()}`
 }
 
@@ -2141,9 +2150,13 @@ try {
     } else if (released && released.status === 'already_gone') {
       lockState = `already_gone - ${MERGE_LOCK} was not there to release`
       log(`${lockState}. Something removed this run's lock while it was working, so another lander may have been running beside it.\n    ${released.notes || ''}`)
+    } else if (!released || !trimmed(released.status) || released.status === 'unattempted') {
+      const said = trimmed(released && released.notes) || 'the release step answered nothing at all, which is what a refused command and a step that died before answering both look like'
+      lockState = `UNATTEMPTED - the release command never ran, so nothing has been read about ${MERGE_LOCK} and nothing has been removed: ${said}. Run it and let it decide: it removes ${MERGE_LOCK} only when ${MERGE_LOCK}/holder reads this run's token, prints NOT_MINE and touches nothing when it reads anything else, and ALREADY_GONE when there is nothing there - so re-running it is safe whatever has happened since: ${releaseCommand(LOCK_TOKEN)}`
+      log(lockState)
     } else {
-      lockState = `LEAKED - ${MERGE_LOCK} still held ${LOCK_TOKEN} after the release step, or the step answered nothing. Check ${MERGE_LOCK}/holder still reads ${LOCK_TOKEN} before removing it - if it reads anything else, another lander has it and it is not yours.`
-      log(`${lockState}\n    ${(released && released.notes) || 'the release agent returned nothing'}`)
+      lockState = `LEAKED - ${MERGE_LOCK} still held ${LOCK_TOKEN} after the release step: the script ran, could not remove it, and said so. Check ${MERGE_LOCK}/holder still reads ${LOCK_TOKEN} before removing it - if it reads anything else, another lander has it and it is not yours.`
+      log(`${lockState}\n    ${released.notes || 'the script reported STILL_HELD and says what stopped the removal'}`)
   }
   }
 }
