@@ -1110,6 +1110,14 @@ let released = null
 let lockState = `LEAKED - the release step never reported. Read ${MERGE_LOCK}/holder before touching anything.`
 let lockOwned = false
 
+async function giveBack(prompt, opts) {
+  try {
+    return await agent(prompt, opts)
+  } catch (e) {
+    return { status: 'unattempted', notes: `the release step died before answering - ${e && e.message ? e.message : String(e)}` }
+  }
+}
+
 // Build a train, test it, and merge it if green. On red, split and recurse: the failure is in one
 // half or the other, and log2(n) CI runs finds it. Depth is capped because a train that keeps
 // failing is telling us something a bisect cannot fix - at that point every remaining branch is
@@ -1436,7 +1444,7 @@ for (const [name, a] of Object.entries(perRepo)) {
 } finally {
 if (lockOwned) {
 const releaseCommand = `bash ${SKILL_DIR}/release-lock.sh --lock ${MERGE_LOCK} --token '${LOCK_TOKEN}'`
-released = await agent(
+released = await giveBack(
   `Release the serial merge lock. This runs however the train ended - merged, stopped or failed -
 because a lock left behind stands down every train after it for no reason.
 
