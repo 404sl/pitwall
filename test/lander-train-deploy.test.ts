@@ -284,3 +284,24 @@ test("a close step confirming only some of what landed reports the rest", async 
   assert.equal(out.closed, "partial");
   assert.deepEqual(out.unclosed, [1290]);
 });
+
+test("the deploy brief hands each configured command over with no cd into the shared checkout", async () => {
+  const prompt = await deployBrief(CONFIGURED);
+
+  for (const command of [STAGING, PRODUCTION]) {
+    const line = prompt.split("\n").find((l) => l.includes(command));
+    assert.ok(line, `the configured deploy command is not in the brief:\n${prompt}`);
+    assert.equal(
+      line.trim(),
+      command,
+      "a configured deploy command was rendered with something in front of it. It used to be a cd into " +
+        "the shared checkout a person works in, which makes a deploy tool that reads the working tree ship " +
+        "that checkout's branch and uncommitted edits instead of the sha that merged - in a brief whose own " +
+        "paragraph forbids touching that working tree.",
+    );
+  }
+  assert.ok(
+    !prompt.includes("cd /root/cli && "),
+    `the deploy brief still chains a cd into the shared checkout onto a command:\n${prompt}`,
+  );
+});

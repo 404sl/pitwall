@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.139
+
+A deploy command configured in a repo's `deploy` array now runs with no working
+directory guaranteed. It is rendered exactly as configured and must name its own
+repository path - `deploy-one.sh` takes `--repo-path`. The lander and the train
+no longer prefix it with a `cd` into the shared checkout a person works in, so a
+deploy tool that reads the working tree can no longer ship that checkout's
+branch and uncommitted edits in place of the sha that merged.
+
 ## 0.1.138
 
 A train that could not give the merge lock back now says which of two things happened. A release

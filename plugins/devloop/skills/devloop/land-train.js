@@ -623,7 +623,7 @@ the one outcome that must not be softened, because the next train will refuse to
 }
 
 function deployCommands() {
-  const cmds = REPO.deploy.map((c) => `  cd ${REPO_PATH} && ${trimmed(c)}`)
+  const cmds = REPO.deploy.map((c) => `  ${trimmed(c)}`)
   return cmds.length
     ? cmds.join('\n\n')
     : `  (${REPO_KEY} records no usable deploy command in its config, so there is nothing here to
