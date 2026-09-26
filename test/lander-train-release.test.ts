@@ -55,6 +55,20 @@ test("a release step that answered nothing is reported as unattempted, not as a 
   );
 });
 
+test("a release step that answered without a status is unattempted too", async () => {
+  const { done } = train({ notes: "the step returned an object with no status in it" });
+  const result = (await done) as { lock?: string };
+  const lock = result.lock || "";
+
+  assert.match(
+    lock,
+    /^UNATTEMPTED - /,
+    "an answer carrying no status is no evidence release-lock.sh printed STILL_HELD, and only a " +
+      `printed STILL_HELD means a person has to look: ${lock}`,
+  );
+  assert.ok(lock.endsWith(COMMAND), `the field does not end with the command that releases the lock: ${lock}`);
+});
+
 test("a release step that says its command was refused reports what refused it in the result, not only in the journal", async () => {
   const refusal = "the Bash call was not permitted: [Auto-Mode Bypass]";
   const { logs, done } = train({ status: "unattempted", notes: refusal });
