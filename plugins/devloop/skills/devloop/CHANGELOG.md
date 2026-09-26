@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.136
+
+`land-one.sh` reads the pull request's base, labels and head from `repos/{slug}/pulls/{n}` and its checks from `repos/{slug}/commits/{sha}/check-runs`, so a throttled GraphQL no longer turns every pull request in a pass into `unreadable`. It waits for CI by polling check-runs on `--register-interval` instead of `gh pr checks --watch`, bounded by the new `--checks-wait` (default 480s); a run still going when that runs out is `not_ready` (exit 7) for a later round, never red. Rate-limited reads retry with backoff, tunable through `LAND_ONE_REST_TRIES` and `LAND_ONE_REST_BACKOFF`. Commit statuses are no longer read; only check runs decide green.
+
 ## 0.1.135
 
 The deploy step is told to run each `deploy-one.sh` in the foreground with `timeout: 600000` on the call, not in the background, and never to end its turn while a deploy is running; environments run one after the other in the same turn. A call cut by the ten-minute ceiling is re-run once, unchanged, and a second cut is reported as an empty revision with status `partial`. A `deploy.lock` refusal is quoted verbatim in `notes` and never cleared by the step.
