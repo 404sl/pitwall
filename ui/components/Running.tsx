@@ -117,25 +117,25 @@ export function Running({ rows, filter, sort, filteredEmpty }: RunningProps) {
     return <p className="pw-empty">{filteredEmpty ?? strings.empty.running}</p>;
   }
   return (
-    <table className="pw-table pw-table--running">
+    <table className="pw-table pw-table--running" role="table">
       <caption className="pw-sr">{strings.caption.running}</caption>
-      <thead className="pw-sr">
-        <tr>
-          <th scope="col">{strings.column.project}</th>
-          <th scope="col">{strings.column.state}</th>
-          <th scope="col">{strings.column.lanes}</th>
+      <thead className="pw-sr" role="rowgroup">
+        <tr role="row">
+          <th scope="col" role="columnheader">{strings.column.project}</th>
+          <th scope="col" role="columnheader">{strings.column.state}</th>
+          <th scope="col" role="columnheader">{strings.column.lanes}</th>
         </tr>
       </thead>
-      <tbody>
+      <tbody role="rowgroup">
         {rows.map((row) => (
-          <tr key={`${row.project}-${row.state}`} className={`pw-row ${STATE_CLASS[row.state]}`}>
-            <th scope="row" className="pw-cell pw-cell--project">
+          <tr key={`${row.project}-${row.state}`} className={`pw-row ${STATE_CLASS[row.state]}`} role="row">
+            <th scope="row" className="pw-cell pw-cell--project" role="rowheader">
               {row.project}
             </th>
-            <td className="pw-cell pw-cell--state">
+            <td className="pw-cell pw-cell--state" role="cell">
               <Count count={row.count} total={row.total} /> {STATE_WORD[row.state]}
             </td>
-            <td className="pw-cell pw-cell--chips">
+            <td className="pw-cell pw-cell--chips" role="cell">
               <Chips chips={row.chips} projectId={row.projectId} filter={filter} sort={sort} />
             </td>
           </tr>

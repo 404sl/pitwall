@@ -434,12 +434,12 @@ function DependencyRows({
   return (
     <>
       {links.map((link) => (
-        <tr key={link.id} className="pw-row">
-          <td className="pw-cell pw-cell--id">
+        <tr key={link.id} className="pw-row" role="row">
+          <td className="pw-cell pw-cell--id" role="cell">
             <IdLink project={project} id={link.id} filter={filter} sort={sort} />
           </td>
-          <td className="pw-cell pw-cell--title">{link.title}</td>
-          <td className="pw-cell pw-cell--data">{link.status}</td>
+          <td className="pw-cell pw-cell--title" role="cell">{link.title}</td>
+          <td className="pw-cell pw-cell--data" role="cell">{link.status}</td>
         </tr>
       ))}
     </>
@@ -449,24 +449,24 @@ function DependencyRows({
 function Dependencies({ view, filter, sort }: { view: IssueView; filter: FilterState; sort?: SortKey }) {
   const { project, blockedBy, blocks } = view.issue;
   return (
-    <table className="pw-table pw-table--deps">
+    <table className="pw-table pw-table--deps" role="table">
       <caption className="pw-sr">{strings.issue.band.dependencies}</caption>
-      <thead className="pw-sr">
-        <tr>
-          <th scope="col">{strings.column.issue}</th>
-          <th scope="col">{strings.column.title}</th>
-          <th scope="col">{strings.column.state}</th>
+      <thead className="pw-sr" role="rowgroup">
+        <tr role="row">
+          <th scope="col" role="columnheader">{strings.column.issue}</th>
+          <th scope="col" role="columnheader">{strings.column.title}</th>
+          <th scope="col" role="columnheader">{strings.column.state}</th>
         </tr>
       </thead>
-      <tbody>
-        <tr className="pw-group">
-          <th colSpan={3} scope="rowgroup">
+      <tbody role="rowgroup">
+        <tr className="pw-group" role="row">
+          <th colSpan={3} scope="rowgroup" role="rowheader">
             {strings.issue.deps.dependsOn}
           </th>
         </tr>
         {blockedBy.length === 0 ? (
-          <tr className="pw-row">
-            <td className="pw-cell pw-empty" colSpan={3}>
+          <tr className="pw-row" role="row">
+            <td className="pw-cell pw-empty" role="cell" colSpan={3}>
               {strings.issue.deps.emptyOn}
             </td>
           </tr>
@@ -474,15 +474,15 @@ function Dependencies({ view, filter, sort }: { view: IssueView; filter: FilterS
           <DependencyRows project={project} links={blockedBy} filter={filter} sort={sort} />
         )}
       </tbody>
-      <tbody>
-        <tr className="pw-group">
-          <th colSpan={3} scope="rowgroup">
+      <tbody role="rowgroup">
+        <tr className="pw-group" role="row">
+          <th colSpan={3} scope="rowgroup" role="rowheader">
             {strings.issue.deps.dependedOnBy}
           </th>
         </tr>
         {blocks.length === 0 ? (
-          <tr className="pw-row">
-            <td className="pw-cell pw-empty" colSpan={3}>
+          <tr className="pw-row" role="row">
+            <td className="pw-cell pw-empty" role="cell" colSpan={3}>
               {strings.issue.deps.emptyBy}
             </td>
           </tr>

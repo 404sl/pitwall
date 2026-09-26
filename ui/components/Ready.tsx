@@ -19,30 +19,30 @@ export function Ready({ rows, total, filter, sort, filteredEmpty }: ReadyProps) 
   const rest = total - rows.length;
   return (
     <>
-      <table className="pw-table pw-table--ready">
+      <table className="pw-table pw-table--ready" role="table">
         <caption className="pw-sr">{strings.caption.ready}</caption>
-        <thead className="pw-sr">
-          <tr>
-            <th scope="col">{strings.column.project}</th>
-            <th scope="col">{strings.column.issue}</th>
-            <th scope="col">{strings.column.priority}</th>
-            <th scope="col">{strings.column.owner}</th>
-            <th scope="col">{strings.column.reporter}</th>
-            <th scope="col">{strings.column.title}</th>
+        <thead className="pw-sr" role="rowgroup">
+          <tr role="row">
+            <th scope="col" role="columnheader">{strings.column.project}</th>
+            <th scope="col" role="columnheader">{strings.column.issue}</th>
+            <th scope="col" role="columnheader">{strings.column.priority}</th>
+            <th scope="col" role="columnheader">{strings.column.owner}</th>
+            <th scope="col" role="columnheader">{strings.column.reporter}</th>
+            <th scope="col" role="columnheader">{strings.column.title}</th>
           </tr>
         </thead>
-        <tbody>
+        <tbody role="rowgroup">
           {rows.map((row) => (
-            <tr key={row.id} className="pw-row">
-              <th scope="row" className="pw-cell pw-cell--project">
+            <tr key={row.id} className="pw-row" role="row">
+              <th scope="row" className="pw-cell pw-cell--project" role="rowheader">
                 {row.project}
               </th>
-              <td className="pw-cell pw-cell--id">{row.id}</td>
-              <td className="pw-cell pw-cell--data" title={row.priority === undefined ? strings.stale.noPriority : undefined}>
+              <td className="pw-cell pw-cell--id" role="cell">{row.id}</td>
+              <td className="pw-cell pw-cell--data" role="cell" title={row.priority === undefined ? strings.stale.noPriority : undefined}>
                 {priorityLabel(row.priority)}
               </td>
               <WhoCells row={row} />
-              <td className="pw-cell pw-cell--title">
+              <td className="pw-cell pw-cell--title" role="cell">
                 <a className="pw-link" href={issueHref(row.projectId, row.id, filter, sort)}>
                   {row.title}
                 </a>

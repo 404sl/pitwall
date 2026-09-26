@@ -78,44 +78,44 @@ export function ParkedRows({
   caption: string;
 }) {
   return (
-    <table className="pw-table pw-table--parked">
+    <table className="pw-table pw-table--parked" role="table">
       <caption className="pw-sr">{caption}</caption>
-      <thead className="pw-sr">
-        <tr>
-          <th scope="col">{strings.column.issue}</th>
-          <th scope="col">{strings.column.priority}</th>
-          <th scope="col">{strings.column.owner}</th>
-          <th scope="col">{strings.column.reporter}</th>
-          <th scope="col">{strings.column.kind}</th>
-          <th scope="col">{strings.column.title}</th>
-          <th scope="col">{strings.column.parked}</th>
-          <th scope="col">{strings.column.staleness}</th>
+      <thead className="pw-sr" role="rowgroup">
+        <tr role="row">
+          <th scope="col" role="columnheader">{strings.column.issue}</th>
+          <th scope="col" role="columnheader">{strings.column.priority}</th>
+          <th scope="col" role="columnheader">{strings.column.owner}</th>
+          <th scope="col" role="columnheader">{strings.column.reporter}</th>
+          <th scope="col" role="columnheader">{strings.column.kind}</th>
+          <th scope="col" role="columnheader">{strings.column.title}</th>
+          <th scope="col" role="columnheader">{strings.column.parked}</th>
+          <th scope="col" role="columnheader">{strings.column.staleness}</th>
         </tr>
       </thead>
       {groups.map((group) => (
-        <tbody key={group.projectId}>
-          <tr className="pw-group">
-            <th colSpan={8} scope="rowgroup">
+        <tbody key={group.projectId} role="rowgroup">
+          <tr className="pw-group" role="row">
+            <th colSpan={8} scope="rowgroup" role="rowheader">
               {group.project}
             </th>
           </tr>
           {group.rows.map((row) => (
-            <tr key={row.id} className="pw-row">
-              <td className="pw-cell pw-cell--id">{row.id}</td>
-              <td className="pw-cell pw-cell--data" title={row.priority === undefined ? strings.stale.noPriority : undefined}>
+            <tr key={row.id} className="pw-row" role="row">
+              <td className="pw-cell pw-cell--id" role="cell">{row.id}</td>
+              <td className="pw-cell pw-cell--data" role="cell" title={row.priority === undefined ? strings.stale.noPriority : undefined}>
                 {priorityLabel(row.priority)}
               </td>
               <WhoCells row={row} />
-              <td className="pw-cell pw-cell--kind">{strings.parkReason[row.reason]}</td>
-              <td className="pw-cell pw-cell--title">
+              <td className="pw-cell pw-cell--kind" role="cell">{strings.parkReason[row.reason]}</td>
+              <td className="pw-cell pw-cell--title" role="cell">
                 <a className="pw-link" href={issueHref(group.projectId, row.id, filter, sort)}>
                   {row.title}
                 </a>
               </td>
-              <td className="pw-cell pw-cell--at">
+              <td className="pw-cell pw-cell--at" role="cell">
                 <ParkAge park={row.park} />
               </td>
-              <td className="pw-cell pw-cell--stale">
+              <td className="pw-cell pw-cell--stale" role="cell">
                 <Staleness row={row} />
               </td>
             </tr>
