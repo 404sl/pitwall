@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.137
+
+The release train no longer treats checks it could not read as checks that failed. Only a verify verdict that positively says `red` retires the train, bisects the set or hands branches back; `unknown`, and a verify step that reports nothing, stop the run with `checks_unreadable` and leave every pull request the train carried labelled for the next train, with the train branch and its pull request left open so their checks can still be read. The verify brief now passes `timeout: 600000` on the watch, says that a call cut by that ceiling is not an answer, and tells the step to re-read the check runs over REST and run the same watch again on the same pull request while anything is still queued or running - rather than concluding anything. It also says what `unknown` is for: the reads were refused, did not parse, or stayed empty, and never a check that is merely still running.
+
+Refs pitwall-gpeq.
+
 ## 0.1.136
 
 `land-one.sh` reads the pull request's base, labels and head from `repos/{slug}/pulls/{n}` and its checks from `repos/{slug}/commits/{sha}/check-runs`, so a throttled GraphQL no longer turns every pull request in a pass into `unreadable`. It waits for CI by polling check-runs on `--register-interval` instead of `gh pr checks --watch`, bounded by the new `--checks-wait` (default 480s); a run still going when that runs out is `not_ready` (exit 7) for a later round, never red. Rate-limited reads retry with backoff, tunable through `LAND_ONE_REST_TRIES` and `LAND_ONE_REST_BACKOFF`. Commit statuses are no longer read; only check runs decide green.
