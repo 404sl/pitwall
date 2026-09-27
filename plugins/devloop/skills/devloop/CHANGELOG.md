@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.144
+
+A train's release step that answers without a status is now reported as
+`UNATTEMPTED`, with the `release-lock.sh` command to re-run, instead of as a
+leak. Only a release step that actually printed `STILL_HELD` reports `LEAKED` and
+needs a person to look at the lock by hand. This matches how `land.js` has read
+the same answer since #275.
+
 ## 0.1.143
 
 A train that stops on `checks_unreadable` must **not** be resumed. The verify step
