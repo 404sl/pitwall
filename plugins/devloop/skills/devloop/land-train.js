@@ -1491,7 +1491,7 @@ if (released && released.status === 'released') {
 } else if (released && released.status === 'already_gone') {
   lockState = `already_gone - ${MERGE_LOCK} was not there to release`
   log(`${lockState}. Something removed this run's lock while it was working, so another train may have been running beside it.\n    ${released.notes || ''}`)
-} else if (!released || released.status === 'unattempted') {
+} else if (!released || !trimmed(released.status) || released.status === 'unattempted') {
   const said = trimmed(released && released.notes) || 'the release step answered nothing at all, which is what a refused command and a step that died before answering both look like'
   lockState = `UNATTEMPTED - the release command never ran, so nothing has been read about ${MERGE_LOCK} and nothing has been removed: ${said}. Run it and let it decide: it removes ${MERGE_LOCK} only when ${MERGE_LOCK}/holder reads this run's token, prints NOT_MINE and touches nothing when it reads anything else, and ALREADY_GONE when there is nothing there - so re-running it is safe whatever has happened since: ${releaseCommand}`
   log(lockState)
